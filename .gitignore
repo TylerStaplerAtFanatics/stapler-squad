@@ -36,3 +36,5 @@ server/web/dist/
 # Playwright test artifacts
 assets/demo-recording/.last-run.json
 assets/demo-recording/demo-Demo-Flow-chromium/
+
+bench-*.txt
