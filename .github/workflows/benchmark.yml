@@ -1,0 +1,514 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'web-app/src/**'
+      - 'web-app/package.json'
+      - 'web-app/package-lock.json'
+      - '.github/workflows/benchmark.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'web-app/src/**'
+      - 'web-app/package.json'
+      - 'web-app/package-lock.json'
+      - '.github/workflows/benchmark.yml'
+
+# Cancel in-progress runs on PRs when a new commit is pushed.
+# On main, never cancel — baseline-commit steps must be allowed to complete.
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Tier 1: Critical-path Go benchmarks — run on every PR and push to main.
+  # Regex covers the highest-signal benchmarks across the codebase:
+  #   - EventBus (events package)
+  #   - DeltaGeneration (terminal package)
+  #   - CircularBuffer (scrollback package)
+  #   - SessionService_ListSessions, GetSession, StreamTerminal (services package)
+  # On push to main: commits updated baseline to benchmarks/go/tier1-baseline.txt.
+  # On PR: runs benchstat against the committed baseline and posts a PR comment.
+  # ─────────────────────────────────────────────────────────────────────────────
+  go-tier1:
+    name: Go Benchmarks (Tier 1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write      # Push baseline updates to main
+      pull-requests: write # Post PR comments on regression alerts
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260312031701-16a31bc5fbd0
+
+      - name: Run Tier 1 benchmarks
+        run: |
+          go test \
+            -bench='BenchmarkEventBus|BenchmarkDeltaGenerat|BenchmarkCircularBuffer|BenchmarkSessionService_List|BenchmarkSessionService_Get|BenchmarkSessionService_Stream' \
+            -benchmem \
+            -count=8 \
+            -timeout=10m \
+            ./... | tee tier1-bench.txt
+
+      - name: Compare against baseline (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f benchmarks/go/tier1-baseline.txt ]; then
+            benchstat benchmarks/go/tier1-baseline.txt tier1-bench.txt > benchstat-tier1.txt 2>&1 || true
+            echo "## Go Benchmarks (Tier 1)" >> $GITHUB_STEP_SUMMARY
+            cat benchstat-tier1.txt >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No baseline yet — will be established on next push to main." > benchstat-tier1.txt
+          fi
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.existsSync('benchstat-tier1.txt')
+              ? fs.readFileSync('benchstat-tier1.txt', 'utf8').trim()
+              : 'No comparison available.';
+            const marker = '<!-- benchmark-go-tier1 -->';
+            const body = `${marker}\n## Go Benchmarks (Tier 1)\n\`\`\`\n${output}\n\`\`\``;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Update baseline (push to main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p benchmarks/go
+          cp tier1-bench.txt benchmarks/go/tier1-baseline.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/go/tier1-baseline.txt
+          git diff --cached --quiet || git commit -m "chore(bench): update go tier1 baseline [skip ci]"
+          git pull --rebase
+          git push
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Tier 2: Full Go benchmark suite — push to main only.
+  # Commits updated baseline to benchmarks/go/tier2-baseline.txt.
+  # Uses a separate baseline file so it never pollutes the Tier 1 comparison.
+  # ─────────────────────────────────────────────────────────────────────────────
+  go-tier2:
+    name: Go Benchmarks (Tier 2 - Extended)
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: write      # Push baseline updates to main
+    # Only run on push to main, not on PRs (too slow for per-PR checks)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run full benchmark suite
+        run: |
+          go test \
+            -bench=. \
+            -benchmem \
+            -count=8 \
+            -timeout=30m \
+            ./... | tee tier2-bench.txt
+
+      - name: Update baseline
+        run: |
+          mkdir -p benchmarks/go
+          cp tier2-bench.txt benchmarks/go/tier2-baseline.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/go/tier2-baseline.txt
+          git diff --cached --quiet || git commit -m "chore(bench): update go tier2 baseline [skip ci]"
+          git pull --rebase
+          git push
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Frontend: Bundle size gate via size-limit.
+  # Blocks PRs where the JS bundle grows by more than 10%.
+  # ─────────────────────────────────────────────────────────────────────────────
+  frontend-bundle:
+    name: Frontend Bundle Size
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web-app/package-lock.json
+
+      - name: Install dependencies
+        run: cd web-app && npm ci
+
+      - name: Install buf
+        run: |
+          curl -sSL "https://github.com/bufbuild/buf/releases/download/v1.41.0/buf-Linux-x86_64" \
+            -o /usr/local/bin/buf && chmod +x /usr/local/bin/buf
+
+      - name: Generate protobuf code
+        run: buf generate proto
+
+      - name: Build Next.js app
+        run: cd web-app && npm run build
+
+      - name: Check bundle size
+        run: cd web-app && npx size-limit
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Frontend: Playwright terminal throughput benchmark.
+  # Measures bytes/second rendered by xterm.js under realistic load.
+  # On push to main: commits updated baseline to benchmarks/frontend/throughput-baseline.json.
+  # On PR: compares against baseline and posts a PR comment.
+  # ─────────────────────────────────────────────────────────────────────────────
+  frontend-throughput:
+    name: Frontend Terminal Throughput
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: frontend-bundle
+    permissions:
+      contents: write      # Push baseline updates to main
+      pull-requests: write # Post PR comments on regression alerts
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web-app/package-lock.json
+
+      - name: Install dependencies
+        run: cd web-app && npm ci
+
+      - name: Install buf
+        run: |
+          curl -sSL "https://github.com/bufbuild/buf/releases/download/v1.41.0/buf-Linux-x86_64" \
+            -o /usr/local/bin/buf && chmod +x /usr/local/bin/buf
+
+      - name: Generate protobuf code
+        run: buf generate proto
+
+      - name: Install Playwright browsers
+        run: cd web-app && npx playwright install --with-deps chromium
+
+      - name: Build Next.js app
+        run: cd web-app && npm run build
+
+      - name: Run terminal throughput benchmark
+        run: |
+          set -o pipefail
+          cd web-app && npx playwright test tests/e2e/benchmarks/terminal-throughput.spec.ts --reporter=json 2>&1 | tee /tmp/throughput-raw.txt
+
+      - name: Assert benchmark data was produced
+        run: |
+          if [ ! -f web-app/benchmark-results.json ]; then
+            echo "ERROR: benchmark-results.json was not produced — benchmark test failed or was skipped" >&2
+            exit 1
+          fi
+          cat web-app/benchmark-results.json
+
+      - name: Compare against baseline (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f benchmarks/frontend/throughput-baseline.json ]; then
+            node -e "
+              const baseline = JSON.parse(require('fs').readFileSync('benchmarks/frontend/throughput-baseline.json', 'utf8'));
+              const current  = JSON.parse(require('fs').readFileSync('web-app/benchmark-results.json', 'utf8'));
+              const rows = current.map(c => {
+                const b = baseline.find(e => e.name === c.name);
+                if (!b) return c.name + ': no baseline';
+                const pct = ((c.value - b.value) / b.value * 100).toFixed(1);
+                const sign = pct >= 0 ? '+' : '';
+                const arrow = c.value >= b.value ? '▲' : '▼';
+                return c.name + ': ' + (c.value/1024).toFixed(0) + ' KB/s ' + arrow + ' ' + sign + pct + '% (baseline: ' + (b.value/1024).toFixed(0) + ' KB/s)';
+              });
+              require('fs').writeFileSync('throughput-comparison.txt', rows.join('\n'));
+              console.log(rows.join('\n'));
+            "
+          else
+            echo "No baseline yet — will be established on next push to main." > throughput-comparison.txt
+          fi
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.existsSync('throughput-comparison.txt')
+              ? fs.readFileSync('throughput-comparison.txt', 'utf8').trim()
+              : 'No comparison available.';
+            const marker = '<!-- benchmark-frontend-throughput -->';
+            const body = `${marker}\n## Frontend Terminal Throughput\n\`\`\`\n${output}\n\`\`\``;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Update baseline (push to main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p benchmarks/frontend
+          cp web-app/benchmark-results.json benchmarks/frontend/throughput-baseline.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/frontend/throughput-baseline.json
+          git diff --cached --quiet || git commit -m "chore(bench): update frontend throughput baseline [skip ci]"
+          git pull --rebase
+          git push
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Lighthouse CI: Advisory performance audit (non-blocking).
+  # Runs Core Web Vitals and performance audits; never blocks merge.
+  # ─────────────────────────────────────────────────────────────────────────────
+  lighthouse:
+    name: Lighthouse CI (Advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: frontend-bundle
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web-app/package-lock.json
+
+      - name: Install dependencies
+        run: cd web-app && npm ci
+
+      - name: Install buf
+        run: |
+          curl -sSL "https://github.com/bufbuild/buf/releases/download/v1.41.0/buf-Linux-x86_64" \
+            -o /usr/local/bin/buf && chmod +x /usr/local/bin/buf
+
+      - name: Generate protobuf code
+        run: buf generate proto
+
+      - name: Build Next.js app
+        run: cd web-app && npm run build
+
+      - name: Install Lighthouse CI
+        run: npm install -g @lhci/cli
+
+      - name: Run Lighthouse CI
+        run: cd web-app && lhci autorun
+        continue-on-error: true  # Advisory only — never blocks merge
+
+      - name: Upload Lighthouse results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: lighthouse-results
+          path: web-app/.lighthouseci/
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # E2E Latency: Playwright RPC timing benchmarks.
+  # Measures ListSessions TTFB, total RPC time, and React render time separately.
+  # On push to main: commits updated baseline to benchmarks/e2e/latency-baseline.json.
+  # On PR: compares against baseline and posts a PR comment.
+  # ─────────────────────────────────────────────────────────────────────────────
+  e2e-latency:
+    name: E2E RPC Latency
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: frontend-bundle
+    permissions:
+      contents: write      # Push baseline updates to main
+      pull-requests: write # Post PR comments on regression alerts
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web-app/package-lock.json
+
+      - name: Install dependencies
+        run: cd web-app && npm ci
+
+      - name: Install buf
+        run: |
+          curl -sSL "https://github.com/bufbuild/buf/releases/download/v1.41.0/buf-Linux-x86_64" \
+            -o /usr/local/bin/buf && chmod +x /usr/local/bin/buf
+
+      - name: Generate protobuf code
+        run: buf generate proto
+
+      - name: Build Next.js app
+        run: npm run build
+        working-directory: web-app
+
+      - name: Copy web UI to dist
+        run: cp -r web-app/out server/web/dist
+
+      - name: Install Playwright browsers
+        run: cd web-app && npx playwright install --with-deps chromium
+
+      - name: Build Go binary
+        run: go build -o stapler-squad .
+
+      - name: Start backend server
+        run: |
+          ./stapler-squad &
+          cd web-app && npx wait-on http://localhost:8543 --timeout 30000
+
+      - name: Run E2E latency benchmark
+        env:
+          TEST_PORT: '8543'
+          TEST_REUSE_SERVER: '1'
+        run: cd web-app && npx playwright test tests/e2e/benchmarks/rpc-latency.spec.ts
+
+      - name: Assert E2E latency data was produced
+        run: |
+          if [ ! -f web-app/e2e-latency-results.json ]; then
+            echo "ERROR: e2e-latency-results.json was not produced — benchmark test failed or was skipped" >&2
+            exit 1
+          fi
+          cat web-app/e2e-latency-results.json
+
+      - name: Compare against baseline (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f benchmarks/e2e/latency-baseline.json ]; then
+            node -e "
+              const baseline = JSON.parse(require('fs').readFileSync('benchmarks/e2e/latency-baseline.json', 'utf8'));
+              const current  = JSON.parse(require('fs').readFileSync('web-app/e2e-latency-results.json', 'utf8'));
+              const rows = current.map(c => {
+                const b = baseline.find(e => e.name === c.name);
+                if (!b) return c.name + ': no baseline';
+                const pct = ((c.value - b.value) / b.value * 100).toFixed(1);
+                const sign = pct >= 0 ? '+' : '';
+                const arrow = c.value <= b.value ? '▼ faster' : '▲ slower';
+                return c.name + ': ' + c.value.toFixed(0) + 'ms (' + arrow + ' ' + sign + pct + '%; baseline: ' + b.value.toFixed(0) + 'ms)';
+              });
+              require('fs').writeFileSync('latency-comparison.txt', rows.join('\n'));
+              console.log(rows.join('\n'));
+            "
+          else
+            echo "No baseline yet — will be established on next push to main." > latency-comparison.txt
+          fi
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.existsSync('latency-comparison.txt')
+              ? fs.readFileSync('latency-comparison.txt', 'utf8').trim()
+              : 'No comparison available.';
+            const marker = '<!-- benchmark-e2e-latency -->';
+            const body = `${marker}\n## E2E RPC Latency\n\`\`\`\n${output}\n\`\`\``;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Update baseline (push to main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p benchmarks/e2e
+          cp web-app/e2e-latency-results.json benchmarks/e2e/latency-baseline.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/e2e/latency-baseline.json
+          git diff --cached --quiet || git commit -m "chore(bench): update e2e latency baseline [skip ci]"
+          git pull --rebase
+          git push
