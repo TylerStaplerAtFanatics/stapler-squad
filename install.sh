@@ -2,6 +2,36 @@
 
 set -e
 
+# Detect which GitHub repo to install from.
+# Resolution order:
+#   1. REPO env var override (e.g. REPO=tstapler/stapler-squad ./install.sh)
+#   2. git remote origin of the current directory (works when run from a clone)
+#   3. Default: TylerStaplerAtFanatics/stapler-squad
+detect_repo() {
+    if [ -n "${REPO:-}" ]; then
+        echo "$REPO"
+        return
+    fi
+
+    if command -v git &> /dev/null; then
+        local remote_url
+        remote_url=$(git remote get-url origin 2>/dev/null || true)
+        if [ -n "$remote_url" ]; then
+            # Handle both https://github.com/owner/repo[.git] and git@github.com:owner/repo[.git]
+            local repo_path
+            repo_path=$(echo "$remote_url" | sed -E 's|.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$|\1|')
+            if [ -n "$repo_path" ] && [[ "$repo_path" == */* ]]; then
+                echo "$repo_path"
+                return
+            fi
+        fi
+    fi
+
+    echo "TylerStaplerAtFanatics/stapler-squad"
+}
+
+GITHUB_REPO=$(detect_repo)
+
 setup_shell_and_path() {
     BIN_DIR=${BIN_DIR:-$HOME/.local/bin}
 
@@ -59,7 +89,7 @@ detect_platform_and_arch() {
 
 get_latest_version() {
     # Get latest version from GitHub API, including prereleases
-    API_RESPONSE=$(curl -sS "https://api.github.com/repos/TylerStaplerAtFanatics/stapler-squad/releases")
+    API_RESPONSE=$(curl -sS "https://api.github.com/repos/${GITHUB_REPO}/releases")
     if [ $? -ne 0 ]; then
         echo "Error: Failed to connect to GitHub API" >&2
         exit 1
@@ -67,14 +97,14 @@ get_latest_version() {
 
     if echo "$API_RESPONSE" | grep -q "Not Found"; then
         echo "Error: Repository not found or no releases published yet." >&2
-        echo "Visit https://github.com/TylerStaplerAtFanatics/stapler-squad/releases to check." >&2
+        echo "Visit https://github.com/${GITHUB_REPO}/releases to check." >&2
         exit 1
     fi
 
     # Check for empty releases list
     if [ "$API_RESPONSE" = "[]" ] || [ -z "$(echo "$API_RESPONSE" | tr -d '[] \n\r')" ]; then
         echo "Error: No releases have been published yet for stapler-squad." >&2
-        echo "Build from source: https://github.com/TylerStaplerAtFanatics/stapler-squad#installation" >&2
+        echo "Build from source: https://github.com/${GITHUB_REPO}#installation" >&2
         exit 1
     fi
 
@@ -219,7 +249,7 @@ build_from_source() {
     echo "Cloning repository..."
     local tmp_dir
     tmp_dir=$(mktemp -d)
-    ensure git clone --depth=1 "https://github.com/TylerStaplerAtFanatics/stapler-squad.git" "$tmp_dir/stapler-squad"
+    ensure git clone --depth=1 "https://github.com/${GITHUB_REPO}.git" "$tmp_dir/stapler-squad"
 
     echo "Building from source (this will install node and buf via Homebrew if missing)..."
     # make build handles proto generation, Next.js web UI build, and Go compilation.
@@ -399,7 +429,7 @@ main() {
             VERSION=$(get_latest_version)
         fi
 
-        RELEASE_URL="https://github.com/TylerStaplerAtFanatics/stapler-squad/releases/download/v${VERSION}"
+        RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}"
         ARCHIVE_NAME="stapler-squad_${VERSION}_${PLATFORM}_${ARCHITECTURE}${ARCHIVE_EXT}"
         BINARY_URL="${RELEASE_URL}/${ARCHIVE_NAME}"
         TMP_DIR=$(mktemp -d)
