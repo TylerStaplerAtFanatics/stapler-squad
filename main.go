@@ -30,7 +30,7 @@ import (
 )
 
 var (
-	version            = "1.0.12"
+	version           = "1.1.0"
 	daemonFlag         bool
 	testModeFlag       bool
 	testDirFlag        string
