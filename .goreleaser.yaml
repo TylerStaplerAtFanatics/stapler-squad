@@ -11,6 +11,8 @@ builds:
       - arm64
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - -X main.version={{.Version}}
 
 archives:
   - format: tar.gz
@@ -23,7 +25,7 @@ archives:
 brews:
   - name: stapler-squad
     repository:
-      owner: tstapler
+      owner: TylerStaplerAtFanatics
       name: stapler-squad
       branch: main
       token: "{{ .Env.GITHUB_TOKEN }}"
@@ -31,7 +33,7 @@ brews:
       name: goreleaserbot
       email: bot@goreleaser.com
     commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
-    homepage: "https://github.com/tstapler/stapler-squad"
+    homepage: "https://github.com/TylerStaplerAtFanatics/stapler-squad"
     description: "Manage multiple AI terminal agents like Claude Code, Aider, Codex, OpenCode, and Amp."
     license: "MIT"
     install: |
