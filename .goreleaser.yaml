@@ -24,12 +24,12 @@ archives:
 
 brews:
   - name: stapler-squad
+    directory: Formula
     repository:
       owner: "{{ .Env.GITHUB_REPOSITORY_OWNER }}"
       name: "{{ .Env.GITHUB_REPO_NAME }}"
       branch: main
       token: "{{ .Env.GITHUB_TOKEN }}"
-      directory: Formula
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
