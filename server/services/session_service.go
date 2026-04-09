@@ -59,6 +59,9 @@ type SessionService struct {
 	// databaseSvc handles workspace/database switcher RPCs.
 	databaseSvc *DatabaseService
 
+	// fileSvc handles file tree browsing RPCs (ListFiles, GetFileContent).
+	fileSvc *FileService
+
 	// pathCompletionSvc handles filesystem path completion RPCs.
 	pathCompletionSvc *PathCompletionService
 
@@ -154,6 +157,7 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 		rulesSvc:          rulesSvc,
 		approvalStore:     approvalStore,
 		databaseSvc:       NewDatabaseService(),
+		fileSvc:           NewFileService(concStorage),
 		pathCompletionSvc: NewPathCompletionService(),
 	}
 }
@@ -1803,6 +1807,22 @@ func (s *SessionService) allInstances() []*session.Instance {
 		result = append(result, s.externalDiscovery.GetSessions()...)
 	}
 	return result
+}
+
+// ListFiles returns the immediate children of a directory in a session's worktree.
+func (s *SessionService) ListFiles(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ListFilesRequest],
+) (*connect.Response[sessionv1.ListFilesResponse], error) {
+	return s.fileSvc.ListFiles(ctx, req)
+}
+
+// GetFileContent retrieves the text content of a file in a session's worktree.
+func (s *SessionService) GetFileContent(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetFileContentRequest],
+) (*connect.Response[sessionv1.GetFileContentResponse], error) {
+	return s.fileSvc.GetFileContent(ctx, req)
 }
 
 // checkpointToProto converts a session.Checkpoint to a proto CheckpointProto.
