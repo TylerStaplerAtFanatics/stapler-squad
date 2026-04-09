@@ -47,8 +47,7 @@ Both Homebrew and manual installation will install Stapler Squad as `ssq` on you
 #### Homebrew
 
 ```bash
-brew tap TylerStaplerAtFanatics/stapler-squad https://github.com/TylerStaplerAtFanatics/stapler-squad
-brew install TylerStaplerAtFanatics/stapler-squad/stapler-squad
+brew tap TylerStaplerAtFanatics/stapler-squad https://github.com/TylerStaplerAtFanatics/stapler-squad && brew install TylerStaplerAtFanatics/stapler-squad/stapler-squad
 ```
 
 This installs both `stapler-squad` and the `ssq` alias.
