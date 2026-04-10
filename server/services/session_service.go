@@ -1784,6 +1784,14 @@ func (s *SessionService) ListPathCompletions(
 	return s.pathCompletionSvc.ListPathCompletions(ctx, req)
 }
 
+// ListWorktrees returns the git worktrees for a given repository path.
+func (s *SessionService) ListWorktrees(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ListWorktreesRequest],
+) (*connect.Response[sessionv1.ListWorktreesResponse], error) {
+	return s.pathCompletionSvc.ListWorktrees(ctx, req)
+}
+
 // findInstance finds an instance by title using the live in-memory poller.
 func (s *SessionService) findInstance(id string) *session.Instance {
 	if s.reviewQueuePoller != nil {

@@ -210,6 +210,10 @@ service SessionService {
   // ListPathCompletions returns filesystem directory entries matching a path prefix.
   // Used by the Omnibar for real-time path completion and inline path validation.
   rpc ListPathCompletions(ListPathCompletionsRequest) returns (ListPathCompletionsResponse) {}
+
+  // ListWorktrees returns the git worktrees for a given repository path.
+  // Used by the Omnibar to populate the "Use Existing Worktree" dropdown.
+  rpc ListWorktrees(ListWorktreesRequest) returns (ListWorktreesResponse) {}
 }
 
 // ListSessionsRequest allows filtering sessions by various criteria.
@@ -1262,4 +1266,24 @@ message PathEntry {
 
   // True if this entry is a directory (symlinks resolved).
   bool is_directory = 3;
+}
+
+message ListWorktreesRequest {
+  // Absolute path to the git repository root. Supports ~ expansion.
+  string repo_path = 1;
+}
+
+message WorktreeEntry {
+  // Absolute path to the worktree directory.
+  string path = 1;
+
+  // Branch checked out in this worktree (empty for detached HEAD).
+  string branch = 2;
+
+  // True if this is the main worktree (not an added worktree).
+  bool is_main = 3;
+}
+
+message ListWorktreesResponse {
+  repeated WorktreeEntry worktrees = 1;
 }
