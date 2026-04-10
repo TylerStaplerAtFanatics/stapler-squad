@@ -3,12 +3,14 @@
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { Session, InstanceType } from "@/gen/session/v1/types_pb";
-import { DiffViewer } from "./DiffViewer";
+import { DiffViewer, prefetchDiff } from "./DiffViewer";
 import { VcsPanel } from "./VcsPanel";
+import { prefetchVcsStatus } from "@/lib/hooks/useVcsStatus";
 import { WorkspaceSwitchModal } from "./WorkspaceSwitchModal";
 import { ApprovalPanel } from "./ApprovalPanel";
 import { SessionLogsTab } from "./SessionLogsTab";
 import { FilesTab } from "./FilesTab";
+import { ActionBar } from "@/components/ui/ActionBar";
 import { useSessionService } from "@/lib/hooks/useSessionService";
 import { getApiBaseUrl } from "@/lib/config";
 import { getProgramDisplay, isKnownProgram, PROGRAMS } from "@/lib/constants/programs";
@@ -65,6 +67,13 @@ export function SessionDetail({
   const [isEditingProgram, setIsEditingProgram] = useState(false);
   const [programValue, setProgramValue] = useState(session.program || "");
   const { updateSession } = useSessionService();
+
+  // Prefetch diff and VCS data as soon as a session is selected so tabs load instantly.
+  useEffect(() => {
+    const baseUrl = getApiBaseUrl();
+    prefetchDiff(session.id, baseUrl);
+    prefetchVcsStatus(session.id, baseUrl);
+  }, [session.id]);
 
   // Notify parent of fullscreen state changes
   useEffect(() => {
@@ -132,17 +141,8 @@ export function SessionDetail({
     <div className={`${styles.container} ${isFullscreen ? styles.fullscreen : ""}`}>
       <div className={styles.header}>
         <h2 className={styles.title}>{session.title}</h2>
-        <div className={styles.headerActions}>
-          {session.instanceType !== InstanceType.EXTERNAL && (
-            <button
-              className={styles.switchWorkspaceButton}
-              onClick={() => setShowWorkspaceSwitchModal(true)}
-              aria-label="Switch workspace"
-              title="Switch branch, bookmark, or worktree"
-            >
-              ⎇ Switch
-            </button>
-          )}
+        <ActionBar gap="sm" justify="end" scroll className={styles.headerActions}>
+          {/* Fullscreen — most used when viewing terminal/diff/vcs */}
           {(activeTab === "terminal" || activeTab === "diff" || activeTab === "vcs") && (
             <button
               className={styles.fullscreenButton}
@@ -153,23 +153,9 @@ export function SessionDetail({
               {isFullscreen ? "⊗" : "⛶"}
             </button>
           )}
-          {onDismissFromQueue && (
-            <button
-              className={styles.navButton}
-              onClick={onDismissFromQueue}
-              aria-label="Clear from queue and advance"
-              title="Clear from queue and advance to next"
-            >
-              ⏭
-            </button>
-          )}
+          {/* Queue navigation — most used in review queue mode */}
           {showNavigation && (
             <>
-              {queuePosition !== undefined && queuePosition > 0 && queueTotal !== undefined && queueTotal > 0 && (
-                <span className={styles.queuePosition} aria-live="polite">
-                  {queuePosition} of {queueTotal}
-                </span>
-              )}
               <button
                 className={styles.navButton}
                 onClick={onPrevious}
@@ -186,8 +172,36 @@ export function SessionDetail({
               >
                 →
               </button>
+              {queuePosition !== undefined && queuePosition > 0 && queueTotal !== undefined && queueTotal > 0 && (
+                <span className={styles.queuePosition} aria-live="polite">
+                  {queuePosition} of {queueTotal}
+                </span>
+              )}
             </>
           )}
+          {/* Dismiss from queue */}
+          {onDismissFromQueue && (
+            <button
+              className={styles.navButton}
+              onClick={onDismissFromQueue}
+              aria-label="Clear from queue and advance"
+              title="Clear from queue and advance to next"
+            >
+              ⏭
+            </button>
+          )}
+          {/* Switch workspace — less frequent */}
+          {session.instanceType !== InstanceType.EXTERNAL && (
+            <button
+              className={styles.switchWorkspaceButton}
+              onClick={() => setShowWorkspaceSwitchModal(true)}
+              aria-label="Switch workspace"
+              title="Switch branch, bookmark, or worktree"
+            >
+              ⎇ Switch
+            </button>
+          )}
+          {/* Close — conventional rightmost */}
           <button
             className={styles.closeButton}
             onClick={onClose}
@@ -195,7 +209,7 @@ export function SessionDetail({
           >
             ✕
           </button>
-        </div>
+        </ActionBar>
       </div>
 
       <div className={styles.tabs}>

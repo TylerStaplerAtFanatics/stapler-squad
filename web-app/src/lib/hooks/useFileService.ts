@@ -9,6 +9,16 @@ import type { FileNode } from "@/gen/session/v1/types_pb";
 
 export type { FileNode, ListFilesResponse, GetFileContentResponse };
 
+// ---- File content cache ----
+
+interface FileContentCacheEntry {
+  data: GetFileContentResponse;
+  timestamp: number;
+}
+
+const fileContentCache = new Map<string, FileContentCacheEntry>();
+const FILE_CONTENT_CACHE_TTL_MS = 30_000;
+
 interface UseGetFileContentResult {
   data: GetFileContentResponse | null;
   loading: boolean;
@@ -76,6 +86,16 @@ export function useGetFileContent(
       return;
     }
 
+    // Check module-level cache first – avoids re-fetching on tab re-entry.
+    const cacheKey = `${sessionId}:${filePath}`;
+    const cached = fileContentCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < FILE_CONTENT_CACHE_TTL_MS) {
+      setData(cached.data);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
@@ -84,6 +104,7 @@ export function useGetFileContent(
     fetchFileContent(sessionId, filePath, baseUrl)
       .then((response) => {
         if (requestId === requestIdRef.current) {
+          fileContentCache.set(cacheKey, { data: response, timestamp: Date.now() });
           setData(response);
         }
       })
