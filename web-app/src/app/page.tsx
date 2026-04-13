@@ -265,9 +265,12 @@ function HomeContent() {
           autoYes: false,
           useTitleAsBranch: true,
         });
+      } else {
+        setWizardInitialData(undefined);
       }
       setShowWizard(true);
     }).catch(() => {
+      setWizardInitialData(undefined);
       setShowWizard(true);
     });
   };

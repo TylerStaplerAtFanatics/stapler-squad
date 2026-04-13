@@ -155,15 +155,14 @@ describe("rankPathsByFrecency", () => {
     expect(rankPathsByFrecency(sessions, NOW)).toEqual(["/solo/repo"]);
   });
 
-  it("is stable for equal scores (same path order preserved)", () => {
-    // Two paths with identical frequency and identical recency
+  it("preserves insertion order for equal-score paths (JS sort is stable)", () => {
+    // Two paths with identical frequency and identical recency — insertion order must be preserved
     const sessions: SessionForFrecency[] = [
       { path: "/repo/alpha", timestampsMs: [NOW] },
       { path: "/repo/beta",  timestampsMs: [NOW] },
     ];
     const result = rankPathsByFrecency(sessions, NOW);
-    expect(result).toHaveLength(2);
-    expect(result).toContain("/repo/alpha");
-    expect(result).toContain("/repo/beta");
+    expect(result[0]).toBe("/repo/alpha");
+    expect(result[1]).toBe("/repo/beta");
   });
 });
