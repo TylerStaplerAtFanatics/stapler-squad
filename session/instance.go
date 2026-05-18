@@ -40,6 +40,8 @@ const (
 	// Deprecated: use Creating.
 	Loading = Creating
 
+	// _statusSentinel is a compile-time marker: if new states are added, update this.
+	_statusSentinel = Hibernated
 )
 
 // String returns a human-readable name for the status.
