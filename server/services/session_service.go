@@ -868,6 +868,7 @@ func (s *SessionService) CreateSession(
 		log.Info("[CreateSession] async start complete", "session", instanceTitle)
 	}()
 
+
 	return connect.NewResponse(&sessionv1.CreateSessionResponse{
 		Session: creatingProto,
 	}), nil
@@ -3186,4 +3187,5 @@ func (s *SessionService) UpdateFeatureFlag(
 		},
 	}), nil
 }
+
 
