@@ -15,13 +15,12 @@ on the `Active` and `Hibernated` lifecycle states from Epic 1.
 
 **Architectural decisions to resolve before coding:**
 
-- **ADR-A**: The Go `Status` iota is being renumbered to a clean sequence
-  (`Creating=0, Active=1, Paused=2, Stopped=3, Hibernated=4`). Task 1.1.4 provides an
-  ent versioned migration that remaps existing DB integer values before any code change
-  goes live. The proto enum integer wire values are independent of the Go iota: the proto
-  keeps `SESSION_STATUS_ACTIVE = 1` (reusing the old `RUNNING = 1` slot), `PAUSED = 4`,
-  `STOPPED = 7`, and adds `HIBERNATED = 8`. The Go↔proto adapter (Task 1.4.2) handles
-  the translation between the two numbering schemes.
+- **ADR-A**: Integer wire values for `Paused` (4) and `Stopped` (7) in the proto enum
+  MUST NOT change. `Active` replaces `Running` (1) in the Go iota but the proto integer
+  `SESSION_STATUS_RUNNING = 1` is reused as `SESSION_STATUS_ACTIVE = 1` to avoid a
+  database migration for existing sessions. `Loading` (3) is deprecated/removed;
+  `NeedsApproval` (5) is repurposed as the sub-status path. `Hibernated` gets proto
+  value `= 8` (next available after `STOPPED = 7`).
 
 - **ADR-B**: Sub-status is never stored in the database. It is derived at response
   time from `GetEffectiveStatus()` and serialized into the `Session` proto only.
@@ -51,17 +50,18 @@ as top-level lifecycle states.
 **File:** `session/instance.go` (lines 22–58)
 
 **What to change:**
-- Replace the old iota with a clean new iota (Task 1.1.4 provides the DB migration that
-  remaps existing integer rows, so tombstone slots are not needed):
+- Add `Active Status = 0` to replace `Running` at position 0, then renumber:
   ```
-  Creating      Status = iota  // 0
-  Active                       // 1 — replaces Running/Ready
-  Paused                       // 2
-  Stopped                      // 3
-  Hibernated                   // 4 — new
+  Active        Status = iota  // replaces Running (0)
+  _                            // tombstone slot for Ready (1) — preserves iota numbering
+  _                            // tombstone slot for Loading (2)
+  Paused                       // unchanged (3)
+  _                            // tombstone slot for NeedsApproval (4)
+  Creating                     // unchanged (5)
+  Stopped                      // unchanged (6)
+  Hibernated                   // new (7)
   ```
-  Keep `Running`, `Ready`, `Loading`, `NeedsApproval` as deprecated aliases so existing
-  call sites compile without change during the transition:
+  Keep `Running`, `Ready`, `Loading`, `NeedsApproval` as deprecated aliases:
   ```go
   // Deprecated: use Active.
   Running = Active
@@ -82,9 +82,7 @@ as top-level lifecycle states.
 - `go build ./...` passes.
 - `Active.String()` returns `"Active"`.
 - `Hibernated.String()` returns `"Hibernated"`.
-- `Creating == 0`, `Active == 1`, `Paused == 2`, `Stopped == 3`, `Hibernated == 4`.
 - `Running == Active`, `Ready == Active`, `Loading == Creating` (alias equality in tests).
-- Task 1.1.4 (DB migration) must land alongside or before this task is merged to main.
 
 ---
 
@@ -93,96 +91,16 @@ as top-level lifecycle states.
 **File:** `session/state_machine.go`
 
 **What to change:**
-Replace `allowedTransitions map[Status][]Status` with a `TransitionDef`-based model:
-
-1. **Define `TransitionDef` and a `transitionKey` index type:**
-   ```go
-   type transitionKey struct{ from, to Status }
-
-   type TransitionDef struct {
-       From  Status
-       To    Status
-       // Guard is called before the status is updated. Return non-nil to abort.
-       // nil means unconditionally allowed.
-       Guard func(ctx context.Context, i *Instance) error
-       // After is called once the status has been updated (side-effects: process
-       // management, worktree ops, scrollback restore, etc.).
-       // nil means no post-transition side-effect.
-       After func(ctx context.Context, i *Instance)
-   }
-   ```
-
-2. **Declare the canonical transition slice:**
-   ```go
-   var transitionDefs = []TransitionDef{
-       {From: Creating,   To: Active,     Guard: nil,                After: afterColdStart},
-       {From: Creating,   To: Stopped,    Guard: nil,                After: nil},
-       {From: Active,     To: Paused,     Guard: guardWorktreePresent, After: afterPause},
-       {From: Active,     To: Stopped,    Guard: nil,                After: nil},
-       {From: Active,     To: Hibernated, Guard: guardIsIdle,        After: afterHibernate},
-       {From: Paused,     To: Active,     Guard: nil,                After: afterResume},
-       {From: Paused,     To: Stopped,    Guard: nil,                After: nil},
-       {From: Stopped,    To: Active,     Guard: guardWorktreePresent, After: afterColdStart},
-       {From: Hibernated, To: Active,     Guard: nil,                After: afterWakeResume},
-       {From: Hibernated, To: Stopped,    Guard: nil,                After: nil},
-   }
-   ```
-
-3. **Build an init-time O(1) lookup index:**
-   ```go
-   var transitionIndex map[transitionKey]TransitionDef
-
-   func init() {
-       transitionIndex = make(map[transitionKey]TransitionDef, len(transitionDefs))
-       for _, def := range transitionDefs {
-           transitionIndex[transitionKey{def.From, def.To}] = def
-       }
-   }
-   ```
-
-4. **Implement `transitionTo` as the single choreography point:**
-   ```go
-   func (i *Instance) transitionTo(ctx context.Context, to Status) error {
-       def, ok := transitionIndex[transitionKey{i.Status, to}]
-       if !ok {
-           return fmt.Errorf("invalid transition %s → %s", i.Status, to)
-       }
-       if def.Guard != nil {
-           if err := def.Guard(ctx, i); err != nil {
-               return fmt.Errorf("transition %s → %s blocked: %w", i.Status, to, err)
-           }
-       }
-       i.Status = to
-       if def.After != nil {
-           def.After(ctx, i)
-       }
-       return nil
-   }
-   ```
-
-5. **Guard functions:**
-   - `guardIsIdle(ctx, i) error` — for `Active → Hibernated`: returns an error if the
-     session's sub-status indicates the AI process is actively processing (i.e.,
-     `GetEffectiveStatus()` is not `StatusIdle`). Allows hibernation to be blocked
-     while a task is in flight.
-   - `guardWorktreePresent(ctx, i) error` — for `Active → Paused` and `Stopped → Active`:
-     returns an error if `i.gitManager.HasWorktree()` is false, preventing a pause/cold-start
-     when the worktree has already been cleaned up.
-
-6. **After-hooks:**
-   - `afterHibernate(ctx, i)` — writes the checkpoint file and kills the tmux session
-     (replaces the body of `Hibernate()` post-transition side-effects).
-   - `afterWakeResume(ctx, i)` — re-launches the AI process via `i.Start(false)` and
-     restores scrollback (replaces the body of `ResumeFromHibernation()` post-transition
-     side-effects).
-   - `afterPause(ctx, i)` — deletes the git worktree.
-   - `afterResume(ctx, i)` — recreates the git worktree and re-launches the AI process.
-   - `afterColdStart(ctx, i)` — performs the cold-restore start (used for
-     `Creating → Active` and `Stopped → Active`).
-
-7. **Retain `CanTransition(from, to Status) bool`** as a pure lookup against
-   `transitionIndex` for callers that only need a reachability check.
-
+Replace `allowedTransitions` with the new model:
+```go
+var allowedTransitions = map[Status][]Status{
+    Creating:   {Active, Stopped},
+    Active:     {Paused, Stopped, Hibernated},
+    Paused:     {Active, Stopped},
+    Stopped:    {Active},           // cold-restore recovery
+    Hibernated: {Active, Stopped},
+}
+```
 Remove entries for `Ready`, `Running`, `NeedsApproval`, `Loading`.
 
 Update the comment block at the top to reflect the new diagram from `requirements.md`.
@@ -192,111 +110,7 @@ Update the comment block at the top to reflect the new diagram from `requirement
 - `CanTransition(Hibernated, Active)` returns `true`.
 - `CanTransition(Active, NeedsApproval)` returns `false` (removed).
 - `CanTransition(Ready, Running)` returns `false` (removed).
-- `transitionTo(ctx, Hibernated)` on an `Active` instance with an idle sub-status
-  runs `afterHibernate` and sets `Status == Hibernated`.
-- `transitionTo(ctx, Hibernated)` on an `Active` instance that is processing returns
-  an error from `guardIsIdle`.
 - All existing state machine unit tests pass or are updated.
-
----
-
-#### Task 1.1.3 — Add `exhaustive` linter to CI lint step
-
-**File:** `Makefile` (same `lint` target that runs `nilaway`)
-
-**What to change:**
-Install and wire up the [`exhaustive`](https://github.com/nishanths/exhaustive) linter,
-which flags `switch` statements over a named type (here `Status`) that are missing one
-or more cases:
-
-1. Add to `make install-tools`:
-   ```makefile
-   go install github.com/nishanths/exhaustive/cmd/exhaustive@latest
-   ```
-
-2. Add to the `lint` target (alongside the existing `nilaway` invocation):
-   ```makefile
-   exhaustive ./session/... ./server/...
-   ```
-   Configure via `.exhaustive.toml` (or `-default-signifies-exhaustive=false`) so that
-   a `default:` branch does **not** satisfy exhaustiveness — every `Status` case must be
-   explicit or the build fails.
-
-3. Fix any pre-existing `switch Status` statements that are currently non-exhaustive
-   before landing this task.
-
-**Acceptance criteria:**
-- `make lint` fails if a new `Status` constant is added without updating all
-  `switch Status` statements in `session/` and `server/`.
-- `make ci` passes with no exhaustiveness violations.
-
----
-
-#### Task 1.1.4 — Ent versioned migration: remap integer status values
-
-**Files:**
-- `session/ent/migrate/migrations/` (new versioned migration file)
-- `session/ent/schema/session.go` (verify `enums` field uses new iota)
-
-**Background:**
-The current `Status` iota stored as an integer column is:
-```
-Running=0, Ready=1, Loading=2, Paused=3, NeedsApproval=4, Creating=5, Stopped=6
-```
-The new iota must be:
-```
-Creating=0, Active=1, Paused=2, Stopped=3, Hibernated=4
-```
-This is a **breaking integer remapping** — existing rows must be migrated.
-
-**Old → New integer mapping:**
-
-| Old value | Old name | New value | New name | Notes |
-|---|---|---|---|---|
-| 0 | Running | 1 | Active | Running becomes Active |
-| 1 | Ready | 1 | Active | Ready becomes Active |
-| 2 | Loading | 0 | Creating | Loading becomes Creating |
-| 3 | Paused | 2 | Paused | Paused shifts from 3→2 |
-| 4 | NeedsApproval | 1 | Active | NeedsApproval becomes Active |
-| 5 | Creating | 0 | Creating | Creating shifts from 5→0 |
-| 6 | Stopped | 3 | Stopped | Stopped shifts from 6→3 |
-
-**What to change:**
-Generate a new ent versioned migration (using the correct command from CLAUDE.md):
-```bash
-go run -mod=mod entgo.io/ent/cmd/ent generate --feature sql/upsert ./session/ent/schema
-```
-Then create the versioned migration SQL file. Because multiple old values map to the
-same new value, the UPDATE must be done in a single pass using a CASE expression to
-avoid overwriting already-remapped rows. Use a temporary sentinel offset (+100) to
-avoid collision during the multi-step remap:
-
-```sql
--- Step 1: shift all old values up by 100 as sentinels (avoids collision)
-UPDATE sessions SET status = status + 100;
-
--- Step 2: remap sentinel values to new integers
-UPDATE sessions SET status = CASE status
-    WHEN 100 THEN 1   -- old Running(0)   → new Active(1)
-    WHEN 101 THEN 1   -- old Ready(1)     → new Active(1)
-    WHEN 102 THEN 0   -- old Loading(2)   → new Creating(0)
-    WHEN 103 THEN 2   -- old Paused(3)    → new Paused(2)
-    WHEN 104 THEN 1   -- old NeedsApproval(4) → new Active(1)
-    WHEN 105 THEN 0   -- old Creating(5)  → new Creating(0)
-    WHEN 106 THEN 3   -- old Stopped(6)   → new Stopped(3)
-    ELSE status        -- future-proof: leave unknowns (should not exist)
-END;
-```
-
-Register the migration file with the ent versioned migration atlas workflow
-(same pattern as any existing migration in `session/ent/migrate/migrations/`).
-
-**Acceptance criteria:**
-- Running the migration against a database with all old status values produces rows
-  with only the values `{0, 1, 2, 3}` (no 4–106 remaining).
-- `go build ./...` passes after schema regeneration.
-- The migration is idempotent when run twice (second run is a no-op).
-- A test in `session/ent/migrate/` verifies the remapping on a SQLite in-memory DB.
 
 ---
 
@@ -404,132 +218,11 @@ func (i *Instance) recoverFromStaleResume() {
 
 ---
 
-### Story 1.3 — Instance Interface Redesign — Make the State Machine Hard to Misuse
-
-**Goal:** Eliminate the two-path status mutation problem (`setStatus` bypass +
-`transitionTo` validated path), add typed predicate methods, remove the fallback pattern,
-and update the `InstanceReader` interface.
-
-**Prerequisite for:** All other epics. This story establishes the public API contract
-that all other stories code against. Must be completed before any other epic begins.
-
----
-
-#### Task 1.3.1 — Add state predicate methods to Instance
-
-**File:** `session/instance_state.go`
-
-**What to change:**
-- Add: `IsCreating() bool`, `IsActive() bool`, `IsPaused() bool`, `IsStopped() bool`,
-  `IsHibernated() bool` — each returns `i.Status == X`
-- Add: `GetLifecycleStatus() Status` returning the typed `Status` (not int)
-- Keep `GetStatus() int` for backward compat with the `SessionAccessor` interface but
-  mark it as deprecated in a comment pointing to `GetLifecycleStatus()`
-
-**Acceptance criteria:**
-- No call site outside `session/` needs to write `i.Status == X` directly.
-
----
-
-#### Task 1.3.2 — Rename setStatus to loadStatus and restrict its use
-
-**File:** `session/instance_state.go`
-
-**What to change:**
-- Rename `setStatus` → `loadStatus`
-- Update godoc: "loadStatus sets Status directly without state machine validation. Call
-  ONLY from `FromInstanceData()` deserialization or test setup. Never call from
-  operational code paths."
-- Update all 6 current callsites to use `loadStatus`
-
-**Acceptance criteria:**
-- `loadStatus` is only called from `instance_serialization.go` and test files.
-
----
-
-#### Task 1.3.3 — Eliminate the transitionTo fallback pattern
-
-**Files:** `session/instance_serialization.go`, `session/review_queue_poller.go`,
-`session/instance.go`
-
-**What to change:**
-- Remove all `if err := transitionTo(X); err != nil { setStatus(X) }` patterns
-- For serialization callers: use `loadStatus` directly (it's a restore, not a transition)
-- For operational callers (`review_queue_poller`, `instance.go`): fix the state machine
-  table so the transition is valid, then call `transitionTo` without fallback
-
-**Acceptance criteria:**
-- Zero occurrences of `setStatus`/`loadStatus` outside `instance_serialization.go` and
-  test files.
-
----
-
-#### Task 1.3.4 — Add context to transitionTo
-
-**File:** `session/instance_state.go`
-
-**What to change:**
-- Change signature: `transitionTo(s Status)` → `transitionTo(ctx context.Context, to Status)`
-- Pass `ctx` through to `TransitionDef.Guard(ctx, i)` (needed by guard functions like
-  `guardIsIdle` for timeout/cancellation)
-- Update all internal callers (within the `session` package only — `transitionTo` is
-  unexported)
-
-**Acceptance criteria:**
-- `transitionTo` accepts context; all guard functions receive context.
-
----
-
-#### Task 1.3.5 — Update InstanceReader interface
-
-**File:** `session/interfaces.go`
-
-**What to change:**
-- Replace `GetStatus() int` with `IsActive() bool`, `IsPaused() bool`,
-  `IsHibernated() bool`, `IsStopped() bool`, `GetLifecycleStatus() Status`
-- Add `IsHibernated() bool` to the interface (needed by health checker and serialization)
-- Verify `*Instance` still satisfies the interface (compiler check)
-
-**Acceptance criteria:**
-- No consumer of `InstanceReader` needs a raw int cast to check session state.
-
----
-
-#### Task 1.3.6 — Remove NeedsApproval lifecycle methods
-
-**File:** `session/instance_state.go`
-
-**What to change:**
-- Remove `MarkNeedsApproval() error` method (`NeedsApproval` is no longer a lifecycle state)
-- Update `Approve()` to call `Resume(ctx)` instead of `transitionTo(Running)`
-- Update `Deny()` to call `Pause(ctx)` instead of `transitionTo(Paused)`
-- Update callers in `session/approval_automation.go` and `server/services/`
-
-**Acceptance criteria:**
-- `NeedsApproval` Status constant no longer exists; approval flow uses sub-status only.
-
----
-
-#### Task 1.3.7 — Replace RecoverFromStopped with normal Resume
-
-**File:** `session/instance_state.go`
-
-**What to change:**
-- Remove `RecoverFromStopped()` method
-- The `Stopped → Active` transition in the `TransitionDef` table (with
-  `guardWorktreePresent` + `afterColdStart` after-hook) replaces this
-- Update the one caller in `instance_serialization.go` to use the normal `Resume(ctx)` path
-
-**Acceptance criteria:**
-- `RecoverFromStopped` is deleted; no bypass of the state machine for cold restore.
-
----
-
-### Story 1.4 — Replace Running/Ready Guards in Go Code
+### Story 1.3 — Replace Running/Ready Guards in Go Code
 
 **Goal:** Remove all `Running || Ready` (and `NeedsApproval`) guards from non-test code.
 
-#### Task 1.4.1 — Audit and replace all guards
+#### Task 1.3.1 — Audit and replace all guards
 
 **Files to audit** (search for `Running`, `Ready`, `NeedsApproval` in `session/` and
 `server/`):
@@ -554,7 +247,7 @@ that all other stories code against. Must be completed before any other epic beg
 
 ---
 
-#### Task 1.4.2 — Add `Active()` helper method
+#### Task 1.3.2 — Add `Active()` helper method
 
 **File:** `session/instance.go`
 
@@ -571,12 +264,12 @@ Mirror the existing `Paused()` and `Stopped()` pattern.
 
 ---
 
-### Story 1.5 — Proto and Adapter Updates
+### Story 1.4 — Proto and Adapter Updates
 
 **Goal:** Update the proto enum and the Go↔proto adapter to match the new model.
 Preserve existing integer wire values.
 
-#### Task 1.5.1 — Update `types.proto` SessionStatus enum
+#### Task 1.4.1 — Update `types.proto` SessionStatus enum
 
 **File:** `proto/session/v1/types.proto` (lines 168–184)
 
@@ -613,7 +306,7 @@ Run `make generate-proto` to regenerate Go and TypeScript bindings.
 
 ---
 
-#### Task 1.5.2 — Update `instance_adapter.go`
+#### Task 1.4.2 — Update `instance_adapter.go`
 
 **File:** `server/adapters/instance_adapter.go`
 
@@ -657,11 +350,11 @@ case sessionv1.SessionStatus_SESSION_STATUS_HIBERNATED:
 
 ---
 
-### Story 1.6 — Frontend Status Updates
+### Story 1.5 — Frontend Status Updates
 
 **Goal:** Update all frontend status handling to use the new model.
 
-#### Task 1.6.1 — Update `getStatusColor` and `getStatusText`
+#### Task 1.5.1 — Update `getStatusColor` and `getStatusText`
 
 **File:** `web-app/src/components/sessions/SessionCard.tsx`
 
@@ -691,7 +384,7 @@ case SessionStatus.HIBERNATED:
 
 ---
 
-#### Task 1.6.2 — Add CSS for `statusHibernated`
+#### Task 1.5.2 — Add CSS for `statusHibernated`
 
 **Files:**
 - `web-app/src/components/sessions/SessionCard.css.ts`
@@ -719,7 +412,7 @@ Add `statusHibernated` token to `web-app/src/styles/theme.css.ts` if it does not
 
 ---
 
-#### Task 1.6.3 — Update all frontend status switches
+#### Task 1.5.3 — Update all frontend status switches
 
 **Files to audit:**
 - Any TypeScript file with a `switch (status)` or `status ===` comparing against
@@ -740,9 +433,9 @@ For each hit:
 
 ---
 
-### Story 1.7 — State Machine Migration Tests
+### Story 1.6 — State Machine Migration Tests
 
-#### Task 1.7.1 — Update existing state machine tests
+#### Task 1.6.1 — Update existing state machine tests
 
 **File:** `session/state_machine_test.go` (create if not exists)
 
@@ -751,7 +444,7 @@ For each hit:
 - Verify removed transitions (`Running → Ready`, `Running → NeedsApproval`) fail.
 - Verify new transitions (`Active → Hibernated`, `Hibernated → Active`) succeed.
 
-#### Task 1.7.2 — Update deserialization tests
+#### Task 1.6.2 — Update deserialization tests
 
 **File:** `session/instance_serialization_test.go` (or nearest test file)
 
