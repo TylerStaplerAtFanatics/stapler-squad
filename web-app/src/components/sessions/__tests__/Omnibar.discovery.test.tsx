@@ -45,6 +45,7 @@ jest.mock("@/lib/store", () => ({
 
 jest.mock("@/lib/store/sessionsSlice", () => ({
   selectAllSessions: jest.fn(),
+  selectActiveSessionsSortedByUpdatedAt: jest.fn(),
 }));
 
 jest.mock("@/components/sessions/OmnibarResultList", () => ({
@@ -198,27 +199,32 @@ describe("Omnibar discovery mode", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Session search updates on every keystroke (immediate, not debounced)
+  // Session search updates after 150ms debounce
   // -------------------------------------------------------------------------
 
-  describe("session search immediacy", () => {
-    it("useSessionSearch receives query without waiting for debounce", () => {
+  describe("session search debounce", () => {
+    it("useSessionSearch receives query after 150ms debounce", async () => {
       const { input } = renderOmnibar();
 
-      // Type bare text – should pass to Fuse immediately (no delay needed).
+      // Type bare text — Fuse search is debounced 150ms to avoid O(n log n) on every keystroke.
       fireEvent.change(input, { target: { value: "feat" } });
 
-      // useSessionSearch should have been called with "feat" synchronously.
+      // Query should NOT have been passed yet (debounce pending).
+      const callsBefore = mockUseSessionSearch.mock.calls.filter(c => c[0] === "feat");
+      expect(callsBefore).toHaveLength(0);
+
+      // After 150ms, debounced input flushes and Fuse receives the query.
+      await act(async () => { jest.advanceTimersByTime(160); });
       expect(mockUseSessionSearch).toHaveBeenCalledWith("feat");
     });
 
-    it("path input does NOT pass to session search", () => {
+    it("path input does NOT pass to session search", async () => {
       const { input } = renderOmnibar();
 
-      // Typing a path should NOT trigger session search.
       fireEvent.change(input, { target: { value: "/home/user/proj" } });
+      await act(async () => { jest.advanceTimersByTime(160); });
 
-      // After the change, useSessionSearch should be called with "" (empty).
+      // Path input should never reach session search.
       const lastCall = mockUseSessionSearch.mock.calls[mockUseSessionSearch.mock.calls.length - 1];
       expect(lastCall[0]).toBe("");
     });
