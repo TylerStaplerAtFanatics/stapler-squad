@@ -1,8 +1,9 @@
 "use client";
 
+import { useRef } from "react";
 import { Session, SessionStatus } from "@/gen/session/v1/types_pb";
 import { Tooltip } from "../ui/Tooltip";
-import { SessionActionsOverflow } from "./SessionActionsOverflow";
+import { SessionActionsOverflow, SessionActionsOverflowHandle } from "./SessionActionsOverflow";
 import {
   row,
   statusDot,
@@ -87,10 +88,17 @@ export function SessionRow({
   onRestart, onCreateCheckpoint, onRunOneShot,
   onSetRateLimitEnabled, onClearConversationState, onUpdateTags,
 }: SessionRowProps) {
+  const overflowRef = useRef<SessionActionsOverflowHandle>(null);
+
   const dotStatus = getStatusDotValue(session.status);
   const lastActivity = getLastActivity(session);
   const elapsedText = formatElapsed(lastActivity ?? session.updatedAt);
   const displayName = session.branch || session.title;
+
+  const handleContextMenu = (e: React.MouseEvent<HTMLLIElement>) => {
+    e.preventDefault();
+    overflowRef.current?.openAt(e.clientX, e.clientY);
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLLIElement>) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -104,6 +112,7 @@ export function SessionRow({
       className={row}
       data-testid="session-row"
       onClick={onClick}
+      onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
       tabIndex={0}
       aria-label={`Session ${session.title}, status: ${dotStatus}, program: ${session.program}`}
@@ -153,6 +162,7 @@ export function SessionRow({
       {/* Actions — overflow menu with pause/resume shortcut and confirmed delete */}
       <span className={actionsStyle} aria-label="Session actions">
         <SessionActionsOverflow
+          ref={overflowRef}
           session={session}
           showPrimaryAction
           onPause={onPause}
