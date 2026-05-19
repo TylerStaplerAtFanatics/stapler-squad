@@ -2,7 +2,10 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"time"
 
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
@@ -18,14 +21,19 @@ type RulesService struct {
 	rulesStore     *RulesStore
 	analyticsStore *AnalyticsStore
 	classifier     *classifier.RuleBasedClassifier
+	promptBuilder  RulePromptBuilder // nil = AI generation unavailable
+	aiClient       AIClient          // nil = AI generation unavailable
 }
 
 // NewRulesService creates a RulesService.
-func NewRulesService(rulesStore *RulesStore, analyticsStore *AnalyticsStore, classifier *classifier.RuleBasedClassifier) *RulesService {
+// promptBuilder and aiClient may be nil; nil means AI rule generation is unavailable.
+func NewRulesService(rulesStore *RulesStore, analyticsStore *AnalyticsStore, classifier *classifier.RuleBasedClassifier, promptBuilder RulePromptBuilder, aiClient AIClient) *RulesService {
 	return &RulesService{
 		rulesStore:     rulesStore,
 		analyticsStore: analyticsStore,
 		classifier:     classifier,
+		promptBuilder:  promptBuilder,
+		aiClient:       aiClient,
 	}
 }
 
@@ -339,5 +347,279 @@ func stringToAutoDecision(s string) sessionv1.AutoDecision {
 		return sessionv1.AutoDecision_AUTO_DECISION_DENY
 	default:
 		return sessionv1.AutoDecision_AUTO_DECISION_ESCALATE
+	}
+}
+
+// ── AI Rule Generation ────────────────────────────────────────────────────────
+
+// GenerateSuggestedRule asks an AI to propose new auto-approval rules.
+// It is read-only — it never calls rulesStore.Upsert.
+// +api: rules:generate-suggested
+func (rs *RulesService) GenerateSuggestedRule(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GenerateSuggestedRuleRequest],
+) (*connect.Response[sessionv1.GenerateSuggestedRuleResponse], error) {
+	// Guard: both interfaces must be configured.
+	if rs.promptBuilder == nil || rs.aiClient == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented,
+			fmt.Errorf("AI rule generation requires ANTHROPIC_API_KEY to be set"))
+	}
+	if req.Msg.Source == sessionv1.SuggestionSource_SUGGESTION_SOURCE_UNSPECIFIED {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("source is required"))
+	}
+	days := 7
+	if req.Msg.WindowDays != nil && *req.Msg.WindowDays > 0 && *req.Msg.WindowDays <= 90 {
+		days = int(*req.Msg.WindowDays)
+	}
+
+	promptCtx := rs.buildPromptContext(req.Msg, days)
+	systemPrompt := rs.promptBuilder.BuildSystemPrompt(promptCtx)
+	userPrompt := rs.promptBuilder.BuildUserPrompt(promptCtx)
+
+	rawJSON, err := rs.aiClient.Complete(ctx, systemPrompt, userPrompt)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("AI client error: %w", err))
+	}
+
+	suggestions, err := rs.parseSuggestions(rawJSON)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("AI returned invalid response: %w", err))
+	}
+
+	for _, s := range suggestions {
+		rs.attachConflictInfo(s)
+	}
+
+	return connect.NewResponse(&sessionv1.GenerateSuggestedRuleResponse{
+		Suggestions: suggestions,
+	}), nil
+}
+
+// buildPromptContext assembles a RulePromptContext from the request and analytics store.
+func (rs *RulesService) buildPromptContext(req *sessionv1.GenerateSuggestedRuleRequest, days int) RulePromptContext {
+	ctx := RulePromptContext{
+		ExistingRules:  rs.allRuleSpecs(),
+		WindowDays:     days,
+		CommandSample:  req.CommandSample,
+		ToolNameFilter: req.ToolNameFilter,
+		ProgramFilter:  req.ProgramNameFilter,
+	}
+
+	// Load analytics window and build gap clusters.
+	since := time.Now().AddDate(0, 0, -days)
+	entries, err := rs.analyticsStore.LoadWindow(since)
+	if err != nil {
+		log.Warn("[RulesService] buildPromptContext: analytics load error", "err", err)
+	}
+
+	// Re-classify gaps against current rules so we see what is STILL uncovered.
+	entries = ReclassifyGaps(entries, rs.classifier)
+
+	// Group escalated, rule-less entries by (ToolName, Program).
+	type gapKey struct{ tool, program string }
+	gapMap := make(map[gapKey]*AnalyticsGap)
+	for _, e := range entries {
+		if e.Decision != "escalate" {
+			continue
+		}
+		if e.RuleID != "" {
+			continue // has a matching rule, not a gap
+		}
+		k := gapKey{tool: e.ToolName, program: e.CommandProgram}
+		g, ok := gapMap[k]
+		if !ok {
+			g = &AnalyticsGap{ToolName: e.ToolName, Program: e.CommandProgram}
+			gapMap[k] = g
+		}
+		g.Count++
+		if len(g.RepresentativeCmds) < 5 && e.CommandPreview != "" {
+			g.RepresentativeCmds = append(g.RepresentativeCmds, e.CommandPreview)
+		}
+	}
+
+	gaps := make([]AnalyticsGap, 0, len(gapMap))
+	for _, g := range gapMap {
+		gaps = append(gaps, *g)
+	}
+	// Sort by count descending, cap at 10.
+	sort.Slice(gaps, func(i, j int) bool { return gaps[i].Count > gaps[j].Count })
+	if len(gaps) > 10 {
+		gaps = gaps[:10]
+	}
+	ctx.AnalyticsGaps = gaps
+
+	return ctx
+}
+
+// rawSuggestion is the intermediate struct used to unmarshal the AI JSON response.
+type rawSuggestion struct {
+	Name           string   `json:"name"`
+	ToolName       string   `json:"tool_name"`
+	ToolPattern    string   `json:"tool_pattern"`
+	CommandPattern string   `json:"command_pattern"`
+	FilePattern    string   `json:"file_pattern"`
+	Decision       string   `json:"decision"`
+	RiskLevel      string   `json:"risk_level"`
+	Reason         string   `json:"reason"`
+	Alternative    string   `json:"alternative"`
+	Priority       int32    `json:"priority"`
+	Confidence     float32  `json:"confidence"`
+	Explanation    string   `json:"explanation"`
+	SourceCommands []string `json:"source_commands"`
+}
+
+// parseSuggestions parses a JSON array of rule suggestions from the AI response.
+// Validates each entry (regex compile, confidence clamp, priority clamp, caps array at 5).
+func (rs *RulesService) parseSuggestions(rawJSON string) ([]*sessionv1.SuggestedRuleProto, error) {
+	var raws []rawSuggestion
+	if err := json.Unmarshal([]byte(rawJSON), &raws); err != nil {
+		// Try stripping common markdown fences.
+		cleaned := rawJSON
+		for _, fence := range []string{"```json\n", "```\n", "```"} {
+			if len(cleaned) > len(fence) && cleaned[:len(fence)] == fence {
+				cleaned = cleaned[len(fence):]
+			}
+			if len(cleaned) > len(fence) && cleaned[len(cleaned)-len(fence):] == fence {
+				cleaned = cleaned[:len(cleaned)-len(fence)]
+			}
+		}
+		if err2 := json.Unmarshal([]byte(cleaned), &raws); err2 != nil {
+			return nil, fmt.Errorf("parse JSON array: %w (original: %v)", err2, err)
+		}
+	}
+
+	// Cap at 5 suggestions.
+	if len(raws) > 5 {
+		raws = raws[:5]
+	}
+
+	result := make([]*sessionv1.SuggestedRuleProto, 0, len(raws))
+	for i, raw := range raws {
+		s, err := rs.validateSuggestion(raw, i)
+		if err != nil {
+			log.Warn("[RulesService] parseSuggestions: dropping invalid suggestion", "index", i, "err", err)
+			continue
+		}
+		result = append(result, s)
+	}
+	return result, nil
+}
+
+// overbreadCommandPatterns are commandPattern values that explicitly match every
+// command and are therefore unsafe to auto-allow. An empty commandPattern is NOT
+// included because it is valid when scoped by tool_name or tool_pattern.
+var overbreadCommandPatterns = map[string]bool{
+	".*": true,
+	".+": true,
+}
+
+// validateSuggestion converts a rawSuggestion to a SuggestedRuleProto, applying all validation.
+func (rs *RulesService) validateSuggestion(raw rawSuggestion, idx int) (*sessionv1.SuggestedRuleProto, error) {
+	// Guard: reject overbroad auto_allow/allow suggestions whose commandPattern explicitly
+	// matches everything (e.g., ".*" or ".+"). An empty commandPattern is allowed only
+	// when scoped by a non-empty tool_name or tool_pattern.
+	rawDecision := raw.Decision
+	if rawDecision == "auto_allow" || rawDecision == "allow" {
+		if overbreadCommandPatterns[raw.CommandPattern] {
+			return nil, fmt.Errorf("suggestion[%d]: dangerously overbroad commandPattern %q for %q decision — must be more specific", idx, raw.CommandPattern, rawDecision)
+		}
+		if raw.CommandPattern == "" && raw.ToolName == "" && raw.ToolPattern == "" {
+			return nil, fmt.Errorf("suggestion[%d]: %q suggestion has no commandPattern, tool_name, or tool_pattern — too broad to auto-allow", idx, rawDecision)
+		}
+	}
+
+	// Validate regex patterns.
+	if raw.CommandPattern != "" {
+		if _, err := regexp.Compile(raw.CommandPattern); err != nil {
+			return nil, fmt.Errorf("suggestion[%d]: invalid commandPattern %q: %w", idx, raw.CommandPattern, err)
+		}
+	}
+	if raw.ToolPattern != "" {
+		if _, err := regexp.Compile(raw.ToolPattern); err != nil {
+			return nil, fmt.Errorf("suggestion[%d]: invalid toolPattern %q: %w", idx, raw.ToolPattern, err)
+		}
+	}
+	if raw.FilePattern != "" {
+		if _, err := regexp.Compile(raw.FilePattern); err != nil {
+			return nil, fmt.Errorf("suggestion[%d]: invalid filePattern %q: %w", idx, raw.FilePattern, err)
+		}
+	}
+
+	// Clamp confidence to [0.0, 1.0].
+	conf := raw.Confidence
+	if conf < 0 {
+		conf = 0
+	}
+	if conf > 1.0 {
+		conf = 1.0
+	}
+
+	// Validate/default priority.
+	priority := raw.Priority
+	if priority < 1 || priority > 999 {
+		priority = 100
+	}
+
+	// Validate decision enum.
+	decision := stringToAutoDecision(raw.Decision)
+
+	// Cap source_commands at 20.
+	srcCmds := raw.SourceCommands
+	if len(srcCmds) > 20 {
+		srcCmds = srcCmds[:20]
+	}
+
+	return &sessionv1.SuggestedRuleProto{
+		Name:           raw.Name,
+		ToolName:       raw.ToolName,
+		ToolPattern:    raw.ToolPattern,
+		CommandPattern: raw.CommandPattern,
+		FilePattern:    raw.FilePattern,
+		Decision:       decision,
+		RiskLevel:      raw.RiskLevel,
+		Reason:         raw.Reason,
+		Alternative:    raw.Alternative,
+		Priority:       priority,
+		Confidence:     conf,
+		Explanation:    raw.Explanation,
+		SourceCommands: srcCmds,
+	}, nil
+}
+
+// attachConflictInfo populates ShadowedByRuleIds and ShadowsRuleIds on a suggestion.
+// Uses a conservative heuristic: if an existing rule shares the same ToolName and both
+// have non-empty CommandPattern, they may overlap. Exact regex intersection is not computed.
+func (rs *RulesService) attachConflictInfo(s *sessionv1.SuggestedRuleProto) {
+	allSpecs := rs.allRuleSpecs()
+	// Sort by priority descending.
+	sort.Slice(allSpecs, func(i, j int) bool { return allSpecs[i].Priority > allSpecs[j].Priority })
+
+	const maxConflicts = 10
+
+	for _, spec := range allSpecs {
+		if len(s.ShadowedByRuleIds)+len(s.ShadowsRuleIds) >= maxConflicts*2 {
+			break
+		}
+		// Conservative overlap heuristic: same ToolName (when both non-empty) AND both have CommandPattern.
+		toolOverlap := (s.ToolName != "" && spec.ToolName != "" && s.ToolName == spec.ToolName)
+		cmdOverlap := s.CommandPattern != "" && spec.CommandPattern != ""
+		if !toolOverlap || !cmdOverlap {
+			continue
+		}
+
+		if spec.Priority > int(s.Priority) {
+			// Existing rule has higher priority — it fires first, shadowing the suggestion.
+			if len(s.ShadowedByRuleIds) < maxConflicts {
+				s.ShadowedByRuleIds = append(s.ShadowedByRuleIds, spec.ID)
+			}
+		} else if spec.Priority < int(s.Priority) {
+			// Suggestion has higher priority — it fires first, shadowing the existing rule.
+			if len(s.ShadowsRuleIds) < maxConflicts {
+				s.ShadowsRuleIds = append(s.ShadowsRuleIds, spec.ID)
+			}
+		}
 	}
 }
