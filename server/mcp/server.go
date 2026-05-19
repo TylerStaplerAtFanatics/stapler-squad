@@ -9,6 +9,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/scrollback"
@@ -17,7 +18,8 @@ import (
 // NewCore creates an MCPServer with all tools registered.
 // Shared by the stdio path (RunServer) and the HTTP path (NewHTTPHandler).
 // storage is optional — when nil, backlog tools are not registered.
-func NewCore(store session.InstanceStore, svc *services.SessionService, sbMgr *scrollback.ScrollbackManager, storage *session.Storage) *mcpserver.MCPServer {
+// eventBus is optional — when nil, triage-complete notifications are disabled.
+func NewCore(store session.InstanceStore, svc *services.SessionService, sbMgr *scrollback.ScrollbackManager, storage *session.Storage, eventBus *events.EventBus) *mcpserver.MCPServer {
 	s := mcpserver.NewMCPServer(
 		"stapler-squad",
 		"1.0.0",
@@ -33,7 +35,7 @@ func NewCore(store session.InstanceStore, svc *services.SessionService, sbMgr *s
 	})
 	registerVCSTools(s, &vcsHandlers{store: store})
 	if storage != nil {
-		registerBacklogTools(s, &backlogHandlers{storage: storage, store: store})
+		registerBacklogTools(s, &backlogHandlers{storage: storage, store: store, eventBus: eventBus})
 	}
 	return s
 }
@@ -42,8 +44,9 @@ func NewCore(store session.InstanceStore, svc *services.SessionService, sbMgr *s
 // Streamable HTTP (the MCP 2025-03-26 transport). Mount it at /mcp on the
 // existing HTTP server so Claude sessions can connect without spawning a
 // subprocess.
-func NewHTTPHandler(store session.InstanceStore, svc *services.SessionService, sbMgr *scrollback.ScrollbackManager, storage *session.Storage) *mcpserver.StreamableHTTPServer {
-	return mcpserver.NewStreamableHTTPServer(NewCore(store, svc, sbMgr, storage))
+// eventBus is optional — pass nil to disable triage-complete notifications.
+func NewHTTPHandler(store session.InstanceStore, svc *services.SessionService, sbMgr *scrollback.ScrollbackManager, storage *session.Storage, eventBus *events.EventBus) *mcpserver.StreamableHTTPServer {
+	return mcpserver.NewStreamableHTTPServer(NewCore(store, svc, sbMgr, storage, eventBus))
 }
 
 // RunServer initializes and starts the MCP stdio server.
@@ -51,7 +54,8 @@ func NewHTTPHandler(store session.InstanceStore, svc *services.SessionService, s
 // store is used for read-only discovery tools. svc provides lifecycle operations.
 // sbMgr provides read access to terminal scrollback data persisted on disk.
 // storage is used for backlog tools (optional; pass nil to disable).
-func RunServer(ctx context.Context, store session.InstanceStore, svc *services.SessionService, sbMgr *scrollback.ScrollbackManager, storage *session.Storage) error {
+// eventBus is optional — pass nil to disable triage-complete notifications on stdio path.
+func RunServer(ctx context.Context, store session.InstanceStore, svc *services.SessionService, sbMgr *scrollback.ScrollbackManager, storage *session.Storage, eventBus *events.EventBus) error {
 	log.Info("mcp server starting on stdio transport")
 
 	// Inject session UUID from environment into the root context so that
@@ -61,7 +65,7 @@ func RunServer(ctx context.Context, store session.InstanceStore, svc *services.S
 		log.InfoLog.Printf("[mcp] session UUID injected from environment: %s", uuid)
 	}
 
-	stdio := mcpserver.NewStdioServer(NewCore(store, svc, sbMgr, storage))
+	stdio := mcpserver.NewStdioServer(NewCore(store, svc, sbMgr, storage, eventBus))
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
 }
 

@@ -2,11 +2,12 @@
 // +feature: backlog:item-detail
 
 import { useState, useEffect, useCallback } from "react";
-import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
+import type { BacklogItem, BacklogItemStatus, AcCriterion } from "@/lib/hooks/useBacklogService";
 import { useBacklogService } from "@/lib/hooks/useBacklogService";
 import { AcCriteriaList } from "./AcCriteriaList";
 import { GateVerdictBox } from "./GateVerdictBox";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
+import { TriageReviewPanel } from "./TriageReviewPanel";
 import * as styles from "./BacklogItemDetail.css";
 
 interface BacklogItemDetailProps {
@@ -46,7 +47,18 @@ function formatDate(iso?: string): string {
 }
 
 export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
-  const service = useBacklogService();
+  const {
+    getBacklogItem,
+    transitionStatus,
+    triggerTriage,
+    spawnSessionFromItem,
+    approvePlan,
+    overrideVerdict,
+    triggerReReview,
+    archiveBacklogItem,
+    updateBacklogItem,
+    lastError,
+  } = useBacklogService();
   const [item, setItem] = useState<BacklogItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +75,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     setLoading(true);
     setError(null);
     try {
-      const result = await service.getBacklogItem(itemId);
+      const result = await getBacklogItem(itemId);
       if (!result) {
         setError("Item not found.");
       } else {
@@ -75,7 +87,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     } finally {
       setLoading(false);
     }
-  }, [itemId, service]);
+  }, [itemId, getBacklogItem]);
 
   useEffect(() => {
     void load();
@@ -108,21 +120,21 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
       try {
         switch (action) {
           case "mark_ready":
-            await service.transitionStatus(item.id, "ready");
+            await transitionStatus(item.id, "ready");
             break;
           case "trigger_triage":
-            await service.triggerTriage(item.id);
+            await triggerTriage(item.id);
             break;
           case "spawn_session":
-            await service.spawnSessionFromItem(item.id);
+            await spawnSessionFromItem(item.id);
             break;
           case "approve_plan":
-            await service.approvePlan(item.id);
+            await approvePlan(item.id);
             break;
           case "override_done": {
             const reviewSession = item.linkedSessions.filter((s) => s.role === "review").at(-1);
             if (reviewSession) {
-              await service.overrideVerdict(reviewSession.entityId, "Manual override to done", "done");
+              await overrideVerdict(reviewSession.entityId, "Manual override to done", "done");
             } else {
               setError("No review session found — cannot override verdict.");
               return;
@@ -130,13 +142,13 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             break;
           }
           case "re_review":
-            await service.triggerReReview(item.id);
+            await triggerReReview(item.id);
             break;
           case "archive":
-            await service.archiveBacklogItem(item.id);
+            await archiveBacklogItem(item.id);
             break;
           case "reopen":
-            await service.transitionStatus(item.id, "review");
+            await transitionStatus(item.id, "review");
             break;
           default:
             break;
@@ -148,20 +160,20 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         setActionLoading(false);
       }
     },
-    [item, service, load]
+    [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, archiveBacklogItem, load]
   );
 
   const handleSaveNotes = useCallback(async () => {
     if (!item) return;
     setActionLoading(true);
     try {
-      const updated = await service.updateBacklogItem(item.id, { notes: notesValue });
+      const updated = await updateBacklogItem(item.id, { notes: notesValue });
       if (updated) setItem(updated);
       setEditingNotes(false);
     } finally {
       setActionLoading(false);
     }
-  }, [item, notesValue, service]);
+  }, [item, notesValue, updateBacklogItem]);
 
   const handleCancelTriage = useCallback(async () => {
     // TODO: implement cancel triage RPC call (if backend supports it)
@@ -169,31 +181,72 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     await load();
   }, [load]);
 
+  const handleApplyTriageSuggestions = useCallback(
+    async (preApplyCriteria: AcCriterion[]) => {
+      if (!item) return;
+      // Step 1: Update AC with suggestions
+      const acSuggestions = item.triageResult?.suggestions.filter((s) => s.rationale !== "question") ?? [];
+      const newAcCriteria: AcCriterion[] = acSuggestions.map((s, i) => ({
+        index: i,
+        text: s.text,
+        status: "pending" as const,
+      }));
+      const updated = await updateBacklogItem(item.id, { acCriteria: newAcCriteria });
+      if (!updated) {
+        throw new Error("Failed to apply suggestions — item may have been modified by another process. Reload and try again.");
+      }
+      // Step 2: Transition to ready
+      const transitioned = await transitionStatus(item.id, "ready", "idea");
+      if (!transitioned) {
+        throw new Error("Failed to mark item ready — please try again.");
+      }
+      await load();
+      // Store pre-apply criteria for undo (returned via throw on error, used by panel)
+      void preApplyCriteria; // captured in panel for undo
+    },
+    [item, updateBacklogItem, transitionStatus, load]
+  );
+
+  const handleUndoTriageSuggestions = useCallback(
+    async (preApplyCriteria: AcCriterion[]) => {
+      if (!item) return;
+      // Revert AC to the pre-apply snapshot
+      const updated = await updateBacklogItem(item.id, { acCriteria: preApplyCriteria });
+      if (!updated) {
+        throw new Error("Failed to undo — item may have been modified. Reload and try again.");
+      }
+      // Revert status back to idea
+      await transitionStatus(item.id, "idea");
+      await load();
+    },
+    [item, updateBacklogItem, transitionStatus, load]
+  );
+
   const handleGateApprove = useCallback(async () => {
     if (!item) return;
     setActionLoading(true);
     try {
-      const ok = await service.transitionStatus(item.id, "done");
+      const ok = await transitionStatus(item.id, "done");
       if (!ok) {
-        setError(service.lastError?.message ?? "Failed to approve — please try again.");
+        setError(lastError?.message ?? "Failed to approve — please try again.");
         return;
       }
       await load();
     } finally {
       setActionLoading(false);
     }
-  }, [item, service, load]);
+  }, [item, transitionStatus, lastError, load]);
 
   const handleGateReopen = useCallback(async () => {
     if (!item) return;
     setActionLoading(true);
     try {
-      await service.transitionStatus(item.id, "in_progress");
+      await transitionStatus(item.id, "in_progress");
       await load();
     } finally {
       setActionLoading(false);
     }
-  }, [item, service, load]);
+  }, [item, transitionStatus, load]);
 
   const handleGateOverride = useCallback(
     async (reason: string) => {
@@ -205,13 +258,13 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           setError("No review session found — cannot override verdict.");
           return;
         }
-        await service.overrideVerdict(reviewSession.entityId, reason, "done");
+        await overrideVerdict(reviewSession.entityId, reason, "done");
         await load();
       } finally {
         setActionLoading(false);
       }
     },
-    [item, service, load]
+    [item, overrideVerdict, load]
   );
 
   const handleGateSkip = useCallback(async () => {
@@ -220,12 +273,12 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     try {
       const reviewSession = item.linkedSessions.filter((s) => s.role === "review").at(-1);
       if (reviewSession) {
-        await service.overrideVerdict(reviewSession.entityId, "Gate skipped by user", "done");
+        await overrideVerdict(reviewSession.entityId, "Gate skipped by user", "done");
       } else {
         // No review session yet — direct transition (item.skipReviewGate path)
-        const ok = await service.transitionStatus(item.id, "done");
+        const ok = await transitionStatus(item.id, "done");
         if (!ok) {
-          setError(service.lastError?.message ?? "Failed to skip gate — please try again.");
+          setError(lastError?.message ?? "Failed to skip gate — please try again.");
           return;
         }
       }
@@ -233,7 +286,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     } finally {
       setActionLoading(false);
     }
-  }, [item, service, load]);
+  }, [item, overrideVerdict, transitionStatus, lastError, load]);
 
   if (loading) {
     return (
@@ -318,6 +371,30 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               onCancel={handleCancelTriage}
               compact={false}
             />
+          </div>
+        )}
+
+        {/* Triage Review Panel */}
+        {item.triageStatus === "completed" &&
+          item.status === "idea" &&
+          item.triageResult && (
+            <div className={styles.section} aria-live="polite">
+              <TriageReviewPanel
+                item={item}
+                triageResult={item.triageResult}
+                onApply={handleApplyTriageSuggestions}
+                onUndoApply={handleUndoTriageSuggestions}
+                onSkip={() => { void load(); }}
+              />
+            </div>
+          )}
+
+        {/* Triage failed banner */}
+        {item.triageStatus === "failed" && item.status === "idea" && (
+          <div className={styles.section}>
+            <div role="alert" style={{ color: "var(--error)", fontSize: "0.875rem" }}>
+              Triage encountered an error. Trigger triage manually to retry.
+            </div>
           </div>
         )}
 

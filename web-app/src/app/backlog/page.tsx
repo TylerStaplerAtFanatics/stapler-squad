@@ -9,6 +9,7 @@ import { AppLink } from "@/components/ui/AppLink";
 import { BacklogItemDetail } from "@/components/backlog/BacklogItemDetail";
 import { BacklogItemForm } from "@/components/backlog/BacklogItemForm";
 import { BacklogEmptyState, FilterZeroState, FooterNudge } from "@/components/backlog/BacklogEmptyState";
+import { VaguenessPromptModal } from "@/components/backlog/VaguenessPromptModal";
 import {
   useBacklogService,
   type BacklogItem,
@@ -153,7 +154,7 @@ function PriorityFilterChips({
 function BacklogPageInner() {
   usePageView();
   const { track } = useAnalytics();
-  const service = useBacklogService();
+  const { listBacklogItems, createBacklogItem, triggerTriage } = useBacklogService();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -174,10 +175,13 @@ function BacklogPageInner() {
   // New-item modal
   const [showForm, setShowForm] = useState(false);
 
+  // Vagueness prompt modal state
+  const [vaguenessItem, setVaguenessItem] = useState<BacklogItem | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await service.listBacklogItems({
+      const result = await listBacklogItems({
         statuses: statusFilter.length > 0 ? statusFilter : undefined,
         priorities: priorityFilter.length > 0 ? priorityFilter : undefined,
         search: search.trim() || undefined,
@@ -186,7 +190,7 @@ function BacklogPageInner() {
     } finally {
       setLoading(false);
     }
-  }, [service, statusFilter, priorityFilter, search]);
+  }, [listBacklogItems, statusFilter, priorityFilter, search]);
 
   useEffect(() => {
     void load();
@@ -231,11 +235,23 @@ function BacklogPageInner() {
 
   const handleCreateItem = useCallback(
     async (data: BacklogItemInput) => {
-      await service.createBacklogItem(data);
+      const result = await createBacklogItem(data);
       setShowForm(false);
       await load();
+      // Show vagueness prompt if item was created with skip_triage=true
+      if (result && data.skipTriage) {
+        setVaguenessItem(result.item);
+        // Navigate to the new item
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("item", result.item.id);
+        router.push(`/backlog?${params.toString()}`);
+      } else if (result) {
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("item", result.item.id);
+        router.push(`/backlog?${params.toString()}`);
+      }
     },
-    [service, load]
+    [createBacklogItem, load, router, searchParams]
   );
 
   const sortIndicator = (col: SortColumn) => {
@@ -439,6 +455,22 @@ function BacklogPageInner() {
             />
           </div>
         </div>
+      )}
+
+      {/* Vagueness Prompt Modal */}
+      {vaguenessItem && (
+        <VaguenessPromptModal
+          itemTitle={vaguenessItem.title}
+          onRefine={() => {
+            setVaguenessItem(null);
+            setShowForm(true);
+          }}
+          onProceed={() => {
+            const item = vaguenessItem;
+            setVaguenessItem(null);
+            void triggerTriage(item.id);
+          }}
+        />
       )}
     </div>
   );
