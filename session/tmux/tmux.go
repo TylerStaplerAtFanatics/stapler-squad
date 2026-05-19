@@ -142,6 +142,10 @@ type TmuxSession struct {
 	onExit          func(reason string)
 	onExitOnce      sync.Once
 	intentionalStop atomic.Bool
+
+	// ExtraEnv holds additional KEY=VALUE pairs to pass as -e flags to tmux new-session.
+	// Used to inject per-session environment variables such as DISPLAY for VNC support.
+	ExtraEnv []string
 }
 
 // windowSize represents terminal dimensions from external sources (like BubbleTea)
@@ -650,11 +654,13 @@ func (t *TmuxSession) start(workDir string, setupCleanup bool, cleanup *CleanupF
 	// nested Claude Code sessions are not blocked by the "nested session" guard.
 	historyPath := fmt.Sprintf("%s/.stapler_squad_history", workDir)
 	programWithHistory := fmt.Sprintf("env HISTFILE=%s %s", historyPath, t.program)
-	extraEnvArgs := make([]string, 0, len(t.extraEnv)*2)
-	for _, kv := range t.extraEnv {
-		extraEnvArgs = append(extraEnvArgs, "-e", kv)
+	newSessionArgs := []string{"new-session", "-d", "-s", t.sanitizedName, "-e", "CLAUDECODE="}
+	for _, kv := range t.ExtraEnv {
+		newSessionArgs = append(newSessionArgs, "-e", kv)
 	}
-	newSessionArgs := append([]string{"new-session", "-d", "-s", t.sanitizedName, "-e", "CLAUDECODE="}, extraEnvArgs...)
+	for _, kv := range t.extraEnv {
+		newSessionArgs = append(newSessionArgs, "-e", kv)
+	}
 	newSessionArgs = append(newSessionArgs, "-c", workDir, programWithHistory)
 	cmd := t.buildTmuxCommand(newSessionArgs...)
 
@@ -811,11 +817,13 @@ func (t *TmuxSession) RestoreWithWorkDir(workDir string) error {
 			// Create a new detached tmux session directly (avoid recursive call to Start).
 			// Pass -e CLAUDECODE= to unset CLAUDECODE in the child environment so that
 			// nested Claude Code sessions are not blocked by the "nested session" guard.
-			restoreEnvArgs := make([]string, 0, len(t.extraEnv)*2)
-			for _, kv := range t.extraEnv {
-				restoreEnvArgs = append(restoreEnvArgs, "-e", kv)
+			restoreArgs := []string{"new-session", "-d", "-s", t.sanitizedName, "-e", "CLAUDECODE="}
+			for _, kv := range t.ExtraEnv {
+				restoreArgs = append(restoreArgs, "-e", kv)
 			}
-			restoreArgs := append([]string{"new-session", "-d", "-s", t.sanitizedName, "-e", "CLAUDECODE="}, restoreEnvArgs...)
+			for _, kv := range t.extraEnv {
+				restoreArgs = append(restoreArgs, "-e", kv)
+			}
 			restoreArgs = append(restoreArgs, "-c", workDir, t.program)
 			cmd := t.buildTmuxCommand(restoreArgs...)
 			err := t.cmdExec.Run(cmd)

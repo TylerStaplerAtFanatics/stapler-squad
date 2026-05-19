@@ -3,8 +3,10 @@ package adapters
 import (
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/cdp"
 	"github.com/tstapler/stapler-squad/session/detection"
 	"github.com/tstapler/stapler-squad/session/detection/ratelimit"
+	"github.com/tstapler/stapler-squad/session/vnc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -96,7 +98,60 @@ func InstanceToProto(inst *session.Instance) *sessionv1.Session {
 	}
 	protoSession.RateLimitEnabled = inst.IsRateLimitEnabled()
 
+	// VNC / browser-passthrough state.
+	if vncMgr := inst.VNCManager(); vncMgr != nil {
+		vncState := vncMgr.State()
+		protoSession.VncState = &sessionv1.VNCState{
+			Status:                mapVNCStatus(vncState.Status),
+			DisplayNumber:         int32(vncState.DisplayNumber),
+			BrowserWindowDetected: vncState.BrowserWindowDetected,
+			// VncPassword intentionally omitted in list/watch paths — only exposed by GetSession.
+		}
+	}
+
+	// CDP / browser-streaming state.
+	if cdpMgr := inst.CDPManager(); cdpMgr != nil {
+		cdpState := cdpMgr.State()
+		protoSession.CdpState = &sessionv1.CDPState{
+			Status: mapCDPStatus(cdpState.Status),
+		}
+	}
+
 	return protoSession
+}
+
+// mapVNCStatus converts a vnc.VNCStatus to the proto VNCStatus enum.
+func mapVNCStatus(status vnc.VNCStatus) sessionv1.VNCStatus {
+	switch status {
+	case vnc.VNCStatusStarting:
+		return sessionv1.VNCStatus_VNC_STATUS_STARTING
+	case vnc.VNCStatusReady:
+		return sessionv1.VNCStatus_VNC_STATUS_READY
+	case vnc.VNCStatusNoBrowser:
+		return sessionv1.VNCStatus_VNC_STATUS_NO_BROWSER
+	case vnc.VNCStatusPassthrough:
+		return sessionv1.VNCStatus_VNC_STATUS_PASSTHROUGH
+	case vnc.VNCStatusUnavailable:
+		return sessionv1.VNCStatus_VNC_STATUS_UNAVAILABLE
+	default:
+		return sessionv1.VNCStatus_VNC_STATUS_UNSPECIFIED
+	}
+}
+
+// mapCDPStatus converts a cdp.CDPStatus to the proto CDPStatus enum.
+func mapCDPStatus(status cdp.CDPStatus) sessionv1.CDPStatus {
+	switch status {
+	case cdp.CDPStatusWaiting:
+		return sessionv1.CDPStatus_CDP_STATUS_WAITING
+	case cdp.CDPStatusStreaming:
+		return sessionv1.CDPStatus_CDP_STATUS_STREAMING
+	case cdp.CDPStatusNoBrowser:
+		return sessionv1.CDPStatus_CDP_STATUS_NO_BROWSER
+	case cdp.CDPStatusUnavailable:
+		return sessionv1.CDPStatus_CDP_STATUS_UNAVAILABLE
+	default:
+		return sessionv1.CDPStatus_CDP_STATUS_UNSPECIFIED
+	}
 }
 
 // rateLimitStateToProto converts a ratelimit.RateLimitState to proto RateLimitState enum.
