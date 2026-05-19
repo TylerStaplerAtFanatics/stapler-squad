@@ -488,7 +488,20 @@ export function NotificationPanel() {
                             🔗 Focus
                           </button>
                         )}
-                        {notification.sessionId && (
+                        {notification.metadata?.["item_id"] && (
+                          <Link
+                            href={`/backlog?item=${encodeURIComponent(notification.metadata["item_id"])}`}
+                            className={viewButton}
+                            onClick={() => {
+                              handleNotificationClick(group.allIds, undefined, notification.sessionId);
+                              togglePanel();
+                            }}
+                            data-testid="notification-view-backlog"
+                          >
+                            View in Backlog
+                          </Link>
+                        )}
+                        {!notification.metadata?.["item_id"] && notification.sessionId && (
                           <Link
                             href={`/?session=${encodeURIComponent(notification.sessionId)}`}
                             className={viewButton}
