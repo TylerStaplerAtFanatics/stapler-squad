@@ -181,6 +181,24 @@ type NotificationPrefs struct {
 	PushEnabled bool `json:"push_enabled"`
 }
 
+// HibernationConfig holds configuration for the session hibernation feature.
+type HibernationConfig struct {
+	// Enabled controls whether hibernation is active. Default: true.
+	Enabled bool `json:"enabled"`
+	// IdleTimeoutMinutes is the number of minutes a session must be idle before
+	// the sweeper automatically hibernates it. Default: 120.
+	IdleTimeoutMinutes int `json:"idle_timeout_minutes"`
+	// ResourcePressureThreshold is the memory usage percentage at which the
+	// sweeper begins hibernating idle sessions. Default: 85.
+	ResourcePressureThreshold int `json:"resource_pressure_threshold_pct"`
+	// CheckpointDir is the directory where hibernation checkpoint data is stored.
+	// Default: "~/.stapler-squad/checkpoints". Tilde is expanded at runtime.
+	CheckpointDir string `json:"checkpoint_dir"`
+	// RetentionDays is the number of days to retain stale checkpoint data.
+	// Default: 30.
+	RetentionDays int `json:"retention_days"`
+}
+
 // Config represents the application configuration
 type Config struct {
 	// executor is the command executor used for shell command discovery.
@@ -272,6 +290,8 @@ type Config struct {
 	// Keys are machine names (e.g. "backlog"); values are booleans.
 	// Absent key == disabled (false is the safe default for all flags).
 	FeatureFlags map[string]bool `json:"feature_flags,omitempty"`
+	// Hibernation holds configuration for the session hibernation feature.
+	Hibernation HibernationConfig `json:"hibernation,omitempty"`
 
 	// Escape analytics configuration
 
@@ -295,6 +315,11 @@ type Config struct {
 	// EscapeAnalyticsRetentionDays is the number of days to retain escape event rows.
 	// Default: 7.
 	EscapeAnalyticsRetentionDays int `json:"escapeAnalyticsRetentionDays,omitempty"`
+	// AnthropicAPIKey is the API key for the Anthropic AI API.
+	// Used by the AI rule generation feature (GenerateSuggestedRule RPC).
+	// Set via config.json or the ANTHROPIC_API_KEY environment variable.
+	// Do not log this value.
+	AnthropicAPIKey string `json:"anthropicApiKey,omitempty"`
 }
 
 // BrowserPassthroughCDPConfig holds tunable parameters for the Chrome DevTools
@@ -451,6 +476,16 @@ func defaultConfigWithExecutor(exec CommandExecutor) *Config {
 	cfg.TerminalStreamingMode = "raw" // Default to raw streaming (simpler, more reliable)
 	cfg.VCSPreference = "auto"        // Default to auto-detection (prefer JJ if available)
 	cfg.AvailablePrograms = availablePrograms
+	cfg.Hibernation = HibernationConfig{
+		Enabled:                   true,
+		IdleTimeoutMinutes:        120,
+		ResourcePressureThreshold: 85,
+		RetentionDays:             30,
+	}
+	// Apply environment variable overrides (never log the value).
+	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+		cfg.AnthropicAPIKey = v
+	}
 	return cfg
 }
 
@@ -462,6 +497,30 @@ func (c *Config) OneOffBaseDirOrDefault() (string, error) {
 	dir := c.OneOffBaseDir
 	if dir == "" {
 		dir = "~/oneoff"
+	}
+	if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand home dir: %w", err)
+		}
+		dir = filepath.Join(home, dir[2:])
+	} else if dir == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand home dir: %w", err)
+		}
+		dir = home
+	}
+	return dir, nil
+}
+
+// HibernationCheckpointDirOrDefault returns the resolved hibernation checkpoint directory.
+// If CheckpointDir is empty, it returns "~/.stapler-squad/checkpoints" with ~ expanded.
+// The directory is NOT created here — the checkpoint writer creates it on first use.
+func (c *Config) HibernationCheckpointDirOrDefault() (string, error) {
+	dir := c.Hibernation.CheckpointDir
+	if dir == "" {
+		dir = "~/.stapler-squad/checkpoints"
 	}
 	if strings.HasPrefix(dir, "~/") {
 		home, err := os.UserHomeDir()
@@ -784,6 +843,11 @@ func LoadConfigFromPath(path string) (*Config, error) {
 	// Unmarshaling produces a zero Config with no executor; initialize it now
 	// so GetClaudeCommand / GetAvailablePrograms don't panic on nil executor.
 	cfg.executor = newTimeoutCommandExecutor(5 * time.Second)
+
+	// Apply environment variable overrides (never log the value).
+	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+		cfg.AnthropicAPIKey = v
+	}
 
 	return &cfg, nil
 }
