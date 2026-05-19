@@ -8,9 +8,12 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/session"
 )
 
@@ -58,8 +61,9 @@ const (
 // --- Handler struct ---
 
 type backlogHandlers struct {
-	storage *session.Storage
-	store   session.InstanceStore
+	storage  *session.Storage
+	store    session.InstanceStore
+	eventBus *events.EventBus // optional; nil means notifications are disabled
 }
 
 // --- get_backlog_item ---
@@ -358,6 +362,13 @@ type triageSuggestion struct {
 	Rationale string `json:"rationale"`
 }
 
+// triageTask is a single implementation task entry for submit_triage_result.
+type triageTask struct {
+	Text     string `json:"text"`
+	Estimate string `json:"estimate"`
+	Category string `json:"category"`
+}
+
 func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	callerUUID, err := callerSessionUUID(ctx)
 	if err != nil {
@@ -409,10 +420,38 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 		}
 	}
 
-	// Build triage result JSON payload.
-	triagePayload := map[string]interface{}{
-		"summary":     summary,
-		"suggestions": suggestions,
+	// Parse tasks (optional).
+	var tasks []triageTask
+	if rawTasks, exists := args["tasks"]; exists {
+		if arr, ok := rawTasks.([]interface{}); ok {
+			for i, rt := range arr {
+				b, marshalErr := json.Marshal(rt)
+				if marshalErr != nil {
+					return errResult(ErrInvalidArgument, fmt.Sprintf("task[%d]: cannot marshal: %v", i, marshalErr), ""), nil
+				}
+				var tt triageTask
+				if err := json.Unmarshal(b, &tt); err != nil {
+					return errResult(ErrInvalidArgument, fmt.Sprintf("task[%d]: invalid shape: %v", i, err), ""), nil
+				}
+				tasks = append(tasks, tt)
+			}
+			// Cap at 12 tasks to keep the checklist scannable.
+			if len(tasks) > 12 {
+				tasks = tasks[:12]
+			}
+		}
+	}
+
+	// Build triage result JSON payload using canonical struct (prevents schema drift).
+	type triageResultPayload struct {
+		Summary     string            `json:"summary"`
+		Suggestions []triageSuggestion `json:"suggestions"`
+		Tasks       []triageTask       `json:"tasks,omitempty"`
+	}
+	triagePayload := triageResultPayload{
+		Summary:     summary,
+		Suggestions: suggestions,
+		Tasks:       tasks,
 	}
 	payloadJSON, jsonErr := json.Marshal(triagePayload)
 	if jsonErr != nil {
@@ -439,6 +478,26 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 		log.ErrorLog.Printf("[mcp:submit_triage_result] failed to save triage result: %v", updateErr)
 	}
 	log.InfoLog.Printf("[mcp:submit_triage_result] session=%s item=%s triage_result=%s", callerUUID, itemID, string(payloadJSON))
+
+	// Publish triage-complete notification if EventBus is wired.
+	if h.eventBus != nil {
+		itemTitle := "Item " + itemID
+		if backlogItem, loadErr := h.storage.GetBacklogItem(ctx, itemID); loadErr == nil {
+			itemTitle = backlogItem.Title
+		}
+		notifMsg := fmt.Sprintf("%s — %d suggestion(s). Click to review.", itemTitle, len(suggestions))
+		event := events.NewNotificationEvent(
+			callerUUID,
+			"",
+			uuid.New().String(),
+			int32(sessionv1.NotificationType_NOTIFICATION_TYPE_INPUT_REQUIRED),
+			int32(sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM),
+			"Triage complete",
+			notifMsg,
+			map[string]string{"item_id": itemID},
+		)
+		h.eventBus.Publish(event)
+	}
 
 	return mcpgo.NewToolResultText(fmt.Sprintf(
 		"Triage result submitted for item %s. %d suggestion(s) recorded.\n\nSummary: %s",
@@ -530,7 +589,7 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 
 	s.AddTool(
 		mcpgo.NewTool("submit_triage_result",
-			mcpgo.WithDescription("Record triage analysis results for a backlog item. Only sessions with role='triage' may call this tool."),
+			mcpgo.WithDescription("Record triage analysis results for a backlog item. Only sessions with role='triage' may call this tool. Pass tasks to surface an implementation checklist in the UI."),
 			mcpgo.WithString("item_id",
 				mcpgo.Description("UUID of the backlog item"),
 				mcpgo.Required(),
@@ -544,6 +603,18 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 						"rationale": map[string]any{"type": "string"},
 					},
 					"required": []string{"text", "rationale"},
+				}),
+			),
+			mcpgo.WithArray("tasks",
+				mcpgo.Description("Optional array of implementation tasks from plan.md (max 12). Each task has text (one-line description), estimate (e.g. '2h', '30m'), and category (backend|frontend|test|infra|docs). Shown as an implementation checklist in the UI."),
+				mcpgo.Items(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"text":     map[string]any{"type": "string"},
+						"estimate": map[string]any{"type": "string"},
+						"category": map[string]any{"type": "string", "enum": []string{"backend", "frontend", "test", "infra", "docs"}},
+					},
+					"required": []string{"text", "estimate", "category"},
 				}),
 			),
 			mcpgo.WithString("plan_artifact_path",

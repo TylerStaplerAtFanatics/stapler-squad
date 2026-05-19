@@ -34,6 +34,27 @@ message ReviewVerdict {
   google.protobuf.Timestamp created_at = 11;
 }
 
+// TriageSuggestion represents a single suggestion from the triage agent.
+message TriageSuggestion {
+  string text = 1;
+  string rationale = 2; // "question" marker for R7-lite clarifying questions
+}
+
+// TriageTask represents a single implementation task from the triage plan.
+message TriageTask {
+  string text = 1;     // one-line task description
+  string estimate = 2; // e.g. "2h", "30m"
+  string category = 3; // e.g. "backend", "frontend", "test", "infra", "docs"
+}
+
+// TriageResult holds the output from a completed triage session.
+message TriageResult {
+  string summary = 1;
+  repeated TriageSuggestion suggestions = 2;
+  repeated string clarifying_questions = 3;
+  repeated TriageTask tasks = 4;
+}
+
 // ItemSession records a session that was spawned or attached to a backlog item.
 message ItemSession {
   string id = 1;
@@ -47,6 +68,7 @@ message ItemSession {
   google.protobuf.Timestamp last_file_touch_at = 9;
   google.protobuf.Timestamp created_at = 10;
   ReviewVerdict review_verdict = 11;
+  TriageResult triage_result = 12;
 }
 
 // BacklogItem represents a unit of work in the backlog.
@@ -108,10 +130,12 @@ message CreateBacklogItemRequest {
   bool skip_planning = 6;
   string repo_path = 7;
   string notes = 8;
+  bool skip_triage = 9;
 }
 
 message CreateBacklogItemResponse {
   BacklogItem item = 1;
+  bool triage_triggered = 2;
 }
 
 message GetBacklogItemRequest {

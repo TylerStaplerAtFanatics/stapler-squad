@@ -17,7 +17,7 @@ export function BacklogItemPanel({
   sessionId,
   isSessionActive,
 }: BacklogItemPanelProps) {
-  const service = useBacklogService();
+  const { getBacklogItem } = useBacklogService();
   const [open, setOpen] = useState(() => {
     if (typeof window === "undefined") return false;
     return localStorage.getItem(`backlog-panel-${sessionId}`) === "open";
@@ -28,14 +28,14 @@ export function BacklogItemPanel({
   const loadItem = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await service.getBacklogItem(backlogItemId);
+      const result = await getBacklogItem(backlogItemId);
       setItem(result);
     } catch (err) {
       console.error("Failed to load backlog item:", err);
     } finally {
       setLoading(false);
     }
-  }, [service, backlogItemId]);
+  }, [getBacklogItem, backlogItemId]);
 
   useEffect(() => {
     void loadItem();

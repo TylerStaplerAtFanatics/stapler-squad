@@ -60,14 +60,18 @@ export function BacklogItemForm({
       setErrors({});
       setSubmitting(true);
       try {
+        // Evaluate vagueness before submitting: short description + no AC = vague
+        const descriptionText = description.trim();
+        const isVague = descriptionText.length < 80 && acCriteria.length === 0;
         await onSubmit({
           title: title.trim(),
-          description: description.trim() || undefined,
+          description: descriptionText || undefined,
           repoPath: repoPath.trim() || undefined,
           priority,
           skipPlanning,
           skipReviewGate,
           acCriteria: acCriteria.map((c, i) => ({ ...c, index: i })),
+          skipTriage: isVague,
         });
       } finally {
         setSubmitting(false);
