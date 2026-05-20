@@ -123,6 +123,15 @@ func (g *GitWorktree) CommitChanges(commitMessage string) error {
 	return nil
 }
 
+// PrimeDirtyCacheAt sets the dirty-cache timestamp to t without running git status.
+// Use this to stagger per-session cache expiry so sessions added to the poller
+// within a short window don't all expire simultaneously and burst-launch git subprocesses.
+func (g *GitWorktree) PrimeDirtyCacheAt(t time.Time) {
+	g.isDirtyCacheMu.Lock()
+	g.isDirtyCacheTime = t
+	g.isDirtyCacheMu.Unlock()
+}
+
 // InvalidateDirtyCache clears the IsDirty cache so the next call re-runs git status.
 // Call this whenever worktree state changes outside of Claude's control (e.g. after a
 // manual commit, after running git operations, or in tests after writing files directly).
