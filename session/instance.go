@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -259,6 +260,9 @@ type Instance struct {
 	// startMu prevents concurrent calls to start() from racing during session setup.
 	// Held for the full duration of start(); callers that lose the race return early.
 	startMu deadlock.Mutex
+	// driverRunning tracks whether a SessionDriver goroutine is active for this instance.
+	// Guarded by CompareAndSwap — see StartSessionDriver.
+	driverRunning atomic.Bool
 
 	// restartCount and recentRestartTimes track rapid restarts for storm detection.
 	restartCount       int64
