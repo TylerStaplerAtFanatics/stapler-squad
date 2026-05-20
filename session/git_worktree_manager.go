@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -36,6 +37,19 @@ func (gm *GitWorktreeManager) GetWorktree() *git.GitWorktree {
 // and by tests.
 func (gm *GitWorktreeManager) SetWorktree(wt *git.GitWorktree) {
 	gm.worktree = wt
+}
+
+// PrimeDirtyCacheJitter staggers the dirty-cache TTL by setting the cache
+// timestamp to a random point in [now-15s, now). Call this when adding a
+// session to the poller so sessions added in a burst don't all run git-status
+// subprocesses simultaneously when their caches expire.
+func (gm *GitWorktreeManager) PrimeDirtyCacheJitter() {
+	if gm.worktree == nil {
+		return
+	}
+	// 15s matches isDirtyCacheTTL in session/git/worktree.go.
+	jitter := time.Duration(rand.Int63n(int64(15 * time.Second)))
+	gm.worktree.PrimeDirtyCacheAt(time.Now().Add(-jitter))
 }
 
 // GetWorktreePath returns the worktree path or "" if no worktree.
