@@ -219,6 +219,14 @@ type SubcommandDecisionCount struct {
 	Count      int
 }
 
+// SubcommandDecisionCount holds a (subcommand, decision) aggregate count.
+// Returned by GetSubcommandBreakdown.
+type SubcommandDecisionCount struct {
+	Subcommand string
+	Decision   string
+	Count      int
+}
+
 // AnalyticsData is the domain model for classification analytics.
 type AnalyticsData struct {
 	ID                 string
