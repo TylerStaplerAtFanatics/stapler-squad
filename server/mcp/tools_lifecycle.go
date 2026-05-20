@@ -175,6 +175,10 @@ func (lh *lifecycleHandlers) createSession(ctx context.Context, req mcpgo.CallTo
 		return errResult(ErrInternalError, fmt.Sprintf("start session: %v", err), ""), nil
 	}
 
+	// Wire a session driver to handle startup dialogs and send the initial task prompt.
+	// Mirrors the pattern used in session_service.go:CreateDirectorySession.
+	session.StartSessionDriver(inst, path)
+
 	// MCP injection: write our server config into the session's .claude/settings.local.json.
 	// inject_mcp defaults to true when not explicitly provided.
 	shouldInjectMCP := true
