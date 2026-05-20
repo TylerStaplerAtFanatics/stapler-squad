@@ -198,7 +198,7 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 
 	workspaceSvc := NewWorkspaceService(concStorage, eventBus)
 
-	return &SessionService{
+	svc := &SessionService{
 		storage:           storage,
 		eventBus:          eventBus,
 		reviewQueueSvc:    reviewQueueSvc,
@@ -218,6 +218,10 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 		projectSvc:        NewProjectService(concStorage),
 		promptStore:       newPromptStore(),
 	}
+	// Wire the fast-path live-instance lookup so WorkspaceService read-only RPCs
+	// (GetVCSStatus, GetWorkspaceInfo, ListWorkspaceTargets) bypass LoadInstances.
+	workspaceSvc.SetLiveFinder(svc)
+	return svc
 }
 
 // newPromptStore creates a PromptStore backed by ~/.stapler-squad/prompts.json.
