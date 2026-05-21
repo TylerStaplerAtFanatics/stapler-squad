@@ -294,6 +294,31 @@ service SessionService {
 
   // GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
   rpc GetEscapeAnalyticsSummary(GetEscapeAnalyticsSummaryRequest) returns (GetEscapeAnalyticsSummaryResponse) {}
+
+  // WriteToSession sends raw text input to a running session's PTY.
+  // Use for unblocking approval prompts or injecting ad-hoc input.
+  // Returns immediately after queueing the write; does not wait for output.
+  rpc WriteToSession(WriteToSessionRequest) returns (WriteToSessionResponse) {}
+
+  // ============================================================================
+  // Custom Shell RPCs
+  // ============================================================================
+
+  // SpawnShell creates and starts a new custom shell attached to a session.
+  // The shell runs as an independent sibling tmux session.
+  rpc SpawnShell(SpawnShellRequest) returns (SpawnShellResponse) {}
+
+  // StopShell stops a running custom shell.
+  rpc StopShell(StopShellRequest) returns (StopShellResponse) {}
+
+  // RestartShell stops a shell (if running) and relaunches it with the same command.
+  rpc RestartShell(RestartShellRequest) returns (RestartShellResponse) {}
+
+  // ListShells returns all custom shells for a session, sorted by order_index.
+  rpc ListShells(ListShellsRequest) returns (ListShellsResponse) {}
+
+  // DeleteShell stops a shell and removes it from storage.
+  rpc DeleteShell(DeleteShellRequest) returns (DeleteShellResponse) {}
 }
 
 // ListSessionsRequest allows filtering sessions by various criteria.
@@ -1757,6 +1782,22 @@ message GetTerminalSnapshotResponse {
   bool is_empty = 2;
 }
 
+// WriteToSession
+
+message WriteToSessionRequest {
+  // ID (title) of the session to write to.
+  string session_id = 1;
+  // Text to send to the terminal PTY.
+  string input = 2;
+  // When true, append a newline after input. Callers should set this explicitly.
+  bool press_enter = 3;
+}
+
+message WriteToSessionResponse {
+  // True when write was queued successfully.
+  bool success = 1;
+}
+
 // LogClientEvents
 
 message ClientLogEntry {
@@ -1902,4 +1943,76 @@ message GetEscapeAnalyticsSummaryResponse {
   int64 total_sequences = 2;
   int64 total_mangled = 3;
   double mangle_rate = 4;
+}
+
+// ============================================================================
+// Custom Shell Request / Response Messages
+// ============================================================================
+
+message SpawnShellRequest {
+  // Session to attach the shell to (uses session title as ID).
+  string session_id = 1;
+
+  // Human-readable name for the shell tab (defaults to basename of command).
+  string name = 2;
+
+  // Command to run (defaults to $SHELL or /bin/sh).
+  string command = 3;
+
+  // Working directory (defaults to session workspace root).
+  string working_dir = 4;
+}
+
+message SpawnShellResponse {
+  // The newly created shell.
+  Shell shell = 1;
+}
+
+message StopShellRequest {
+  // Session identifier.
+  string session_id = 1;
+
+  // Shell identifier.
+  string shell_id = 2;
+}
+
+message StopShellResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RestartShellRequest {
+  // Session identifier.
+  string session_id = 1;
+
+  // Shell identifier.
+  string shell_id = 2;
+}
+
+message RestartShellResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListShellsRequest {
+  // Session identifier.
+  string session_id = 1;
+}
+
+message ListShellsResponse {
+  // All shells for the session, sorted by order_index ascending.
+  repeated Shell shells = 1;
+}
+
+message DeleteShellRequest {
+  // Session identifier.
+  string session_id = 1;
+
+  // Shell identifier.
+  string shell_id = 2;
+}
+
+message DeleteShellResponse {
+  bool success = 1;
+  string message = 2;
 }

@@ -273,6 +273,24 @@ const (
 	// SessionServiceGetEscapeAnalyticsSummaryProcedure is the fully-qualified name of the
 	// SessionService's GetEscapeAnalyticsSummary RPC.
 	SessionServiceGetEscapeAnalyticsSummaryProcedure = "/session.v1.SessionService/GetEscapeAnalyticsSummary"
+	// SessionServiceWriteToSessionProcedure is the fully-qualified name of the SessionService's
+	// WriteToSession RPC.
+	SessionServiceWriteToSessionProcedure = "/session.v1.SessionService/WriteToSession"
+	// SessionServiceSpawnShellProcedure is the fully-qualified name of the SessionService's SpawnShell
+	// RPC.
+	SessionServiceSpawnShellProcedure = "/session.v1.SessionService/SpawnShell"
+	// SessionServiceStopShellProcedure is the fully-qualified name of the SessionService's StopShell
+	// RPC.
+	SessionServiceStopShellProcedure = "/session.v1.SessionService/StopShell"
+	// SessionServiceRestartShellProcedure is the fully-qualified name of the SessionService's
+	// RestartShell RPC.
+	SessionServiceRestartShellProcedure = "/session.v1.SessionService/RestartShell"
+	// SessionServiceListShellsProcedure is the fully-qualified name of the SessionService's ListShells
+	// RPC.
+	SessionServiceListShellsProcedure = "/session.v1.SessionService/ListShells"
+	// SessionServiceDeleteShellProcedure is the fully-qualified name of the SessionService's
+	// DeleteShell RPC.
+	SessionServiceDeleteShellProcedure = "/session.v1.SessionService/DeleteShell"
 )
 
 // SessionServiceClient is a client for the session.v1.SessionService service.
@@ -481,6 +499,21 @@ type SessionServiceClient interface {
 	QueryEscapeAnalytics(context.Context, *connect.Request[v1.QueryEscapeAnalyticsRequest]) (*connect.Response[v1.QueryEscapeAnalyticsResponse], error)
 	// GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
 	GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error)
+	// WriteToSession sends raw text input to a running session's PTY.
+	// Use for unblocking approval prompts or injecting ad-hoc input.
+	// Returns immediately after queueing the write; does not wait for output.
+	WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error)
+	// SpawnShell creates and starts a new custom shell attached to a session.
+	// The shell runs as an independent sibling tmux session.
+	SpawnShell(context.Context, *connect.Request[v1.SpawnShellRequest]) (*connect.Response[v1.SpawnShellResponse], error)
+	// StopShell stops a running custom shell.
+	StopShell(context.Context, *connect.Request[v1.StopShellRequest]) (*connect.Response[v1.StopShellResponse], error)
+	// RestartShell stops a shell (if running) and relaunches it with the same command.
+	RestartShell(context.Context, *connect.Request[v1.RestartShellRequest]) (*connect.Response[v1.RestartShellResponse], error)
+	// ListShells returns all custom shells for a session, sorted by order_index.
+	ListShells(context.Context, *connect.Request[v1.ListShellsRequest]) (*connect.Response[v1.ListShellsResponse], error)
+	// DeleteShell stops a shell and removes it from storage.
+	DeleteShell(context.Context, *connect.Request[v1.DeleteShellRequest]) (*connect.Response[v1.DeleteShellResponse], error)
 }
 
 // NewSessionServiceClient constructs a client for the session.v1.SessionService service. By
@@ -980,6 +1013,42 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("GetEscapeAnalyticsSummary")),
 			connect.WithClientOptions(opts...),
 		),
+		writeToSession: connect.NewClient[v1.WriteToSessionRequest, v1.WriteToSessionResponse](
+			httpClient,
+			baseURL+SessionServiceWriteToSessionProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("WriteToSession")),
+			connect.WithClientOptions(opts...),
+		),
+		spawnShell: connect.NewClient[v1.SpawnShellRequest, v1.SpawnShellResponse](
+			httpClient,
+			baseURL+SessionServiceSpawnShellProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("SpawnShell")),
+			connect.WithClientOptions(opts...),
+		),
+		stopShell: connect.NewClient[v1.StopShellRequest, v1.StopShellResponse](
+			httpClient,
+			baseURL+SessionServiceStopShellProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("StopShell")),
+			connect.WithClientOptions(opts...),
+		),
+		restartShell: connect.NewClient[v1.RestartShellRequest, v1.RestartShellResponse](
+			httpClient,
+			baseURL+SessionServiceRestartShellProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("RestartShell")),
+			connect.WithClientOptions(opts...),
+		),
+		listShells: connect.NewClient[v1.ListShellsRequest, v1.ListShellsResponse](
+			httpClient,
+			baseURL+SessionServiceListShellsProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("ListShells")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteShell: connect.NewClient[v1.DeleteShellRequest, v1.DeleteShellResponse](
+			httpClient,
+			baseURL+SessionServiceDeleteShellProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("DeleteShell")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -1066,6 +1135,12 @@ type sessionServiceClient struct {
 	updateFeatureFlag         *connect.Client[v1.UpdateFeatureFlagRequest, v1.UpdateFeatureFlagResponse]
 	queryEscapeAnalytics      *connect.Client[v1.QueryEscapeAnalyticsRequest, v1.QueryEscapeAnalyticsResponse]
 	getEscapeAnalyticsSummary *connect.Client[v1.GetEscapeAnalyticsSummaryRequest, v1.GetEscapeAnalyticsSummaryResponse]
+	writeToSession            *connect.Client[v1.WriteToSessionRequest, v1.WriteToSessionResponse]
+	spawnShell                *connect.Client[v1.SpawnShellRequest, v1.SpawnShellResponse]
+	stopShell                 *connect.Client[v1.StopShellRequest, v1.StopShellResponse]
+	restartShell              *connect.Client[v1.RestartShellRequest, v1.RestartShellResponse]
+	listShells                *connect.Client[v1.ListShellsRequest, v1.ListShellsResponse]
+	deleteShell               *connect.Client[v1.DeleteShellRequest, v1.DeleteShellResponse]
 }
 
 // ListSessions calls session.v1.SessionService.ListSessions.
@@ -1473,6 +1548,36 @@ func (c *sessionServiceClient) GetEscapeAnalyticsSummary(ctx context.Context, re
 	return c.getEscapeAnalyticsSummary.CallUnary(ctx, req)
 }
 
+// WriteToSession calls session.v1.SessionService.WriteToSession.
+func (c *sessionServiceClient) WriteToSession(ctx context.Context, req *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error) {
+	return c.writeToSession.CallUnary(ctx, req)
+}
+
+// SpawnShell calls session.v1.SessionService.SpawnShell.
+func (c *sessionServiceClient) SpawnShell(ctx context.Context, req *connect.Request[v1.SpawnShellRequest]) (*connect.Response[v1.SpawnShellResponse], error) {
+	return c.spawnShell.CallUnary(ctx, req)
+}
+
+// StopShell calls session.v1.SessionService.StopShell.
+func (c *sessionServiceClient) StopShell(ctx context.Context, req *connect.Request[v1.StopShellRequest]) (*connect.Response[v1.StopShellResponse], error) {
+	return c.stopShell.CallUnary(ctx, req)
+}
+
+// RestartShell calls session.v1.SessionService.RestartShell.
+func (c *sessionServiceClient) RestartShell(ctx context.Context, req *connect.Request[v1.RestartShellRequest]) (*connect.Response[v1.RestartShellResponse], error) {
+	return c.restartShell.CallUnary(ctx, req)
+}
+
+// ListShells calls session.v1.SessionService.ListShells.
+func (c *sessionServiceClient) ListShells(ctx context.Context, req *connect.Request[v1.ListShellsRequest]) (*connect.Response[v1.ListShellsResponse], error) {
+	return c.listShells.CallUnary(ctx, req)
+}
+
+// DeleteShell calls session.v1.SessionService.DeleteShell.
+func (c *sessionServiceClient) DeleteShell(ctx context.Context, req *connect.Request[v1.DeleteShellRequest]) (*connect.Response[v1.DeleteShellResponse], error) {
+	return c.deleteShell.CallUnary(ctx, req)
+}
+
 // SessionServiceHandler is an implementation of the session.v1.SessionService service.
 type SessionServiceHandler interface {
 	// ListSessions returns all sessions with optional filtering.
@@ -1679,6 +1784,21 @@ type SessionServiceHandler interface {
 	QueryEscapeAnalytics(context.Context, *connect.Request[v1.QueryEscapeAnalyticsRequest]) (*connect.Response[v1.QueryEscapeAnalyticsResponse], error)
 	// GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
 	GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error)
+	// WriteToSession sends raw text input to a running session's PTY.
+	// Use for unblocking approval prompts or injecting ad-hoc input.
+	// Returns immediately after queueing the write; does not wait for output.
+	WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error)
+	// SpawnShell creates and starts a new custom shell attached to a session.
+	// The shell runs as an independent sibling tmux session.
+	SpawnShell(context.Context, *connect.Request[v1.SpawnShellRequest]) (*connect.Response[v1.SpawnShellResponse], error)
+	// StopShell stops a running custom shell.
+	StopShell(context.Context, *connect.Request[v1.StopShellRequest]) (*connect.Response[v1.StopShellResponse], error)
+	// RestartShell stops a shell (if running) and relaunches it with the same command.
+	RestartShell(context.Context, *connect.Request[v1.RestartShellRequest]) (*connect.Response[v1.RestartShellResponse], error)
+	// ListShells returns all custom shells for a session, sorted by order_index.
+	ListShells(context.Context, *connect.Request[v1.ListShellsRequest]) (*connect.Response[v1.ListShellsResponse], error)
+	// DeleteShell stops a shell and removes it from storage.
+	DeleteShell(context.Context, *connect.Request[v1.DeleteShellRequest]) (*connect.Response[v1.DeleteShellResponse], error)
 }
 
 // NewSessionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -2174,6 +2294,42 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("GetEscapeAnalyticsSummary")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionServiceWriteToSessionHandler := connect.NewUnaryHandler(
+		SessionServiceWriteToSessionProcedure,
+		svc.WriteToSession,
+		connect.WithSchema(sessionServiceMethods.ByName("WriteToSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceSpawnShellHandler := connect.NewUnaryHandler(
+		SessionServiceSpawnShellProcedure,
+		svc.SpawnShell,
+		connect.WithSchema(sessionServiceMethods.ByName("SpawnShell")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceStopShellHandler := connect.NewUnaryHandler(
+		SessionServiceStopShellProcedure,
+		svc.StopShell,
+		connect.WithSchema(sessionServiceMethods.ByName("StopShell")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceRestartShellHandler := connect.NewUnaryHandler(
+		SessionServiceRestartShellProcedure,
+		svc.RestartShell,
+		connect.WithSchema(sessionServiceMethods.ByName("RestartShell")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceListShellsHandler := connect.NewUnaryHandler(
+		SessionServiceListShellsProcedure,
+		svc.ListShells,
+		connect.WithSchema(sessionServiceMethods.ByName("ListShells")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceDeleteShellHandler := connect.NewUnaryHandler(
+		SessionServiceDeleteShellProcedure,
+		svc.DeleteShell,
+		connect.WithSchema(sessionServiceMethods.ByName("DeleteShell")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/session.v1.SessionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SessionServiceListSessionsProcedure:
@@ -2338,6 +2494,18 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceQueryEscapeAnalyticsHandler.ServeHTTP(w, r)
 		case SessionServiceGetEscapeAnalyticsSummaryProcedure:
 			sessionServiceGetEscapeAnalyticsSummaryHandler.ServeHTTP(w, r)
+		case SessionServiceWriteToSessionProcedure:
+			sessionServiceWriteToSessionHandler.ServeHTTP(w, r)
+		case SessionServiceSpawnShellProcedure:
+			sessionServiceSpawnShellHandler.ServeHTTP(w, r)
+		case SessionServiceStopShellProcedure:
+			sessionServiceStopShellHandler.ServeHTTP(w, r)
+		case SessionServiceRestartShellProcedure:
+			sessionServiceRestartShellHandler.ServeHTTP(w, r)
+		case SessionServiceListShellsProcedure:
+			sessionServiceListShellsHandler.ServeHTTP(w, r)
+		case SessionServiceDeleteShellProcedure:
+			sessionServiceDeleteShellHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -2669,4 +2837,28 @@ func (UnimplementedSessionServiceHandler) QueryEscapeAnalytics(context.Context, 
 
 func (UnimplementedSessionServiceHandler) GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetEscapeAnalyticsSummary is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.WriteToSession is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) SpawnShell(context.Context, *connect.Request[v1.SpawnShellRequest]) (*connect.Response[v1.SpawnShellResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.SpawnShell is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) StopShell(context.Context, *connect.Request[v1.StopShellRequest]) (*connect.Response[v1.StopShellResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.StopShell is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) RestartShell(context.Context, *connect.Request[v1.RestartShellRequest]) (*connect.Response[v1.RestartShellResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.RestartShell is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) ListShells(context.Context, *connect.Request[v1.ListShellsRequest]) (*connect.Response[v1.ListShellsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.ListShells is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) DeleteShell(context.Context, *connect.Request[v1.DeleteShellRequest]) (*connect.Response[v1.DeleteShellResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.DeleteShell is not implemented"))
 }

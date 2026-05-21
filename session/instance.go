@@ -218,6 +218,14 @@ type Instance struct {
 	// production inspector is used. Set in tests to inject a fake home dir.
 	historyDetector *HistoryFileDetector
 
+	// shellRepo is the persistence backend for shell operations. Injected by Storage
+	// after instance creation/loading; nil disables persistence (tests, external instances).
+	shellRepo ShellRepository
+
+	// shellRegistry holds in-memory shell state (shells, handles, mutexes).
+	// Initialized by initShellRegistry(); shell operations go through instance_shells.go.
+	shellRegistry
+
 	// Claude Code session information for persistence and re-attachment
 	claudeSession *ClaudeSessionData
 
@@ -463,6 +471,9 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	// Initialize TagManager backed by the Instance.Tags slice
 	instance.tagManager = NewTagManager(&instance.Tags)
 
+	// Initialize shell registry maps.
+	instance.initShellRegistry()
+
 	// Auto-detect worktree info if GitHub owner/repo not explicitly set
 	// This extracts repository information from the git remote URL
 	if instance.GitHubOwner == "" || instance.GitHubRepo == "" {
@@ -487,6 +498,12 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	}
 
 	return instance, nil
+}
+
+// SetShellRepository injects the shell persistence backend. Called by Storage after
+// loading or creating an instance. Pass nil to disable persistence (e.g., in tests).
+func (i *Instance) SetShellRepository(repo ShellRepository) {
+	i.shellRepo = repo
 }
 
 // NewInstanceWithCleanup creates a new Instance and returns it along with a cleanup function.

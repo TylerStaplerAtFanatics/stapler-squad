@@ -2093,6 +2093,29 @@ func HasBacklogItemsWith(preds ...predicate.BacklogItem) predicate.Session {
 	})
 }
 
+// HasShells applies the HasEdge predicate on the "shells" edge.
+func HasShells() predicate.Session {
+	return predicate.Session(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, ShellsTable, ShellsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasShellsWith applies the HasEdge predicate on the "shells" edge with a given conditions (other predicates).
+func HasShellsWith(preds ...predicate.Shell) predicate.Session {
+	return predicate.Session(func(s *sql.Selector) {
+		step := newShellsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // And groups predicates with the AND operator between them.
 func And(predicates ...predicate.Session) predicate.Session {
 	return predicate.Session(sql.AndPredicates(predicates...))

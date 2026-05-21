@@ -575,6 +575,46 @@ var (
 			},
 		},
 	}
+	// ShellsColumns holds the columns for the "shells" table.
+	ShellsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeString},
+		{Name: "name", Type: field.TypeString},
+		{Name: "command", Type: field.TypeString, Default: ""},
+		{Name: "working_dir", Type: field.TypeString, Nullable: true},
+		{Name: "tmux_session_name", Type: field.TypeString},
+		{Name: "status", Type: field.TypeString, Default: "running"},
+		{Name: "exit_code", Type: field.TypeInt, Nullable: true},
+		{Name: "order_index", Type: field.TypeInt, Default: 0},
+		{Name: "started_at", Type: field.TypeTime},
+		{Name: "stopped_at", Type: field.TypeTime, Nullable: true},
+		{Name: "session_shells", Type: field.TypeInt},
+	}
+	// ShellsTable holds the schema information for the "shells" table.
+	ShellsTable = &schema.Table{
+		Name:       "shells",
+		Columns:    ShellsColumns,
+		PrimaryKey: []*schema.Column{ShellsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "shells_sessions_shells",
+				Columns:    []*schema.Column{ShellsColumns[10]},
+				RefColumns: []*schema.Column{SessionsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "shell_status",
+				Unique:  false,
+				Columns: []*schema.Column{ShellsColumns[5]},
+			},
+			{
+				Name:    "shell_order_index",
+				Unique:  false,
+				Columns: []*schema.Column{ShellsColumns[7]},
+			},
+		},
+	}
 	// SourceSyncEventsColumns holds the columns for the "source_sync_events" table.
 	SourceSyncEventsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeUUID},
@@ -717,6 +757,7 @@ var (
 		ProjectsTable,
 		ReviewVerdictsTable,
 		SessionsTable,
+		ShellsTable,
 		SourceSyncEventsTable,
 		TagsTable,
 		WorktreesTable,
@@ -733,6 +774,7 @@ func init() {
 	ItemSessionsTable.ForeignKeys[0].RefTable = BacklogItemsTable
 	ReviewVerdictsTable.ForeignKeys[0].RefTable = ItemSessionsTable
 	SessionsTable.ForeignKeys[0].RefTable = ProjectsTable
+	ShellsTable.ForeignKeys[0].RefTable = SessionsTable
 	SourceSyncEventsTable.ForeignKeys[0].RefTable = ItemSourcesTable
 	WorktreesTable.ForeignKeys[0].RefTable = SessionsTable
 	BacklogItemSessionsTable.ForeignKeys[0].RefTable = BacklogItemsTable

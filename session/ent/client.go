@@ -30,6 +30,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
 	"github.com/tstapler/stapler-squad/session/ent/session"
+	"github.com/tstapler/stapler-squad/session/ent/shell"
 	"github.com/tstapler/stapler-squad/session/ent/sourcesyncevent"
 	"github.com/tstapler/stapler-squad/session/ent/tag"
 	"github.com/tstapler/stapler-squad/session/ent/worktree"
@@ -68,6 +69,8 @@ type Client struct {
 	ReviewVerdict *ReviewVerdictClient
 	// Session is the client for interacting with the Session builders.
 	Session *SessionClient
+	// Shell is the client for interacting with the Shell builders.
+	Shell *ShellClient
 	// SourceSyncEvent is the client for interacting with the SourceSyncEvent builders.
 	SourceSyncEvent *SourceSyncEventClient
 	// Tag is the client for interacting with the Tag builders.
@@ -99,6 +102,7 @@ func (c *Client) init() {
 	c.Project = NewProjectClient(c.config)
 	c.ReviewVerdict = NewReviewVerdictClient(c.config)
 	c.Session = NewSessionClient(c.config)
+	c.Shell = NewShellClient(c.config)
 	c.SourceSyncEvent = NewSourceSyncEventClient(c.config)
 	c.Tag = NewTagClient(c.config)
 	c.Worktree = NewWorktreeClient(c.config)
@@ -208,6 +212,7 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		Project:                 NewProjectClient(cfg),
 		ReviewVerdict:           NewReviewVerdictClient(cfg),
 		Session:                 NewSessionClient(cfg),
+		Shell:                   NewShellClient(cfg),
 		SourceSyncEvent:         NewSourceSyncEventClient(cfg),
 		Tag:                     NewTagClient(cfg),
 		Worktree:                NewWorktreeClient(cfg),
@@ -244,6 +249,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		Project:                 NewProjectClient(cfg),
 		ReviewVerdict:           NewReviewVerdictClient(cfg),
 		Session:                 NewSessionClient(cfg),
+		Shell:                   NewShellClient(cfg),
 		SourceSyncEvent:         NewSourceSyncEventClient(cfg),
 		Tag:                     NewTagClient(cfg),
 		Worktree:                NewWorktreeClient(cfg),
@@ -278,7 +284,7 @@ func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
 		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.ClassificationAnalytics,
 		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
-		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session,
+		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session, c.Shell,
 		c.SourceSyncEvent, c.Tag, c.Worktree,
 	} {
 		n.Use(hooks...)
@@ -291,7 +297,7 @@ func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
 		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.ClassificationAnalytics,
 		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
-		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session,
+		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session, c.Shell,
 		c.SourceSyncEvent, c.Tag, c.Worktree,
 	} {
 		n.Intercept(interceptors...)
@@ -329,6 +335,8 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.ReviewVerdict.mutate(ctx, m)
 	case *SessionMutation:
 		return c.Session.mutate(ctx, m)
+	case *ShellMutation:
+		return c.Shell.mutate(ctx, m)
 	case *SourceSyncEventMutation:
 		return c.SourceSyncEvent.mutate(ctx, m)
 	case *TagMutation:
@@ -2481,6 +2489,22 @@ func (c *SessionClient) QueryBacklogItems(_m *Session) *BacklogItemQuery {
 	return query
 }
 
+// QueryShells queries the shells edge of a Session.
+func (c *SessionClient) QueryShells(_m *Session) *ShellQuery {
+	query := (&ShellClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(session.Table, session.FieldID, id),
+			sqlgraph.To(shell.Table, shell.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, session.ShellsTable, session.ShellsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // Hooks returns the client hooks.
 func (c *SessionClient) Hooks() []Hook {
 	return c.hooks.Session
@@ -2503,6 +2527,155 @@ func (c *SessionClient) mutate(ctx context.Context, m *SessionMutation) (Value, 
 		return (&SessionDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown Session mutation op: %q", m.Op())
+	}
+}
+
+// ShellClient is a client for the Shell schema.
+type ShellClient struct {
+	config
+}
+
+// NewShellClient returns a client for the Shell from the given config.
+func NewShellClient(c config) *ShellClient {
+	return &ShellClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `shell.Hooks(f(g(h())))`.
+func (c *ShellClient) Use(hooks ...Hook) {
+	c.hooks.Shell = append(c.hooks.Shell, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `shell.Intercept(f(g(h())))`.
+func (c *ShellClient) Intercept(interceptors ...Interceptor) {
+	c.inters.Shell = append(c.inters.Shell, interceptors...)
+}
+
+// Create returns a builder for creating a Shell entity.
+func (c *ShellClient) Create() *ShellCreate {
+	mutation := newShellMutation(c.config, OpCreate)
+	return &ShellCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of Shell entities.
+func (c *ShellClient) CreateBulk(builders ...*ShellCreate) *ShellCreateBulk {
+	return &ShellCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *ShellClient) MapCreateBulk(slice any, setFunc func(*ShellCreate, int)) *ShellCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &ShellCreateBulk{err: fmt.Errorf("calling to ShellClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*ShellCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &ShellCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for Shell.
+func (c *ShellClient) Update() *ShellUpdate {
+	mutation := newShellMutation(c.config, OpUpdate)
+	return &ShellUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *ShellClient) UpdateOne(_m *Shell) *ShellUpdateOne {
+	mutation := newShellMutation(c.config, OpUpdateOne, withShell(_m))
+	return &ShellUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *ShellClient) UpdateOneID(id string) *ShellUpdateOne {
+	mutation := newShellMutation(c.config, OpUpdateOne, withShellID(id))
+	return &ShellUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for Shell.
+func (c *ShellClient) Delete() *ShellDelete {
+	mutation := newShellMutation(c.config, OpDelete)
+	return &ShellDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *ShellClient) DeleteOne(_m *Shell) *ShellDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *ShellClient) DeleteOneID(id string) *ShellDeleteOne {
+	builder := c.Delete().Where(shell.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &ShellDeleteOne{builder}
+}
+
+// Query returns a query builder for Shell.
+func (c *ShellClient) Query() *ShellQuery {
+	return &ShellQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeShell},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a Shell entity by its id.
+func (c *ShellClient) Get(ctx context.Context, id string) (*Shell, error) {
+	return c.Query().Where(shell.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *ShellClient) GetX(ctx context.Context, id string) *Shell {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QuerySession queries the session edge of a Shell.
+func (c *ShellClient) QuerySession(_m *Shell) *SessionQuery {
+	query := (&SessionClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(shell.Table, shell.FieldID, id),
+			sqlgraph.To(session.Table, session.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, shell.SessionTable, shell.SessionColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *ShellClient) Hooks() []Hook {
+	return c.hooks.Shell
+}
+
+// Interceptors returns the client interceptors.
+func (c *ShellClient) Interceptors() []Interceptor {
+	return c.inters.Shell
+}
+
+func (c *ShellClient) mutate(ctx context.Context, m *ShellMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&ShellCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&ShellUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&ShellUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&ShellDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown Shell mutation op: %q", m.Op())
 	}
 }
 
@@ -2958,13 +3131,13 @@ type (
 	hooks struct {
 		AnalyticsEvent, ApprovalRule, BacklogItem, ClassificationAnalytics,
 		ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession,
-		ItemSource, Project, ReviewVerdict, Session, SourceSyncEvent, Tag,
+		ItemSource, Project, ReviewVerdict, Session, Shell, SourceSyncEvent, Tag,
 		Worktree []ent.Hook
 	}
 	inters struct {
 		AnalyticsEvent, ApprovalRule, BacklogItem, ClassificationAnalytics,
 		ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession,
-		ItemSource, Project, ReviewVerdict, Session, SourceSyncEvent, Tag,
+		ItemSource, Project, ReviewVerdict, Session, Shell, SourceSyncEvent, Tag,
 		Worktree []ent.Interceptor
 	}
 )

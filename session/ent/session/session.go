@@ -88,6 +88,8 @@ const (
 	EdgeProject = "project"
 	// EdgeBacklogItems holds the string denoting the backlog_items edge name in mutations.
 	EdgeBacklogItems = "backlog_items"
+	// EdgeShells holds the string denoting the shells edge name in mutations.
+	EdgeShells = "shells"
 	// Table holds the table name of the session in the database.
 	Table = "sessions"
 	// WorktreeTable is the table that holds the worktree relation/edge.
@@ -128,6 +130,13 @@ const (
 	// BacklogItemsInverseTable is the table name for the BacklogItem entity.
 	// It exists in this package in order to avoid circular dependency with the "backlogitem" package.
 	BacklogItemsInverseTable = "backlog_items"
+	// ShellsTable is the table that holds the shells relation/edge.
+	ShellsTable = "shells"
+	// ShellsInverseTable is the table name for the Shell entity.
+	// It exists in this package in order to avoid circular dependency with the "shell" package.
+	ShellsInverseTable = "shells"
+	// ShellsColumn is the table column denoting the shells relation/edge.
+	ShellsColumn = "session_shells"
 )
 
 // Columns holds all SQL columns for session fields.
@@ -437,6 +446,20 @@ func ByBacklogItems(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newBacklogItemsStep(), append([]sql.OrderTerm{term}, terms...)...)
 	}
 }
+
+// ByShellsCount orders the results by shells count.
+func ByShellsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newShellsStep(), opts...)
+	}
+}
+
+// ByShells orders the results by shells terms.
+func ByShells(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newShellsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
 func newWorktreeStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
@@ -477,5 +500,12 @@ func newBacklogItemsStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(BacklogItemsInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.M2M, true, BacklogItemsTable, BacklogItemsPrimaryKey...),
+	)
+}
+func newShellsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(ShellsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, ShellsTable, ShellsColumn),
 	)
 }

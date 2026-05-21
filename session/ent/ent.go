@@ -26,6 +26,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
 	"github.com/tstapler/stapler-squad/session/ent/session"
+	"github.com/tstapler/stapler-squad/session/ent/shell"
 	"github.com/tstapler/stapler-squad/session/ent/sourcesyncevent"
 	"github.com/tstapler/stapler-squad/session/ent/tag"
 	"github.com/tstapler/stapler-squad/session/ent/worktree"
@@ -103,6 +104,7 @@ func checkColumn(t, c string) error {
 			project.Table:                 project.ValidColumn,
 			reviewverdict.Table:           reviewverdict.ValidColumn,
 			session.Table:                 session.ValidColumn,
+			shell.Table:                   shell.ValidColumn,
 			sourcesyncevent.Table:         sourcesyncevent.ValidColumn,
 			tag.Table:                     tag.ValidColumn,
 			worktree.Table:                worktree.ValidColumn,
