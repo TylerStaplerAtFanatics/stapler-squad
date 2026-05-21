@@ -12,16 +12,43 @@ export const container = style({
 export const scrollArea = style({
   flex: 1,
   overflowY: "auto",
-  padding: vars.space["6"],
+  padding: `${vars.space["4"]} ${vars.space["4"]}`,
   display: "flex",
   flexDirection: "column",
-  gap: vars.space["6"],
+  gap: vars.space["4"],
+});
+
+export const errorBanner = style({
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: vars.space["2"],
+  padding: `${vars.space["2"]} ${vars.space["3"]}`,
+  background: vars.color.errorBg,
+  color: vars.color.error,
+  borderRadius: vars.radii.sm,
+  fontSize: vars.fontSize.sm,
+  border: `1px solid ${vars.color.errorDark}`,
+});
+
+export const errorBannerDismiss = style({
+  background: "transparent",
+  border: "none",
+  color: vars.color.error,
+  cursor: "pointer",
+  fontSize: vars.fontSize.base,
+  lineHeight: "1",
+  padding: 0,
+  flexShrink: 0,
 });
 
 export const header = style({
   display: "flex",
   flexDirection: "column",
   gap: vars.space["2"],
+  flexShrink: 0,
+  padding: `${vars.space["4"]} ${vars.space["6"]}`,
+  borderBottom: `1px solid ${vars.color.borderSubtle}`,
 });
 
 export const headerRow = style({
@@ -94,6 +121,11 @@ export const statusArchived = style({
   color: vars.color.textDisabled,
   border: `1px solid ${vars.color.borderMuted}`,
 });
+export const statusRefining = style({
+  background: vars.color.warningBg,
+  color: vars.color.warningText,
+  border: `1px solid ${vars.color.warning}`,
+});
 
 export const priorityBadge = style({
   display: "inline-flex",
@@ -112,6 +144,52 @@ export const dateMeta = style({
   fontSize: vars.fontSize.xs,
   color: vars.color.textMuted,
   fontFamily: vars.font.mono,
+});
+
+export const headerActions = style({
+  display: "flex",
+  alignItems: "center",
+  gap: vars.space["2"],
+  flexShrink: 0,
+});
+
+export const editButton = style({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: vars.space["1"],
+  padding: `${vars.space["1"]} ${vars.space["3"]}`,
+  borderRadius: vars.radii.sm,
+  border: `1px solid ${vars.color.borderMuted}`,
+  background: "transparent",
+  color: vars.color.textSecondary,
+  cursor: "pointer",
+  fontSize: vars.fontSize.sm,
+  fontWeight: vars.fontWeight.medium,
+  flexShrink: 0,
+  ":hover": {
+    background: vars.color.hoverBackground,
+    borderColor: vars.color.borderStrong,
+    color: vars.color.textPrimary,
+  },
+});
+
+export const editFormWrapper = style({
+  padding: vars.space["6"],
+});
+
+export const editFormHeader = style({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  marginBottom: vars.space["4"],
+  paddingBottom: vars.space["3"],
+  borderBottom: `1px solid ${vars.color.borderSubtle}`,
+});
+
+export const editFormTitle = style({
+  fontSize: vars.fontSize.base,
+  fontWeight: vars.fontWeight.semibold,
+  color: vars.color.textPrimary,
 });
 
 export const closeButton = style({
