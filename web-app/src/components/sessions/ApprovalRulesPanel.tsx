@@ -26,6 +26,11 @@ import {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/** Escape all regex metacharacters in a literal string for safe interpolation into patterns. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function decisionLabel(d: AutoDecision): string {
   switch (d) {
     case AutoDecision.ALLOW: return "Auto-Allow";
@@ -59,6 +64,8 @@ interface RuleFormState {
   toolPattern: string;
   commandPattern: string;
   filePattern: string;
+  criteriaPrograms: string[];
+  criteriaSubcommands: string[];
   decision: AutoDecision;
   reason: string;
   alternative: string;
@@ -72,6 +79,8 @@ const emptyForm: RuleFormState = {
   toolPattern: "",
   commandPattern: "",
   filePattern: "",
+  criteriaPrograms: [],
+  criteriaSubcommands: [],
   decision: AutoDecision.ALLOW,
   reason: "",
   alternative: "",
@@ -109,6 +118,8 @@ export function ApprovalRulesPanel() {
     clear: cmdGenClear,
   } = useGenerateRule();
 
+  const formSectionRef = useRef<HTMLDivElement>(null);
+
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<RuleFormState>(emptyForm);
@@ -119,6 +130,45 @@ export function ApprovalRulesPanel() {
 
   // Track which form fields the user has manually edited (not overwritten by AI pre-fill).
   const touchedFieldsRef = useRef<Set<keyof RuleFormState>>(new Set());
+
+  // ── URL param pre-fill (from analytics "Add rule →" links) ───────────────
+  // Runs once on mount (client only). Reads window.location.search directly to
+  // avoid useSearchParams + Suspense complications in the static export.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tool = params.get("tool");
+    const program = params.get("program");
+    const subcommand = params.get("subcommand");
+    if (!tool && !program) return;
+
+    const prefill: Partial<RuleFormState> = {};
+    if (tool) {
+      prefill.toolName = tool;
+      prefill.name = `Allow ${tool}`;
+    } else if (program) {
+      prefill.toolName = "Bash";
+      prefill.criteriaPrograms = [program];
+      if (subcommand) {
+        prefill.criteriaSubcommands = [subcommand];
+        prefill.name = `Allow ${program} ${subcommand}`;
+      } else {
+        prefill.name = `Allow ${program}`;
+      }
+    }
+
+    setShowForm(true);
+    setForm({ ...emptyForm, ...prefill });
+    setFormError(null);
+    setAiPrefilled(false);
+    setCmdSampleValue("");
+    touchedFieldsRef.current = new Set();
+    cmdGenClear();
+
+    setTimeout(() => {
+      formSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 100);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── filter ────────────────────────────────────────────────────────────────
 
@@ -133,15 +183,15 @@ export function ApprovalRulesPanel() {
       setFormError("Name is required.");
       return;
     }
-    if (!form.toolName && !form.toolPattern && !form.commandPattern && !form.filePattern) {
-      setFormError("At least one of Tool Name, Tool Pattern, Command Pattern, or File Pattern is required.");
+    if (!form.toolName && !form.toolPattern && !form.commandPattern && !form.filePattern && form.criteriaPrograms.length === 0) {
+      setFormError("At least one of Tool Name, Tool Pattern, Command Pattern, File Pattern, or Programs is required.");
       return;
     }
     setFormError(null);
     setSaving(true);
     try {
       const id = `user-${Date.now()}`;
-      await upsertRule({ id, ...form, riskLevel: "" });
+      await upsertRule({ id, ...form, riskLevel: "", criteriaPrograms: form.criteriaPrograms, criteriaSubcommands: form.criteriaSubcommands });
       setForm(emptyForm);
       setShowForm(false);
     } catch (e) {
@@ -163,6 +213,8 @@ export function ApprovalRulesPanel() {
         toolPattern: rule.toolPattern,
         commandPattern: rule.commandPattern,
         filePattern: rule.filePattern,
+        criteriaPrograms: rule.criteriaPrograms,
+        criteriaSubcommands: rule.criteriaSubcommands,
         decision: rule.decision,
         riskLevel: rule.riskLevel,
         reason: rule.reason,
@@ -206,16 +258,18 @@ export function ApprovalRulesPanel() {
     const suggestion = cmdSuggestions[0];
     const touched = touchedFieldsRef.current;
     setForm((prev) => ({
-      name:           touched.has("name")           ? prev.name           : suggestion.name || prev.name,
-      toolName:       touched.has("toolName")       ? prev.toolName       : suggestion.toolName || prev.toolName,
-      toolPattern:    touched.has("toolPattern")    ? prev.toolPattern    : suggestion.toolPattern || prev.toolPattern,
-      commandPattern: touched.has("commandPattern") ? prev.commandPattern : suggestion.commandPattern || prev.commandPattern,
-      filePattern:    touched.has("filePattern")    ? prev.filePattern    : suggestion.filePattern || prev.filePattern,
-      decision:       touched.has("decision")       ? prev.decision       : (suggestion.decision !== AutoDecision.UNSPECIFIED ? suggestion.decision : prev.decision),
-      reason:         touched.has("reason")         ? prev.reason         : suggestion.reason || prev.reason,
-      alternative:    touched.has("alternative")    ? prev.alternative    : suggestion.alternative || prev.alternative,
-      priority:       touched.has("priority")       ? prev.priority       : (suggestion.priority > 0 ? suggestion.priority : prev.priority),
-      enabled:        prev.enabled,
+      name:                touched.has("name")                ? prev.name                : suggestion.name || prev.name,
+      toolName:            touched.has("toolName")            ? prev.toolName            : suggestion.toolName || prev.toolName,
+      toolPattern:         touched.has("toolPattern")         ? prev.toolPattern         : suggestion.toolPattern || prev.toolPattern,
+      commandPattern:      touched.has("commandPattern")      ? prev.commandPattern      : suggestion.commandPattern || prev.commandPattern,
+      filePattern:         touched.has("filePattern")         ? prev.filePattern         : suggestion.filePattern || prev.filePattern,
+      criteriaPrograms:    touched.has("criteriaPrograms")    ? prev.criteriaPrograms    : prev.criteriaPrograms,
+      criteriaSubcommands: touched.has("criteriaSubcommands") ? prev.criteriaSubcommands : prev.criteriaSubcommands,
+      decision:            touched.has("decision")            ? prev.decision            : (suggestion.decision !== AutoDecision.UNSPECIFIED ? suggestion.decision : prev.decision),
+      reason:              touched.has("reason")              ? prev.reason              : suggestion.reason || prev.reason,
+      alternative:         touched.has("alternative")         ? prev.alternative         : suggestion.alternative || prev.alternative,
+      priority:            touched.has("priority")            ? prev.priority            : (suggestion.priority > 0 ? suggestion.priority : prev.priority),
+      enabled:             prev.enabled,
     }));
     setAiPrefilled(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -423,6 +477,12 @@ export function ApprovalRulesPanel() {
                   <td className={td}>
                     <div className={matchInfo}>
                       {rule.toolName && <code className={matchChip}>{rule.toolName}</code>}
+                      {rule.criteriaPrograms && rule.criteriaPrograms.length > 0 && (
+                        <code className={matchChip}>programs: {rule.criteriaPrograms.join(", ")}</code>
+                      )}
+                      {rule.criteriaSubcommands && rule.criteriaSubcommands.length > 0 && (
+                        <code className={matchChip}>sub: {rule.criteriaSubcommands.join(", ")}</code>
+                      )}
                       {rule.commandPattern && <code className={matchChip}>{rule.commandPattern}</code>}
                       {rule.toolPattern && <code className={matchChip}>{rule.toolPattern}</code>}
                       {rule.filePattern && <code className={matchChip}>{rule.filePattern}</code>}
@@ -468,7 +528,7 @@ export function ApprovalRulesPanel() {
       </div>
 
       {/* ── Add rule form ── */}
-      <div className={formSection}>
+      <div className={formSection} ref={formSectionRef}>
         {!showForm ? (
           <button className={addButton} onClick={openForm}>
             + Add Custom Rule
@@ -552,6 +612,31 @@ export function ApprovalRulesPanel() {
                   value={form.toolName}
                   onChange={(e) => setFormField("toolName", e.target.value)}
                   placeholder="e.g. Bash"
+                />
+              </label>
+
+              <label className={label}>
+                Programs
+                <input
+                  className={input}
+                  value={form.criteriaPrograms.join(", ")}
+                  onChange={(e) => setFormField("criteriaPrograms", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+                  placeholder="e.g. git, gh, npm"
+                  data-testid="form-criteria-programs-input"
+                />
+                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 2 }}>
+                  Structural matching is preferred over Command Pattern regex for program/subcommand rules.
+                </span>
+              </label>
+
+              <label className={label}>
+                Subcommands
+                <input
+                  className={input}
+                  value={form.criteriaSubcommands.join(", ")}
+                  onChange={(e) => setFormField("criteriaSubcommands", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+                  placeholder="e.g. push, publish, deploy"
+                  data-testid="form-criteria-subcommands-input"
                 />
               </label>
 

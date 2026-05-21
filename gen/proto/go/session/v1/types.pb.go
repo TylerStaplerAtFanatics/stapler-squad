@@ -3856,8 +3856,11 @@ type ApprovalRuleProto struct {
 	Enabled        bool                   `protobuf:"varint,12,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	Source         string                 `protobuf:"bytes,13,opt,name=source,proto3" json:"source,omitempty"`
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Structured criteria — preferred over command_pattern for program/subcommand matching.
+	CriteriaPrograms    []string `protobuf:"bytes,15,rep,name=criteria_programs,json=criteriaPrograms,proto3" json:"criteria_programs,omitempty"`
+	CriteriaSubcommands []string `protobuf:"bytes,16,rep,name=criteria_subcommands,json=criteriaSubcommands,proto3" json:"criteria_subcommands,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ApprovalRuleProto) Reset() {
@@ -3984,6 +3987,20 @@ func (x *ApprovalRuleProto) GetSource() string {
 func (x *ApprovalRuleProto) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *ApprovalRuleProto) GetCriteriaPrograms() []string {
+	if x != nil {
+		return x.CriteriaPrograms
+	}
+	return nil
+}
+
+func (x *ApprovalRuleProto) GetCriteriaSubcommands() []string {
+	if x != nil {
+		return x.CriteriaSubcommands
 	}
 	return nil
 }
@@ -4615,6 +4632,122 @@ func (x *DailyBucketProto) GetTotal() int32 {
 	return 0
 }
 
+// SubcommandBreakdownProto is a per-subcommand decision breakdown for the drill-down panel.
+type SubcommandBreakdownProto struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// subcommand is the first positional argument (e.g., "commit", "push").
+	// Empty string means no subcommand was detected.
+	Subcommand string `protobuf:"bytes,1,opt,name=subcommand,proto3" json:"subcommand,omitempty"`
+	// total is the total call count for this subcommand in the window.
+	Total int32 `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	// Per-decision counts.
+	AutoAllow   int32 `protobuf:"varint,3,opt,name=auto_allow,json=autoAllow,proto3" json:"auto_allow,omitempty"`
+	AutoDeny    int32 `protobuf:"varint,4,opt,name=auto_deny,json=autoDeny,proto3" json:"auto_deny,omitempty"`
+	Escalate    int32 `protobuf:"varint,5,opt,name=escalate,proto3" json:"escalate,omitempty"`
+	ManualAllow int32 `protobuf:"varint,6,opt,name=manual_allow,json=manualAllow,proto3" json:"manual_allow,omitempty"`
+	ManualDeny  int32 `protobuf:"varint,7,opt,name=manual_deny,json=manualDeny,proto3" json:"manual_deny,omitempty"`
+	// has_rule_coverage is true if any existing rule covers this (program, subcommand) pair.
+	HasRuleCoverage bool `protobuf:"varint,8,opt,name=has_rule_coverage,json=hasRuleCoverage,proto3" json:"has_rule_coverage,omitempty"`
+	// suggested_rule_hint is an optional pre-fill pattern hint for the rule form.
+	// Format: the subcommand string itself (e.g., "push") — the UI appends context.
+	SuggestedRuleHint string `protobuf:"bytes,9,opt,name=suggested_rule_hint,json=suggestedRuleHint,proto3" json:"suggested_rule_hint,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *SubcommandBreakdownProto) Reset() {
+	*x = SubcommandBreakdownProto{}
+	mi := &file_session_v1_types_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubcommandBreakdownProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubcommandBreakdownProto) ProtoMessage() {}
+
+func (x *SubcommandBreakdownProto) ProtoReflect() protoreflect.Message {
+	mi := &file_session_v1_types_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubcommandBreakdownProto.ProtoReflect.Descriptor instead.
+func (*SubcommandBreakdownProto) Descriptor() ([]byte, []int) {
+	return file_session_v1_types_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *SubcommandBreakdownProto) GetSubcommand() string {
+	if x != nil {
+		return x.Subcommand
+	}
+	return ""
+}
+
+func (x *SubcommandBreakdownProto) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *SubcommandBreakdownProto) GetAutoAllow() int32 {
+	if x != nil {
+		return x.AutoAllow
+	}
+	return 0
+}
+
+func (x *SubcommandBreakdownProto) GetAutoDeny() int32 {
+	if x != nil {
+		return x.AutoDeny
+	}
+	return 0
+}
+
+func (x *SubcommandBreakdownProto) GetEscalate() int32 {
+	if x != nil {
+		return x.Escalate
+	}
+	return 0
+}
+
+func (x *SubcommandBreakdownProto) GetManualAllow() int32 {
+	if x != nil {
+		return x.ManualAllow
+	}
+	return 0
+}
+
+func (x *SubcommandBreakdownProto) GetManualDeny() int32 {
+	if x != nil {
+		return x.ManualDeny
+	}
+	return 0
+}
+
+func (x *SubcommandBreakdownProto) GetHasRuleCoverage() bool {
+	if x != nil {
+		return x.HasRuleCoverage
+	}
+	return false
+}
+
+func (x *SubcommandBreakdownProto) GetSuggestedRuleHint() string {
+	if x != nil {
+		return x.SuggestedRuleHint
+	}
+	return ""
+}
+
 // DatabaseInfo contains display information about a workspace database.
 // Used by the workspace switcher UI in the header.
 type DatabaseInfo struct {
@@ -4641,7 +4774,7 @@ type DatabaseInfo struct {
 
 func (x *DatabaseInfo) Reset() {
 	*x = DatabaseInfo{}
-	mi := &file_session_v1_types_proto_msgTypes[30]
+	mi := &file_session_v1_types_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4653,7 +4786,7 @@ func (x *DatabaseInfo) String() string {
 func (*DatabaseInfo) ProtoMessage() {}
 
 func (x *DatabaseInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[30]
+	mi := &file_session_v1_types_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4666,7 +4799,7 @@ func (x *DatabaseInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseInfo.ProtoReflect.Descriptor instead.
 func (*DatabaseInfo) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{30}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *DatabaseInfo) GetWorkspaceId() string {
@@ -4750,7 +4883,7 @@ type FileNode struct {
 
 func (x *FileNode) Reset() {
 	*x = FileNode{}
-	mi := &file_session_v1_types_proto_msgTypes[31]
+	mi := &file_session_v1_types_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4762,7 +4895,7 @@ func (x *FileNode) String() string {
 func (*FileNode) ProtoMessage() {}
 
 func (x *FileNode) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[31]
+	mi := &file_session_v1_types_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4775,7 +4908,7 @@ func (x *FileNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileNode.ProtoReflect.Descriptor instead.
 func (*FileNode) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{31}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *FileNode) GetName() string {
@@ -4862,7 +4995,7 @@ type CheckpointProto struct {
 
 func (x *CheckpointProto) Reset() {
 	*x = CheckpointProto{}
-	mi := &file_session_v1_types_proto_msgTypes[32]
+	mi := &file_session_v1_types_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4874,7 +5007,7 @@ func (x *CheckpointProto) String() string {
 func (*CheckpointProto) ProtoMessage() {}
 
 func (x *CheckpointProto) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[32]
+	mi := &file_session_v1_types_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4887,7 +5020,7 @@ func (x *CheckpointProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckpointProto.ProtoReflect.Descriptor instead.
 func (*CheckpointProto) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{32}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *CheckpointProto) GetId() string {
@@ -4989,7 +5122,7 @@ type UnfinishedWorktree struct {
 
 func (x *UnfinishedWorktree) Reset() {
 	*x = UnfinishedWorktree{}
-	mi := &file_session_v1_types_proto_msgTypes[33]
+	mi := &file_session_v1_types_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5001,7 +5134,7 @@ func (x *UnfinishedWorktree) String() string {
 func (*UnfinishedWorktree) ProtoMessage() {}
 
 func (x *UnfinishedWorktree) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[33]
+	mi := &file_session_v1_types_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5014,7 +5147,7 @@ func (x *UnfinishedWorktree) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnfinishedWorktree.ProtoReflect.Descriptor instead.
 func (*UnfinishedWorktree) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{33}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *UnfinishedWorktree) GetRepoPath() string {
@@ -5169,7 +5302,7 @@ type UnfinishedWorkConfig struct {
 
 func (x *UnfinishedWorkConfig) Reset() {
 	*x = UnfinishedWorkConfig{}
-	mi := &file_session_v1_types_proto_msgTypes[34]
+	mi := &file_session_v1_types_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5181,7 +5314,7 @@ func (x *UnfinishedWorkConfig) String() string {
 func (*UnfinishedWorkConfig) ProtoMessage() {}
 
 func (x *UnfinishedWorkConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[34]
+	mi := &file_session_v1_types_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5194,7 +5327,7 @@ func (x *UnfinishedWorkConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnfinishedWorkConfig.ProtoReflect.Descriptor instead.
 func (*UnfinishedWorkConfig) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{34}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *UnfinishedWorkConfig) GetAutoSpiderSessions() bool {
@@ -5246,7 +5379,7 @@ type SuggestedRuleProto struct {
 
 func (x *SuggestedRuleProto) Reset() {
 	*x = SuggestedRuleProto{}
-	mi := &file_session_v1_types_proto_msgTypes[35]
+	mi := &file_session_v1_types_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5258,7 +5391,7 @@ func (x *SuggestedRuleProto) String() string {
 func (*SuggestedRuleProto) ProtoMessage() {}
 
 func (x *SuggestedRuleProto) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[35]
+	mi := &file_session_v1_types_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5271,7 +5404,7 @@ func (x *SuggestedRuleProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SuggestedRuleProto.ProtoReflect.Descriptor instead.
 func (*SuggestedRuleProto) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{35}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SuggestedRuleProto) GetName() string {
@@ -5665,7 +5798,7 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\x11seconds_remaining\x18\t \x01(\x05R\x10secondsRemaining\x1a<\n" +
 	"\x0eToolInputEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdb\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbb\x04\n" +
 	"\x11ApprovalRuleProto\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
@@ -5683,7 +5816,9 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\aenabled\x18\f \x01(\bR\aenabled\x12\x16\n" +
 	"\x06source\x18\r \x01(\tR\x06source\x129\n" +
 	"\n" +
-	"created_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xf7\b\n" +
+	"created_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12+\n" +
+	"\x11criteria_programs\x18\x0f \x03(\tR\x10criteriaPrograms\x121\n" +
+	"\x14criteria_subcommands\x18\x10 \x03(\tR\x13criteriaSubcommands\"\xf7\b\n" +
 	"\x15AnalyticsSummaryProto\x12'\n" +
 	"\x0ftotal_decisions\x18\x01 \x01(\x05R\x0etotalDecisions\x12^\n" +
 	"\x0fdecision_counts\x18\x02 \x03(\v25.session.v1.AnalyticsSummaryProto.DecisionCountsEntryR\x0edecisionCounts\x126\n" +
@@ -5740,7 +5875,21 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\fmanual_allow\x18\x05 \x01(\x05R\vmanualAllow\x12\x1f\n" +
 	"\vmanual_deny\x18\x06 \x01(\x05R\n" +
 	"manualDeny\x12\x14\n" +
-	"\x05total\x18\a \x01(\x05R\x05total\"\x87\x02\n" +
+	"\x05total\x18\a \x01(\x05R\x05total\"\xc8\x02\n" +
+	"\x18SubcommandBreakdownProto\x12\x1e\n" +
+	"\n" +
+	"subcommand\x18\x01 \x01(\tR\n" +
+	"subcommand\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\x12\x1d\n" +
+	"\n" +
+	"auto_allow\x18\x03 \x01(\x05R\tautoAllow\x12\x1b\n" +
+	"\tauto_deny\x18\x04 \x01(\x05R\bautoDeny\x12\x1a\n" +
+	"\bescalate\x18\x05 \x01(\x05R\bescalate\x12!\n" +
+	"\fmanual_allow\x18\x06 \x01(\x05R\vmanualAllow\x12\x1f\n" +
+	"\vmanual_deny\x18\a \x01(\x05R\n" +
+	"manualDeny\x12*\n" +
+	"\x11has_rule_coverage\x18\b \x01(\bR\x0fhasRuleCoverage\x12.\n" +
+	"\x13suggested_rule_hint\x18\t \x01(\tR\x11suggestedRuleHint\"\x87\x02\n" +
 	"\fDatabaseInfo\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x10\n" +
@@ -5983,7 +6132,7 @@ func file_session_v1_types_proto_rawDescGZIP() []byte {
 }
 
 var file_session_v1_types_proto_enumTypes = make([]protoimpl.EnumInfo, 19)
-var file_session_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
+var file_session_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_session_v1_types_proto_goTypes = []any{
 	(VNCStatus)(0),                    // 0: session.v1.VNCStatus
 	(CDPStatus)(0),                    // 1: session.v1.CDPStatus
@@ -6034,97 +6183,98 @@ var file_session_v1_types_proto_goTypes = []any{
 	(*ImportStatProto)(nil),           // 46: session.v1.ImportStatProto
 	(*SubcommandStatProto)(nil),       // 47: session.v1.SubcommandStatProto
 	(*DailyBucketProto)(nil),          // 48: session.v1.DailyBucketProto
-	(*DatabaseInfo)(nil),              // 49: session.v1.DatabaseInfo
-	(*FileNode)(nil),                  // 50: session.v1.FileNode
-	(*CheckpointProto)(nil),           // 51: session.v1.CheckpointProto
-	(*UnfinishedWorktree)(nil),        // 52: session.v1.UnfinishedWorktree
-	(*UnfinishedWorkConfig)(nil),      // 53: session.v1.UnfinishedWorkConfig
-	(*SuggestedRuleProto)(nil),        // 54: session.v1.SuggestedRuleProto
-	nil,                               // 55: session.v1.ClaudeSession.MetadataEntry
-	nil,                               // 56: session.v1.ReviewItem.MetadataEntry
-	nil,                               // 57: session.v1.ReviewQueue.ByPriorityEntry
-	nil,                               // 58: session.v1.ReviewQueue.ByReasonEntry
-	nil,                               // 59: session.v1.Notification.MetadataEntry
-	nil,                               // 60: session.v1.PendingApprovalProto.ToolInputEntry
-	nil,                               // 61: session.v1.AnalyticsSummaryProto.DecisionCountsEntry
-	(*timestamppb.Timestamp)(nil),     // 62: google.protobuf.Timestamp
+	(*SubcommandBreakdownProto)(nil),  // 49: session.v1.SubcommandBreakdownProto
+	(*DatabaseInfo)(nil),              // 50: session.v1.DatabaseInfo
+	(*FileNode)(nil),                  // 51: session.v1.FileNode
+	(*CheckpointProto)(nil),           // 52: session.v1.CheckpointProto
+	(*UnfinishedWorktree)(nil),        // 53: session.v1.UnfinishedWorktree
+	(*UnfinishedWorkConfig)(nil),      // 54: session.v1.UnfinishedWorkConfig
+	(*SuggestedRuleProto)(nil),        // 55: session.v1.SuggestedRuleProto
+	nil,                               // 56: session.v1.ClaudeSession.MetadataEntry
+	nil,                               // 57: session.v1.ReviewItem.MetadataEntry
+	nil,                               // 58: session.v1.ReviewQueue.ByPriorityEntry
+	nil,                               // 59: session.v1.ReviewQueue.ByReasonEntry
+	nil,                               // 60: session.v1.Notification.MetadataEntry
+	nil,                               // 61: session.v1.PendingApprovalProto.ToolInputEntry
+	nil,                               // 62: session.v1.AnalyticsSummaryProto.DecisionCountsEntry
+	(*timestamppb.Timestamp)(nil),     // 63: google.protobuf.Timestamp
 }
 var file_session_v1_types_proto_depIdxs = []int32{
 	2,  // 0: session.v1.Session.status:type_name -> session.v1.SessionStatus
-	62, // 1: session.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	62, // 2: session.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
-	62, // 3: session.v1.Session.last_terminal_update:type_name -> google.protobuf.Timestamp
-	62, // 4: session.v1.Session.last_meaningful_output:type_name -> google.protobuf.Timestamp
+	63, // 1: session.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	63, // 2: session.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	63, // 3: session.v1.Session.last_terminal_update:type_name -> google.protobuf.Timestamp
+	63, // 4: session.v1.Session.last_meaningful_output:type_name -> google.protobuf.Timestamp
 	3,  // 5: session.v1.Session.session_type:type_name -> session.v1.SessionType
 	23, // 6: session.v1.Session.diff_stats:type_name -> session.v1.DiffStats
 	24, // 7: session.v1.Session.git_worktree:type_name -> session.v1.GitWorktree
 	25, // 8: session.v1.Session.claude_session:type_name -> session.v1.ClaudeSession
 	4,  // 9: session.v1.Session.instance_type:type_name -> session.v1.InstanceType
 	22, // 10: session.v1.Session.external_metadata:type_name -> session.v1.ExternalInstanceMetadata
-	62, // 11: session.v1.Session.last_pr_status_check:type_name -> google.protobuf.Timestamp
+	63, // 11: session.v1.Session.last_pr_status_check:type_name -> google.protobuf.Timestamp
 	7,  // 12: session.v1.Session.rate_limit_state:type_name -> session.v1.RateLimitState
-	62, // 13: session.v1.Session.rate_limit_reset_time:type_name -> google.protobuf.Timestamp
+	63, // 13: session.v1.Session.rate_limit_reset_time:type_name -> google.protobuf.Timestamp
 	5,  // 14: session.v1.Session.working_state:type_name -> session.v1.WorkingState
 	20, // 15: session.v1.Session.vnc_state:type_name -> session.v1.VNCState
 	21, // 16: session.v1.Session.cdp_state:type_name -> session.v1.CDPState
 	6,  // 17: session.v1.Session.sub_status:type_name -> session.v1.SubStatus
 	0,  // 18: session.v1.VNCState.status:type_name -> session.v1.VNCStatus
 	1,  // 19: session.v1.CDPState.status:type_name -> session.v1.CDPStatus
-	62, // 20: session.v1.ExternalInstanceMetadata.discovered_at:type_name -> google.protobuf.Timestamp
-	62, // 21: session.v1.ExternalInstanceMetadata.last_seen:type_name -> google.protobuf.Timestamp
-	62, // 22: session.v1.ClaudeSession.last_attached:type_name -> google.protobuf.Timestamp
+	63, // 20: session.v1.ExternalInstanceMetadata.discovered_at:type_name -> google.protobuf.Timestamp
+	63, // 21: session.v1.ExternalInstanceMetadata.last_seen:type_name -> google.protobuf.Timestamp
+	63, // 22: session.v1.ClaudeSession.last_attached:type_name -> google.protobuf.Timestamp
 	26, // 23: session.v1.ClaudeSession.settings:type_name -> session.v1.ClaudeSettings
-	55, // 24: session.v1.ClaudeSession.metadata:type_name -> session.v1.ClaudeSession.MetadataEntry
+	56, // 24: session.v1.ClaudeSession.metadata:type_name -> session.v1.ClaudeSession.MetadataEntry
 	9,  // 25: session.v1.ReviewItem.reason:type_name -> session.v1.AttentionReason
 	8,  // 26: session.v1.ReviewItem.priority:type_name -> session.v1.Priority
-	62, // 27: session.v1.ReviewItem.detected_at:type_name -> google.protobuf.Timestamp
-	56, // 28: session.v1.ReviewItem.metadata:type_name -> session.v1.ReviewItem.MetadataEntry
+	63, // 27: session.v1.ReviewItem.detected_at:type_name -> google.protobuf.Timestamp
+	57, // 28: session.v1.ReviewItem.metadata:type_name -> session.v1.ReviewItem.MetadataEntry
 	2,  // 29: session.v1.ReviewItem.status:type_name -> session.v1.SessionStatus
 	23, // 30: session.v1.ReviewItem.diff_stats:type_name -> session.v1.DiffStats
-	62, // 31: session.v1.ReviewItem.last_activity:type_name -> google.protobuf.Timestamp
+	63, // 31: session.v1.ReviewItem.last_activity:type_name -> google.protobuf.Timestamp
 	5,  // 32: session.v1.ReviewItem.working_state:type_name -> session.v1.WorkingState
-	62, // 33: session.v1.PRInfo.created_at:type_name -> google.protobuf.Timestamp
-	62, // 34: session.v1.PRInfo.updated_at:type_name -> google.protobuf.Timestamp
-	62, // 35: session.v1.PRComment.created_at:type_name -> google.protobuf.Timestamp
+	63, // 33: session.v1.PRInfo.created_at:type_name -> google.protobuf.Timestamp
+	63, // 34: session.v1.PRInfo.updated_at:type_name -> google.protobuf.Timestamp
+	63, // 35: session.v1.PRComment.created_at:type_name -> google.protobuf.Timestamp
 	27, // 36: session.v1.ReviewQueue.items:type_name -> session.v1.ReviewItem
-	57, // 37: session.v1.ReviewQueue.by_priority:type_name -> session.v1.ReviewQueue.ByPriorityEntry
-	58, // 38: session.v1.ReviewQueue.by_reason:type_name -> session.v1.ReviewQueue.ByReasonEntry
+	58, // 37: session.v1.ReviewQueue.by_priority:type_name -> session.v1.ReviewQueue.ByPriorityEntry
+	59, // 38: session.v1.ReviewQueue.by_reason:type_name -> session.v1.ReviewQueue.ByReasonEntry
 	10, // 39: session.v1.Notification.notification_type:type_name -> session.v1.NotificationType
 	11, // 40: session.v1.Notification.priority:type_name -> session.v1.NotificationPriority
-	62, // 41: session.v1.Notification.timestamp:type_name -> google.protobuf.Timestamp
-	59, // 42: session.v1.Notification.metadata:type_name -> session.v1.Notification.MetadataEntry
+	63, // 41: session.v1.Notification.timestamp:type_name -> google.protobuf.Timestamp
+	60, // 42: session.v1.Notification.metadata:type_name -> session.v1.Notification.MetadataEntry
 	13, // 43: session.v1.FileChange.status:type_name -> session.v1.FileStatus
 	12, // 44: session.v1.VCSStatus.type:type_name -> session.v1.VCSType
 	32, // 45: session.v1.VCSStatus.staged_files:type_name -> session.v1.FileChange
 	32, // 46: session.v1.VCSStatus.unstaged_files:type_name -> session.v1.FileChange
 	32, // 47: session.v1.VCSStatus.untracked_files:type_name -> session.v1.FileChange
 	32, // 48: session.v1.VCSStatus.conflict_files:type_name -> session.v1.FileChange
-	62, // 49: session.v1.RevisionTarget.timestamp:type_name -> google.protobuf.Timestamp
+	63, // 49: session.v1.RevisionTarget.timestamp:type_name -> google.protobuf.Timestamp
 	12, // 50: session.v1.AvailableWorkspaceTargets.vcs_type:type_name -> session.v1.VCSType
 	34, // 51: session.v1.AvailableWorkspaceTargets.bookmarks:type_name -> session.v1.BookmarkTarget
 	35, // 52: session.v1.AvailableWorkspaceTargets.recent_revisions:type_name -> session.v1.RevisionTarget
 	36, // 53: session.v1.AvailableWorkspaceTargets.worktrees:type_name -> session.v1.WorktreeTarget
 	12, // 54: session.v1.VCSInfo.vcs_type:type_name -> session.v1.VCSType
-	60, // 55: session.v1.PendingApprovalProto.tool_input:type_name -> session.v1.PendingApprovalProto.ToolInputEntry
-	62, // 56: session.v1.PendingApprovalProto.created_at:type_name -> google.protobuf.Timestamp
-	62, // 57: session.v1.PendingApprovalProto.expires_at:type_name -> google.protobuf.Timestamp
+	61, // 55: session.v1.PendingApprovalProto.tool_input:type_name -> session.v1.PendingApprovalProto.ToolInputEntry
+	63, // 56: session.v1.PendingApprovalProto.created_at:type_name -> google.protobuf.Timestamp
+	63, // 57: session.v1.PendingApprovalProto.expires_at:type_name -> google.protobuf.Timestamp
 	16, // 58: session.v1.ApprovalRuleProto.decision:type_name -> session.v1.AutoDecision
-	62, // 59: session.v1.ApprovalRuleProto.created_at:type_name -> google.protobuf.Timestamp
-	61, // 60: session.v1.AnalyticsSummaryProto.decision_counts:type_name -> session.v1.AnalyticsSummaryProto.DecisionCountsEntry
+	63, // 59: session.v1.ApprovalRuleProto.created_at:type_name -> google.protobuf.Timestamp
+	62, // 60: session.v1.AnalyticsSummaryProto.decision_counts:type_name -> session.v1.AnalyticsSummaryProto.DecisionCountsEntry
 	42, // 61: session.v1.AnalyticsSummaryProto.top_tools:type_name -> session.v1.ToolStatProto
 	43, // 62: session.v1.AnalyticsSummaryProto.top_denied_commands:type_name -> session.v1.CommandStatProto
 	44, // 63: session.v1.AnalyticsSummaryProto.top_triggered_rules:type_name -> session.v1.RuleStatProto
-	62, // 64: session.v1.AnalyticsSummaryProto.window_start:type_name -> google.protobuf.Timestamp
-	62, // 65: session.v1.AnalyticsSummaryProto.window_end:type_name -> google.protobuf.Timestamp
+	63, // 64: session.v1.AnalyticsSummaryProto.window_start:type_name -> google.protobuf.Timestamp
+	63, // 65: session.v1.AnalyticsSummaryProto.window_end:type_name -> google.protobuf.Timestamp
 	45, // 66: session.v1.AnalyticsSummaryProto.top_command_programs:type_name -> session.v1.ProgramStatProto
 	46, // 67: session.v1.AnalyticsSummaryProto.top_python_imports:type_name -> session.v1.ImportStatProto
 	42, // 68: session.v1.AnalyticsSummaryProto.top_uncovered_tools:type_name -> session.v1.ToolStatProto
 	45, // 69: session.v1.AnalyticsSummaryProto.top_uncovered_programs:type_name -> session.v1.ProgramStatProto
 	47, // 70: session.v1.AnalyticsSummaryProto.command_subcommand_stats:type_name -> session.v1.SubcommandStatProto
-	62, // 71: session.v1.DatabaseInfo.last_used:type_name -> google.protobuf.Timestamp
-	62, // 72: session.v1.CheckpointProto.timestamp:type_name -> google.protobuf.Timestamp
-	62, // 73: session.v1.UnfinishedWorktree.last_modified:type_name -> google.protobuf.Timestamp
-	62, // 74: session.v1.UnfinishedWorktree.scan_time:type_name -> google.protobuf.Timestamp
+	63, // 71: session.v1.DatabaseInfo.last_used:type_name -> google.protobuf.Timestamp
+	63, // 72: session.v1.CheckpointProto.timestamp:type_name -> google.protobuf.Timestamp
+	63, // 73: session.v1.UnfinishedWorktree.last_modified:type_name -> google.protobuf.Timestamp
+	63, // 74: session.v1.UnfinishedWorktree.scan_time:type_name -> google.protobuf.Timestamp
 	17, // 75: session.v1.UnfinishedWorktree.scan_status:type_name -> session.v1.ScanStatus
 	16, // 76: session.v1.SuggestedRuleProto.decision:type_name -> session.v1.AutoDecision
 	77, // [77:77] is the sub-list for method output_type
@@ -6146,7 +6296,7 @@ func file_session_v1_types_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_v1_types_proto_rawDesc), len(file_session_v1_types_proto_rawDesc)),
 			NumEnums:      19,
-			NumMessages:   43,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
