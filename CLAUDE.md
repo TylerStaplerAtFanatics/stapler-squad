@@ -107,8 +107,8 @@ STAPLER_SQUAD_WORKSPACE_MODE=false ./stapler-squad
 ```
 Full isolation reference: `.claude/docs/state-isolation.md`
 
-**External session monitoring** (claude-mux PTY multiplexer for IntelliJ/VS Code terminals):
-install via `./scripts/install-mux.sh` then `alias claude='claude-mux claude'`.
+**External session monitoring** (ssq-mux PTY multiplexer for IntelliJ/VS Code terminals):
+install via `./scripts/install-mux.sh` then `alias claude='ssq-mux claude'`.
 Full guide: `.claude/docs/pty-multiplexing.md`
 
 ## Architecture Overview
@@ -217,7 +217,7 @@ make e2e-lighthouse
 |---|---|
 | Profiling / lock-up debugging | `.claude/docs/profiling.md` |
 | OpenTelemetry / Datadog setup | `.claude/docs/opentelemetry.md` |
-| PTY multiplexing (claude-mux) | `.claude/docs/pty-multiplexing.md` |
+| PTY multiplexing (ssq-mux) | `.claude/docs/pty-multiplexing.md` |
 | State file isolation / multi-instance | `.claude/docs/state-isolation.md` |
 | Tag-based session organization | `.claude/docs/tag-organization.md` |
 | Benchmark reference | `.claude/docs/benchmarks.md` |

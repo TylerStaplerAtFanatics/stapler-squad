@@ -64,6 +64,11 @@ export const statusArchived = style({
   color: vars.color.textDisabled,
   border: `1px solid ${vars.color.borderMuted}`,
 });
+export const statusRefining = style({
+  background: vars.color.warningBg,
+  color: vars.color.warningText,
+  border: `1px solid ${vars.color.warning}`,
+});
 
 export const acCount = style({
   color: vars.color.textSecondary,

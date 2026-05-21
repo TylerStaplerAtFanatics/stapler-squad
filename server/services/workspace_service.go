@@ -24,13 +24,23 @@ type WorkspaceProvider interface {
 	GetWorkspace(sessionID string) (session.Workspace, error)
 }
 
+// LiveInstanceFinder is satisfied by SessionService. It returns the live in-memory
+// instance by scanning the poller's tracked sessions (O(N)) or nil if the session is
+// not yet in the poller. WorkspaceService uses this as a fast path to avoid calling
+// LoadInstances() — which re-hydrates all sessions from disk and spawns PTY/tmux
+// subprocesses — on every read-only RPC call.
+type LiveInstanceFinder interface {
+	FindLiveInstance(id string) *session.Instance
+}
+
 // WorkspaceService handles all VCS/workspace RPC methods.
 //
 // These methods operate on session workspace state (git/jj status, branch
 // switching, worktrees) and may emit events after state-modifying operations.
 type WorkspaceService struct {
-	storage  *session.Storage
-	eventBus *events.EventBus
+	storage    *session.Storage
+	eventBus   *events.EventBus
+	liveFinder LiveInstanceFinder
 	// inFlightSwitches tracks session IDs currently undergoing a workspace switch.
 	// Prevents concurrent SwitchWorkspace RPCs on the same session from corrupting state.
 	inFlightSwitches sync.Map
@@ -41,25 +51,43 @@ func NewWorkspaceService(storage *session.Storage, eventBus *events.EventBus) *W
 	return &WorkspaceService{storage: storage, eventBus: eventBus}
 }
 
-// findInstance loads instances from storage and returns the one matching id.
-// id may be either the session UUID or the legacy Title; both are accepted.
-// Returns CodeNotFound if no matching session exists.
-func (ws *WorkspaceService) findInstance(id string) ([]*session.Instance, *session.Instance, error) {
+// SetLiveFinder wires the fast-path instance lookup. Call this after constructing
+// SessionService so that read-only RPCs bypass LoadInstances().
+func (ws *WorkspaceService) SetLiveFinder(f LiveInstanceFinder) {
+	ws.liveFinder = f
+}
+
+// findInstanceFast returns the live instance for the given id. It tries the
+// live poller first (O(1) map lookup, no subprocess), falling back to
+// LoadInstances only when the session is not yet tracked by the poller.
+//
+// All WorkspaceService RPCs use this path. SaveInstances accepts a slice
+// with a single element, so the mutating SwitchWorkspace RPC also uses this
+// rather than loading the full session list.
+func (ws *WorkspaceService) findInstanceFast(id string) (*session.Instance, error) {
+	if ws.liveFinder != nil {
+		if inst := ws.liveFinder.FindLiveInstance(id); inst != nil {
+			return inst, nil
+		}
+	}
+	if ws.storage == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", id))
+	}
 	instances, err := ws.storage.LoadInstances()
 	if err != nil {
-		return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
 	}
 	for _, inst := range instances {
 		if inst.MatchesID(id) {
-			return instances, inst, nil
+			return inst, nil
 		}
 	}
-	return instances, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", id))
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", id))
 }
 
 // GetWorkspace implements WorkspaceProvider.
 func (ws *WorkspaceService) GetWorkspace(sessionID string) (session.Workspace, error) {
-	_, inst, err := ws.findInstance(sessionID)
+	inst, err := ws.findInstanceFast(sessionID)
 	if err != nil {
 		return session.Workspace{}, err
 	}
@@ -75,7 +103,7 @@ func (ws *WorkspaceService) GetVCSStatus(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	_, instance, err := ws.findInstance(req.Msg.Id)
+	instance, err := ws.findInstanceFast(req.Msg.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +150,7 @@ func (ws *WorkspaceService) GetWorkspaceInfo(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	_, instance, err := ws.findInstance(req.Msg.Id)
+	instance, err := ws.findInstanceFast(req.Msg.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +196,7 @@ func (ws *WorkspaceService) ListWorkspaceTargets(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	_, instance, err := ws.findInstance(req.Msg.Id)
+	instance, err := ws.findInstanceFast(req.Msg.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +272,7 @@ func (ws *WorkspaceService) SwitchWorkspace(
 	}
 	defer ws.inFlightSwitches.Delete(req.Msg.Id)
 
-	instances, instance, err := ws.findInstance(req.Msg.Id)
+	instance, err := ws.findInstanceFast(req.Msg.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -307,8 +335,10 @@ func (ws *WorkspaceService) SwitchWorkspace(
 		protoVCSType = sessionv1.VCSType_VCS_TYPE_UNSPECIFIED
 	}
 
-	if err := ws.storage.SaveInstances(instances); err != nil {
-		log.Warn("failed to save instances after workspace switch", "err", err)
+	if ws.storage != nil {
+		if err := ws.storage.SaveInstances([]*session.Instance{instance}); err != nil {
+			log.Warn("failed to save instances after workspace switch", "err", err)
+		}
 	}
 
 	if ws.eventBus != nil {

@@ -246,17 +246,26 @@ func (i *Instance) findAndAttachToProjectSession(sessionManager *ClaudeSessionMa
 }
 
 // GetClaudeSession returns the Claude session data for this instance.
+// Thread-safe: acquires stateMutex read lock.
 func (i *Instance) GetClaudeSession() *ClaudeSessionData {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
 	return i.claudeSession
 }
 
 // SetClaudeSession sets the Claude session data for this instance.
+// Thread-safe: acquires stateMutex write lock.
 func (i *Instance) SetClaudeSession(sessionData *ClaudeSessionData) {
+	i.stateMutex.Lock()
+	defer i.stateMutex.Unlock()
 	i.claudeSession = sessionData
 }
 
 // HasClaudeSession returns true if this instance has Claude session data.
+// Thread-safe: acquires stateMutex read lock.
 func (i *Instance) HasClaudeSession() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
 	return i.claudeSession != nil && i.claudeSession.ConversationUUID != ""
 }
 

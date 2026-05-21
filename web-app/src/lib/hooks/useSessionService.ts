@@ -80,6 +80,11 @@ interface UseSessionServiceReturn {
   // Real-time updates
   watchSessions: (options?: { categoryFilter?: string; statusFilter?: SessionStatus }) => void;
   stopWatching: () => void;
+
+  // Session monitor
+  getTerminalSnapshot: (sessionId: string, lastNLines?: number) => Promise<string>;
+  writeToSession: (sessionId: string, input: string, pressEnter?: boolean) => Promise<boolean>;
+  getConversationMessages: (sessionId: string, limit?: number) => Promise<Array<{ role: string; content: string; timestamp?: string; model?: string }>>;
 }
 
 export function useSessionService(
@@ -685,6 +690,50 @@ export function useSessionService(
 
   const connectionState = useAppSelector(selectConnectionState);
 
+  const getTerminalSnapshot = useCallback(
+    async (sessionId: string, lastNLines = 50): Promise<string> => {
+      if (!clientRef.current) return "";
+      try {
+        const resp = await clientRef.current.getTerminalSnapshot({ sessionId, lastNLines });
+        return resp.content ?? "";
+      } catch {
+        return "";
+      }
+    },
+    []
+  );
+
+  const writeToSession = useCallback(
+    async (sessionId: string, input: string, pressEnter = true): Promise<boolean> => {
+      if (!clientRef.current) return false;
+      try {
+        const resp = await clientRef.current.writeToSession({ sessionId, input, pressEnter });
+        return resp.success ?? false;
+      } catch {
+        return false;
+      }
+    },
+    []
+  );
+
+  const getConversationMessages = useCallback(
+    async (sessionId: string, limit = 30): Promise<Array<{ role: string; content: string; timestamp?: string; model?: string }>> => {
+      if (!clientRef.current) return [];
+      try {
+        const resp = await clientRef.current.getClaudeHistoryMessages({ id: sessionId, limit, tail: true });
+        return (resp.messages ?? []).map((m) => ({
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp ? new Date(Number(m.timestamp.seconds) * 1000).toISOString() : undefined,
+          model: m.model,
+        }));
+      } catch {
+        return [];
+      }
+    },
+    []
+  );
+
   return {
     sessions,
     loading,
@@ -710,5 +759,8 @@ export function useSessionService(
     listPromptHistory,
     watchSessions,
     stopWatching,
+    getTerminalSnapshot,
+    writeToSession,
+    getConversationMessages,
   };
 }

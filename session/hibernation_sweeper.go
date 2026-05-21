@@ -8,12 +8,20 @@ import (
 	"github.com/tstapler/stapler-squad/log"
 )
 
+// LiveInstancesProvider is satisfied by ReviewQueuePoller. It returns the live
+// in-memory instances without constructing new Instance objects or spawning PTY
+// processes. HibernationSweeper uses this as a fast path to avoid LoadInstances().
+type LiveInstancesProvider interface {
+	GetInstances() []*Instance
+}
+
 // HibernationSweeper periodically checks all sessions and hibernates those
 // that have been idle longer than the configured timeout.
 // It also prunes stale checkpoint data older than the retention period.
 type HibernationSweeper struct {
-	storage *Storage
-	cfg     *appconfig.Config
+	storage      *Storage
+	cfg          *appconfig.Config
+	liveProvider LiveInstancesProvider
 }
 
 // NewHibernationSweeper creates a HibernationSweeper using the given storage and config.
@@ -22,6 +30,13 @@ func NewHibernationSweeper(storage *Storage, cfg *appconfig.Config) *Hibernation
 		storage: storage,
 		cfg:     cfg,
 	}
+}
+
+// SetLiveProvider wires the fast-path instance source. Call this after constructing
+// the ReviewQueuePoller so that sweep() uses live in-memory instances instead of
+// calling LoadInstances() (which spawns PTY/tmux subprocesses).
+func (s *HibernationSweeper) SetLiveProvider(p LiveInstancesProvider) {
+	s.liveProvider = p
 }
 
 // Start runs the periodic sweep loop. Blocks until ctx is cancelled.
@@ -57,10 +72,16 @@ func (s *HibernationSweeper) sweep(ctx context.Context) {
 		return
 	}
 
-	instances, err := s.storage.LoadInstances()
-	if err != nil {
-		log.Error("hibernation sweeper: failed to load instances", "err", err)
-		return
+	var instances []*Instance
+	if s.liveProvider != nil {
+		instances = s.liveProvider.GetInstances()
+	} else {
+		var err error
+		instances, err = s.storage.LoadInstances()
+		if err != nil {
+			log.Error("hibernation sweeper: failed to load instances", "err", err)
+			return
+		}
 	}
 
 	for _, inst := range instances {

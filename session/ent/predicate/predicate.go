@@ -15,6 +15,9 @@ type ApprovalRule func(*sql.Selector)
 // BacklogItem is the predicate function for backlogitem builders.
 type BacklogItem func(*sql.Selector)
 
+// BacklogStatusEvent is the predicate function for backlogstatusevent builders.
+type BacklogStatusEvent func(*sql.Selector)
+
 // ClassificationAnalytics is the predicate function for classificationanalytics builders.
 type ClassificationAnalytics func(*sql.Selector)
 

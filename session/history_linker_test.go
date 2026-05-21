@@ -49,16 +49,67 @@ func TestHistoryLinker_SetHistoryInfo_UpdatesInstance(t *testing.T) {
 	assert.Equal(t, histPath, inst.HistoryFilePath)
 }
 
+// TestHistoryLinker_AlreadyLinked_NoUpdate verifies that correlateSession with
+// force=false skips sessions that already have a conversation UUID linked.
 func TestHistoryLinker_AlreadyLinked_NoUpdate(t *testing.T) {
-	existingUUID := "existing-uuid-1234-5678-9012"
-	inst := makeTestInstance("linked-session")
-	inst.SetHistoryInfo(existingUUID+"-00000000-0000-0000-0000-000000000000", "/some/path.jsonl")
+	tempHome := t.TempDir()
+	inspector := &mockProcessInspector{files: []string{}}
+	detector := NewHistoryFileDetectorWithHomeDir(inspector, tempHome)
 
-	// Replace with a proper UUID.
-	realUUID := "550e8400-e29b-41d4-a716-446655440001"
-	inst.SetHistoryInfo(realUUID, "/some/path.jsonl")
-	assert.True(t, inst.HasClaudeSession())
-	assert.Equal(t, realUUID, inst.claudeSession.ConversationUUID)
+	sessionPath := "/home/user/myproject"
+	originalUUID := "aaaaaaaa-1111-1111-1111-111111111111"
+	newUUID := "bbbbbbbb-2222-2222-2222-222222222222"
+
+	// Place a newer file so the detector would return newUUID if queried.
+	projectDir := filepath.Join(tempHome, ".claude", "projects", ClaudeProjectDirName(sessionPath))
+	require.NoError(t, os.MkdirAll(projectDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, newUUID+".jsonl"), []byte("{}"), 0644))
+
+	// Instance already linked to originalUUID.
+	inst := &Instance{Title: "linked-session", Path: sessionPath, Status: Running}
+	inst.SetHistoryInfo(originalUUID, "/some/path.jsonl")
+	require.True(t, inst.HasClaudeSession())
+
+	linker := NewHistoryLinker(detector, nil)
+	linker.correlateSession(inst, false)
+
+	// force=false must skip already-linked sessions; UUID must be unchanged.
+	assert.Equal(t, originalUUID, inst.claudeSession.ConversationUUID)
+}
+
+// TestHistoryLinker_CorrelateSession_Force_UpdatesUUIDAfterClear is a regression
+// test for the bug where correlateSession returned early for already-linked sessions,
+// preventing detection of new UUIDs created after /clear.
+//
+// This test FAILS against pre-fix code that had `if inst.HasClaudeSession() { return }`.
+func TestHistoryLinker_CorrelateSession_Force_UpdatesUUIDAfterClear(t *testing.T) {
+	tempHome := t.TempDir()
+	inspector := &mockProcessInspector{files: []string{}}
+	detector := NewHistoryFileDetectorWithHomeDir(inspector, tempHome)
+
+	sessionPath := "/home/user/myproject"
+	oldUUID := "aaaaaaaa-0000-0000-0000-000000000000"
+	newUUID := "bbbbbbbb-1111-1111-1111-111111111111"
+
+	// Build two JSONL files; newUUID has a later mod time so it wins the detection.
+	projectDir := filepath.Join(tempHome, ".claude", "projects", ClaudeProjectDirName(sessionPath))
+	require.NoError(t, os.MkdirAll(projectDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, oldUUID+".jsonl"), []byte("{}"), 0644))
+	time.Sleep(2 * time.Millisecond)
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, newUUID+".jsonl"), []byte("{}"), 0644))
+
+	// Instance was linked to the old UUID (e.g., from before /clear).
+	inst := &Instance{Title: "cleared-session", Path: sessionPath, Status: Running}
+	inst.SetHistoryInfo(oldUUID, filepath.Join(projectDir, oldUUID+".jsonl"))
+	require.True(t, inst.HasClaudeSession())
+
+	linker := NewHistoryLinker(detector, nil)
+	linker.correlateSession(inst, true)
+
+	// force=true must re-detect and update to the newer UUID.
+	require.True(t, inst.HasClaudeSession())
+	assert.Equal(t, newUUID, inst.claudeSession.ConversationUUID,
+		"force=true should update UUID after /clear created a new conversation")
 }
 
 func TestHistoryLinker_NoJSONLOpen_NoUpdate(t *testing.T) {
@@ -208,7 +259,7 @@ func TestHistoryLinker_CorrelateSession_UsesWorktreePath_NotBasePath(t *testing.
 	inst.gitManager.SetWorktree(newTestGitWorktree(repoPath, worktreePath))
 
 	linker := NewHistoryLinker(detector, nil)
-	linker.correlateSession(inst)
+	linker.correlateSession(inst, false)
 
 	require.True(t, inst.HasClaudeSession(), "instance should be linked after correlateSession")
 	assert.Equal(t, worktreeUUID, inst.claudeSession.ConversationUUID,
@@ -237,7 +288,7 @@ func TestHistoryLinker_CorrelateSession_FallsBackToBasePath_WhenNoWorktree(t *te
 	// No worktree set — gitManager.HasWorktree() returns false.
 
 	linker := NewHistoryLinker(detector, nil)
-	linker.correlateSession(inst)
+	linker.correlateSession(inst, false)
 
 	require.True(t, inst.HasClaudeSession())
 	assert.Equal(t, sessionUUID, inst.claudeSession.ConversationUUID)

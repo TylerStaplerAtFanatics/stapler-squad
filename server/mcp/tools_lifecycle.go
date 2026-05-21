@@ -29,7 +29,7 @@ type CreateSessionResult struct {
 func registerLifecycleTools(s *mcpserver.MCPServer, lh *lifecycleHandlers) {
 	s.AddTool(
 		mcpgo.NewTool("create_session",
-			mcpgo.WithDescription("Create and start a new Stapler Squad session (tmux + optional git worktree). Returns the new session. Rate-limited to 3 per minute."),
+			mcpgo.WithDescription("Create and start a new Stapler Squad session (tmux + optional git worktree). By default, injects this MCP server into the child session's .claude/settings.local.json so the new session can use all Stapler Squad tools. Returns the new session. Rate-limited to 3 per minute."),
 			mcpgo.WithString("title", mcpgo.Description("Unique name for the session"), mcpgo.Required()),
 			mcpgo.WithString("path", mcpgo.Description("Absolute path to the repository root"), mcpgo.Required()),
 			mcpgo.WithString("branch", mcpgo.Description("Git branch name (creates if missing; required for new_worktree session type)")),
@@ -144,6 +144,7 @@ func (lh *lifecycleHandlers) createSession(ctx context.Context, req mcpgo.CallTo
 			}
 		}
 	}
+	tags = append(tags, "source:mcp")
 
 	// Check for title collision before starting. Use ListInstanceData (raw DB read)
 	// rather than LoadInstances to avoid spawning PTY processes as a side effect.
@@ -173,6 +174,10 @@ func (lh *lifecycleHandlers) createSession(ctx context.Context, req mcpgo.CallTo
 	if err := inst.Start(true); err != nil {
 		return errResult(ErrInternalError, fmt.Sprintf("start session: %v", err), ""), nil
 	}
+
+	// Wire a session driver to handle startup dialogs and send the initial task prompt.
+	// Mirrors the pattern used in session_service.go:CreateDirectorySession.
+	session.StartSessionDriver(inst, path)
 
 	// MCP injection: write our server config into the session's .claude/settings.local.json.
 	// inject_mcp defaults to true when not explicitly provided.

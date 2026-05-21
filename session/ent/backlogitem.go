@@ -68,11 +68,13 @@ type BacklogItemEdges struct {
 	ItemSessions []*ItemSession `json:"item_sessions,omitempty"`
 	// Sessions holds the value of the sessions edge.
 	Sessions []*Session `json:"sessions,omitempty"`
+	// StatusEvents holds the value of the status_events edge.
+	StatusEvents []*BacklogStatusEvent `json:"status_events,omitempty"`
 	// Source holds the value of the source edge.
 	Source *ItemSource `json:"source,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [3]bool
+	loadedTypes [4]bool
 }
 
 // ItemSessionsOrErr returns the ItemSessions value or an error if the edge
@@ -93,12 +95,21 @@ func (e BacklogItemEdges) SessionsOrErr() ([]*Session, error) {
 	return nil, &NotLoadedError{edge: "sessions"}
 }
 
+// StatusEventsOrErr returns the StatusEvents value or an error if the edge
+// was not loaded in eager-loading.
+func (e BacklogItemEdges) StatusEventsOrErr() ([]*BacklogStatusEvent, error) {
+	if e.loadedTypes[2] {
+		return e.StatusEvents, nil
+	}
+	return nil, &NotLoadedError{edge: "status_events"}
+}
+
 // SourceOrErr returns the Source value or an error if the edge
 // was not loaded in eager-loading, or loaded but was not found.
 func (e BacklogItemEdges) SourceOrErr() (*ItemSource, error) {
 	if e.Source != nil {
 		return e.Source, nil
-	} else if e.loadedTypes[2] {
+	} else if e.loadedTypes[3] {
 		return nil, &NotFoundError{label: itemsource.Label}
 	}
 	return nil, &NotLoadedError{edge: "source"}
@@ -281,6 +292,11 @@ func (_m *BacklogItem) QueryItemSessions() *ItemSessionQuery {
 // QuerySessions queries the "sessions" edge of the BacklogItem entity.
 func (_m *BacklogItem) QuerySessions() *SessionQuery {
 	return NewBacklogItemClient(_m.config).QuerySessions(_m)
+}
+
+// QueryStatusEvents queries the "status_events" edge of the BacklogItem entity.
+func (_m *BacklogItem) QueryStatusEvents() *BacklogStatusEventQuery {
+	return NewBacklogItemClient(_m.config).QueryStatusEvents(_m)
 }
 
 // QuerySource queries the "source" edge of the BacklogItem entity.

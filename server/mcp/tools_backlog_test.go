@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/session"
 )
 
@@ -338,4 +340,102 @@ func TestReportProgress_MapsStatusValues(t *testing.T) {
 	criteria, err := session.ParseAcCriteria(fetchedItem.AcceptanceCriteria)
 	require.NoError(t, err)
 	require.Equal(t, "done", criteria[0].Status, "pass should be mapped to done")
+}
+
+// ─── T-11 tests 7 & 8: submitTriageResult notification publishing ─────────────
+
+// setupTriageSession creates a backlog item, links a triage session with role=triage,
+// and returns the item ID and session UUID for use in notification tests.
+func setupTriageSession(t *testing.T, storage *session.Storage) (itemID, sessionUUID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	itemData := session.BacklogItemData{
+		Title:    "Triage notification test item",
+		Status:   string(session.BacklogStatusIdea),
+		Priority: 2,
+	}
+	item, err := storage.CreateBacklogItem(ctx, itemData)
+	require.NoError(t, err)
+
+	sessUUID := uuid.New().String()
+	_, isErr := storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: sessUUID,
+		SessionRole: session.SessionRoleTriage,
+	})
+	require.NoError(t, isErr)
+
+	return item.ID, sessUUID
+}
+
+// TestSubmitTriageResult_PublishesNotificationOnSuccess verifies that a triage-complete
+// notification is published to the EventBus with item_id in metadata.
+func TestSubmitTriageResult_PublishesNotificationOnSuccess(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+	bus := events.NewEventBus(32)
+
+	itemID, sessUUID := setupTriageSession(t, storage)
+
+	handler := &backlogHandlers{storage: storage, eventBus: bus}
+	ctxWithUUID := WithSessionUUID(context.Background(), sessUUID)
+
+	// Subscribe before submitting so we capture the event.
+	subCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eventCh, _ := bus.Subscribe(subCtx)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id": itemID,
+		"summary": "Item looks reasonable",
+		"suggestions": []interface{}{
+			map[string]interface{}{"text": "Add tests", "rationale": "coverage"},
+		},
+	})
+
+	result, err := handler.submitTriageResult(ctxWithUUID, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Verify success response.
+	require.Len(t, result.Content, 1)
+	tc, ok := result.Content[0].(mcpgo.TextContent)
+	require.True(t, ok)
+	require.Contains(t, tc.Text, "Triage result submitted")
+
+	// Expect one event on the bus.
+	select {
+	case event := <-eventCh:
+		require.NotNil(t, event)
+		assert.Equal(t, itemID, event.NotificationMetadata["item_id"], "event should carry item_id in metadata")
+		assert.Equal(t, "Triage complete", event.NotificationTitle)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected notification event was not published within 2s")
+	}
+}
+
+// TestSubmitTriageResult_NoNotificationWhenEventBusNil verifies that submitTriageResult
+// does not panic when eventBus is nil and still returns a success result.
+func TestSubmitTriageResult_NoNotificationWhenEventBusNil(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+
+	itemID, sessUUID := setupTriageSession(t, storage)
+
+	handler := &backlogHandlers{storage: storage, eventBus: nil}
+	ctxWithUUID := WithSessionUUID(context.Background(), sessUUID)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id": itemID,
+		"summary": "All looks good, no suggestions needed",
+	})
+
+	require.NotPanics(t, func() {
+		result, err := handler.submitTriageResult(ctxWithUUID, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.Content, 1)
+		tc, ok := result.Content[0].(mcpgo.TextContent)
+		require.True(t, ok)
+		assert.Contains(t, tc.Text, "Triage result submitted")
+	})
 }

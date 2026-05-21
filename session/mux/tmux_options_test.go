@@ -34,9 +34,9 @@ func TestScanByUserOptions_NoSessions(t *testing.T) {
 // logic using the same field splitting used in ScanByUserOptions.
 func TestScanByUserOptions_ParsesFields(t *testing.T) {
 	// Simulate the output of `tmux list-sessions -F ...` for two sessions:
-	// one claude-mux session and one without options.
+	// one ssq-mux session and one without options.
 	lines := []string{
-		"claudesquad_ext_myproject_claude_1234\t/tmp/claude-mux-1234.sock\t/home/user/myproject\tclaude\t1234\t1700000000",
+		"claudesquad_ext_myproject_claude_1234\t/tmp/ssq-mux-1234.sock\t/home/user/myproject\tclaude\t1234\t1700000000",
 		"some_other_session\t\t\t\t\t", // no @cs_socket_path — should be filtered
 	}
 	output := strings.Join(lines, "\n")
@@ -80,7 +80,7 @@ func TestScanByUserOptions_ParsesFields(t *testing.T) {
 	if s.Metadata.TmuxSession != "claudesquad_ext_myproject_claude_1234" {
 		t.Errorf("TmuxSession: got %q", s.Metadata.TmuxSession)
 	}
-	if s.SocketPath != "/tmp/claude-mux-1234.sock" {
+	if s.SocketPath != "/tmp/ssq-mux-1234.sock" {
 		t.Errorf("SocketPath: got %q", s.SocketPath)
 	}
 	if s.Metadata.Cwd != "/home/user/myproject" {
@@ -118,7 +118,7 @@ func TestWriteReadUserOptions(t *testing.T) {
 		_ = safeexec.CommandContext(killCtx, "tmux", "kill-session", "-t", sessionName).Run()
 	})
 
-	socketPath := "/tmp/claude-mux-test-99999.sock"
+	socketPath := "/tmp/ssq-mux-test-99999.sock"
 	cwd := "/tmp/test-cwd"
 	command := "claude"
 	pid := 99999
@@ -175,7 +175,7 @@ func TestScanFromUserOptions_RegistersSession(t *testing.T) {
 		_ = safeexec.CommandContext(killCtx2, "tmux", "kill-session", "-t", sessionName).Run()
 	})
 
-	socketPath := "/tmp/claude-mux-test-88888.sock"
+	socketPath := "/tmp/ssq-mux-test-88888.sock"
 	if err := WriteSessionUserOptions(sessionName, socketPath, "/tmp", "claude", 88888, time.Now().Unix()); err != nil {
 		t.Fatalf("WriteSessionUserOptions: %v", err)
 	}

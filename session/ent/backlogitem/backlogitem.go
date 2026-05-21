@@ -55,6 +55,8 @@ const (
 	EdgeItemSessions = "item_sessions"
 	// EdgeSessions holds the string denoting the sessions edge name in mutations.
 	EdgeSessions = "sessions"
+	// EdgeStatusEvents holds the string denoting the status_events edge name in mutations.
+	EdgeStatusEvents = "status_events"
 	// EdgeSource holds the string denoting the source edge name in mutations.
 	EdgeSource = "source"
 	// Table holds the table name of the backlogitem in the database.
@@ -71,6 +73,13 @@ const (
 	// SessionsInverseTable is the table name for the Session entity.
 	// It exists in this package in order to avoid circular dependency with the "session" package.
 	SessionsInverseTable = "sessions"
+	// StatusEventsTable is the table that holds the status_events relation/edge.
+	StatusEventsTable = "backlog_status_events"
+	// StatusEventsInverseTable is the table name for the BacklogStatusEvent entity.
+	// It exists in this package in order to avoid circular dependency with the "backlogstatusevent" package.
+	StatusEventsInverseTable = "backlog_status_events"
+	// StatusEventsColumn is the table column denoting the status_events relation/edge.
+	StatusEventsColumn = "item_id"
 	// SourceTable is the table that holds the source relation/edge.
 	SourceTable = "backlog_items"
 	// SourceInverseTable is the table name for the ItemSource entity.
@@ -281,6 +290,20 @@ func BySessions(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByStatusEventsCount orders the results by status_events count.
+func ByStatusEventsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newStatusEventsStep(), opts...)
+	}
+}
+
+// ByStatusEvents orders the results by status_events terms.
+func ByStatusEvents(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newStatusEventsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // BySourceField orders the results by source field.
 func BySourceField(field string, opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -299,6 +322,13 @@ func newSessionsStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(SessionsInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.M2M, false, SessionsTable, SessionsPrimaryKey...),
+	)
+}
+func newStatusEventsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(StatusEventsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, StatusEventsTable, StatusEventsColumn),
 	)
 }
 func newSourceStep() *sqlgraph.Step {
