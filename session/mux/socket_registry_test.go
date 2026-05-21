@@ -14,7 +14,7 @@ func TestSocketRegistry_SetGet_Roundtrip(t *testing.T) {
 	reg := NewSocketRegistry(t.TempDir())
 
 	entry := RegistryEntry{
-		SocketPath:  "/tmp/claude-mux-123.sock",
+		SocketPath:  "/tmp/ssq-mux-123.sock",
 		SessionName: "my-session",
 		LastSeen:    time.Now().UTC().Truncate(time.Second),
 	}

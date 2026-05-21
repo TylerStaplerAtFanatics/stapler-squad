@@ -11,14 +11,14 @@ import (
 	"time"
 )
 
-// DiscoveredSession represents a discovered claude-mux session.
+// DiscoveredSession represents a discovered ssq-mux session.
 type DiscoveredSession struct {
 	SocketPath string
 	Metadata   *SessionMetadata
 	LastSeen   time.Time
 }
 
-// Discovery scans for and tracks claude-mux sessions.
+// Discovery scans for and tracks ssq-mux sessions.
 type Discovery struct {
 	sessions  map[string]*DiscoveredSession
 	mu        sync.RWMutex
@@ -41,10 +41,10 @@ func (d *Discovery) OnSessionChange(callback func(*DiscoveredSession, bool)) {
 	d.callbacks = append(d.callbacks, callback)
 }
 
-// Scan searches for active claude-mux sockets and returns discovered sessions.
+// Scan searches for active ssq-mux sockets and returns discovered sessions.
 func (d *Discovery) Scan() ([]*DiscoveredSession, error) {
 	// Find all potential socket files
-	pattern := filepath.Join(os.TempDir(), "claude-mux-*.sock")
+	pattern := filepath.Join(os.TempDir(), "ssq-mux-*.sock")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to glob socket files: %w", err)
@@ -253,9 +253,9 @@ func CleanStaleSocket(socketPath string) error {
 	return nil // Socket is active, don't remove
 }
 
-// CleanAllStaleSockets removes all stale claude-mux sockets.
+// CleanAllStaleSockets removes all stale ssq-mux sockets.
 func CleanAllStaleSockets() error {
-	pattern := filepath.Join(os.TempDir(), "claude-mux-*.sock")
+	pattern := filepath.Join(os.TempDir(), "ssq-mux-*.sock")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return err

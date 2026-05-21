@@ -37,26 +37,26 @@ func TestIsClaudeMuxSocket(t *testing.T) {
 		path     string
 		expected bool
 	}{
-		{"/tmp/claude-mux-12345.sock", true},
-		{"/tmp/claude-mux-999.sock", true},
+		{"/tmp/ssq-mux-12345.sock", true},
+		{"/tmp/ssq-mux-999.sock", true},
 		{"/tmp/other-file.sock", false},
-		{"/tmp/claude-mux.sock", false}, // Missing PID
-		{"/tmp/claude-mux-12345.txt", false},
-		{"claude-mux-12345.sock", true},              // Base name only
-		{"/var/run/claude-mux-789.sock", true},       // Different directory
+		{"/tmp/ssq-mux.sock", false}, // Missing PID
+		{"/tmp/ssq-mux-12345.txt", false},
+		{"ssq-mux-12345.sock", true},              // Base name only
+		{"/var/run/ssq-mux-789.sock", true},       // Different directory
 		{"/tmp/CLAUDE-MUX-12345.sock", false},        // Case sensitive
-		{"/tmp/claude-mux-12345.sock.old", false},    // Extra extension
-		{"/tmp/.claude-mux-12345.sock", false},       // Hidden file
-		{"/tmp/my-claude-mux-12345.sock", false},     // Prefix mismatch
-		{"/tmp/claude-mux-12345.sock.backup", false}, // Suffix
-		{"/tmp/claude-mux-abc.sock", true},           // Non-numeric OK
-		{"/tmp/claude-mux-.sock", true},              // Empty PID OK
+		{"/tmp/ssq-mux-12345.sock.old", false},    // Extra extension
+		{"/tmp/.ssq-mux-12345.sock", false},       // Hidden file
+		{"/tmp/my-ssq-mux-12345.sock", false},     // Prefix mismatch
+		{"/tmp/ssq-mux-12345.sock.backup", false}, // Suffix
+		{"/tmp/ssq-mux-abc.sock", true},           // Non-numeric OK
+		{"/tmp/ssq-mux-.sock", true},              // Empty PID OK
 	}
 
 	for _, tt := range tests {
-		result := isClaudeMuxSocket(tt.path)
+		result := isSsqMuxSocket(tt.path)
 		if result != tt.expected {
-			t.Errorf("isClaudeMuxSocket(%q) = %v, expected %v", tt.path, result, tt.expected)
+			t.Errorf("isSsqMuxSocket(%q) = %v, expected %v", tt.path, result, tt.expected)
 		}
 	}
 }
@@ -91,7 +91,7 @@ func TestAutoDiscoverySocketHandling(t *testing.T) {
 
 	// Create a temporary socket file for testing
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "claude-mux-test.sock")
+	socketPath := filepath.Join(tmpDir, "ssq-mux-test.sock")
 
 	// Test socket created
 	f, err := os.Create(socketPath)
@@ -101,8 +101,8 @@ func TestAutoDiscoverySocketHandling(t *testing.T) {
 	f.Close()
 
 	// Socket should match pattern
-	if !isClaudeMuxSocket(socketPath) {
-		t.Error("Test socket should match claude-mux pattern")
+	if !isSsqMuxSocket(socketPath) {
+		t.Error("Test socket should match ssq-mux pattern")
 	}
 
 	// Test socket removed
