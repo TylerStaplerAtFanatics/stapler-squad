@@ -172,6 +172,128 @@ prompt: |
 
   Do **not** implement the fixes — this command produces proposals for agent hand-off.
   Do **not** add a CLAUDE.md note unless every other enforcement level is unreachable.
+
+  ---
+
+  ## Phase 5 — Browser / React Profiling
+
+  Run this phase in parallel with or after Go profiling. The app runs at `http://localhost:8543`.
+  Playwright is available at `tests/e2e/node_modules/.bin/playwright`.
+
+  ### 5a — Capture numeric baseline via Playwright
+
+  Write and run `/tmp/ss-browser-baseline.js`:
+
+  ```javascript
+  const { chromium } = require('/Users/tylerstapler/IdeaProjects/stapler-squad/tests/e2e/node_modules/playwright-core');
+
+  async function captureBaseline(label, scenarioFn) {
+    const browser = await chromium.launch();
+    const page = await browser.newPage();
+
+    await page.addInitScript(() => {
+      window.__perfData__ = { longTasks: [] };
+      new PerformanceObserver(list => {
+        list.getEntries().forEach(e => window.__perfData__.longTasks.push({
+          duration: e.duration, startTime: e.startTime
+        }));
+      }).observe({ entryTypes: ['longtask'] });
+    });
+
+    await browser.startTracing(page, {
+      path: `/tmp/trace-${label}.json`,
+      screenshots: false,
+      categories: ['devtools.timeline', 'v8', 'blink.user_timing', 'disabled-by-default-v8.cpu_profiler'],
+    });
+
+    const before = await page.metrics();
+    await page.goto('http://localhost:8543', { waitUntil: 'networkidle' });
+    await scenarioFn(page);
+    const after = await page.metrics();
+    await browser.stopTracing();
+
+    const longTasks = await page.evaluate(() => window.__perfData__.longTasks);
+    console.log(`\n=== ${label} ===`);
+    console.log({
+      scriptDuration:  (after.ScriptDuration  - before.ScriptDuration).toFixed(3) + 's',
+      layoutCount:      after.LayoutCount      - before.LayoutCount,
+      recalcStyleCount: after.RecalcStyleCount - before.RecalcStyleCount,
+      heapGrowthMB:    ((after.JSHeapUsedSize  - before.JSHeapUsedSize) / 1024 / 1024).toFixed(2) + 'MB',
+      nodes:            after.Nodes            - before.Nodes,
+    });
+    console.log(`Long tasks (>50ms): ${longTasks.length}`, longTasks.map(t => Math.round(t.duration) + 'ms'));
+    console.log(`Trace saved: /tmp/trace-${label}.json`);
+    await browser.close();
+  }
+
+  captureBaseline('initial-load', async (page) => {
+    await page.waitForSelector('body');
+    await page.waitForTimeout(1000);
+  }).then(() =>
+  captureBaseline('session-list-scroll', async (page) => {
+    await page.waitForSelector('body');
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press('ArrowDown');
+      await page.waitForTimeout(100);
+    }
+  })).catch(console.error);
+  ```
+
+  ```bash
+  node /tmp/ss-browser-baseline.js
+  ```
+
+  ### 5b — Interpret results
+
+  **Long tasks (>50ms)**: each one blocks user input and shows up as red-flagged bars in the Performance panel.
+  Load `/tmp/trace-initial-load.json` into Chrome DevTools → Performance tab for the flamechart.
+
+  **Key metrics to flag**:
+  | Metric | Warning threshold | Critical threshold |
+  |--------|------------------|--------------------|
+  | `scriptDuration` on initial load | > 0.5s | > 1.0s |
+  | `layoutCount` per interaction | > 10 | > 50 |
+  | `heapGrowthMB` after 10 interactions | > 5MB | > 20MB |
+  | Long task count on load | > 3 | > 10 |
+  | Single long task duration | > 100ms | > 500ms |
+
+  ### 5c — React-specific checks
+
+  Add a temporary `<Profiler>` wrapper in the dev build around the sessions list:
+
+  ```tsx
+  import { Profiler, type ProfilerOnRenderCallback } from 'react';
+
+  const onRender: ProfilerOnRenderCallback = (id, phase, actualDuration, baseDuration) => {
+    if (actualDuration > 16)
+      console.warn(`[Profiler] ${id} (${phase}): ${actualDuration.toFixed(1)}ms  ratio: ${(actualDuration/baseDuration).toFixed(2)}`);
+  };
+
+  <Profiler id="SessionList" onRender={onRender}>
+    <SessionList />
+  </Profiler>
+  ```
+
+  Key ratio: `actualDuration / baseDuration` → near 1.0 = memoization absent; near 0.1 = working.
+
+  ### 5d — Bundle size check
+
+  ```bash
+  cd web-app && npm run build 2>/dev/null | tail -20
+  # Then inspect the largest chunks
+  ls -lah web-app/.next/static/chunks/*.js 2>/dev/null | sort -k5 -rh | head -10
+  # or for Vite/CRA:
+  ls -lah web-app/dist/assets/*.js 2>/dev/null | sort -k5 -rh | head -10
+  ```
+
+  ### 5e — Browser fix proposals (same template as Phase 3)
+
+  For each browser bottleneck found, produce a `### [PerfFix-Browser-N]` block:
+  - **Signal**: metric name + value
+  - **Root cause**: one sentence
+  - **Fix**: what component/hook to change
+  - **Enforcement**: Jest/RTL test or Playwright perf assertion that would catch regression
+
 ---
 
 # perf:make-it-faster
@@ -213,6 +335,27 @@ done
 4. Unit test     → asserts pre-fix code fails
 5. CLAUDE.md     → last resort only
 ```
+
+## Browser quick-reference
+
+```bash
+# Run browser baseline (app must be on localhost:8543)
+node /tmp/ss-browser-baseline.js
+
+# Inspect bundle chunks by size
+ls -lah web-app/.next/static/chunks/*.js 2>/dev/null | sort -k5 -rh | head -10
+
+# JS coverage (unused code)
+# Run captureBaseline with page.coverage.startJSCoverage() — see browser-profiling skill
+```
+
+| Signal | Tool | Where to look |
+|--------|------|---------------|
+| Long tasks on load | Playwright `page.metrics()` + `PerformanceObserver longtask` | > 3 tasks or > 100ms each |
+| React re-render cascade | `<Profiler onRender>` | `actualDuration / baseDuration` near 1.0 |
+| Layout thrashing | Performance panel → "Forced reflow" | `layoutCount` > 10 per interaction |
+| Memory leak | Playwright heap delta across 10 cycles | > 5MB growth |
+| Oversized bundle | `source-map-explorer` or `.next/static/chunks` | chunk > 500KB unparsed |
 
 ## Known hotspots (as of 2026-05-02)
 

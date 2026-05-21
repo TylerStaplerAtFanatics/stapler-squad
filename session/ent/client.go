@@ -19,6 +19,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/analyticsevent"
 	"github.com/tstapler/stapler-squad/session/ent/approvalrule"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
 	"github.com/tstapler/stapler-squad/session/ent/classificationanalytics"
 	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
 	"github.com/tstapler/stapler-squad/session/ent/claudesession"
@@ -46,6 +47,8 @@ type Client struct {
 	ApprovalRule *ApprovalRuleClient
 	// BacklogItem is the client for interacting with the BacklogItem builders.
 	BacklogItem *BacklogItemClient
+	// BacklogStatusEvent is the client for interacting with the BacklogStatusEvent builders.
+	BacklogStatusEvent *BacklogStatusEventClient
 	// ClassificationAnalytics is the client for interacting with the ClassificationAnalytics builders.
 	ClassificationAnalytics *ClassificationAnalyticsClient
 	// ClaudeMetadata is the client for interacting with the ClaudeMetadata builders.
@@ -88,6 +91,7 @@ func (c *Client) init() {
 	c.AnalyticsEvent = NewAnalyticsEventClient(c.config)
 	c.ApprovalRule = NewApprovalRuleClient(c.config)
 	c.BacklogItem = NewBacklogItemClient(c.config)
+	c.BacklogStatusEvent = NewBacklogStatusEventClient(c.config)
 	c.ClassificationAnalytics = NewClassificationAnalyticsClient(c.config)
 	c.ClaudeMetadata = NewClaudeMetadataClient(c.config)
 	c.ClaudeSession = NewClaudeSessionClient(c.config)
@@ -197,6 +201,7 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		AnalyticsEvent:          NewAnalyticsEventClient(cfg),
 		ApprovalRule:            NewApprovalRuleClient(cfg),
 		BacklogItem:             NewBacklogItemClient(cfg),
+		BacklogStatusEvent:      NewBacklogStatusEventClient(cfg),
 		ClassificationAnalytics: NewClassificationAnalyticsClient(cfg),
 		ClaudeMetadata:          NewClaudeMetadataClient(cfg),
 		ClaudeSession:           NewClaudeSessionClient(cfg),
@@ -233,6 +238,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		AnalyticsEvent:          NewAnalyticsEventClient(cfg),
 		ApprovalRule:            NewApprovalRuleClient(cfg),
 		BacklogItem:             NewBacklogItemClient(cfg),
+		BacklogStatusEvent:      NewBacklogStatusEventClient(cfg),
 		ClassificationAnalytics: NewClassificationAnalyticsClient(cfg),
 		ClaudeMetadata:          NewClaudeMetadataClient(cfg),
 		ClaudeSession:           NewClaudeSessionClient(cfg),
@@ -276,10 +282,10 @@ func (c *Client) Close() error {
 // In order to add hooks to a specific client, call: `client.Node.Use(...)`.
 func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
-		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.ClassificationAnalytics,
-		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
-		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session,
-		c.SourceSyncEvent, c.Tag, c.Worktree,
+		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.BacklogStatusEvent,
+		c.ClassificationAnalytics, c.ClaudeMetadata, c.ClaudeSession, c.DiffStats,
+		c.ErrorEvent, c.EscapeEvent, c.ItemSession, c.ItemSource, c.Project,
+		c.ReviewVerdict, c.Session, c.SourceSyncEvent, c.Tag, c.Worktree,
 	} {
 		n.Use(hooks...)
 	}
@@ -289,10 +295,10 @@ func (c *Client) Use(hooks ...Hook) {
 // In order to add interceptors to a specific client, call: `client.Node.Intercept(...)`.
 func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
-		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.ClassificationAnalytics,
-		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
-		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session,
-		c.SourceSyncEvent, c.Tag, c.Worktree,
+		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.BacklogStatusEvent,
+		c.ClassificationAnalytics, c.ClaudeMetadata, c.ClaudeSession, c.DiffStats,
+		c.ErrorEvent, c.EscapeEvent, c.ItemSession, c.ItemSource, c.Project,
+		c.ReviewVerdict, c.Session, c.SourceSyncEvent, c.Tag, c.Worktree,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -307,6 +313,8 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.ApprovalRule.mutate(ctx, m)
 	case *BacklogItemMutation:
 		return c.BacklogItem.mutate(ctx, m)
+	case *BacklogStatusEventMutation:
+		return c.BacklogStatusEvent.mutate(ctx, m)
 	case *ClassificationAnalyticsMutation:
 		return c.ClassificationAnalytics.mutate(ctx, m)
 	case *ClaudeMetadataMutation:
@@ -746,6 +754,22 @@ func (c *BacklogItemClient) QuerySessions(_m *BacklogItem) *SessionQuery {
 	return query
 }
 
+// QueryStatusEvents queries the status_events edge of a BacklogItem.
+func (c *BacklogItemClient) QueryStatusEvents(_m *BacklogItem) *BacklogStatusEventQuery {
+	query := (&BacklogStatusEventClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(backlogitem.Table, backlogitem.FieldID, id),
+			sqlgraph.To(backlogstatusevent.Table, backlogstatusevent.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, backlogitem.StatusEventsTable, backlogitem.StatusEventsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QuerySource queries the source edge of a BacklogItem.
 func (c *BacklogItemClient) QuerySource(_m *BacklogItem) *ItemSourceQuery {
 	query := (&ItemSourceClient{config: c.config}).Query()
@@ -784,6 +808,155 @@ func (c *BacklogItemClient) mutate(ctx context.Context, m *BacklogItemMutation) 
 		return (&BacklogItemDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown BacklogItem mutation op: %q", m.Op())
+	}
+}
+
+// BacklogStatusEventClient is a client for the BacklogStatusEvent schema.
+type BacklogStatusEventClient struct {
+	config
+}
+
+// NewBacklogStatusEventClient returns a client for the BacklogStatusEvent from the given config.
+func NewBacklogStatusEventClient(c config) *BacklogStatusEventClient {
+	return &BacklogStatusEventClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `backlogstatusevent.Hooks(f(g(h())))`.
+func (c *BacklogStatusEventClient) Use(hooks ...Hook) {
+	c.hooks.BacklogStatusEvent = append(c.hooks.BacklogStatusEvent, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `backlogstatusevent.Intercept(f(g(h())))`.
+func (c *BacklogStatusEventClient) Intercept(interceptors ...Interceptor) {
+	c.inters.BacklogStatusEvent = append(c.inters.BacklogStatusEvent, interceptors...)
+}
+
+// Create returns a builder for creating a BacklogStatusEvent entity.
+func (c *BacklogStatusEventClient) Create() *BacklogStatusEventCreate {
+	mutation := newBacklogStatusEventMutation(c.config, OpCreate)
+	return &BacklogStatusEventCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of BacklogStatusEvent entities.
+func (c *BacklogStatusEventClient) CreateBulk(builders ...*BacklogStatusEventCreate) *BacklogStatusEventCreateBulk {
+	return &BacklogStatusEventCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *BacklogStatusEventClient) MapCreateBulk(slice any, setFunc func(*BacklogStatusEventCreate, int)) *BacklogStatusEventCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &BacklogStatusEventCreateBulk{err: fmt.Errorf("calling to BacklogStatusEventClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*BacklogStatusEventCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &BacklogStatusEventCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for BacklogStatusEvent.
+func (c *BacklogStatusEventClient) Update() *BacklogStatusEventUpdate {
+	mutation := newBacklogStatusEventMutation(c.config, OpUpdate)
+	return &BacklogStatusEventUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *BacklogStatusEventClient) UpdateOne(_m *BacklogStatusEvent) *BacklogStatusEventUpdateOne {
+	mutation := newBacklogStatusEventMutation(c.config, OpUpdateOne, withBacklogStatusEvent(_m))
+	return &BacklogStatusEventUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *BacklogStatusEventClient) UpdateOneID(id uuid.UUID) *BacklogStatusEventUpdateOne {
+	mutation := newBacklogStatusEventMutation(c.config, OpUpdateOne, withBacklogStatusEventID(id))
+	return &BacklogStatusEventUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for BacklogStatusEvent.
+func (c *BacklogStatusEventClient) Delete() *BacklogStatusEventDelete {
+	mutation := newBacklogStatusEventMutation(c.config, OpDelete)
+	return &BacklogStatusEventDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *BacklogStatusEventClient) DeleteOne(_m *BacklogStatusEvent) *BacklogStatusEventDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *BacklogStatusEventClient) DeleteOneID(id uuid.UUID) *BacklogStatusEventDeleteOne {
+	builder := c.Delete().Where(backlogstatusevent.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &BacklogStatusEventDeleteOne{builder}
+}
+
+// Query returns a query builder for BacklogStatusEvent.
+func (c *BacklogStatusEventClient) Query() *BacklogStatusEventQuery {
+	return &BacklogStatusEventQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeBacklogStatusEvent},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a BacklogStatusEvent entity by its id.
+func (c *BacklogStatusEventClient) Get(ctx context.Context, id uuid.UUID) (*BacklogStatusEvent, error) {
+	return c.Query().Where(backlogstatusevent.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *BacklogStatusEventClient) GetX(ctx context.Context, id uuid.UUID) *BacklogStatusEvent {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryItem queries the item edge of a BacklogStatusEvent.
+func (c *BacklogStatusEventClient) QueryItem(_m *BacklogStatusEvent) *BacklogItemQuery {
+	query := (&BacklogItemClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(backlogstatusevent.Table, backlogstatusevent.FieldID, id),
+			sqlgraph.To(backlogitem.Table, backlogitem.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, backlogstatusevent.ItemTable, backlogstatusevent.ItemColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *BacklogStatusEventClient) Hooks() []Hook {
+	return c.hooks.BacklogStatusEvent
+}
+
+// Interceptors returns the client interceptors.
+func (c *BacklogStatusEventClient) Interceptors() []Interceptor {
+	return c.inters.BacklogStatusEvent
+}
+
+func (c *BacklogStatusEventClient) mutate(ctx context.Context, m *BacklogStatusEventMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&BacklogStatusEventCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&BacklogStatusEventUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&BacklogStatusEventUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&BacklogStatusEventDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown BacklogStatusEvent mutation op: %q", m.Op())
 	}
 }
 
@@ -2956,15 +3129,15 @@ func (c *WorktreeClient) mutate(ctx context.Context, m *WorktreeMutation) (Value
 // hooks and interceptors per client, for fast access.
 type (
 	hooks struct {
-		AnalyticsEvent, ApprovalRule, BacklogItem, ClassificationAnalytics,
-		ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession,
-		ItemSource, Project, ReviewVerdict, Session, SourceSyncEvent, Tag,
-		Worktree []ent.Hook
+		AnalyticsEvent, ApprovalRule, BacklogItem, BacklogStatusEvent,
+		ClassificationAnalytics, ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent,
+		EscapeEvent, ItemSession, ItemSource, Project, ReviewVerdict, Session,
+		SourceSyncEvent, Tag, Worktree []ent.Hook
 	}
 	inters struct {
-		AnalyticsEvent, ApprovalRule, BacklogItem, ClassificationAnalytics,
-		ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession,
-		ItemSource, Project, ReviewVerdict, Session, SourceSyncEvent, Tag,
-		Worktree []ent.Interceptor
+		AnalyticsEvent, ApprovalRule, BacklogItem, BacklogStatusEvent,
+		ClassificationAnalytics, ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent,
+		EscapeEvent, ItemSession, ItemSource, Project, ReviewVerdict, Session,
+		SourceSyncEvent, Tag, Worktree []ent.Interceptor
 	}
 )

@@ -15,6 +15,15 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 )
 
+// stubLiveFinder is a test double for LiveInstanceFinder that returns a fixed instance.
+type stubLiveFinder struct {
+	inst *session.Instance
+}
+
+func (s *stubLiveFinder) FindLiveInstance(_ string) *session.Instance {
+	return s.inst
+}
+
 // workspaceTestFixture holds the WorkspaceService and its dependencies for a
 // single test. The storage is backed by a real SQLite database in a temp dir.
 type workspaceTestFixture struct {
@@ -65,7 +74,7 @@ func seedInstance(t *testing.T, storage *session.Storage, title string) {
 	inst := &session.Instance{
 		Title:   title,
 		Path:    "/tmp/test-workspace",
-		Status:  session.Active,
+		Status:  session.Stopped, // Stopped avoids tmux Start() in FromInstanceData
 		Program: "claude",
 	}
 	require.NoError(t, storage.AddInstance(inst))
@@ -288,4 +297,54 @@ func TestWorkspaceService_GetVCSStatus_UnknownIDReturnsNotFound(t *testing.T) {
 	var connectErr *connect.Error
 	require.ErrorAs(t, err, &connectErr)
 	assert.Equal(t, connect.CodeNotFound, connectErr.Code())
+}
+
+// --------------------------------------------------------------------------
+// LiveInstanceFinder fast-path tests
+// --------------------------------------------------------------------------
+
+// TestWorkspaceService_FindInstanceFast_LiveFinderHit_BypassesStorage verifies
+// that when SetLiveFinder is wired and FindLiveInstance returns an instance,
+// that instance is used directly without consulting storage.
+func TestWorkspaceService_FindInstanceFast_LiveFinderHit_BypassesStorage(t *testing.T) {
+	fix := setupWorkspaceTestFixture(t)
+	t.Cleanup(fix.cleanup)
+
+	liveInst := &session.Instance{
+		Title:   "live-session",
+		Path:    "/tmp/live-workspace",
+		Status:  session.Active,
+		Program: "claude",
+	}
+	fix.svc.SetLiveFinder(&stubLiveFinder{inst: liveInst})
+
+	// Session is NOT in storage — only the live finder can resolve it.
+	_, err := fix.svc.GetVCSStatus(context.Background(), connect.NewRequest(&sessionv1.GetVCSStatusRequest{
+		Id: "live-session",
+	}))
+
+	// GetVCSStatus will fail (no real VCS dir), but it must NOT be CodeNotFound —
+	// that would mean the session wasn't resolved at all.
+	require.NoError(t, err, "live instance with no working dir should return a response with an error field, not a gRPC error")
+}
+
+// TestWorkspaceService_FindInstanceFast_LiveFinderMiss_FallsBackToStorage verifies
+// that when the live finder returns nil, findInstanceFast falls back to storage.
+func TestWorkspaceService_FindInstanceFast_LiveFinderMiss_FallsBackToStorage(t *testing.T) {
+	fix := setupWorkspaceTestFixture(t)
+	t.Cleanup(fix.cleanup)
+
+	// Live finder always misses.
+	fix.svc.SetLiveFinder(&stubLiveFinder{inst: nil})
+
+	// Session is in storage.
+	seedInstance(t, fix.storage, "storage-session")
+
+	_, err := fix.svc.GetVCSStatus(context.Background(), connect.NewRequest(&sessionv1.GetVCSStatusRequest{
+		Id: "storage-session",
+	}))
+
+	// Same logic: a missing working dir produces a response with an error field,
+	// but the session must be found (no CodeNotFound).
+	require.NoError(t, err, "session found via storage fallback should not return a gRPC error")
 }

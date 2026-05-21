@@ -9,12 +9,14 @@ import { AppLink } from "@/components/ui/AppLink";
 import { BacklogItemDetail } from "@/components/backlog/BacklogItemDetail";
 import { BacklogItemForm } from "@/components/backlog/BacklogItemForm";
 import { BacklogEmptyState, FilterZeroState, FooterNudge } from "@/components/backlog/BacklogEmptyState";
+import { VaguenessPromptModal } from "@/components/backlog/VaguenessPromptModal";
 import {
   useBacklogService,
   type BacklogItem,
   type BacklogItemStatus,
   type BacklogItemInput,
 } from "@/lib/hooks/useBacklogService";
+import { getStatusLabel } from "@/lib/backlog/status";
 import * as styles from "./backlog.css";
 
 // ---------------------------------------------------------------------------
@@ -25,6 +27,7 @@ type SortColumn = "title" | "status" | "priority" | "updatedAt";
 
 const ALL_STATUSES: BacklogItemStatus[] = [
   "idea",
+  "refining",
   "ready",
   "in_progress",
   "review",
@@ -32,23 +35,17 @@ const ALL_STATUSES: BacklogItemStatus[] = [
   "archived",
 ];
 
-const STATUS_LABELS: Record<BacklogItemStatus, string> = {
-  idea: "Idea",
-  ready: "Ready",
-  in_progress: "In Progress",
-  review: "Review",
-  done: "Done",
-  archived: "Archived",
-};
-
-const STATUS_CSS: Record<BacklogItemStatus, string> = {
+const STATUS_CSS: Record<string, string> = {
   idea: styles.statusIdea,
+  refining: styles.statusRefining,
   ready: styles.statusReady,
   in_progress: styles.statusInProgress,
   review: styles.statusReview,
   done: styles.statusDone,
   archived: styles.statusArchived,
 };
+
+const getStatusClass = (s: string): string => STATUS_CSS[s] ?? styles.statusArchived;
 
 const PRIORITY_LABELS: Record<number, string> = {
   1: "P1",
@@ -102,7 +99,7 @@ function StatusFilterChips({
             aria-pressed={active}
             data-testid={`backlog-filter-status-${status}`}
           >
-            {STATUS_LABELS[status]}
+            {getStatusLabel(status)}
           </button>
         );
       })}
@@ -153,7 +150,7 @@ function PriorityFilterChips({
 function BacklogPageInner() {
   usePageView();
   const { track } = useAnalytics();
-  const service = useBacklogService();
+  const { listBacklogItems, createBacklogItem, triggerTriage } = useBacklogService();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -174,10 +171,13 @@ function BacklogPageInner() {
   // New-item modal
   const [showForm, setShowForm] = useState(false);
 
+  // Vagueness prompt modal state
+  const [vaguenessItem, setVaguenessItem] = useState<BacklogItem | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await service.listBacklogItems({
+      const result = await listBacklogItems({
         statuses: statusFilter.length > 0 ? statusFilter : undefined,
         priorities: priorityFilter.length > 0 ? priorityFilter : undefined,
         search: search.trim() || undefined,
@@ -186,7 +186,7 @@ function BacklogPageInner() {
     } finally {
       setLoading(false);
     }
-  }, [service, statusFilter, priorityFilter, search]);
+  }, [listBacklogItems, statusFilter, priorityFilter, search]);
 
   useEffect(() => {
     void load();
@@ -231,11 +231,23 @@ function BacklogPageInner() {
 
   const handleCreateItem = useCallback(
     async (data: BacklogItemInput) => {
-      await service.createBacklogItem(data);
+      const result = await createBacklogItem(data);
       setShowForm(false);
       await load();
+      // Show vagueness prompt if item was created with skip_triage=true
+      if (result && data.skipTriage) {
+        setVaguenessItem(result.item);
+        // Navigate to the new item
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("item", result.item.id);
+        router.push(`/backlog?${params.toString()}`);
+      } else if (result) {
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("item", result.item.id);
+        router.push(`/backlog?${params.toString()}`);
+      }
     },
-    [service, load]
+    [createBacklogItem, load, router, searchParams]
   );
 
   const sortIndicator = (col: SortColumn) => {
@@ -376,10 +388,10 @@ function BacklogPageInner() {
                       </td>
                       <td className={styles.tableCell}>
                         <span
-                          className={`${styles.statusBadge} ${STATUS_CSS[item.status]}`}
-                          aria-label={`Status: ${STATUS_LABELS[item.status]}`}
+                          className={`${styles.statusBadge} ${getStatusClass(item.status)}`}
+                          aria-label={`Status: ${getStatusLabel(item.status)}`}
                         >
-                          {STATUS_LABELS[item.status]}
+                          {getStatusLabel(item.status)}
                         </span>
                       </td>
                       <td className={styles.tableCell}>
@@ -439,6 +451,22 @@ function BacklogPageInner() {
             />
           </div>
         </div>
+      )}
+
+      {/* Vagueness Prompt Modal */}
+      {vaguenessItem && (
+        <VaguenessPromptModal
+          itemTitle={vaguenessItem.title}
+          onRefine={() => {
+            setVaguenessItem(null);
+            setShowForm(true);
+          }}
+          onProceed={() => {
+            const item = vaguenessItem;
+            setVaguenessItem(null);
+            void triggerTriage(item.id);
+          }}
+        />
       )}
     </div>
   );

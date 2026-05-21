@@ -7,6 +7,7 @@ import (
 
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/tokens"
 )
 
 // InstanceData represents the serializable data of an Instance
@@ -253,6 +254,29 @@ func (s *Storage) ListInstanceData() ([]InstanceData, error) {
 	return s.repo.List(context.Background())
 }
 
+// ListSessionRecords returns a snapshot of all sessions as SessionRecords,
+// for use by the tokens.Associator to match JSONL files to stapler-squad sessions.
+func (s *Storage) ListSessionRecords() []tokens.SessionRecord {
+	data, err := s.ListInstanceData()
+	if err != nil {
+		return nil
+	}
+	records := make([]tokens.SessionRecord, 0, len(data))
+	for _, d := range data {
+		sessionID := d.UUID
+		if sessionID == "" {
+			sessionID = d.Title
+		}
+		records = append(records, tokens.SessionRecord{
+			SessionID:      sessionID,
+			ConversationID: d.ClaudeSession.ConversationUUID,
+			Path:           d.Path,
+			CreatedAt:      d.CreatedAt,
+		})
+	}
+	return records
+}
+
 // DeleteInstance removes an instance from storage.
 func (s *Storage) DeleteInstance(title string) error {
 	return s.repo.Delete(context.Background(), title)
@@ -264,7 +288,10 @@ func (s *Storage) AddInstance(instance *Instance) error {
 	data := instance.ToInstanceData()
 	ctx := context.Background()
 	if err := s.repo.Create(ctx, data); err != nil {
-		// Already exists → update instead
+		if !ent.IsConstraintError(err) {
+			return fmt.Errorf("failed to persist session %q: %w", data.Title, err)
+		}
+		// Unique constraint violation → session already exists, update instead.
 		return s.repo.Update(ctx, data)
 	}
 	return nil

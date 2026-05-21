@@ -125,7 +125,7 @@ The live TUI's own `ESC[2J`/`ESC[H` sequences on the next render cycle will clea
 
 4. **Paused sessions**: `CapturePaneContentWithOptions()` calls tmux, which is unavailable for paused sessions. The function will return an error. The handler must check for error and skip history delivery silently — a paused session showing the current pane snapshot (from scrollback file) is already degraded; absence of history is acceptable. Implement in Story 1 as an explicit fallback: `if err != nil { log skip history }`.
 
-5. **External sessions**: External sessions (discovered via claude-mux) use `streamViaTmuxCapturePane()` and call `instance.CapturePaneContent()` which delegates to the tmux manager. History capture for external sessions uses `CapturePaneContentWithOptions()` on the external tmux session name. This should work as long as the external session is a regular tmux session.
+5. **External sessions**: External sessions (discovered via ssq-mux) use `streamViaTmuxCapturePane()` and call `instance.CapturePaneContent()` which delegates to the tmux manager. History capture for external sessions uses `CapturePaneContentWithOptions()` on the external tmux session name. This should work as long as the external session is a regular tmux session.
 
 ---
 
@@ -461,7 +461,7 @@ if scrollbackReq := incomingData.GetScrollbackRequest(); scrollbackReq != nil {
 ### Potential Bug: History from external sessions with non-standard tmux names
 
 **Severity**: Low
-**Description**: External sessions (claude-mux) use the external tmux session name from `ExternalMetadata.TmuxSessionName`. `GetScrollbackHistory()` on `instance.go` calls `tmuxManager.CapturePaneContentWithOptions()` which uses `t.sanitizedName` (the internal tmux name). For external sessions, `sanitizedName` may not match `ExternalMetadata.TmuxSessionName`.
+**Description**: External sessions (ssq-mux) use the external tmux session name from `ExternalMetadata.TmuxSessionName`. `GetScrollbackHistory()` on `instance.go` calls `tmuxManager.CapturePaneContentWithOptions()` which uses `t.sanitizedName` (the internal tmux name). For external sessions, `sanitizedName` may not match `ExternalMetadata.TmuxSessionName`.
 
 **Mitigation**: Inspect how `CapturePaneContent()` vs `GetContent()` is used for external sessions in `streamViaTmuxCapturePane()`. External sessions use `streamer.GetContent()` (the external tmux streamer), not `instance.CapturePaneContent()`. For Story 3, external session history should be fetched via `CapturePaneContentWithOptions` on the external tmux session name, not through `instance.GetScrollbackHistory()`. Add a branch in Story 3:
 

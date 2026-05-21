@@ -38,6 +38,7 @@ type BacklogService struct {
 	sourceBackend  itemSourceBackend
 	sessionCreator SessionCreator
 	cfg            *config.Config
+	engine         session.WorkflowEngine
 	// worktreeMu serializes context-file writes to the same worktree path so that
 	// concurrent SpawnSessionFromItem / AttachSessionToItem calls cannot produce
 	// a partially-written .claude/backlog-context.md.
@@ -51,12 +52,16 @@ type BacklogService struct {
 // Degradation contract: If creator is nil, RPCs that spawn sessions will return
 // CodeUnimplemented. This is expected in test environments where a real session
 // manager is unavailable.
-func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *config.Config) *BacklogService {
+func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *config.Config, engine session.WorkflowEngine) *BacklogService {
+	if engine == nil {
+		engine = session.NewDefaultWorkflowEngine()
+	}
 	return &BacklogService{
 		storage:        storage,
 		sourceBackend:  storage,
 		sessionCreator: creator,
 		cfg:            cfg,
+		engine:         engine,
 	}
 }
 
@@ -172,7 +177,53 @@ func itemSessionToProto(is *ent.ItemSession) *sessionv1.ItemSession {
 			}
 		}
 	}
+	// Populate triage result when stored as JSON in ItemSession.TriageResult.
+	if is.TriageResult != "" {
+		var tr triageResultJSON
+		if jsonErr := json.Unmarshal([]byte(is.TriageResult), &tr); jsonErr != nil {
+			log.WarningLog.Printf("[itemSessionToProto] invalid triage_result JSON for session %s: %v", is.ID, jsonErr)
+		} else {
+			suggs := make([]*sessionv1.TriageSuggestion, len(tr.Suggestions))
+			for i, sg := range tr.Suggestions {
+				suggs[i] = &sessionv1.TriageSuggestion{Text: sg.Text, Rationale: sg.Rationale}
+			}
+			tasks := make([]*sessionv1.TriageTask, len(tr.Tasks))
+			for i, t := range tr.Tasks {
+				tasks[i] = &sessionv1.TriageTask{Text: t.Text, Estimate: t.Estimate, Category: t.Category}
+			}
+			p.TriageResult = &sessionv1.TriageResult{
+				Summary:             tr.Summary,
+				Suggestions:         suggs,
+				ClarifyingQuestions: tr.ClarifyingQuestions,
+				Tasks:               tasks,
+			}
+		}
+	}
 	return p
+}
+
+// triageResultJSON is the canonical shape written by submitTriageResult and
+// read back by itemSessionToProto. Must stay in sync with tools_backlog.go —
+// do not use map[string]interface{}.
+type triageResultJSON struct {
+	Summary             string                 `json:"summary"`
+	Suggestions         []triageSuggestionJSON `json:"suggestions"`
+	ClarifyingQuestions []string               `json:"clarifying_questions,omitempty"`
+	Tasks               []triageTaskJSON       `json:"tasks,omitempty"`
+}
+
+// triageSuggestionJSON mirrors tools_backlog.go's triageSuggestion struct.
+// Kept separate to avoid cross-package coupling; field names must match.
+type triageSuggestionJSON struct {
+	Text      string `json:"text"`
+	Rationale string `json:"rationale"`
+}
+
+// triageTaskJSON mirrors tools_backlog.go's triageTask struct.
+type triageTaskJSON struct {
+	Text     string `json:"text"`
+	Estimate string `json:"estimate"`
+	Category string `json:"category"`
 }
 
 // backlogItemToProto maps a BacklogItemData to the proto BacklogItem message.
@@ -308,8 +359,23 @@ func (s *BacklogService) CreateBacklogItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create backlog item: %w", err))
 	}
 
+	triageTriggered := false
+	if !req.Msg.SkipTriage && created.RepoPath != "" && s.sessionCreator != nil {
+		triageCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		_, triageErr := s.TriggerTriage(triageCtx,
+			connect.NewRequest(&sessionv1.TriggerTriageRequest{ItemId: created.ID}))
+		if triageErr != nil {
+			log.WarningLog.Printf("[CreateBacklogItem] auto-triage failed for item %s: %v", created.ID, triageErr)
+			// Do not fail the create; log and continue
+		} else {
+			triageTriggered = true
+		}
+	}
+
 	return connect.NewResponse(&sessionv1.CreateBacklogItemResponse{
-		Item: backlogItemToProto(created),
+		Item:            backlogItemToProto(created),
+		TriageTriggered: triageTriggered,
 	}), nil
 }
 
@@ -512,7 +578,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 	from := session.BacklogStatus(item.Status)
 	to := session.BacklogStatus(req.Msg.TargetStatus)
 
-	if !session.CanTransitionBacklog(from, to) {
+	if !s.engine.CanTransition(from, to) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("invalid transition from %q to %q", from, to))
 	}
@@ -535,7 +601,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 		OverallOutcome:    overallOutcome,
 		OverrideReason:    req.Msg.OverrideReason,
 	}
-	if guardErr := session.TransitionGuard(guardInput, to); guardErr != nil {
+	if guardErr := s.engine.ValidateGates(guardInput, to); guardErr != nil {
 		if errors.Is(guardErr, session.ErrACRequired) ||
 			errors.Is(guardErr, session.ErrPlanRequired) ||
 			errors.Is(guardErr, session.ErrPlanArtifactsRequired) ||
@@ -983,6 +1049,15 @@ func (s *BacklogService) TriggerTriage(
 			fmt.Errorf("set repo_path before triggering triage"))
 	}
 
+	// 3a. Double-trigger guard: check for an existing running triage session.
+	existingSessions, _ := s.storage.ListItemSessions(ctx, req.Msg.ItemId)
+	for _, is := range existingSessions {
+		if is.SessionRole == string(session.SessionRoleTriage) && is.EndedAt == nil {
+			return nil, connect.NewError(connect.CodeAlreadyExists,
+				fmt.Errorf("triage session already running for item %s", req.Msg.ItemId))
+		}
+	}
+
 	// 4. Build slug and artifact dir path.
 	slug := slugify(item.Title)
 	artifactRelPath := filepath.Join("docs", "tasks", slug)
@@ -1082,6 +1157,19 @@ After all files are written, call the submit_triage_result MCP tool with:
 - plan_artifact_path: %q
 - summary: a 2-3 sentence executive summary of your triage findings
 - suggestions: (optional) array of improvement suggestions, each with text and rationale
+- tasks: (optional) array of implementation tasks derived from plan.md, each with:
+    text: one-line task description
+    estimate: time estimate (e.g. "2h", "30m", "1d")
+    category: one of "backend", "frontend", "test", "infra", "docs"
+  Maximum 12 tasks. These will be shown to the operator as an interactive implementation checklist.
+
+### Step 5 — Clarifying Questions (optional)
+If the item description is ambiguous and you need specific information to
+produce quality acceptance criteria, include up to 3 clarifying questions
+in the suggestions array with rationale set to "question":
+  { "text": "What is the expected timeout behavior?", "rationale": "question" }
+If you have no questions, omit this step. Do not pause or wait for user input.
+
 This notifies the operator that triage is complete and ready for review.
 
 Do not modify any source code. Only write planning documents.
