@@ -288,7 +288,10 @@ func (s *Storage) AddInstance(instance *Instance) error {
 	data := instance.ToInstanceData()
 	ctx := context.Background()
 	if err := s.repo.Create(ctx, data); err != nil {
-		// Already exists → update instead
+		if !ent.IsConstraintError(err) {
+			return fmt.Errorf("failed to persist session %q: %w", data.Title, err)
+		}
+		// Unique constraint violation → session already exists, update instead.
 		return s.repo.Update(ctx, data)
 	}
 	return nil

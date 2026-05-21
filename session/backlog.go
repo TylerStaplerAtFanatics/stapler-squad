@@ -10,6 +10,7 @@ type BacklogStatus string
 
 const (
 	BacklogStatusIdea       BacklogStatus = "idea"
+	BacklogStatusRefining   BacklogStatus = "refining"
 	BacklogStatusReady      BacklogStatus = "ready"
 	BacklogStatusInProgress BacklogStatus = "in_progress"
 	BacklogStatusReview     BacklogStatus = "review"
@@ -22,6 +23,12 @@ const (
 	SessionRoleWork   = "work"
 	SessionRoleTriage = "triage"
 	SessionRoleReview = "review"
+)
+
+// TriggeredBy values for BacklogStatusEvent records.
+const (
+	TriggeredByUser   = "user"
+	TriggeredBySystem = "system"
 )
 
 // DefaultBacklogPriority is the default priority assigned to new backlog items
@@ -109,8 +116,15 @@ func AggregateOutcome(verdicts []CriterionVerdict) string {
 }
 
 // validTransitions is the authoritative state machine transition table.
+// idea→ready is a fast-track for items that already have AC written; items
+// needing AC work should go idea→refining→ready instead.
 var validTransitions = map[BacklogStatus]map[BacklogStatus]bool{
 	BacklogStatusIdea: {
+		BacklogStatusReady:    true,
+		BacklogStatusRefining: true,
+		BacklogStatusArchived: true,
+	},
+	BacklogStatusRefining: {
 		BacklogStatusReady:    true,
 		BacklogStatusArchived: true,
 	},
@@ -185,6 +199,13 @@ func TransitionGuard(item BacklogItemTransitionInput, to BacklogStatus) error {
 		}
 		if item.PlanApproved && !item.SkipPlanning && item.PlanArtifactsPath == "" {
 			return ErrPlanArtifactsRequired
+		}
+		return nil
+
+	case from == BacklogStatusRefining && to == BacklogStatusReady:
+		criteria, err := ParseAcCriteria(item.AcCriteriaJSON)
+		if err != nil || len(criteria) == 0 {
+			return ErrACRequired
 		}
 		return nil
 
