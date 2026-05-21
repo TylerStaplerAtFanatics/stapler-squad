@@ -47,8 +47,7 @@ func (gm *GitWorktreeManager) PrimeDirtyCacheJitter() {
 	if gm.worktree == nil {
 		return
 	}
-	// 15s matches isDirtyCacheTTL in session/git/worktree.go.
-	jitter := time.Duration(rand.Int63n(int64(15 * time.Second)))
+	jitter := time.Duration(rand.Int63n(int64(git.IsDirtyCacheTTL)))
 	gm.worktree.PrimeDirtyCacheAt(time.Now().Add(-jitter))
 }
 
@@ -243,6 +242,7 @@ type GitManager interface {
 	SetDiffStats(*git.DiffStats)
 	ClearDiffStats()
 	GetCurrentCommitSHA() (string, error)
+	PrimeDirtyCacheJitter()
 }
 
 // compile-time check that *GitWorktreeManager satisfies GitManager.

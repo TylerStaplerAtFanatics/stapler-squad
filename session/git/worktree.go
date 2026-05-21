@@ -22,8 +22,8 @@ func getWorktreeDirectory() (string, error) {
 	return filepath.Join(configDir, "worktrees"), nil
 }
 
-// isDirtyCacheTTL is the duration for which a cached IsDirty result is considered fresh.
-const isDirtyCacheTTL = 15 * time.Second
+// IsDirtyCacheTTL is the duration for which a cached IsDirty result is considered fresh.
+const IsDirtyCacheTTL = 15 * time.Second
 
 // GitWorktree manages git worktree operations for a session
 type GitWorktree struct {

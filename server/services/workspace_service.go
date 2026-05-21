@@ -25,7 +25,7 @@ type WorkspaceProvider interface {
 }
 
 // LiveInstanceFinder is satisfied by SessionService. It returns the live in-memory
-// instance held by the ReviewQueuePoller (O(1) map lookup) or nil if the session is
+// instance by scanning the poller's tracked sessions (O(N)) or nil if the session is
 // not yet in the poller. WorkspaceService uses this as a fast path to avoid calling
 // LoadInstances() — which re-hydrates all sessions from disk and spawns PTY/tmux
 // subprocesses — on every read-only RPC call.
@@ -84,7 +84,6 @@ func (ws *WorkspaceService) findInstanceFast(id string) (*session.Instance, erro
 	}
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", id))
 }
-
 
 // GetWorkspace implements WorkspaceProvider.
 func (ws *WorkspaceService) GetWorkspace(sessionID string) (session.Workspace, error) {
