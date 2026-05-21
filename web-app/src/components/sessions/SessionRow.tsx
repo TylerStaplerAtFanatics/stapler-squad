@@ -1,8 +1,10 @@
 "use client";
 
-import { Session, SessionStatus } from "@/gen/session/v1/types_pb";
+import { useRef } from "react";
+import { Session, SessionStatus, SubStatus } from "@/gen/session/v1/types_pb";
 import { Tooltip } from "../ui/Tooltip";
-import { SessionActionsOverflow } from "./SessionActionsOverflow";
+import { SessionActionsOverflow, SessionActionsOverflowHandle } from "./SessionActionsOverflow";
+import { SubStatusChip } from "./SubStatusChip";
 import {
   row,
   statusDot,
@@ -29,11 +31,13 @@ interface SessionRowProps {
   onSetRateLimitEnabled?: (sessionId: string, enabled: boolean) => void;
   onClearConversationState?: (sessionId: string) => Promise<boolean>;
   onUpdateTags?: (sessionId: string, tags: string[]) => void;
+  onHibernate?: () => void;
+  onResumeFromHibernation?: () => void;
 }
 
 function getStatusDotValue(status: SessionStatus): string {
   switch (status) {
-    case SessionStatus.RUNNING:
+    case SessionStatus.ACTIVE:  // includes legacy RUNNING (same wire value = 1)
       return "running";
     case SessionStatus.READY:
       return "idle";
@@ -45,6 +49,8 @@ function getStatusDotValue(status: SessionStatus): string {
       return "loading";
     case SessionStatus.NEEDS_APPROVAL:
       return "needs-approval";
+    case SessionStatus.HIBERNATED:
+      return "hibernated";
     default:
       return "idle";
   }
@@ -86,11 +92,19 @@ export function SessionRow({
   onClone, onOpenInNewPane, onNewWorkspace,
   onRestart, onCreateCheckpoint, onRunOneShot,
   onSetRateLimitEnabled, onClearConversationState, onUpdateTags,
+  onHibernate, onResumeFromHibernation,
 }: SessionRowProps) {
+  const overflowRef = useRef<SessionActionsOverflowHandle>(null);
+
   const dotStatus = getStatusDotValue(session.status);
   const lastActivity = getLastActivity(session);
   const elapsedText = formatElapsed(lastActivity ?? session.updatedAt);
   const displayName = session.branch || session.title;
+
+  const handleContextMenu = (e: React.MouseEvent<HTMLLIElement>) => {
+    e.preventDefault();
+    overflowRef.current?.openAt(e.clientX, e.clientY);
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLLIElement>) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -104,6 +118,7 @@ export function SessionRow({
       className={row}
       data-testid="session-row"
       onClick={onClick}
+      onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
       tabIndex={0}
       aria-label={`Session ${session.title}, status: ${dotStatus}, program: ${session.program}`}
@@ -120,8 +135,16 @@ export function SessionRow({
 
       {/* Name + path stacked — name always visible, path wraps below */}
       <span className={nameCellStyle}>
-        <span className={nameStyle} aria-label={displayName} title={displayName}>
-          {displayName}
+        <span style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+          <span className={nameStyle} aria-label={displayName} title={displayName}>
+            {displayName}
+          </span>
+          {/* Sub-status chip — only for Active sessions (ACTIVE covers legacy RUNNING) */}
+          {session.status === SessionStatus.ACTIVE &&
+            session.subStatus !== SubStatus.UNSPECIFIED &&
+            session.subStatus !== SubStatus.IDLE && (
+              <SubStatusChip subStatus={session.subStatus} />
+            )}
         </span>
         {session.path && (
           <Tooltip label={session.path} side="bottom">
@@ -153,10 +176,13 @@ export function SessionRow({
       {/* Actions — overflow menu with pause/resume shortcut and confirmed delete */}
       <span className={actionsStyle} aria-label="Session actions">
         <SessionActionsOverflow
+          ref={overflowRef}
           session={session}
           showPrimaryAction
           onPause={onPause}
           onResume={onResume}
+          onHibernate={onHibernate}
+          onResumeFromHibernation={onResumeFromHibernation}
           onDelete={onDelete}
           onClone={onClone}
           onOpenInNewPane={onOpenInNewPane}
