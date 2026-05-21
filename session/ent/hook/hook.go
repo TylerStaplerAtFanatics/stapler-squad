@@ -45,6 +45,18 @@ func (f BacklogItemFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value,
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.BacklogItemMutation", m)
 }
 
+// The BacklogStatusEventFunc type is an adapter to allow the use of ordinary
+// function as BacklogStatusEvent mutator.
+type BacklogStatusEventFunc func(context.Context, *ent.BacklogStatusEventMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f BacklogStatusEventFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.BacklogStatusEventMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.BacklogStatusEventMutation", m)
+}
+
 // The ClassificationAnalyticsFunc type is an adapter to allow the use of ordinary
 // function as ClassificationAnalytics mutator.
 type ClassificationAnalyticsFunc func(context.Context, *ent.ClassificationAnalyticsMutation) (ent.Value, error)

@@ -14,6 +14,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
 	"github.com/tstapler/stapler-squad/session/ent/session"
@@ -315,6 +316,21 @@ func (_c *BacklogItemCreate) AddSessions(v ...*Session) *BacklogItemCreate {
 	return _c.AddSessionIDs(ids...)
 }
 
+// AddStatusEventIDs adds the "status_events" edge to the BacklogStatusEvent entity by IDs.
+func (_c *BacklogItemCreate) AddStatusEventIDs(ids ...uuid.UUID) *BacklogItemCreate {
+	_c.mutation.AddStatusEventIDs(ids...)
+	return _c
+}
+
+// AddStatusEvents adds the "status_events" edges to the BacklogStatusEvent entity.
+func (_c *BacklogItemCreate) AddStatusEvents(v ...*BacklogStatusEvent) *BacklogItemCreate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddStatusEventIDs(ids...)
+}
+
 // SetSourceID sets the "source" edge to the ItemSource entity by ID.
 func (_c *BacklogItemCreate) SetSourceID(id uuid.UUID) *BacklogItemCreate {
 	_c.mutation.SetSourceID(id)
@@ -572,6 +588,22 @@ func (_c *BacklogItemCreate) createSpec() (*BacklogItem, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(session.FieldID, field.TypeInt),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.StatusEventsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StatusEventsTable,
+			Columns: []string{backlogitem.StatusEventsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
 			},
 		}
 		for _, k := range nodes {

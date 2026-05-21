@@ -13,6 +13,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
 	"github.com/tstapler/stapler-squad/session/ent/predicate"
@@ -359,6 +360,21 @@ func (_u *BacklogItemUpdate) AddSessions(v ...*Session) *BacklogItemUpdate {
 	return _u.AddSessionIDs(ids...)
 }
 
+// AddStatusEventIDs adds the "status_events" edge to the BacklogStatusEvent entity by IDs.
+func (_u *BacklogItemUpdate) AddStatusEventIDs(ids ...uuid.UUID) *BacklogItemUpdate {
+	_u.mutation.AddStatusEventIDs(ids...)
+	return _u
+}
+
+// AddStatusEvents adds the "status_events" edges to the BacklogStatusEvent entity.
+func (_u *BacklogItemUpdate) AddStatusEvents(v ...*BacklogStatusEvent) *BacklogItemUpdate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddStatusEventIDs(ids...)
+}
+
 // SetSourceID sets the "source" edge to the ItemSource entity by ID.
 func (_u *BacklogItemUpdate) SetSourceID(id uuid.UUID) *BacklogItemUpdate {
 	_u.mutation.SetSourceID(id)
@@ -423,6 +439,27 @@ func (_u *BacklogItemUpdate) RemoveSessions(v ...*Session) *BacklogItemUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveSessionIDs(ids...)
+}
+
+// ClearStatusEvents clears all "status_events" edges to the BacklogStatusEvent entity.
+func (_u *BacklogItemUpdate) ClearStatusEvents() *BacklogItemUpdate {
+	_u.mutation.ClearStatusEvents()
+	return _u
+}
+
+// RemoveStatusEventIDs removes the "status_events" edge to BacklogStatusEvent entities by IDs.
+func (_u *BacklogItemUpdate) RemoveStatusEventIDs(ids ...uuid.UUID) *BacklogItemUpdate {
+	_u.mutation.RemoveStatusEventIDs(ids...)
+	return _u
+}
+
+// RemoveStatusEvents removes "status_events" edges to BacklogStatusEvent entities.
+func (_u *BacklogItemUpdate) RemoveStatusEvents(v ...*BacklogStatusEvent) *BacklogItemUpdate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveStatusEventIDs(ids...)
 }
 
 // ClearSource clears the "source" edge to the ItemSource entity.
@@ -661,6 +698,51 @@ func (_u *BacklogItemUpdate) sqlSave(ctx context.Context) (_node int, err error)
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(session.FieldID, field.TypeInt),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.StatusEventsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StatusEventsTable,
+			Columns: []string{backlogitem.StatusEventsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedStatusEventsIDs(); len(nodes) > 0 && !_u.mutation.StatusEventsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StatusEventsTable,
+			Columns: []string{backlogitem.StatusEventsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.StatusEventsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StatusEventsTable,
+			Columns: []string{backlogitem.StatusEventsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
 			},
 		}
 		for _, k := range nodes {
@@ -1044,6 +1126,21 @@ func (_u *BacklogItemUpdateOne) AddSessions(v ...*Session) *BacklogItemUpdateOne
 	return _u.AddSessionIDs(ids...)
 }
 
+// AddStatusEventIDs adds the "status_events" edge to the BacklogStatusEvent entity by IDs.
+func (_u *BacklogItemUpdateOne) AddStatusEventIDs(ids ...uuid.UUID) *BacklogItemUpdateOne {
+	_u.mutation.AddStatusEventIDs(ids...)
+	return _u
+}
+
+// AddStatusEvents adds the "status_events" edges to the BacklogStatusEvent entity.
+func (_u *BacklogItemUpdateOne) AddStatusEvents(v ...*BacklogStatusEvent) *BacklogItemUpdateOne {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddStatusEventIDs(ids...)
+}
+
 // SetSourceID sets the "source" edge to the ItemSource entity by ID.
 func (_u *BacklogItemUpdateOne) SetSourceID(id uuid.UUID) *BacklogItemUpdateOne {
 	_u.mutation.SetSourceID(id)
@@ -1108,6 +1205,27 @@ func (_u *BacklogItemUpdateOne) RemoveSessions(v ...*Session) *BacklogItemUpdate
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveSessionIDs(ids...)
+}
+
+// ClearStatusEvents clears all "status_events" edges to the BacklogStatusEvent entity.
+func (_u *BacklogItemUpdateOne) ClearStatusEvents() *BacklogItemUpdateOne {
+	_u.mutation.ClearStatusEvents()
+	return _u
+}
+
+// RemoveStatusEventIDs removes the "status_events" edge to BacklogStatusEvent entities by IDs.
+func (_u *BacklogItemUpdateOne) RemoveStatusEventIDs(ids ...uuid.UUID) *BacklogItemUpdateOne {
+	_u.mutation.RemoveStatusEventIDs(ids...)
+	return _u
+}
+
+// RemoveStatusEvents removes "status_events" edges to BacklogStatusEvent entities.
+func (_u *BacklogItemUpdateOne) RemoveStatusEvents(v ...*BacklogStatusEvent) *BacklogItemUpdateOne {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveStatusEventIDs(ids...)
 }
 
 // ClearSource clears the "source" edge to the ItemSource entity.
@@ -1376,6 +1494,51 @@ func (_u *BacklogItemUpdateOne) sqlSave(ctx context.Context) (_node *BacklogItem
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(session.FieldID, field.TypeInt),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.StatusEventsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StatusEventsTable,
+			Columns: []string{backlogitem.StatusEventsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedStatusEventsIDs(); len(nodes) > 0 && !_u.mutation.StatusEventsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StatusEventsTable,
+			Columns: []string{backlogitem.StatusEventsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.StatusEventsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StatusEventsTable,
+			Columns: []string{backlogitem.StatusEventsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
 			},
 		}
 		for _, k := range nodes {

@@ -26,6 +26,7 @@ type ReviewGateSpawner interface {
 type BacklogLifecycleListener struct {
 	storage        *Storage
 	sessionCreator ReviewGateSpawner
+	engine         WorkflowEngine
 	enabled        atomic.Bool
 }
 
@@ -36,13 +37,16 @@ func (l *BacklogLifecycleListener) SetEnabled(v bool) { l.enabled.Store(v) }
 // NewBacklogLifecycleListener creates a listener backed by the given storage.
 // The review gate is disabled (sessionCreator=nil).
 func NewBacklogLifecycleListener(storage *Storage) *BacklogLifecycleListener {
-	return &BacklogLifecycleListener{storage: storage}
+	return &BacklogLifecycleListener{storage: storage, engine: NewDefaultWorkflowEngine()}
 }
 
 // NewBacklogLifecycleListenerWithSpawner creates a listener that will spawn a
 // review gate session when a work session exits and SkipReviewGate is false.
-func NewBacklogLifecycleListenerWithSpawner(storage *Storage, spawner ReviewGateSpawner) *BacklogLifecycleListener {
-	return &BacklogLifecycleListener{storage: storage, sessionCreator: spawner}
+func NewBacklogLifecycleListenerWithSpawner(storage *Storage, spawner ReviewGateSpawner, engine WorkflowEngine) *BacklogLifecycleListener {
+	if engine == nil {
+		engine = NewDefaultWorkflowEngine()
+	}
+	return &BacklogLifecycleListener{storage: storage, sessionCreator: spawner, engine: engine}
 }
 
 // instanceBacklogListener is a per-instance shim that binds the instance UUID into

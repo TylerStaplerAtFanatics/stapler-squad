@@ -117,12 +117,42 @@ func (h *backlogHandlers) getBacklogItem(ctx context.Context, req mcpgo.CallTool
 		sb.WriteString("\n\n")
 	}
 
-	// Available slash commands reminder.
-	sb.WriteString("## Available MCP Tools\n")
-	sb.WriteString("- report_progress — update an AC criterion status\n")
-	sb.WriteString("- request_review — notify reviewer that work is ready\n")
-	sb.WriteString("- submit_review_verdict — submit per-criterion verdicts (review role)\n")
-	sb.WriteString("- submit_triage_result — record triage analysis (triage role)\n")
+	// Role-aware workflow guidance: look up the caller's role if a session UUID is present.
+	role := ""
+	if callerUUID, ok := sessionUUIDFromContext(ctx); ok {
+		if is, linkErr := h.storage.GetItemSessionBySessionAndItem(ctx, callerUUID, itemID); linkErr == nil {
+			role = is.SessionRole
+		}
+	}
+	switch role {
+	case "triage":
+		sb.WriteString("## Your Role: Triage\n")
+		sb.WriteString("Analyze the codebase and produce planning artifacts. Do NOT modify source code.\n\n")
+		sb.WriteString("Workflow:\n")
+		sb.WriteString("1. Run parallel research subagents → write research/*.md files\n")
+		sb.WriteString("2. Synthesize into plan.md + validation.md\n")
+		sb.WriteString("3. Call submit_triage_result with: item_id, summary, suggestions (AC gaps/questions), tasks (implementation checklist, max 12), plan_artifact_path\n")
+	case "work":
+		sb.WriteString("## Your Role: Work\n")
+		sb.WriteString("Implement the acceptance criteria. Do NOT call submit_triage_result or submit_review_verdict.\n\n")
+		sb.WriteString("Workflow:\n")
+		sb.WriteString("1. Work through each AC criterion\n")
+		sb.WriteString("2. After completing each criterion, call report_progress with criteria_index + status=pass\n")
+		sb.WriteString("3. When all criteria are done, call request_review with a summary of what you built\n")
+	case "review":
+		sb.WriteString("## Your Role: Review\n")
+		sb.WriteString("Verify each acceptance criterion is met. Do NOT modify source code or call report_progress.\n\n")
+		sb.WriteString("Workflow:\n")
+		sb.WriteString("1. Check each AC criterion against the implementation\n")
+		sb.WriteString("2. Call submit_review_verdict with per-criterion verdicts (PASS/FAIL/PARTIAL) + evidence\n")
+		sb.WriteString("   PASS → item transitions to done. FAIL → item sent back for rework.\n")
+	default:
+		sb.WriteString("## Available MCP Tools\n")
+		sb.WriteString("- report_progress — mark an AC criterion pass/fail/in_progress (role: work)\n")
+		sb.WriteString("- request_review — signal implementation complete, notify reviewer (role: work)\n")
+		sb.WriteString("- submit_review_verdict — submit per-criterion verdicts, PASS transitions to done (role: review)\n")
+		sb.WriteString("- submit_triage_result — record triage analysis and notify operator (role: triage)\n")
+	}
 
 	payload := sb.String()
 	envelope := fmt.Sprintf(
@@ -511,7 +541,7 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 	s.AddTool(
 		mcpgo.NewTool("get_backlog_item",
-			mcpgo.WithDescription("Retrieve full details for a backlog item including acceptance criteria, description, priority, and status. Returns a delimited envelope safe for LLM consumption."),
+			mcpgo.WithDescription("Fetch full details for a backlog item: title, description, acceptance criteria, priority, and status. Call this first in any backlog-linked session to orient yourself. Returns role-specific workflow guidance when your session is linked to the item (triage/work/review role instructions)."),
 			mcpgo.WithString("item_id",
 				mcpgo.Description("UUID of the backlog item"),
 				mcpgo.Required(),
@@ -522,23 +552,23 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 
 	s.AddTool(
 		mcpgo.NewTool("report_progress",
-			mcpgo.WithDescription("Update the status of a single acceptance criterion on a backlog item. Only sessions linked to the item may call this tool."),
+			mcpgo.WithDescription("Update one acceptance criterion status during implementation. Role: work only — do not call from triage or review sessions. Call after completing each AC criterion: status=pass marks it done, fail marks it blocked, in_progress marks it active. Use criteria_index=0 for the first criterion."),
 			mcpgo.WithString("item_id",
 				mcpgo.Description("UUID of the backlog item"),
 				mcpgo.Required(),
 			),
 			mcpgo.WithNumber("criteria_index",
-				mcpgo.Description("Zero-based index of the acceptance criterion to update"),
+				mcpgo.Description("Zero-based index of the acceptance criterion to update (0 = first criterion)"),
 				mcpgo.Required(),
 				mcpgo.Min(0),
 			),
 			mcpgo.WithString("status",
-				mcpgo.Description("New status for the criterion: pass, fail, or in_progress"),
+				mcpgo.Description("New status: pass (criterion complete), fail (blocked/broken), in_progress (actively working)"),
 				mcpgo.Required(),
 				mcpgo.Enum("pass", "fail", "in_progress"),
 			),
 			mcpgo.WithString("note",
-				mcpgo.Description("Optional note to append to the criterion text"),
+				mcpgo.Description("Optional short note about the criterion outcome (e.g. test name, PR link, failure reason)"),
 			),
 		),
 		h.reportProgress,
@@ -546,13 +576,13 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 
 	s.AddTool(
 		mcpgo.NewTool("request_review",
-			mcpgo.WithDescription("Notify the reviewer that work on a backlog item is complete and ready for review. Only sessions linked to the item may call this tool."),
+			mcpgo.WithDescription("Signal that implementation is complete and the item is ready for review. Role: work only. Call after all acceptance criteria are marked pass. Transitions the item to 'review' status and notifies the reviewer. Do not call until all AC criteria are done."),
 			mcpgo.WithString("item_id",
 				mcpgo.Description("UUID of the backlog item"),
 				mcpgo.Required(),
 			),
 			mcpgo.WithString("message",
-				mcpgo.Description("Short message to the reviewer describing what was done (max 2000 chars)"),
+				mcpgo.Description("Summary for the reviewer: what was built, how to verify it, any known limitations (max 2000 chars)"),
 				mcpgo.Required(),
 			),
 		),
@@ -561,7 +591,7 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 
 	s.AddTool(
 		mcpgo.NewTool("submit_review_verdict",
-			mcpgo.WithDescription("Submit per-criterion review verdicts for a backlog item. Only sessions with role='review' may call this. If overall outcome is PASS, the item is automatically transitioned to done."),
+			mcpgo.WithDescription("Submit per-criterion review verdicts for a backlog item. Role: review only. Outcome=PASS for all criteria automatically transitions the item to done. Outcome=FAIL on any criterion sends it back for rework. Always provide concrete evidence — empty evidence is auto-downgraded to PARTIAL."),
 			mcpgo.WithString("item_id",
 				mcpgo.Description("UUID of the backlog item"),
 				mcpgo.Required(),
@@ -589,7 +619,7 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 
 	s.AddTool(
 		mcpgo.NewTool("submit_triage_result",
-			mcpgo.WithDescription("Record triage analysis results for a backlog item. Only sessions with role='triage' may call this tool. Pass tasks to surface an implementation checklist in the UI."),
+			mcpgo.WithDescription("Record completed triage analysis for a backlog item. Role: triage only. Call this LAST — after all research/*.md, plan.md, and validation.md files are written. 'suggestions' = proposed additions or improvements to acceptance criteria/spec (include clarifying questions here with rationale='question'). 'tasks' = implementation task breakdown shown as an interactive checklist to the operator (max 12, each needs text + estimate + category). 'plan_artifact_path' = absolute path to the docs/tasks/[slug] directory. Calling this notifies the operator that triage is complete and ready for review."),
 			mcpgo.WithString("item_id",
 				mcpgo.Description("UUID of the backlog item"),
 				mcpgo.Required(),

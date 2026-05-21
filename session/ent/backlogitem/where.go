@@ -1147,6 +1147,29 @@ func HasSessionsWith(preds ...predicate.Session) predicate.BacklogItem {
 	})
 }
 
+// HasStatusEvents applies the HasEdge predicate on the "status_events" edge.
+func HasStatusEvents() predicate.BacklogItem {
+	return predicate.BacklogItem(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, StatusEventsTable, StatusEventsColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasStatusEventsWith applies the HasEdge predicate on the "status_events" edge with a given conditions (other predicates).
+func HasStatusEventsWith(preds ...predicate.BacklogStatusEvent) predicate.BacklogItem {
+	return predicate.BacklogItem(func(s *sql.Selector) {
+		step := newStatusEventsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // HasSource applies the HasEdge predicate on the "source" edge.
 func HasSource() predicate.BacklogItem {
 	return predicate.BacklogItem(func(s *sql.Selector) {

@@ -384,8 +384,12 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		return nil, fmt.Errorf("load instances: %w", err)
 	}
 
+	// WorkflowEngine governs backlog state transitions; constructed once and shared
+	// by both the service layer and the lifecycle listener.
+	workflowEngine := session.NewDefaultWorkflowEngine()
+
 	// Backlog lifecycle listener — always created, enabled state set from config below.
-	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithSpawner(storage, sessionService)
+	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithSpawner(storage, sessionService, workflowEngine)
 
 	// Step 5 (continued): wire dependencies to each instance
 	// inst.SetReviewQueue and inst.SetStatusManager are called per-instance in a loop;
@@ -649,7 +653,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Info("backlog feature disabled (toggle via Settings → Features)")
 	}
 
-	backlogSvc := services.NewBacklogService(storage, sessionService, cfg)
+	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
