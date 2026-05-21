@@ -14,7 +14,7 @@ import (
 )
 
 // ExternalSessionDiscovery discovers and manages external Claude sessions
-// from claude-mux multiplexed terminals.
+// from ssq-mux multiplexed terminals.
 type ExternalSessionDiscovery struct {
 	discovery *mux.Discovery
 

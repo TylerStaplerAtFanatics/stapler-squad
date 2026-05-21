@@ -49,8 +49,8 @@ type ExternalInstanceMetadata struct {
 	// OriginalPID is the process ID when first discovered
 	OriginalPID int
 
-	// MuxSocketPath is the path to a claude-mux Unix domain socket
-	// If set, this instance was discovered via claude-mux and supports
+	// MuxSocketPath is the path to an ssq-mux Unix domain socket
+	// If set, this instance was discovered via ssq-mux and supports
 	// full bidirectional terminal access
 	MuxSocketPath string
 
@@ -133,7 +133,7 @@ func GetExternalPermissions(allowAttach bool) InstancePermissions {
 
 // GetMuxExternalPermissions returns permissions for mux-enabled external instances.
 // Mux instances support full bidirectional terminal access and can be destroyed
-// since they're explicitly opted-in by launching through claude-mux with tmux session.
+// since they're explicitly opted-in by launching through ssq-mux with tmux session.
 func GetMuxExternalPermissions() InstancePermissions {
 	return InstancePermissions{
 		CanView:        true,

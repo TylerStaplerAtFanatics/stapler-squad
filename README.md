@@ -306,9 +306,9 @@ make lint             # Multi-tool linting suite
 
 Install all tools with: `make install-tools`
 
-#### claude-mux (External Terminal Multiplexer)
+#### ssq-mux (External Terminal Multiplexer)
 
-`claude-mux` wraps AI assistant commands with a PTY multiplexer so Stapler Squad can stream terminal output from any external terminal (IntelliJ, VS Code, etc.) into the web UI in real time.
+`ssq-mux` wraps AI assistant commands with a PTY multiplexer so Stapler Squad can stream terminal output from any external terminal (IntelliJ, VS Code, etc.) into the web UI in real time.
 
 **Build and install:**
 
@@ -335,7 +335,7 @@ export PATH="$HOME/.local/bin:$PATH"
 **Shell alias (recommended):**
 
 ```bash
-alias claude='claude-mux claude'
+alias claude='ssq-mux claude'
 ```
 
 Add this to `~/.zshrc`, `~/.bashrc`, or equivalent, then reload: `source ~/.zshrc`.
@@ -344,22 +344,22 @@ Add this to `~/.zshrc`, `~/.bashrc`, or equivalent, then reload: `source ~/.zshr
 
 ```bash
 # Start a Claude session — automatically discovered by Stapler Squad
-claude-mux claude
+ssq-mux claude
 
 # Custom session name
-claude-mux -n "api-refactor" claude
+ssq-mux -n "api-refactor" claude
 
 # List active sessions
-claude-mux --list
+ssq-mux --list
 
 # Reattach to an existing session after restart
-claude-mux --attach <session-name>
+ssq-mux --attach <session-name>
 ```
 
 **IDE configuration — IntelliJ IDEA / PyCharm / WebStorm:**
 
 1. Settings → Tools → Terminal
-2. Set **Shell path** to: `~/.local/bin/claude-mux`
+2. Set **Shell path** to: `~/.local/bin/ssq-mux`
 3. Set **Shell arguments** to: `claude`
 4. Restart the IDE terminal
 
@@ -369,14 +369,14 @@ Add to `settings.json`:
 
 ```json
 "terminal.integrated.profiles.osx": {
-  "claude-mux": {
-    "path": "~/.local/bin/claude-mux",
+  "ssq-mux": {
+    "path": "~/.local/bin/ssq-mux",
     "args": ["claude"]
   }
 }
 ```
 
-Set `terminal.integrated.defaultProfile.osx` to `"claude-mux"`.
+Set `terminal.integrated.defaultProfile.osx` to `"ssq-mux"`.
 
 <br />
 
