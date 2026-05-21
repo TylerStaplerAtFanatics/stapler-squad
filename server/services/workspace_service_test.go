@@ -78,7 +78,7 @@ func seedInstance(t *testing.T, storage *session.Storage, title string) {
 	inst := &session.Instance{
 		Title:   title,
 		Path:    "/tmp/test-workspace",
-		Status:  session.Paused, // Paused avoids tmux setup in LoadInstances (no CI tmux)
+		Status:  session.Stopped, // Stopped avoids tmux Start() in FromInstanceData
 		Program: "claude",
 	}
 	require.NoError(t, storage.AddInstance(inst))
@@ -317,7 +317,7 @@ func TestWorkspaceService_FindInstanceFast_LiveFinderHit_BypassesStorage(t *test
 	liveInst := &session.Instance{
 		Title:   "live-session",
 		Path:    "/tmp/live-workspace",
-		Status:  session.Running,
+		Status:  session.Active,
 		Program: "claude",
 	}
 	fix.svc.SetLiveFinder(&stubLiveFinder{inst: liveInst})

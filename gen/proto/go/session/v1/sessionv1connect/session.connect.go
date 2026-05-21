@@ -159,6 +159,12 @@ const (
 	// SessionServiceGetApprovalAnalyticsProcedure is the fully-qualified name of the SessionService's
 	// GetApprovalAnalytics RPC.
 	SessionServiceGetApprovalAnalyticsProcedure = "/session.v1.SessionService/GetApprovalAnalytics"
+	// SessionServiceGetProgramAnalyticsProcedure is the fully-qualified name of the SessionService's
+	// GetProgramAnalytics RPC.
+	SessionServiceGetProgramAnalyticsProcedure = "/session.v1.SessionService/GetProgramAnalytics"
+	// SessionServiceGenerateSuggestedRuleProcedure is the fully-qualified name of the SessionService's
+	// GenerateSuggestedRule RPC.
+	SessionServiceGenerateSuggestedRuleProcedure = "/session.v1.SessionService/GenerateSuggestedRule"
 	// SessionServiceListDatabasesProcedure is the fully-qualified name of the SessionService's
 	// ListDatabases RPC.
 	SessionServiceListDatabasesProcedure = "/session.v1.SessionService/ListDatabases"
@@ -276,6 +282,12 @@ const (
 	// SessionServiceGetEscapeAnalyticsSummaryProcedure is the fully-qualified name of the
 	// SessionService's GetEscapeAnalyticsSummary RPC.
 	SessionServiceGetEscapeAnalyticsSummaryProcedure = "/session.v1.SessionService/GetEscapeAnalyticsSummary"
+	// SessionServiceHibernateSessionProcedure is the fully-qualified name of the SessionService's
+	// HibernateSession RPC.
+	SessionServiceHibernateSessionProcedure = "/session.v1.SessionService/HibernateSession"
+	// SessionServiceResumeHibernatedSessionProcedure is the fully-qualified name of the
+	// SessionService's ResumeHibernatedSession RPC.
+	SessionServiceResumeHibernatedSessionProcedure = "/session.v1.SessionService/ResumeHibernatedSession"
 )
 
 // SessionServiceClient is a client for the session.v1.SessionService service.
@@ -386,6 +398,14 @@ type SessionServiceClient interface {
 	DeleteApprovalRule(context.Context, *connect.Request[v1.DeleteApprovalRuleRequest]) (*connect.Response[v1.DeleteApprovalRuleResponse], error)
 	// GetApprovalAnalytics returns aggregated analytics for classification decisions.
 	GetApprovalAnalytics(context.Context, *connect.Request[v1.GetApprovalAnalyticsRequest]) (*connect.Response[v1.GetApprovalAnalyticsResponse], error)
+	// GetProgramAnalytics returns drill-down analytics for a single command program.
+	// Shows subcommand breakdown, recent examples, and daily trend for the time window.
+	GetProgramAnalytics(context.Context, *connect.Request[v1.GetProgramAnalyticsRequest]) (*connect.Response[v1.GetProgramAnalyticsResponse], error)
+	// GenerateSuggestedRule asks an AI agent to propose a new auto-approval rule.
+	// Analyzes existing rules, seed examples, and analytics data to produce a
+	// pre-filled SuggestedRuleProto. May take 5–30 seconds; callers must set a
+	// 60-second deadline via AbortController.
+	GenerateSuggestedRule(context.Context, *connect.Request[v1.GenerateSuggestedRuleRequest]) (*connect.Response[v1.GenerateSuggestedRuleResponse], error)
 	// ListDatabases returns all discovered workspace databases with metadata.
 	// Used by the workspace switcher UI to show available workspaces.
 	ListDatabases(context.Context, *connect.Request[v1.ListDatabasesRequest]) (*connect.Response[v1.ListDatabasesResponse], error)
@@ -488,6 +508,12 @@ type SessionServiceClient interface {
 	QueryEscapeAnalytics(context.Context, *connect.Request[v1.QueryEscapeAnalyticsRequest]) (*connect.Response[v1.QueryEscapeAnalyticsResponse], error)
 	// GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
 	GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error)
+	// HibernateSession checkpoints the session state, kills the AI process, and
+	// transitions the session to Hibernated status.
+	HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error)
+	// ResumeHibernatedSession re-launches the AI process for a Hibernated session,
+	// transitioning it back to Active status.
+	ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error)
 }
 
 // NewSessionServiceClient constructs a client for the session.v1.SessionService service. By
@@ -759,6 +785,18 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("GetApprovalAnalytics")),
 			connect.WithClientOptions(opts...),
 		),
+		getProgramAnalytics: connect.NewClient[v1.GetProgramAnalyticsRequest, v1.GetProgramAnalyticsResponse](
+			httpClient,
+			baseURL+SessionServiceGetProgramAnalyticsProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("GetProgramAnalytics")),
+			connect.WithClientOptions(opts...),
+		),
+		generateSuggestedRule: connect.NewClient[v1.GenerateSuggestedRuleRequest, v1.GenerateSuggestedRuleResponse](
+			httpClient,
+			baseURL+SessionServiceGenerateSuggestedRuleProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("GenerateSuggestedRule")),
+			connect.WithClientOptions(opts...),
+		),
 		listDatabases: connect.NewClient[v1.ListDatabasesRequest, v1.ListDatabasesResponse](
 			httpClient,
 			baseURL+SessionServiceListDatabasesProcedure,
@@ -993,6 +1031,18 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("GetEscapeAnalyticsSummary")),
 			connect.WithClientOptions(opts...),
 		),
+		hibernateSession: connect.NewClient[v1.HibernateSessionRequest, v1.HibernateSessionResponse](
+			httpClient,
+			baseURL+SessionServiceHibernateSessionProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("HibernateSession")),
+			connect.WithClientOptions(opts...),
+		),
+		resumeHibernatedSession: connect.NewClient[v1.ResumeHibernatedSessionRequest, v1.ResumeHibernatedSessionResponse](
+			httpClient,
+			baseURL+SessionServiceResumeHibernatedSessionProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("ResumeHibernatedSession")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -1041,6 +1091,8 @@ type sessionServiceClient struct {
 	upsertApprovalRule        *connect.Client[v1.UpsertApprovalRuleRequest, v1.UpsertApprovalRuleResponse]
 	deleteApprovalRule        *connect.Client[v1.DeleteApprovalRuleRequest, v1.DeleteApprovalRuleResponse]
 	getApprovalAnalytics      *connect.Client[v1.GetApprovalAnalyticsRequest, v1.GetApprovalAnalyticsResponse]
+	getProgramAnalytics       *connect.Client[v1.GetProgramAnalyticsRequest, v1.GetProgramAnalyticsResponse]
+	generateSuggestedRule     *connect.Client[v1.GenerateSuggestedRuleRequest, v1.GenerateSuggestedRuleResponse]
 	listDatabases             *connect.Client[v1.ListDatabasesRequest, v1.ListDatabasesResponse]
 	getCurrentDatabase        *connect.Client[v1.GetCurrentDatabaseRequest, v1.GetCurrentDatabaseResponse]
 	switchDatabase            *connect.Client[v1.SwitchDatabaseRequest, v1.SwitchDatabaseResponse]
@@ -1080,6 +1132,8 @@ type sessionServiceClient struct {
 	updateFeatureFlag         *connect.Client[v1.UpdateFeatureFlagRequest, v1.UpdateFeatureFlagResponse]
 	queryEscapeAnalytics      *connect.Client[v1.QueryEscapeAnalyticsRequest, v1.QueryEscapeAnalyticsResponse]
 	getEscapeAnalyticsSummary *connect.Client[v1.GetEscapeAnalyticsSummaryRequest, v1.GetEscapeAnalyticsSummaryResponse]
+	hibernateSession          *connect.Client[v1.HibernateSessionRequest, v1.HibernateSessionResponse]
+	resumeHibernatedSession   *connect.Client[v1.ResumeHibernatedSessionRequest, v1.ResumeHibernatedSessionResponse]
 }
 
 // ListSessions calls session.v1.SessionService.ListSessions.
@@ -1297,6 +1351,16 @@ func (c *sessionServiceClient) GetApprovalAnalytics(ctx context.Context, req *co
 	return c.getApprovalAnalytics.CallUnary(ctx, req)
 }
 
+// GetProgramAnalytics calls session.v1.SessionService.GetProgramAnalytics.
+func (c *sessionServiceClient) GetProgramAnalytics(ctx context.Context, req *connect.Request[v1.GetProgramAnalyticsRequest]) (*connect.Response[v1.GetProgramAnalyticsResponse], error) {
+	return c.getProgramAnalytics.CallUnary(ctx, req)
+}
+
+// GenerateSuggestedRule calls session.v1.SessionService.GenerateSuggestedRule.
+func (c *sessionServiceClient) GenerateSuggestedRule(ctx context.Context, req *connect.Request[v1.GenerateSuggestedRuleRequest]) (*connect.Response[v1.GenerateSuggestedRuleResponse], error) {
+	return c.generateSuggestedRule.CallUnary(ctx, req)
+}
+
 // ListDatabases calls session.v1.SessionService.ListDatabases.
 func (c *sessionServiceClient) ListDatabases(ctx context.Context, req *connect.Request[v1.ListDatabasesRequest]) (*connect.Response[v1.ListDatabasesResponse], error) {
 	return c.listDatabases.CallUnary(ctx, req)
@@ -1492,6 +1556,16 @@ func (c *sessionServiceClient) GetEscapeAnalyticsSummary(ctx context.Context, re
 	return c.getEscapeAnalyticsSummary.CallUnary(ctx, req)
 }
 
+// HibernateSession calls session.v1.SessionService.HibernateSession.
+func (c *sessionServiceClient) HibernateSession(ctx context.Context, req *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error) {
+	return c.hibernateSession.CallUnary(ctx, req)
+}
+
+// ResumeHibernatedSession calls session.v1.SessionService.ResumeHibernatedSession.
+func (c *sessionServiceClient) ResumeHibernatedSession(ctx context.Context, req *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error) {
+	return c.resumeHibernatedSession.CallUnary(ctx, req)
+}
+
 // SessionServiceHandler is an implementation of the session.v1.SessionService service.
 type SessionServiceHandler interface {
 	// ListSessions returns all sessions with optional filtering.
@@ -1600,6 +1674,14 @@ type SessionServiceHandler interface {
 	DeleteApprovalRule(context.Context, *connect.Request[v1.DeleteApprovalRuleRequest]) (*connect.Response[v1.DeleteApprovalRuleResponse], error)
 	// GetApprovalAnalytics returns aggregated analytics for classification decisions.
 	GetApprovalAnalytics(context.Context, *connect.Request[v1.GetApprovalAnalyticsRequest]) (*connect.Response[v1.GetApprovalAnalyticsResponse], error)
+	// GetProgramAnalytics returns drill-down analytics for a single command program.
+	// Shows subcommand breakdown, recent examples, and daily trend for the time window.
+	GetProgramAnalytics(context.Context, *connect.Request[v1.GetProgramAnalyticsRequest]) (*connect.Response[v1.GetProgramAnalyticsResponse], error)
+	// GenerateSuggestedRule asks an AI agent to propose a new auto-approval rule.
+	// Analyzes existing rules, seed examples, and analytics data to produce a
+	// pre-filled SuggestedRuleProto. May take 5–30 seconds; callers must set a
+	// 60-second deadline via AbortController.
+	GenerateSuggestedRule(context.Context, *connect.Request[v1.GenerateSuggestedRuleRequest]) (*connect.Response[v1.GenerateSuggestedRuleResponse], error)
 	// ListDatabases returns all discovered workspace databases with metadata.
 	// Used by the workspace switcher UI to show available workspaces.
 	ListDatabases(context.Context, *connect.Request[v1.ListDatabasesRequest]) (*connect.Response[v1.ListDatabasesResponse], error)
@@ -1702,6 +1784,12 @@ type SessionServiceHandler interface {
 	QueryEscapeAnalytics(context.Context, *connect.Request[v1.QueryEscapeAnalyticsRequest]) (*connect.Response[v1.QueryEscapeAnalyticsResponse], error)
 	// GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
 	GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error)
+	// HibernateSession checkpoints the session state, kills the AI process, and
+	// transitions the session to Hibernated status.
+	HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error)
+	// ResumeHibernatedSession re-launches the AI process for a Hibernated session,
+	// transitioning it back to Active status.
+	ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error)
 }
 
 // NewSessionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -1969,6 +2057,18 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("GetApprovalAnalytics")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionServiceGetProgramAnalyticsHandler := connect.NewUnaryHandler(
+		SessionServiceGetProgramAnalyticsProcedure,
+		svc.GetProgramAnalytics,
+		connect.WithSchema(sessionServiceMethods.ByName("GetProgramAnalytics")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceGenerateSuggestedRuleHandler := connect.NewUnaryHandler(
+		SessionServiceGenerateSuggestedRuleProcedure,
+		svc.GenerateSuggestedRule,
+		connect.WithSchema(sessionServiceMethods.ByName("GenerateSuggestedRule")),
+		connect.WithHandlerOptions(opts...),
+	)
 	sessionServiceListDatabasesHandler := connect.NewUnaryHandler(
 		SessionServiceListDatabasesProcedure,
 		svc.ListDatabases,
@@ -2203,6 +2303,18 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("GetEscapeAnalyticsSummary")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionServiceHibernateSessionHandler := connect.NewUnaryHandler(
+		SessionServiceHibernateSessionProcedure,
+		svc.HibernateSession,
+		connect.WithSchema(sessionServiceMethods.ByName("HibernateSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceResumeHibernatedSessionHandler := connect.NewUnaryHandler(
+		SessionServiceResumeHibernatedSessionProcedure,
+		svc.ResumeHibernatedSession,
+		connect.WithSchema(sessionServiceMethods.ByName("ResumeHibernatedSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/session.v1.SessionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SessionServiceListSessionsProcedure:
@@ -2291,6 +2403,10 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceDeleteApprovalRuleHandler.ServeHTTP(w, r)
 		case SessionServiceGetApprovalAnalyticsProcedure:
 			sessionServiceGetApprovalAnalyticsHandler.ServeHTTP(w, r)
+		case SessionServiceGetProgramAnalyticsProcedure:
+			sessionServiceGetProgramAnalyticsHandler.ServeHTTP(w, r)
+		case SessionServiceGenerateSuggestedRuleProcedure:
+			sessionServiceGenerateSuggestedRuleHandler.ServeHTTP(w, r)
 		case SessionServiceListDatabasesProcedure:
 			sessionServiceListDatabasesHandler.ServeHTTP(w, r)
 		case SessionServiceGetCurrentDatabaseProcedure:
@@ -2369,6 +2485,10 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceQueryEscapeAnalyticsHandler.ServeHTTP(w, r)
 		case SessionServiceGetEscapeAnalyticsSummaryProcedure:
 			sessionServiceGetEscapeAnalyticsSummaryHandler.ServeHTTP(w, r)
+		case SessionServiceHibernateSessionProcedure:
+			sessionServiceHibernateSessionHandler.ServeHTTP(w, r)
+		case SessionServiceResumeHibernatedSessionProcedure:
+			sessionServiceResumeHibernatedSessionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -2550,6 +2670,14 @@ func (UnimplementedSessionServiceHandler) GetApprovalAnalytics(context.Context, 
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetApprovalAnalytics is not implemented"))
 }
 
+func (UnimplementedSessionServiceHandler) GetProgramAnalytics(context.Context, *connect.Request[v1.GetProgramAnalyticsRequest]) (*connect.Response[v1.GetProgramAnalyticsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetProgramAnalytics is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) GenerateSuggestedRule(context.Context, *connect.Request[v1.GenerateSuggestedRuleRequest]) (*connect.Response[v1.GenerateSuggestedRuleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GenerateSuggestedRule is not implemented"))
+}
+
 func (UnimplementedSessionServiceHandler) ListDatabases(context.Context, *connect.Request[v1.ListDatabasesRequest]) (*connect.Response[v1.ListDatabasesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.ListDatabases is not implemented"))
 }
@@ -2704,4 +2832,12 @@ func (UnimplementedSessionServiceHandler) QueryEscapeAnalytics(context.Context, 
 
 func (UnimplementedSessionServiceHandler) GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetEscapeAnalyticsSummary is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.HibernateSession is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.ResumeHibernatedSession is not implemented"))
 }

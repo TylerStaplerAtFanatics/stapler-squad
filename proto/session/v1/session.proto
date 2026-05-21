@@ -154,6 +154,16 @@ service SessionService {
   // GetApprovalAnalytics returns aggregated analytics for classification decisions.
   rpc GetApprovalAnalytics(GetApprovalAnalyticsRequest) returns (GetApprovalAnalyticsResponse) {}
 
+  // GetProgramAnalytics returns drill-down analytics for a single command program.
+  // Shows subcommand breakdown, recent examples, and daily trend for the time window.
+  rpc GetProgramAnalytics(GetProgramAnalyticsRequest) returns (GetProgramAnalyticsResponse) {}
+
+  // GenerateSuggestedRule asks an AI agent to propose a new auto-approval rule.
+  // Analyzes existing rules, seed examples, and analytics data to produce a
+  // pre-filled SuggestedRuleProto. May take 5–30 seconds; callers must set a
+  // 60-second deadline via AbortController.
+  rpc GenerateSuggestedRule(GenerateSuggestedRuleRequest) returns (GenerateSuggestedRuleResponse) {}
+
   // ListDatabases returns all discovered workspace databases with metadata.
   // Used by the workspace switcher UI to show available workspaces.
   rpc ListDatabases(ListDatabasesRequest) returns (ListDatabasesResponse) {}
@@ -299,6 +309,14 @@ service SessionService {
 
   // GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
   rpc GetEscapeAnalyticsSummary(GetEscapeAnalyticsSummaryRequest) returns (GetEscapeAnalyticsSummaryResponse) {}
+
+  // HibernateSession checkpoints the session state, kills the AI process, and
+  // transitions the session to Hibernated status.
+  rpc HibernateSession(HibernateSessionRequest) returns (HibernateSessionResponse) {}
+
+  // ResumeHibernatedSession re-launches the AI process for a Hibernated session,
+  // transitioning it back to Active status.
+  rpc ResumeHibernatedSession(ResumeHibernatedSessionRequest) returns (ResumeHibernatedSessionResponse) {}
 }
 
 // ListSessionsRequest allows filtering sessions by various criteria.
@@ -1217,6 +1235,30 @@ message GetApprovalAnalyticsResponse {
 }
 
 // ============================================================================
+// Program Analytics Drill-Down Messages
+// ============================================================================
+
+message GetProgramAnalyticsRequest {
+  // program is the executable name (e.g., "git", "gh", "npm").
+  string program = 1;
+  // window_days controls the time window (default 7, max 90).
+  optional int32 window_days = 2;
+}
+
+message GetProgramAnalyticsResponse {
+  // program echoed from the request.
+  string program = 1;
+  // category is the program's category (e.g., "vcs", "node").
+  string category = 2;
+  // subcommands contains per-subcommand decision breakdown, sorted by total descending.
+  repeated SubcommandBreakdownProto subcommands = 3;
+  // recent_examples contains the last 20 raw command_preview strings across all subcommands.
+  repeated string recent_examples = 4;
+  // trend contains per-day counts for the whole program in the window.
+  repeated DailyBucketProto trend = 5;
+}
+
+// ============================================================================
 // Database / Workspace Switcher Messages
 // ============================================================================
 
@@ -1924,3 +1966,46 @@ message GetEscapeAnalyticsSummaryResponse {
   int64 total_mangled = 3;
   double mangle_rate = 4;
 }
+
+message GenerateSuggestedRuleRequest {
+  SuggestionSource source = 1;
+  // For ANALYTICS_GAPS: number of days of history to analyze (1–90, default 7).
+  optional int32 window_days = 2;
+  // For COMMAND_SAMPLE: the raw command string the user pasted.
+  string command_sample = 3;
+  // For REVIEW_QUEUE_ITEM: the analytics entry ID of the review item.
+  string analytics_item_id = 4;
+  // For ANALYTICS_GAPS scoped to a single tool/program: optional filter.
+  string tool_name_filter = 5;
+  string program_name_filter = 6;
+}
+
+message GenerateSuggestedRuleResponse {
+  // Multiple suggestions are returned so the user can review a batch at once.
+  // Analytics-gaps calls return up to 5 suggestions (one per top gap cluster).
+  // Command-sample and review-queue-item calls return exactly 1.
+  repeated SuggestedRuleProto suggestions = 1;
+}
+
+// HibernateSession messages
+message HibernateSessionRequest {
+  string id = 1;
+  // reason identifies why the session is being hibernated.
+  // Values: "manual", "idle", "resource_pressure". Defaults to "manual".
+  string reason = 2;
+}
+
+message HibernateSessionResponse {
+  Session session = 1;
+}
+
+// ResumeHibernatedSession messages
+message ResumeHibernatedSessionRequest {
+  string id = 1;
+}
+
+message ResumeHibernatedSessionResponse {
+  Session session = 1;
+}
+
+

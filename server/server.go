@@ -21,6 +21,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/push"
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/server/web"
+	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/tmux"
 
 	"github.com/google/uuid"
@@ -296,6 +297,18 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	srv.mux.HandleFunc(wsPath, wsHandler.HandleWebSocket)
 	log.Info("Registered ConnectRPC WebSocket handler", "path", wsPath)
 
+	// Register VNC browser-passthrough WebSocket proxy.
+	// Use ReviewQueuePoller (in-memory) rather than Storage (SQLite) for session lookup.
+	vncProxy := services.NewVNCProxyHandler(deps.ReviewQueuePoller)
+	srv.mux.HandleFunc("/api/sessions/{id}/vnc", vncProxy.HandleWebSocket)
+	log.Info("Registered VNC WebSocket proxy at /api/sessions/{id}/vnc")
+
+	// Register CDP browser-streaming WebSocket handler.
+	// Use ReviewQueuePoller (in-memory) rather than Storage (SQLite) for session lookup.
+	cdpStream := services.NewCDPStreamHandler(deps.ReviewQueuePoller)
+	srv.mux.HandleFunc("/api/sessions/{id}/cdp-stream", cdpStream.HandleWebSocket)
+	log.Info("Registered CDP stream WebSocket handler at /api/sessions/{id}/cdp-stream")
+
 	// Register general ConnectRPC handler (unary calls)
 	path, handler := sessionv1connect.NewSessionServiceHandler(deps.SessionService, ConnectOptions(deps.ErrorRegistry)...)
 	apiPath := "/api" + path
@@ -476,6 +489,17 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	fileSvc := deps.SessionService.GetFileService()
 	srv.mux.HandleFunc("/api/files/raw", fileSvc.ServeFileRaw)
 	log.Info("Registered raw file download handler at /api/files/raw")
+
+	// Start hibernation sweeper (auto-hibernates idle sessions and prunes stale checkpoints).
+	if cfg.Hibernation.Enabled {
+		sweeper := session.NewHibernationSweeper(deps.Storage, cfg)
+		if deps.ReviewQueuePoller != nil {
+			sweeper.SetLiveProvider(deps.ReviewQueuePoller)
+		}
+		go sweeper.Start(serverCtx)
+		log.Info("Hibernation sweeper started",
+			"idle_timeout_minutes", cfg.Hibernation.IdleTimeoutMinutes)
+	}
 }
 
 // registerStaticRoutes mounts routes that are always registered regardless of

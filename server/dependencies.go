@@ -14,11 +14,13 @@ import (
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/cdp"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/scrollback"
 	"github.com/tstapler/stapler-squad/session/tmux"
 	"github.com/tstapler/stapler-squad/session/tokens"
 	"github.com/tstapler/stapler-squad/session/unfinished"
+	"github.com/tstapler/stapler-squad/session/vnc"
 )
 
 // ServerDependencies holds all wired service components for the HTTP server.
@@ -55,6 +57,14 @@ type ServerDependencies struct {
 	// Analytics storage. Nil when the analytics DB failed to open (LogAnalyticsProvider
 	// is used as a fallback in that case).
 	AnalyticsEntClient *ent.Client
+
+	// VNCDeps holds the result of the startup VNC dependency check.
+	// Available=false means the Browser tab will be hidden on all sessions.
+	VNCDeps vnc.DepsResult
+
+	// CDPDeps holds the result of the startup CDP (Chrome) dependency check.
+	// Available=false means CDP browser streaming is unavailable on this host.
+	CDPDeps cdp.DepsResult
 }
 
 // ToServerDeps converts RuntimeDeps to the flat ServerDependencies struct consumed
@@ -83,6 +93,8 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
 		AnalyticsEntClient:      rt.AnalyticsEntClient,
+		VNCDeps:                 rt.VNCDeps,
+		CDPDeps:                 rt.CDPDeps,
 	}
 }
 
@@ -344,6 +356,12 @@ type RuntimeDeps struct {
 
 	// Analytics storage.
 	AnalyticsEntClient *ent.Client
+
+	// VNCDeps holds the result of the startup VNC dependency check.
+	VNCDeps vnc.DepsResult
+
+	// CDPDeps holds the result of the startup CDP (Chrome) dependency check.
+	CDPDeps cdp.DepsResult
 }
 
 // BuildRuntimeDeps constructs Phase 3 dependencies using Phase 2 outputs.
@@ -460,6 +478,20 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 			} else {
 				log.Info("persisted migrated instance data", "count", len(instances))
 			}
+		}
+
+		// Step 6.6: Reconcile CDP orphan wrapper directories.
+		// Collect active session IDs, then remove any cdp-bins subdirectory that
+		// does not belong to a known session (left behind by crashed or deleted sessions).
+		// Both the real manager and the noop manager implement ReconcileOrphans with
+		// filesystem-only cleanup (no Chrome binary required).
+		activeSessionIDs := make([]string, 0, len(instances))
+		for _, inst := range instances {
+			activeSessionIDs = append(activeSessionIDs, inst.GetStableID())
+		}
+		cdpCleanupMgr := cdp.New(cdp.CDPConfig{}) // noop when Chrome is absent; still cleans up dirs
+		if err := cdpCleanupMgr.ReconcileOrphans(activeSessionIDs); err != nil {
+			log.Warn("cdp: orphan cleanup failed (non-fatal)", "err", err)
 		}
 
 		// Step 7: start controllers (requires started instances + StatusManager)
@@ -657,6 +689,23 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
+	// Check VNC dependencies once at startup so the server knows whether browser
+	// passthrough is available on this host. Non-fatal: Missing deps log a warning.
+	vncDeps := vnc.CheckDependencies()
+	if !vncDeps.Available {
+		log.Warn("VNC browser passthrough unavailable", "reason", vncDeps.Reason, "missing", vncDeps.Missing)
+	} else {
+		log.Info("VNC browser passthrough available")
+	}
+
+	// Check CDP (Chrome) dependencies once at startup. Non-fatal.
+	cdpDeps := cdp.CheckDependencies()
+	if !cdpDeps.Available {
+		log.Warn("CDP browser streaming unavailable", "reason", cdpDeps.Reason)
+	} else {
+		log.Info("CDP browser streaming available", "chrome", cdpDeps.ChromePath)
+	}
+
 	// Initialize TokenStore and InsightsService for token usage analytics.
 	var insightsSvc *services.InsightsService
 	if homeDir, homeDirErr := os.UserHomeDir(); homeDirErr == nil {
@@ -671,6 +720,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	} else {
 		log.Warn("could not determine home dir for InsightsService token store", "err", homeDirErr)
 	}
+
 
 	return &RuntimeDeps{
 		ServiceDeps:             svc,
@@ -691,5 +741,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		SyncLoop:                nil, // managed by BacklogController
 		Config:                  cfg,
 		AnalyticsEntClient:      analyticsClient,
+		VNCDeps:                 vncDeps,
+		CDPDeps:                 cdpDeps,
 	}, nil
 }
