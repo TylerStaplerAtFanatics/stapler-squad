@@ -124,45 +124,38 @@ func (g *GoGitVCSReader) ResolveDefaultBranch(repoPath string) string {
 }
 
 func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
-	repo, err := openWorktree(worktreePath)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := safeexec.CommandContext(ctx, "git", "-C", worktreePath, "status", "--porcelain").Output()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("git status: %w", err)
 	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		return false, err
-	}
-	status, err := wt.Status()
-	if err != nil {
-		return false, err
-	}
-	return !status.IsClean(), nil
+	return len(strings.TrimSpace(string(out))) > 0, nil
 }
 
 func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error) {
-	// Use git rev-list --count instead of an in-process commit walk to avoid
-	// building large map[Hash]bool sets on long histories.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	aheadOut, err := safeexec.CommandContext(ctx, "git", "-C", worktreePath, "rev-list", "--count", base+"..HEAD").Output()
+	// Single subprocess with --left-right to get both counts in one pass.
+	// Output format: "<ahead>\t<behind>\n"
+	out, err := safeexec.CommandContext(ctx, "git", "-C", worktreePath,
+		"rev-list", "--count", "--left-right", base+"...HEAD").Output()
 	if err != nil {
-		return 0, 0, fmt.Errorf("rev-list ahead: %w", err)
+		return 0, 0, fmt.Errorf("rev-list left-right: %w", err)
 	}
-	ahead, err := strconv.Atoi(strings.TrimSpace(string(aheadOut)))
-	if err != nil {
-		return 0, 0, fmt.Errorf("parse ahead count: %w", err)
+	parts := strings.Fields(strings.TrimSpace(string(out)))
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("unexpected rev-list output: %q", string(out))
 	}
-
-	behindOut, err := safeexec.CommandContext(ctx, "git", "-C", worktreePath, "rev-list", "--count", "HEAD.."+base).Output()
-	if err != nil {
-		return 0, 0, fmt.Errorf("rev-list behind: %w", err)
-	}
-	behind, err := strconv.Atoi(strings.TrimSpace(string(behindOut)))
+	behind, err := strconv.Atoi(parts[0])
 	if err != nil {
 		return 0, 0, fmt.Errorf("parse behind count: %w", err)
 	}
-
+	ahead, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse ahead count: %w", err)
+	}
 	return ahead, behind, nil
 }
 

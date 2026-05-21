@@ -1,13 +1,16 @@
 // +feature: insights-dashboard
 "use client";
 
+import dynamic from "next/dynamic";
 import { useInsightsSummary } from "@/lib/hooks/useInsightsService";
 import { SummaryCards } from "./SummaryCards";
-import { DailySpendChart } from "./DailySpendChart";
-import { ModelBreakdownChart } from "./ModelBreakdownChart";
-import { ModelOverTimeChart } from "./ModelOverTimeChart";
 import { TopNTable } from "./TopNTables";
 import { SessionsTable } from "./SessionsTable";
+
+// Lazy-load recharts and its D3 dependencies (~1.2MB) only when the insights page is visited.
+const DailySpendChart = dynamic(() => import("./DailySpendChart").then((m) => m.DailySpendChart), { ssr: false });
+const ModelBreakdownChart = dynamic(() => import("./ModelBreakdownChart").then((m) => m.ModelBreakdownChart), { ssr: false });
+const ModelOverTimeChart = dynamic(() => import("./ModelOverTimeChart").then((m) => m.ModelOverTimeChart), { ssr: false });
 import {
   page,
   pageHeader,
