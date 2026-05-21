@@ -182,11 +182,11 @@ extract_and_install() {
     # Install binary with desired name
     mv "${tmp_dir}/stapler-squad${extension}" "$bin_dir/$INSTALL_NAME${extension}"
 
-    # Install claude-mux if present in the archive
-    if [ -f "${tmp_dir}/claude-mux${extension}" ]; then
-        mv "${tmp_dir}/claude-mux${extension}" "$bin_dir/claude-mux${extension}"
-        chmod +x "$bin_dir/claude-mux${extension}"
-        echo "Installed claude-mux to $bin_dir/claude-mux${extension}"
+    # Install ssq-mux if present in the archive
+    if [ -f "${tmp_dir}/ssq-mux${extension}" ]; then
+        mv "${tmp_dir}/ssq-mux${extension}" "$bin_dir/ssq-mux${extension}"
+        chmod +x "$bin_dir/ssq-mux${extension}"
+        echo "Installed ssq-mux to $bin_dir/ssq-mux${extension}"
     fi
 
     rm -rf "$tmp_dir"
@@ -263,9 +263,9 @@ build_from_source() {
     # make build handles proto generation, Next.js web UI build, and Go compilation.
     (cd "$tmp_dir/stapler-squad" && ensure make build)
 
-    # Also build claude-mux
-    echo "Building claude-mux..."
-    (cd "$tmp_dir/stapler-squad" && ensure go build -o claude-mux ./cmd/claude-mux)
+    # Also build ssq-mux
+    echo "Building ssq-mux..."
+    (cd "$tmp_dir/stapler-squad" && ensure go build -o ssq-mux ./cmd/ssq-mux)
 
     if [ ! -d "$bin_dir" ]; then
         mkdir -p "$bin_dir"
@@ -279,9 +279,9 @@ build_from_source() {
     mv "$tmp_dir/stapler-squad/stapler-squad" "$bin_dir/$INSTALL_NAME"
     chmod +x "$bin_dir/$INSTALL_NAME"
 
-    mv "$tmp_dir/stapler-squad/claude-mux" "$bin_dir/claude-mux"
-    chmod +x "$bin_dir/claude-mux"
-    echo "Installed claude-mux to $bin_dir/claude-mux"
+    mv "$tmp_dir/stapler-squad/ssq-mux" "$bin_dir/ssq-mux"
+    chmod +x "$bin_dir/ssq-mux"
+    echo "Installed ssq-mux to $bin_dir/ssq-mux"
 
     rm -rf "$tmp_dir"
 

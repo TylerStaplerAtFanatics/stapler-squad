@@ -174,7 +174,7 @@ func (m *Multiplexer) Start() error {
 
 	// Create socket path using OS-specific temp directory
 	// On macOS this is /var/folders/.../T/, on Linux it's /tmp
-	m.socketPath = filepath.Join(os.TempDir(), fmt.Sprintf("claude-mux-%d.sock", os.Getpid()))
+	m.socketPath = filepath.Join(os.TempDir(), fmt.Sprintf("ssq-mux-%d.sock", os.Getpid()))
 
 	// Remove any stale socket
 	os.Remove(m.socketPath)

@@ -48,7 +48,7 @@ type HooksMetadata struct {
 	SocketPath string
 	// TmuxSession is the tmux session name for this mux instance
 	TmuxSession string
-	// PID is the process ID of the claude-mux wrapper
+	// PID is the process ID of the ssq-mux wrapper
 	PID int
 	// Cwd is the current working directory
 	Cwd string
@@ -56,7 +56,7 @@ type HooksMetadata struct {
 	Command string
 }
 
-// GenerateHooksFile creates a temporary hooks configuration file for claude-mux.
+// GenerateHooksFile creates a temporary hooks configuration file for ssq-mux.
 // The file enables Claude Code hooks to send notifications to stapler-squad with
 // proper session context for correlation and deep linking.
 //
@@ -136,7 +136,7 @@ func GenerateHooksFile(meta *HooksMetadata) (string, error) {
 
 	// Create temporary file for hooks configuration
 	// Use OS temp directory for proper cleanup and permissions
-	hooksPath := filepath.Join(os.TempDir(), fmt.Sprintf("claude-mux-hooks-%d.json", meta.PID))
+	hooksPath := filepath.Join(os.TempDir(), fmt.Sprintf("ssq-mux-hooks-%d.json", meta.PID))
 
 	// Write configuration file
 	if err := os.WriteFile(hooksPath, configData, 0600); err != nil {
@@ -147,7 +147,7 @@ func GenerateHooksFile(meta *HooksMetadata) (string, error) {
 }
 
 // CleanupHooksFile removes the generated hooks configuration file.
-// This should be called when claude-mux exits.
+// This should be called when ssq-mux exits.
 func CleanupHooksFile(path string) error {
 	if path == "" {
 		return nil
@@ -161,10 +161,10 @@ func CleanupHooksFile(path string) error {
 	return os.Remove(path)
 }
 
-// CleanupStaleHooksFiles removes any hooks files left behind by crashed claude-mux instances.
+// CleanupStaleHooksFiles removes any hooks files left behind by crashed ssq-mux instances.
 // This should be called on startup to clean up orphaned files.
 func CleanupStaleHooksFiles() error {
-	pattern := filepath.Join(os.TempDir(), "claude-mux-hooks-*.json")
+	pattern := filepath.Join(os.TempDir(), "ssq-mux-hooks-*.json")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return fmt.Errorf("failed to glob hooks files: %w", err)
@@ -173,7 +173,7 @@ func CleanupStaleHooksFiles() error {
 	for _, match := range matches {
 		// Extract PID from filename and check if process is still running
 		var pid int
-		_, err := fmt.Sscanf(filepath.Base(match), "claude-mux-hooks-%d.json", &pid)
+		_, err := fmt.Sscanf(filepath.Base(match), "ssq-mux-hooks-%d.json", &pid)
 		if err != nil {
 			continue // Skip files that don't match pattern
 		}
@@ -206,7 +206,7 @@ func findHooksHandler() (string, error) {
 				return p, nil
 			}
 		}
-		// scripts/ sibling of executable's parent (e.g. project root when built to ./claude-mux)
+		// scripts/ sibling of executable's parent (e.g. project root when built to ./ssq-mux)
 		for _, name := range names {
 			if p := filepath.Join(filepath.Dir(execDir), "scripts", name); fileExists(p) {
 				return p, nil

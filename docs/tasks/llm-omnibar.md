@@ -283,7 +283,7 @@ Before proceeding to Story 3, verify:
 Before proceeding to Story 4, verify end-to-end manually:
 - Start the server with `make restart-web`
 - From a shell: `curl -s -X POST http://localhost:8543/session.v1.SessionService/ParseIntent -H "Content-Type: application/json" -d '{"description":"fix the auth bug on main","execute":false}'` returns a `ParseIntentResponse` with non-empty `intent.title` and `intent.path`
-- `claude-mux claude` (or Claude configured with the MCP server) can call `create_session_from_intent` and receive a structured response
+- `ssq-mux claude` (or Claude configured with the MCP server) can call `create_session_from_intent` and receive a structured response
 - `make test` passes
 
 ---

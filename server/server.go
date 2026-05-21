@@ -136,6 +136,10 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 
 	// Start HistoryLinker: detects Claude JSONL files and links conversation
 	// UUIDs to sessions so cold restore can use --resume on restart.
+	// Known startup race: the initial ScanAll in Start fires before the
+	// background goroutine below has re-populated live tmux sessions, so the
+	// proc_pidinfo open-file path will miss; recoverFromStaleResume is the
+	// safety net for sessions that slip through.
 	go deps.HistoryLinker.Start(serverCtx)
 	log.Info("HistoryLinker started")
 
@@ -329,6 +333,14 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		log.Info("Registered UnfinishedWorkService handler", "path", uwAPIPath)
 	}
 
+	// Register InsightsService handler for token usage analytics.
+	if deps.InsightsService != nil {
+		insightsPath, insightsHandler := sessionv1connect.NewInsightsServiceHandler(deps.InsightsService, ConnectOptions(deps.ErrorRegistry)...)
+		insightsAPIPath := "/api" + insightsPath
+		srv.RegisterConnectHandler(insightsAPIPath, http.StripPrefix("/api", insightsHandler))
+		log.Info("Registered InsightsService handler", "path", insightsAPIPath)
+	}
+
 	// Register BacklogService handler.
 	if deps.BacklogService != nil {
 		blPath, blHandler := sessionv1connect.NewBacklogServiceHandler(deps.BacklogService, ConnectOptions(deps.ErrorRegistry)...)
@@ -336,6 +348,7 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		srv.RegisterConnectHandler(blAPIPath, http.StripPrefix("/api", blHandler))
 		log.InfoLog.Printf("Registered BacklogService handler at %s", blAPIPath)
 	}
+
 
 	// Wire external session support into the unified WebSocket handler
 	wsHandler.SetExternalSessionSupport(deps.ExternalDiscovery)
@@ -386,7 +399,7 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	// Register MCP HTTP transport at /mcp so Claude sessions can connect
 	// without spawning a subprocess. The URL is passed via --mcp-server to
 	// claude when creating new sessions (no settings-file injection needed).
-	mcpHTTPHandler := servermcp.NewHTTPHandler(deps.Storage, deps.SessionService, deps.ScrollbackManager, deps.Storage)
+	mcpHTTPHandler := servermcp.NewHTTPHandler(deps.Storage, deps.SessionService, deps.ScrollbackManager, deps.Storage, deps.EventBus)
 	// Wrap with middleware that injects session UUID from X-Stapler-Session-UUID header.
 	mcpWithUUID := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if uuid := r.Header.Get("X-Stapler-Session-UUID"); uuid != "" {

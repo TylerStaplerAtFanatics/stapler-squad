@@ -34,7 +34,7 @@ This file serves as a lightweight index of all feature plans in `docs/tasks/`.
 | [Full Text Search History](full-text-search-history.md) | Implemented | - |
 | [System Service Auto-Start](completed/system-service-autostart.md) | Implemented (Stories 1-4) | 2026-04-20 |
 | [Rate Limit Detection](detect-and-address-rate-limits.md) | Implemented (core Stories 1-4; Story 5 config pending) | 2026-04 |
-| claude-mux build/install + from-source installer | Implemented (6518db9) | 2026-04 |
+| ssq-mux build/install + from-source installer | Implemented (6518db9) | 2026-04 |
 | Classifier: AskUserQuestion escalation + path expansion | Implemented (65b8c8e, 627c3af) | 2026-04 |
 | Fork compatibility (dynamic repo owner) | Implemented (a1b0ed6) | 2026-04 |
 | Mobile overflow menu | Implemented (ef342b6) | 2026-05-02 |

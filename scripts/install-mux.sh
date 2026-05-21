@@ -1,7 +1,7 @@
 #!/bin/sh
-# install-mux.sh - Install claude-mux PTY multiplexer
+# install-mux.sh - Install ssq-mux PTY multiplexer
 #
-# This script builds and installs claude-mux, enabling seamless
+# This script builds and installs ssq-mux, enabling seamless
 # Claude session monitoring from external terminals (IntelliJ, VS Code, etc.)
 
 set -e
@@ -15,8 +15,8 @@ NC='\033[0m' # No Color
 
 # Configuration
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-BINARY_NAME="claude-mux"
-BUILD_CMD="go build -o $BINARY_NAME ./cmd/claude-mux"
+BINARY_NAME="ssq-mux"
+BUILD_CMD="go build -o $BINARY_NAME ./cmd/ssq-mux"
 
 # Helper functions
 log_info() {
@@ -53,16 +53,16 @@ check_dependencies() {
 
 # Check if running from project root
 check_project_root() {
-    if [ ! -f "go.mod" ] || [ ! -d "cmd/claude-mux" ]; then
+    if [ ! -f "go.mod" ] || [ ! -d "cmd/ssq-mux" ]; then
         log_error "Must run from stapler-squad project root directory"
         log_info "Current directory: $(pwd)"
         exit 1
     fi
 }
 
-# Build claude-mux
+# Build ssq-mux
 build_mux() {
-    log_info "Building claude-mux..."
+    log_info "Building ssq-mux..."
     if ! $BUILD_CMD; then
         log_error "Build failed"
         exit 1
@@ -112,12 +112,12 @@ print_alias_setup() {
     echo ""
     echo "To automatically wrap Claude commands, add this alias to your shell config:"
     echo ""
-    echo "  ${GREEN}alias claude='claude-mux claude'${NC}"
+    echo "  ${GREEN}alias claude='ssq-mux claude'${NC}"
     echo ""
     echo "Add to:"
     echo "  - Bash: ~/.bashrc"
     echo "  - Zsh: ~/.zshrc"
-    echo "  - Fish: ~/.config/fish/config.fish (use: alias claude 'claude-mux claude')"
+    echo "  - Fish: ~/.config/fish/config.fish (use: alias claude 'ssq-mux claude')"
     echo ""
     echo "After adding the alias, run: ${BLUE}source ~/.zshrc${NC} (or your shell config)"
     echo ""
@@ -129,7 +129,7 @@ print_ide_setup() {
     echo ""
     echo "${YELLOW}IntelliJ IDEA / PyCharm / WebStorm:${NC}"
     echo "  1. Open Settings → Tools → Terminal"
-    echo "  2. Set 'Shell path' to: ${GREEN}$INSTALL_DIR/claude-mux${NC}"
+    echo "  2. Set 'Shell path' to: ${GREEN}$INSTALL_DIR/ssq-mux${NC}"
     echo "  3. Set 'Shell arguments' to: ${GREEN}claude${NC}"
     echo "  4. Restart IDE terminal"
     echo ""
@@ -138,8 +138,8 @@ print_ide_setup() {
     echo "  2. Search for 'terminal.integrated.shell'"
     echo "  3. For your OS, set:"
     echo "     \"terminal.integrated.profiles.osx\": {"
-    echo "       \"claude-mux\": {"
-    echo "         \"path\": \"$INSTALL_DIR/claude-mux\","
+    echo "       \"ssq-mux\": {"
+    echo "         \"path\": \"$INSTALL_DIR/ssq-mux\","
     echo "         \"args\": [\"claude\"]"
     echo "       }"
     echo "     }"
@@ -152,19 +152,19 @@ print_verification() {
     log_info "Verification Steps"
     echo ""
     echo "1. ${BLUE}Check installation:${NC}"
-    echo "     which claude-mux"
-    echo "     Expected: $INSTALL_DIR/claude-mux"
+    echo "     which ssq-mux"
+    echo "     Expected: $INSTALL_DIR/ssq-mux"
     echo ""
     echo "2. ${BLUE}Test wrapper:${NC}"
-    echo "     claude-mux echo \"Hello from claude-mux\""
-    echo "     Expected: Hello message + socket created at /tmp/claude-mux-*.sock"
+    echo "     ssq-mux echo \"Hello from ssq-mux\""
+    echo "     Expected: Hello message + socket created at /tmp/ssq-mux-*.sock"
     echo ""
     echo "3. ${BLUE}Run Claude (if installed):${NC}"
-    echo "     claude-mux claude"
+    echo "     ssq-mux claude"
     echo "     Expected: Claude session starts + discoverable by claude-squad"
     echo ""
     echo "4. ${BLUE}Check discovery:${NC}"
-    echo "     ls /tmp/claude-mux-*.sock"
+    echo "     ls /tmp/ssq-mux-*.sock"
     echo "     Expected: Socket files for active sessions"
     echo ""
 }
@@ -173,19 +173,19 @@ print_verification() {
 print_troubleshooting() {
     log_info "Troubleshooting"
     echo ""
-    echo "${YELLOW}Issue: 'claude-mux: command not found'${NC}"
+    echo "${YELLOW}Issue: 'ssq-mux: command not found'${NC}"
     echo "  Solution: Ensure $INSTALL_DIR is in your PATH (see above)"
     echo ""
     echo "${YELLOW}Issue: 'stdin is not a terminal'${NC}"
-    echo "  Solution: claude-mux requires a TTY. Use from terminal, not scripts."
+    echo "  Solution: ssq-mux requires a TTY. Use from terminal, not scripts."
     echo ""
     echo "${YELLOW}Issue: Sessions not discovered by claude-squad${NC}"
-    echo "  1. Check socket exists: ls /tmp/claude-mux-*.sock"
-    echo "  2. Verify permissions: ls -l /tmp/claude-mux-*.sock"
+    echo "  1. Check socket exists: ls /tmp/ssq-mux-*.sock"
+    echo "  2. Verify permissions: ls -l /tmp/ssq-mux-*.sock"
     echo "  3. Enable discovery in claude-squad (auto-enabled for external sessions)"
     echo ""
     echo "${YELLOW}Issue: Multiple sessions conflict${NC}"
-    echo "  Solution: Each session gets unique socket. Use 'ps aux | grep claude-mux' to see all."
+    echo "  Solution: Each session gets unique socket. Use 'ps aux | grep ssq-mux' to see all."
     echo ""
 }
 
@@ -193,17 +193,17 @@ print_troubleshooting() {
 print_success_summary() {
     echo ""
     echo "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    log_success "claude-mux installed successfully!"
+    log_success "ssq-mux installed successfully!"
     echo "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "Next steps:"
     echo "  1. Add $INSTALL_DIR to your PATH (if not already)"
-    echo "  2. Add shell alias (recommended): alias claude='claude-mux claude'"
+    echo "  2. Add shell alias (recommended): alias claude='ssq-mux claude'"
     echo "  3. Configure your IDE terminal (see instructions above)"
-    echo "  4. Verify installation with: which claude-mux"
+    echo "  4. Verify installation with: which ssq-mux"
     echo ""
     echo "Documentation: docs/external-sessions.md"
-    echo "Help: claude-mux --help"
+    echo "Help: ssq-mux --help"
     echo ""
 }
 

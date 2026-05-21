@@ -1,4 +1,4 @@
-import { createSlice, createEntityAdapter, PayloadAction } from "@reduxjs/toolkit";
+import { createSlice, createEntityAdapter, createSelector, PayloadAction } from "@reduxjs/toolkit";
 import { Session, SessionStatus } from "@/gen/session/v1/types_pb";
 import type { RootState } from "./store";
 
@@ -99,6 +99,16 @@ const adapterSelectors = sessionsAdapter.getSelectors<RootState>(
 
 export const selectAllSessions = adapterSelectors.selectAll;
 export const selectSessionById = adapterSelectors.selectById;
+
+// Memoized selector: active sessions pre-sorted by updatedAt descending.
+// Avoids repeated O(n log n) sort inside render functions that show recent sessions.
+export const selectActiveSessionsSortedByUpdatedAt = createSelector(
+  selectAllSessions,
+  (sessions) =>
+    sessions
+      .filter((s) => s.status !== SessionStatus.UNSPECIFIED)
+      .sort((a, b) => Number(b.updatedAt?.seconds ?? 0) - Number(a.updatedAt?.seconds ?? 0))
+);
 export const selectSessionIds = adapterSelectors.selectIds;
 export const selectSessionsTotal = adapterSelectors.selectTotal;
 export const selectSessionsLoading = (state: RootState) => state.sessions.loading;

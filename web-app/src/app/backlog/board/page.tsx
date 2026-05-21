@@ -9,7 +9,7 @@ import { useBacklogService } from "@/lib/hooks/useBacklogService";
 import type { BacklogItem } from "@/lib/hooks/useBacklogService";
 
 export default function BacklogBoardPage() {
-  const service = useBacklogService();
+  const { listBacklogItems, transitionStatus, triggerTriage, spawnSessionFromItem } = useBacklogService();
   const router = useRouter();
   const [items, setItems] = useState<BacklogItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -17,12 +17,12 @@ export default function BacklogBoardPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await service.listBacklogItems();
+      const result = await listBacklogItems();
       setItems(result);
     } finally {
       setLoading(false);
     }
-  }, [service]);
+  }, [listBacklogItems]);
 
   useEffect(() => {
     void load();
@@ -32,13 +32,13 @@ export default function BacklogBoardPage() {
     async (action: string, itemId: string) => {
       switch (action) {
         case "mark_ready":
-          await service.transitionStatus(itemId, "ready");
+          await transitionStatus(itemId, "ready");
           break;
         case "trigger_triage":
-          await service.triggerTriage(itemId);
+          await triggerTriage(itemId);
           break;
         case "spawn_session":
-          await service.spawnSessionFromItem(itemId);
+          await spawnSessionFromItem(itemId);
           break;
         case "view_session":
         case "view_review":
@@ -49,7 +49,7 @@ export default function BacklogBoardPage() {
       }
       await load();
     },
-    [service, load, router]
+    [transitionStatus, triggerTriage, spawnSessionFromItem, load, router]
   );
 
   const handleItemClick = useCallback(

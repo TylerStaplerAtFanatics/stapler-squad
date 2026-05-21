@@ -414,7 +414,7 @@ func TestBacklogLifecycleListener_NewBacklogLifecycleListenerWithSpawner(t *test
 	// Create a mock spawner.
 	mockSpawner := &mockReviewGateSpawner{}
 
-	listener := NewBacklogLifecycleListenerWithSpawner(storage, mockSpawner)
+	listener := NewBacklogLifecycleListenerWithSpawner(storage, mockSpawner, nil)
 	require.NotNil(t, listener)
 	require.Equal(t, storage, listener.storage)
 	require.Equal(t, mockSpawner, listener.sessionCreator)

@@ -106,11 +106,6 @@ export interface OmnibarCreationPanelProps {
   pathDoesNotExist?: boolean;
 }
 
-function truncatePath(p: string, maxLen = 50): string {
-  if (p.length <= maxLen) return p;
-  return "…" + p.slice(-(maxLen - 1));
-}
-
 // Helper: file → base64 string (strips data URL prefix).
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -276,8 +271,8 @@ export function OmnibarCreationPanel({
     <>
       {/* Pre-selected repo path (creation_with_repo mode) */}
       {path && (
-        <div className={styles.pathDisplay} title={path}>
-          {truncatePath(path)}
+        <div className={styles.pathDisplay}>
+          {path}
         </div>
       )}
 

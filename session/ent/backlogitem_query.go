@@ -14,6 +14,7 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
 	"github.com/tstapler/stapler-squad/session/ent/predicate"
@@ -29,6 +30,7 @@ type BacklogItemQuery struct {
 	predicates       []predicate.BacklogItem
 	withItemSessions *ItemSessionQuery
 	withSessions     *SessionQuery
+	withStatusEvents *BacklogStatusEventQuery
 	withSource       *ItemSourceQuery
 	withFKs          bool
 	// intermediate query (i.e. traversal path).
@@ -104,6 +106,28 @@ func (_q *BacklogItemQuery) QuerySessions() *SessionQuery {
 			sqlgraph.From(backlogitem.Table, backlogitem.FieldID, selector),
 			sqlgraph.To(session.Table, session.FieldID),
 			sqlgraph.Edge(sqlgraph.M2M, false, backlogitem.SessionsTable, backlogitem.SessionsPrimaryKey...),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryStatusEvents chains the current query on the "status_events" edge.
+func (_q *BacklogItemQuery) QueryStatusEvents() *BacklogStatusEventQuery {
+	query := (&BacklogStatusEventClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(backlogitem.Table, backlogitem.FieldID, selector),
+			sqlgraph.To(backlogstatusevent.Table, backlogstatusevent.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, backlogitem.StatusEventsTable, backlogitem.StatusEventsColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -327,6 +351,7 @@ func (_q *BacklogItemQuery) Clone() *BacklogItemQuery {
 		predicates:       append([]predicate.BacklogItem{}, _q.predicates...),
 		withItemSessions: _q.withItemSessions.Clone(),
 		withSessions:     _q.withSessions.Clone(),
+		withStatusEvents: _q.withStatusEvents.Clone(),
 		withSource:       _q.withSource.Clone(),
 		// clone intermediate query.
 		sql:  _q.sql.Clone(),
@@ -353,6 +378,17 @@ func (_q *BacklogItemQuery) WithSessions(opts ...func(*SessionQuery)) *BacklogIt
 		opt(query)
 	}
 	_q.withSessions = query
+	return _q
+}
+
+// WithStatusEvents tells the query-builder to eager-load the nodes that are connected to
+// the "status_events" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *BacklogItemQuery) WithStatusEvents(opts ...func(*BacklogStatusEventQuery)) *BacklogItemQuery {
+	query := (&BacklogStatusEventClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withStatusEvents = query
 	return _q
 }
 
@@ -446,9 +482,10 @@ func (_q *BacklogItemQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*
 		nodes       = []*BacklogItem{}
 		withFKs     = _q.withFKs
 		_spec       = _q.querySpec()
-		loadedTypes = [3]bool{
+		loadedTypes = [4]bool{
 			_q.withItemSessions != nil,
 			_q.withSessions != nil,
+			_q.withStatusEvents != nil,
 			_q.withSource != nil,
 		}
 	)
@@ -487,6 +524,13 @@ func (_q *BacklogItemQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*
 		if err := _q.loadSessions(ctx, query, nodes,
 			func(n *BacklogItem) { n.Edges.Sessions = []*Session{} },
 			func(n *BacklogItem, e *Session) { n.Edges.Sessions = append(n.Edges.Sessions, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withStatusEvents; query != nil {
+		if err := _q.loadStatusEvents(ctx, query, nodes,
+			func(n *BacklogItem) { n.Edges.StatusEvents = []*BacklogStatusEvent{} },
+			func(n *BacklogItem, e *BacklogStatusEvent) { n.Edges.StatusEvents = append(n.Edges.StatusEvents, e) }); err != nil {
 			return nil, err
 		}
 	}
@@ -588,6 +632,36 @@ func (_q *BacklogItemQuery) loadSessions(ctx context.Context, query *SessionQuer
 		for kn := range nodes {
 			assign(kn, n)
 		}
+	}
+	return nil
+}
+func (_q *BacklogItemQuery) loadStatusEvents(ctx context.Context, query *BacklogStatusEventQuery, nodes []*BacklogItem, init func(*BacklogItem), assign func(*BacklogItem, *BacklogStatusEvent)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[uuid.UUID]*BacklogItem)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(backlogstatusevent.FieldItemID)
+	}
+	query.Where(predicate.BacklogStatusEvent(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(backlogitem.StatusEventsColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.ItemID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "item_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
 	}
 	return nil
 }

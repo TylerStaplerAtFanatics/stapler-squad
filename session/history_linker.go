@@ -41,9 +41,10 @@ type HistoryLinker struct {
 	detector *HistoryFileDetector
 	watcher  *HistoryFileWatcher
 
-	mu        deadlock.RWMutex
-	instances []*Instance
-	backoffs  map[string]*sessionBackoff
+	mu              deadlock.RWMutex
+	instances       []*Instance
+	backoffs        map[string]*sessionBackoff
+	extraCallbacks  []func(string) // additional per-file callbacks (e.g. TokenStore)
 }
 
 // NewHistoryLinkerFromRealInspector creates a HistoryLinker backed by the real
@@ -69,10 +70,26 @@ func NewHistoryLinkerFromRealInspector() *HistoryLinker {
 		instances: make([]*Instance, 0),
 		backoffs:  make(map[string]*sessionBackoff),
 	}
-	hl.watcher = NewHistoryFileWatcher(watchDir, func(_ string) {
+	hl.watcher = NewHistoryFileWatcher(watchDir, func(filePath string) {
 		hl.ScanAll()
+		// Notify any extra callbacks (e.g. TokenStore for token usage tracking).
+		hl.mu.RLock()
+		cbs := hl.extraCallbacks
+		hl.mu.RUnlock()
+		for _, cb := range cbs {
+			cb(filePath)
+		}
 	})
 	return hl
+}
+
+// RegisterFileCallback registers a callback that receives the file path whenever
+// a JSONL history file is created or modified. Used to wire the TokenStore into
+// the existing fsnotify infrastructure without creating a second watcher.
+func (hl *HistoryLinker) RegisterFileCallback(cb func(filePath string)) {
+	hl.mu.Lock()
+	defer hl.mu.Unlock()
+	hl.extraCallbacks = append(hl.extraCallbacks, cb)
 }
 
 // Instances returns a snapshot of the currently monitored instances.
@@ -128,8 +145,9 @@ func (hl *HistoryLinker) RemoveInstance(title string) {
 // loop until ctx is cancelled. The fsnotify watcher is also started here so
 // that new JSONL files trigger instant correlation.
 func (hl *HistoryLinker) Start(ctx context.Context) {
-	// Story 1.2.3: initial scan before first poll interval.
-	hl.scanAllSessions()
+	// Force-scan on startup: re-check already-linked sessions in case the UUID
+	// changed while the service was down (e.g., user ran /clear before restart).
+	hl.ScanAll()
 
 	// Register watcher callback for fast-path detection.
 	if hl.watcher != nil {
@@ -156,21 +174,30 @@ func (hl *HistoryLinker) run(ctx context.Context) {
 	}
 }
 
-// ScanAll triggers an immediate correlation pass over all monitored instances.
-// Exported for use by HistoryFileWatcher callbacks. Resets all backoffs so
-// that sessions suppressed by backoff get a fresh attempt when a new JSONL
-// file is detected by the watcher.
+// ScanAll triggers an immediate correlation pass over all monitored instances,
+// including those already linked to a UUID. Exported for use by HistoryFileWatcher
+// callbacks and called on startup. Resets backoffs and force-rechecks all sessions
+// so that UUID changes (e.g., /clear creating a new conversation) are detected
+// promptly rather than waiting for the next cold restore.
 func (hl *HistoryLinker) ScanAll() {
+	// Hold the write lock for both the backoff clear and the snapshot so there
+	// is no window where a concurrent AddInstance call adds an instance that is
+	// missed by the snapshot while the backoffs map is already cleared.
 	hl.mu.Lock()
 	for k := range hl.backoffs {
 		delete(hl.backoffs, k)
 	}
+	snapshot := make([]*Instance, len(hl.instances))
+	copy(snapshot, hl.instances)
 	hl.mu.Unlock()
-	hl.scanAllSessions()
+
+	for _, inst := range snapshot {
+		hl.correlateSession(inst, true)
+	}
 }
 
-// scanAllSessions iterates all monitored instances and attempts history correlation
-// for those with a live tmux session.
+// scanAllSessions is the polling-loop variant: skips already-linked sessions to
+// avoid unnecessary proc_pidinfo calls on every 5 s tick.
 func (hl *HistoryLinker) scanAllSessions() {
 	hl.mu.RLock()
 	snapshot := make([]*Instance, len(hl.instances))
@@ -178,29 +205,38 @@ func (hl *HistoryLinker) scanAllSessions() {
 	hl.mu.RUnlock()
 
 	for _, inst := range snapshot {
-		hl.correlateSession(inst)
+		hl.correlateSession(inst, false)
 	}
 }
 
 // correlateSession detects a history file for inst and updates its fields if found.
-// Skips instances that already have a UUID (idempotent). Sessions that repeatedly
-// yield no JSONL are throttled via exponential backoff to reduce subprocess spawns.
-func (hl *HistoryLinker) correlateSession(inst *Instance) {
-	// Skip if we already know the UUID — avoid unnecessary proc_pidinfo calls.
-	if inst.HasClaudeSession() {
+//
+// When force=false (polling loop), already-linked sessions are skipped to avoid
+// unnecessary proc_pidinfo calls. Unlinked sessions are throttled via exponential
+// backoff.
+//
+// When force=true (fsnotify-triggered or startup scan), already-linked sessions are
+// re-checked so that UUID changes from /clear are detected and stored promptly. This
+// ensures cold restores use the correct --resume UUID rather than a stale pre-/clear one.
+func (hl *HistoryLinker) correlateSession(inst *Instance, force bool) {
+	alreadyLinked := inst.HasClaudeSession()
+
+	// In non-force polling mode, skip already-linked sessions for performance.
+	if !force && alreadyLinked {
 		return
 	}
 
 	now := time.Now()
 
-	// Check per-session backoff before spawning any subprocess.
-	// Parked sessions skip polling entirely and only re-attempt via ScanAll (fsnotify).
-	hl.mu.RLock()
-	bo := hl.backoffs[inst.Title]
-	suppressed := bo != nil && (bo.parked || now.Before(bo.nextRetry))
-	hl.mu.RUnlock()
-	if suppressed {
-		return
+	// Backoff only applies to sessions not yet linked (force bypasses it entirely).
+	if !alreadyLinked && !force {
+		hl.mu.RLock()
+		bo := hl.backoffs[inst.Title]
+		suppressed := bo != nil && (bo.parked || now.Before(bo.nextRetry))
+		hl.mu.RUnlock()
+		if suppressed {
+			return
+		}
 	}
 
 	var info *HistoryFileInfo
@@ -228,18 +264,35 @@ func (hl *HistoryLinker) correlateSession(inst *Instance) {
 	}
 
 	if info == nil {
-		log.Debug("HistoryLinker: no JSONL found", "session", inst.Title, "path", inst.Path)
-		hl.recordMiss(inst.Title, now)
+		// Only record a miss for sessions not yet linked: the backoff mechanism
+		// is an optimisation for sessions that never got a UUID. For already-linked
+		// sessions where detection temporarily fails, we keep the stored UUID.
+		if !alreadyLinked {
+			log.Debug("HistoryLinker: no JSONL found", "session", inst.Title, "path", inst.Path)
+			hl.recordMiss(inst.Title, now)
+		}
 		return
 	}
 
-	// Success: clear backoff so the session can be re-linked promptly if needed.
-	hl.mu.Lock()
-	delete(hl.backoffs, inst.Title)
-	hl.mu.Unlock()
+	// Clear backoff for newly-linked sessions so they are re-checked promptly.
+	if !alreadyLinked {
+		hl.mu.Lock()
+		delete(hl.backoffs, inst.Title)
+		hl.mu.Unlock()
+	}
 
-	log.Info("HistoryLinker: linked session to conversation UUID",
-		"session", inst.Title, "conv_uuid", info.ConversationUUID)
+	// SetHistoryInfo is idempotent: if UUID and path already match it returns early.
+	// Log only when we are actually updating a linked session's UUID (e.g., after /clear).
+	if alreadyLinked {
+		cs := inst.GetClaudeSession()
+		if cs != nil && cs.ConversationUUID != info.ConversationUUID {
+			log.Info("HistoryLinker: updating session UUID after conversation change",
+				"session", inst.Title, "old_uuid", cs.ConversationUUID, "new_uuid", info.ConversationUUID)
+		}
+	} else {
+		log.Info("HistoryLinker: linked session to conversation UUID",
+			"session", inst.Title, "conv_uuid", info.ConversationUUID)
+	}
 	log.ForSession(inst.Title).Info("UUID linked by HistoryLinker", "conv_uuid", info.ConversationUUID, "path", info.HistoryFilePath)
 	inst.SetHistoryInfo(info.ConversationUUID, info.HistoryFilePath)
 }

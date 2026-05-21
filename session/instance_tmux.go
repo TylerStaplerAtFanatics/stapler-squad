@@ -91,7 +91,7 @@ func (i *Instance) KillSessionKeepWorktree() error {
 }
 
 // KillExternalSession terminates an external mux session by killing its tmux session.
-// This only works for external sessions that were started via claude-mux with tmux integration.
+// This only works for external sessions that were started via ssq-mux with tmux integration.
 // Returns an error if this is not an external instance or lacks tmux session name.
 func (i *Instance) KillExternalSession() error {
 	if i.InstanceType != InstanceTypeExternal {

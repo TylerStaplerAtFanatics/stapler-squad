@@ -14,8 +14,8 @@ import { usePathHistory } from "@/lib/hooks/usePathHistory";
 import { useWorktreeSuggestions } from "@/lib/hooks/useWorktreeSuggestions";
 import { useSessionSearch, type SessionSearchResult } from "@/lib/hooks/useSessionSearch";
 import { useAppSelector } from "@/lib/store";
-import { selectAllSessions } from "@/lib/store/sessionsSlice";
-import { Session, SessionStatus } from "@/gen/session/v1/types_pb";
+import { selectActiveSessionsSortedByUpdatedAt } from "@/lib/store/sessionsSlice";
+import { Session } from "@/gen/session/v1/types_pb";
 import { PathCompletionDropdown, type CompletionEntry } from "./PathCompletionDropdown";
 import { OmnibarResultList, getResultListItemCount, getHighlightedItemId } from "./OmnibarResultList";
 import { OmnibarModeBadge } from "./OmnibarModeBadge";
@@ -124,6 +124,15 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
 
   // Input state
   const [input, setInput] = useState("");
+  // Debounced copy of input — used for Fuse searches to avoid running O(n log n) work
+  // on every keystroke. The visible input still uses the raw value for instant response.
+  const [debouncedInput, setDebouncedInput] = useState("");
+  const debounceFuseRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    if (debounceFuseRef.current) clearTimeout(debounceFuseRef.current);
+    debounceFuseRef.current = setTimeout(() => setDebouncedInput(input), 150);
+    return () => { if (debounceFuseRef.current) clearTimeout(debounceFuseRef.current); };
+  }, [input]);
   const [detection, setDetection] = useState<DetectionResult | null>(null);
 
   // Consolidated form state
@@ -275,17 +284,16 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
   // Discovery mode derived from modeState
   const isDiscoveryMode = modeState.type === "discovery";
 
-  // Compute session search query without waiting for the 150ms detection debounce.
-  // Bare text (no path/URL/github prefix) passes to Fuse immediately for zero-lag search.
+  // Session search query uses the debounced input so Fuse only runs after typing pauses.
   const sessionSearchQuery = useMemo(() => {
-    if (!input.trim()) return "";
-    if (detection?.type === InputType.SessionSearch) return input;
+    if (!debouncedInput.trim()) return "";
+    if (detection?.type === InputType.SessionSearch) return debouncedInput;
     // Eagerly treat as session search if input doesn't look like a path or URL
-    if (!input.startsWith("/") && !input.startsWith("~") && !input.startsWith("http")) {
-      return input;
+    if (!debouncedInput.startsWith("/") && !debouncedInput.startsWith("~") && !debouncedInput.startsWith("http")) {
+      return debouncedInput;
     }
     return "";
-  }, [input, detection]);
+  }, [debouncedInput, detection]);
   const sessionResults = useSessionSearch(sessionSearchQuery);
 
   const allRepoEntries = useMemo(() => getAllHistory(50), [getAllHistory]);
@@ -300,29 +308,21 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
     [allRepoEntries]
   );
 
-  const allSessions = useAppSelector(selectAllSessions);
+  const activeSortedSessions = useAppSelector(selectActiveSessionsSortedByUpdatedAt);
 
   const displayedSessionResults = useMemo((): SessionSearchResult[] => {
-    if (!input.trim()) {
-      const active = allSessions
-        .filter((s) => s.status !== SessionStatus.UNSPECIFIED)
-        .sort((a, b) => {
-          const aTime = Number(a.updatedAt?.seconds ?? 0);
-          const bTime = Number(b.updatedAt?.seconds ?? 0);
-          return bTime - aTime;
-        })
-        .slice(0, 5);
-      return active.map((s) => ({ session: s, score: 0, matchedFields: [] }));
+    if (!debouncedInput.trim()) {
+      return activeSortedSessions.slice(0, 5).map((s) => ({ session: s, score: 0, matchedFields: [] }));
     }
     return sessionResults;
-  }, [input, sessionResults, allSessions]);
+  }, [debouncedInput, sessionResults, activeSortedSessions]);
 
   const displayedRepoEntries = useMemo(() => {
-    if (!input.trim()) {
+    if (!debouncedInput.trim()) {
       return allRepoEntries.slice(0, 5);
     }
-    return repoFuse.search(input).map((r) => r.item).slice(0, 8);
-  }, [input, allRepoEntries, repoFuse]);
+    return repoFuse.search(debouncedInput).map((r) => r.item).slice(0, 8);
+  }, [debouncedInput, allRepoEntries, repoFuse]);
 
   const totalResultCount = getResultListItemCount(
     displayedSessionResults.length,

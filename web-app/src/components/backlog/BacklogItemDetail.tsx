@@ -2,11 +2,15 @@
 // +feature: backlog:item-detail
 
 import { useState, useEffect, useCallback } from "react";
-import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
+import type { BacklogItem, AcCriterion, BacklogItemInput } from "@/lib/hooks/useBacklogService";
 import { useBacklogService } from "@/lib/hooks/useBacklogService";
+import { getStatusLabel } from "@/lib/backlog/status";
+import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
+import { SessionMonitor } from "./SessionMonitor";
 import { GateVerdictBox } from "./GateVerdictBox";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
+import { TriageReviewPanel } from "./TriageReviewPanel";
 import * as styles from "./BacklogItemDetail.css";
 
 interface BacklogItemDetailProps {
@@ -14,23 +18,17 @@ interface BacklogItemDetailProps {
   onClose?: () => void;
 }
 
-const STATUS_LABELS: Record<BacklogItemStatus, string> = {
-  idea: "Idea",
-  ready: "Ready",
-  in_progress: "In Progress",
-  review: "Review",
-  done: "Done",
-  archived: "Archived",
-};
-
-const STATUS_CLASS: Record<BacklogItemStatus, string> = {
+const STATUS_CLASS: Record<string, string> = {
   idea: styles.statusIdea,
+  refining: styles.statusRefining,
   ready: styles.statusReady,
   in_progress: styles.statusInProgress,
   review: styles.statusReview,
   done: styles.statusDone,
   archived: styles.statusArchived,
 };
+
+const getStatusClass = (s: string): string => STATUS_CLASS[s] ?? styles.statusArchived;
 
 const PRIORITY_LABELS: Record<number, string> = { 1: "P1", 2: "P2", 3: "P3", 4: "P4", 5: "P5" };
 
@@ -46,11 +44,23 @@ function formatDate(iso?: string): string {
 }
 
 export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
-  const service = useBacklogService();
+  const {
+    getBacklogItem,
+    transitionStatus,
+    triggerTriage,
+    spawnSessionFromItem,
+    approvePlan,
+    overrideVerdict,
+    triggerReReview,
+    archiveBacklogItem,
+    updateBacklogItem,
+    lastError,
+  } = useBacklogService();
   const [item, setItem] = useState<BacklogItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [editMode, setEditMode] = useState(false);
 
   // Notes inline editing
   const [editingNotes, setEditingNotes] = useState(false);
@@ -63,7 +73,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     setLoading(true);
     setError(null);
     try {
-      const result = await service.getBacklogItem(itemId);
+      const result = await getBacklogItem(itemId);
       if (!result) {
         setError("Item not found.");
       } else {
@@ -75,7 +85,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     } finally {
       setLoading(false);
     }
-  }, [itemId, service]);
+  }, [itemId, getBacklogItem]);
 
   useEffect(() => {
     void load();
@@ -108,21 +118,21 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
       try {
         switch (action) {
           case "mark_ready":
-            await service.transitionStatus(item.id, "ready");
+            await transitionStatus(item.id, "ready");
             break;
           case "trigger_triage":
-            await service.triggerTriage(item.id);
+            await triggerTriage(item.id);
             break;
           case "spawn_session":
-            await service.spawnSessionFromItem(item.id);
+            await spawnSessionFromItem(item.id);
             break;
           case "approve_plan":
-            await service.approvePlan(item.id);
+            await approvePlan(item.id);
             break;
           case "override_done": {
             const reviewSession = item.linkedSessions.filter((s) => s.role === "review").at(-1);
             if (reviewSession) {
-              await service.overrideVerdict(reviewSession.entityId, "Manual override to done", "done");
+              await overrideVerdict(reviewSession.entityId, "Manual override to done", "done");
             } else {
               setError("No review session found — cannot override verdict.");
               return;
@@ -130,13 +140,13 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             break;
           }
           case "re_review":
-            await service.triggerReReview(item.id);
+            await triggerReReview(item.id);
             break;
           case "archive":
-            await service.archiveBacklogItem(item.id);
+            await archiveBacklogItem(item.id);
             break;
           case "reopen":
-            await service.transitionStatus(item.id, "review");
+            await transitionStatus(item.id, "review");
             break;
           default:
             break;
@@ -148,20 +158,33 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         setActionLoading(false);
       }
     },
-    [item, service, load]
+    [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, archiveBacklogItem, load]
   );
 
   const handleSaveNotes = useCallback(async () => {
     if (!item) return;
     setActionLoading(true);
     try {
-      const updated = await service.updateBacklogItem(item.id, { notes: notesValue });
+      const updated = await updateBacklogItem(item.id, { notes: notesValue });
       if (updated) setItem(updated);
       setEditingNotes(false);
     } finally {
       setActionLoading(false);
     }
-  }, [item, notesValue, service]);
+  }, [item, notesValue, updateBacklogItem]);
+
+  const handleUpdateItem = useCallback(
+    async (data: BacklogItemInput) => {
+      if (!item) return;
+      const updated = await updateBacklogItem(item.id, data);
+      if (updated) {
+        setItem(updated);
+        setNotesValue(updated.notes ?? "");
+      }
+      setEditMode(false);
+    },
+    [item, updateBacklogItem]
+  );
 
   const handleCancelTriage = useCallback(async () => {
     // TODO: implement cancel triage RPC call (if backend supports it)
@@ -169,31 +192,72 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     await load();
   }, [load]);
 
+  const handleApplyTriageSuggestions = useCallback(
+    async (preApplyCriteria: AcCriterion[]) => {
+      if (!item) return;
+      // Step 1: Update AC with suggestions
+      const acSuggestions = item.triageResult?.suggestions.filter((s) => s.rationale !== "question") ?? [];
+      const newAcCriteria: AcCriterion[] = acSuggestions.map((s, i) => ({
+        index: i,
+        text: s.text,
+        status: "pending" as const,
+      }));
+      const updated = await updateBacklogItem(item.id, { acCriteria: newAcCriteria });
+      if (!updated) {
+        throw new Error("Failed to apply suggestions — item may have been modified by another process. Reload and try again.");
+      }
+      // Step 2: Transition to ready
+      const transitioned = await transitionStatus(item.id, "ready", "idea");
+      if (!transitioned) {
+        throw new Error("Failed to mark item ready — please try again.");
+      }
+      await load();
+      // Store pre-apply criteria for undo (returned via throw on error, used by panel)
+      void preApplyCriteria; // captured in panel for undo
+    },
+    [item, updateBacklogItem, transitionStatus, load]
+  );
+
+  const handleUndoTriageSuggestions = useCallback(
+    async (preApplyCriteria: AcCriterion[]) => {
+      if (!item) return;
+      // Revert AC to the pre-apply snapshot
+      const updated = await updateBacklogItem(item.id, { acCriteria: preApplyCriteria });
+      if (!updated) {
+        throw new Error("Failed to undo — item may have been modified. Reload and try again.");
+      }
+      // Revert status back to idea
+      await transitionStatus(item.id, "idea");
+      await load();
+    },
+    [item, updateBacklogItem, transitionStatus, load]
+  );
+
   const handleGateApprove = useCallback(async () => {
     if (!item) return;
     setActionLoading(true);
     try {
-      const ok = await service.transitionStatus(item.id, "done");
+      const ok = await transitionStatus(item.id, "done");
       if (!ok) {
-        setError(service.lastError?.message ?? "Failed to approve — please try again.");
+        setError(lastError?.message ?? "Failed to approve — please try again.");
         return;
       }
       await load();
     } finally {
       setActionLoading(false);
     }
-  }, [item, service, load]);
+  }, [item, transitionStatus, lastError, load]);
 
   const handleGateReopen = useCallback(async () => {
     if (!item) return;
     setActionLoading(true);
     try {
-      await service.transitionStatus(item.id, "in_progress");
+      await transitionStatus(item.id, "in_progress");
       await load();
     } finally {
       setActionLoading(false);
     }
-  }, [item, service, load]);
+  }, [item, transitionStatus, load]);
 
   const handleGateOverride = useCallback(
     async (reason: string) => {
@@ -205,13 +269,15 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           setError("No review session found — cannot override verdict.");
           return;
         }
-        await service.overrideVerdict(reviewSession.entityId, reason, "done");
+        await overrideVerdict(reviewSession.entityId, reason, "done");
         await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Override failed.");
       } finally {
         setActionLoading(false);
       }
     },
-    [item, service, load]
+    [item, overrideVerdict, load]
   );
 
   const handleGateSkip = useCallback(async () => {
@@ -220,38 +286,60 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     try {
       const reviewSession = item.linkedSessions.filter((s) => s.role === "review").at(-1);
       if (reviewSession) {
-        await service.overrideVerdict(reviewSession.entityId, "Gate skipped by user", "done");
+        await overrideVerdict(reviewSession.entityId, "Gate skipped by user", "done");
       } else {
         // No review session yet — direct transition (item.skipReviewGate path)
-        const ok = await service.transitionStatus(item.id, "done");
+        const ok = await transitionStatus(item.id, "done");
         if (!ok) {
-          setError(service.lastError?.message ?? "Failed to skip gate — please try again.");
+          setError(lastError?.message ?? "Failed to skip gate — please try again.");
           return;
         }
       }
       await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Skip gate failed.");
     } finally {
       setActionLoading(false);
     }
-  }, [item, service, load]);
+  }, [item, overrideVerdict, transitionStatus, lastError, load]);
 
   if (loading) {
     return (
-      <div className={styles.container} data-testid="backlog-item-detail">
+      <article className={styles.container} data-testid="backlog-item-detail">
+        {onClose && (
+          <div className={styles.header}>
+            <div className={styles.headerRow}>
+              <span />
+              <div className={styles.headerActions}>
+                <button className={styles.closeButton} onClick={onClose} aria-label="Close">×</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className={styles.loadingState} role="status" aria-label="Loading backlog item">
           Loading…
         </div>
-      </div>
+      </article>
     );
   }
 
-  if (error || !item) {
+  if (!item) {
     return (
-      <div className={styles.container} data-testid="backlog-item-detail">
+      <article className={styles.container} data-testid="backlog-item-detail">
+        {onClose && (
+          <div className={styles.header}>
+            <div className={styles.headerRow}>
+              <span />
+              <div className={styles.headerActions}>
+                <button className={styles.closeButton} onClick={onClose} aria-label="Close">×</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className={styles.errorState} role="alert">
           {error ?? "Item not found."}
         </div>
-      </div>
+      </article>
     );
   }
 
@@ -259,43 +347,86 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     item.status === "ready" &&
     (item.skipPlanning || item.planApproved);
 
+  if (editMode) {
+    return (
+      <article
+        className={styles.container}
+        data-testid="backlog-item-detail"
+        aria-label={`Edit backlog item: ${item.title}`}
+      >
+        <div className={styles.header}>
+          <div className={styles.headerRow}>
+            <div className={styles.titleGroup}>
+              <h2 className={styles.itemTitle}>{item.title}</h2>
+            </div>
+            <div className={styles.headerActions}>
+              <button
+                className={styles.closeButton}
+                onClick={() => setEditMode(false)}
+                aria-label="Cancel editing"
+                data-testid="backlog-detail-cancel-edit"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className={styles.scrollArea}>
+          <BacklogItemForm
+            initialValues={item}
+            onSubmit={handleUpdateItem}
+            onCancel={() => setEditMode(false)}
+          />
+        </div>
+      </article>
+    );
+  }
+
   return (
     <article
       className={styles.container}
       data-testid="backlog-item-detail"
       aria-label={`Backlog item: ${item.title}`}
     >
-      <div className={styles.scrollArea}>
-        {/* Header */}
-        <div className={styles.header}>
-          <div className={styles.headerRow}>
-            <div className={styles.titleGroup}>
-              <h2 className={styles.itemTitle}>{item.title}</h2>
-              <div className={styles.metaRow}>
-                <span
-                  className={`${styles.statusBadge} ${STATUS_CLASS[item.status]}`}
-                  aria-label={`Status: ${STATUS_LABELS[item.status]}`}
-                >
-                  {STATUS_LABELS[item.status]}
+      {/* Sticky header — always visible regardless of scroll */}
+      <div className={styles.header}>
+        <div className={styles.headerRow}>
+          <div className={styles.titleGroup}>
+            <h2 className={styles.itemTitle}>{item.title}</h2>
+            <div className={styles.metaRow}>
+              <span
+                className={`${styles.statusBadge} ${getStatusClass(item.status)}`}
+                aria-label={`Status: ${getStatusLabel(item.status)}`}
+              >
+                {getStatusLabel(item.status)}
+              </span>
+              <span
+                className={styles.priorityBadge}
+                aria-label={`Priority: ${PRIORITY_LABELS[item.priority] ?? "Unknown"}`}
+              >
+                {PRIORITY_LABELS[item.priority] ?? "P?"}
+              </span>
+              {item.createdAt && (
+                <span className={styles.dateMeta}>
+                  Created {formatDate(item.createdAt)}
                 </span>
-                <span
-                  className={styles.priorityBadge}
-                  aria-label={`Priority: ${PRIORITY_LABELS[item.priority] ?? "Unknown"}`}
-                >
-                  {PRIORITY_LABELS[item.priority] ?? "P?"}
+              )}
+              {item.updatedAt && (
+                <span className={styles.dateMeta}>
+                  · Updated {formatDate(item.updatedAt)}
                 </span>
-                {item.createdAt && (
-                  <span className={styles.dateMeta}>
-                    Created {formatDate(item.createdAt)}
-                  </span>
-                )}
-                {item.updatedAt && (
-                  <span className={styles.dateMeta}>
-                    · Updated {formatDate(item.updatedAt)}
-                  </span>
-                )}
-              </div>
+              )}
             </div>
+          </div>
+          <div className={styles.headerActions}>
+            <button
+              className={styles.editButton}
+              onClick={() => setEditMode(true)}
+              aria-label="Edit item"
+              data-testid="backlog-detail-edit"
+            >
+              Edit
+            </button>
             {onClose && (
               <button
                 className={styles.closeButton}
@@ -308,6 +439,22 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             )}
           </div>
         </div>
+      </div>
+
+      <div className={styles.scrollArea}>
+        {/* Inline action error banner */}
+        {error && (
+          <div className={styles.errorBanner} role="alert">
+            <span>{error}</span>
+            <button
+              className={styles.errorBannerDismiss}
+              onClick={() => setError(null)}
+              aria-label="Dismiss error"
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         {/* Triage Progress Indicator */}
         {(item.status === "idea" || item.status === "ready") && item.triageStatus === "running" && (
@@ -318,6 +465,30 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               onCancel={handleCancelTriage}
               compact={false}
             />
+          </div>
+        )}
+
+        {/* Triage Review Panel */}
+        {item.triageStatus === "completed" &&
+          item.status === "idea" &&
+          item.triageResult && (
+            <div className={styles.section} aria-live="polite">
+              <TriageReviewPanel
+                item={item}
+                triageResult={item.triageResult}
+                onApply={handleApplyTriageSuggestions}
+                onUndoApply={handleUndoTriageSuggestions}
+                onSkip={() => { void load(); }}
+              />
+            </div>
+          )}
+
+        {/* Triage failed banner */}
+        {item.triageStatus === "failed" && item.status === "idea" && (
+          <div className={styles.section}>
+            <div role="alert" style={{ color: "var(--error)", fontSize: "0.875rem" }}>
+              Triage encountered an error. Trigger triage manually to retry.
+            </div>
           </div>
         )}
 
@@ -372,6 +543,16 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 >
                   Mark Ready
                 </button>
+                {item.triageStatus !== "running" && (
+                  <button
+                    className={styles.actionButton}
+                    onClick={() => handleAction("trigger_triage")}
+                    disabled={actionLoading}
+                    data-testid="backlog-action-trigger-triage"
+                  >
+                    Trigger Triage
+                  </button>
+                )}
               </>
             )}
 
@@ -480,7 +661,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             <h3 className={styles.sectionTitle}>Sessions ({item.linkedSessions.length})</h3>
             <div className={styles.sessionList} role="list" aria-label="Linked sessions">
               {item.linkedSessions.map((s) => (
-                <div key={s.sessionId} className={styles.sessionRow} role="listitem">
+                <a
+                  key={s.sessionId}
+                  className={styles.sessionRow}
+                  href={`/?session=${s.sessionId}`}
+                  role="listitem"
+                  title="Open in terminal"
+                  style={{ textDecoration: "none" }}
+                >
                   <span className={styles.sessionId} title={s.sessionId}>
                     {s.sessionId}
                   </span>
@@ -488,9 +676,22 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   {s.startedAt && (
                     <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
                   )}
-                </div>
+                </a>
               ))}
             </div>
+
+            {/* Session monitor for the most recent active session */}
+            {(() => {
+              const active = [...item.linkedSessions].reverse().find((s) => !s.endedAt);
+              if (!active) return null;
+              return (
+                <SessionMonitor
+                  sessionId={active.sessionId}
+                  sessionRole={active.role}
+                  isRunning={!active.endedAt}
+                />
+              );
+            })()}
           </div>
         )}
 
