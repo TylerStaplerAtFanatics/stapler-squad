@@ -180,16 +180,16 @@ func (hl *HistoryLinker) run(ctx context.Context) {
 // so that UUID changes (e.g., /clear creating a new conversation) are detected
 // promptly rather than waiting for the next cold restore.
 func (hl *HistoryLinker) ScanAll() {
+	// Hold the write lock for both the backoff clear and the snapshot so there
+	// is no window where a concurrent AddInstance call adds an instance that is
+	// missed by the snapshot while the backoffs map is already cleared.
 	hl.mu.Lock()
 	for k := range hl.backoffs {
 		delete(hl.backoffs, k)
 	}
-	hl.mu.Unlock()
-
-	hl.mu.RLock()
 	snapshot := make([]*Instance, len(hl.instances))
 	copy(snapshot, hl.instances)
-	hl.mu.RUnlock()
+	hl.mu.Unlock()
 
 	for _, inst := range snapshot {
 		hl.correlateSession(inst, true)
