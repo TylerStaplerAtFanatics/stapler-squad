@@ -44,6 +44,10 @@ interface TerminalOutputProps {
   isExternal?: boolean;
   tmuxSessionName?: string; // For external sessions, the tmux session name
   isVisible?: boolean; // When provided, triggers fit+focus on visibility change
+  /** When set, routes the terminal stream to a custom shell PTY. */
+  shellId?: string;
+  /** Callback invoked when a ShellStatusUpdate is received for this shell. */
+  onShellStatusChange?: (status: "running" | "stopped" | "error", exitCode?: number) => void;
 }
 
 // Minimum dimensions considered "real" — anything smaller is a transient value
@@ -59,7 +63,7 @@ const MIN_ROWS = 10;
 const XTERM_DEFAULT_COLS = 80;
 const XTERM_DEFAULT_ROWS = 24;
 
-export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSessionName, isVisible }: TerminalOutputProps) {
+export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSessionName, isVisible, shellId, onShellStatusChange }: TerminalOutputProps) {
   const { track } = useAnalytics();
   const xtermRef = useRef<XtermTerminalHandle | null>(null);
   const terminalContainerRef = useRef<HTMLDivElement>(null);
@@ -384,6 +388,8 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
   const { isConnected, error, sendInput, sendInputWithEcho, resize, connect, disconnect, scrollbackLoaded, requestScrollback, sendFlowControl, getIsApplyingState, sspNegotiated, startRecording, stopRecording, terminalState } = useTerminalStream({
     baseUrl,
     sessionId: effectiveSessionId,
+    shellId,
+    onShellStatusChange,
     getTerminal,
     scrollbackLines: 1000,
     autoConnect: false,
