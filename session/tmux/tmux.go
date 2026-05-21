@@ -1907,12 +1907,22 @@ func CleanupSessionsOnServer(cmdExec executor.Executor, serverSocket string) err
 // sanitizeUTF8String converts raw bytes to valid UTF-8 string, replacing invalid sequences
 // This prevents xterm.js parsing errors from invalid byte sequences while maintaining
 // terminal formatting and color information
+// sanitizerPool reuses strings.Builder allocations across sanitizeUTF8String calls.
+// Pre-grown to 4KB to cover typical pane content without reallocation.
+var sanitizerPool = sync.Pool{New: func() any {
+	b := new(strings.Builder)
+	b.Grow(4096)
+	return b
+}}
+
 func sanitizeUTF8String(rawBytes []byte) string {
 	if len(rawBytes) == 0 {
 		return ""
 	}
 
-	var result strings.Builder
+	result := sanitizerPool.Get().(*strings.Builder)
+	result.Reset()
+	defer sanitizerPool.Put(result)
 	inEscape := false
 
 	for i := 0; i < len(rawBytes); {
