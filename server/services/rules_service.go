@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
@@ -82,19 +83,21 @@ func (rs *RulesService) UpsertApprovalRule(
 	}
 
 	spec := RuleSpec{
-		ID:             r.Id,
-		Name:           r.Name,
-		ToolName:       r.ToolName,
-		ToolPattern:    r.ToolPattern,
-		CommandPattern: r.CommandPattern,
-		FilePattern:    r.FilePattern,
-		Decision:       autoDecisionToString(r.Decision),
-		RiskLevel:      r.RiskLevel,
-		Reason:         r.Reason,
-		Alternative:    r.Alternative,
-		Priority:       int(r.Priority),
-		Enabled:        r.Enabled,
-		Source:         "user",
+		ID:                  r.Id,
+		Name:                r.Name,
+		ToolName:            r.ToolName,
+		ToolPattern:         r.ToolPattern,
+		CommandPattern:      r.CommandPattern,
+		FilePattern:         r.FilePattern,
+		CriteriaPrograms:    r.CriteriaPrograms,
+		CriteriaSubcommands: r.CriteriaSubcommands,
+		Decision:            autoDecisionToString(r.Decision),
+		RiskLevel:           r.RiskLevel,
+		Reason:              r.Reason,
+		Alternative:         r.Alternative,
+		Priority:            int(r.Priority),
+		Enabled:             r.Enabled,
+		Source:              "user",
 	}
 	if r.CreatedAt != nil {
 		spec.CreatedAt = r.CreatedAt.AsTime()
@@ -179,6 +182,186 @@ func (rs *RulesService) GetApprovalAnalytics(
 	return connect.NewResponse(protoResp), nil
 }
 
+// GetProgramAnalytics returns drill-down analytics for a single program.
+// Implements AC-7 (subcommand breakdown, examples, trend).
+func (rs *RulesService) GetProgramAnalytics(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetProgramAnalyticsRequest],
+) (*connect.Response[sessionv1.GetProgramAnalyticsResponse], error) {
+	program := strings.TrimSpace(req.Msg.Program)
+	if program == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("program is required"))
+	}
+
+	days := 7
+	if req.Msg.WindowDays != nil {
+		days = int(*req.Msg.WindowDays)
+		if days <= 0 || days > 90 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("window_days must be 1–90"))
+		}
+	}
+	since := time.Now().AddDate(0, 0, -days)
+
+	// AC-4: subcommand breakdown (SQL GROUP BY)
+	breakdownRows, err := rs.analyticsStore.GetSubcommandBreakdown(ctx, program, since)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("subcommand breakdown: %w", err))
+	}
+
+	// AC-5: recent examples (up to 20, all subcommands)
+	examples, err := rs.analyticsStore.ListRecentCommands(ctx, program, "", since, 20)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recent examples: %w", err))
+	}
+
+	// AC-6: trend (all rows for program in window → Go-level daily bucketing)
+	entries, err := rs.analyticsStore.LoadProgramWindow(ctx, program, since)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("program window: %w", err))
+	}
+	dailyBuckets := ComputeDailyBuckets(entries)
+
+	// Derive category from entries (use first non-empty value)
+	category := ""
+	for _, e := range entries {
+		if e.CommandCategory != "" {
+			category = e.CommandCategory
+			break
+		}
+	}
+
+	// Collect known subcommands for rule coverage check (AC-10 / has_rule_coverage).
+	knownSubcmds := make([]string, 0, len(breakdownRows))
+	for _, row := range breakdownRows {
+		knownSubcmds = append(knownSubcmds, row.Subcommand)
+	}
+	coveredSubcmds := rs.coveredSubcommands(program, knownSubcmds)
+
+	// Aggregate per-subcommand breakdown into proto messages
+	aggr := make(map[string]map[string]int32) // subcommand → decision → count
+	for _, row := range breakdownRows {
+		sub := row.Subcommand // may be ""
+		if aggr[sub] == nil {
+			aggr[sub] = make(map[string]int32)
+		}
+		aggr[sub][row.Decision] += int32(row.Count) //#nosec G115 — count fits int32
+	}
+
+	subProtos := make([]*sessionv1.SubcommandBreakdownProto, 0, len(aggr))
+	for sub, decMap := range aggr {
+		p := &sessionv1.SubcommandBreakdownProto{
+			Subcommand:        sub,
+			AutoAllow:         decMap["auto_allow"],
+			AutoDeny:          decMap["auto_deny"],
+			Escalate:          decMap["escalate"],
+			ManualAllow:       decMap["manual_allow"],
+			ManualDeny:        decMap["manual_deny"],
+			HasRuleCoverage:   coveredSubcmds[sub],
+			SuggestedRuleHint: sub,
+		}
+		p.Total = p.AutoAllow + p.AutoDeny + p.Escalate + p.ManualAllow + p.ManualDeny
+		subProtos = append(subProtos, p)
+	}
+	// Sort by total descending
+	sort.Slice(subProtos, func(i, j int) bool {
+		return subProtos[i].Total > subProtos[j].Total
+	})
+
+	// Build daily trend proto
+	trendProtos := make([]*sessionv1.DailyBucketProto, 0, len(dailyBuckets))
+	for _, b := range dailyBuckets {
+		trendProtos = append(trendProtos, &sessionv1.DailyBucketProto{
+			Date:        b.Date,
+			AutoAllow:   int32(b.AutoAllow),
+			AutoDeny:    int32(b.AutoDeny),
+			Escalate:    int32(b.Escalate),
+			ManualAllow: int32(b.ManualAllow),
+			ManualDeny:  int32(b.ManualDeny),
+			Total:       int32(b.Total),
+		})
+	}
+
+	return connect.NewResponse(&sessionv1.GetProgramAnalyticsResponse{
+		Program:        program,
+		Category:       category,
+		Subcommands:    subProtos,
+		RecentExamples: examples,
+		Trend:          trendProtos,
+	}), nil
+}
+
+// coveredSubcommands returns a map of subcommand → true for all known subcommands
+// of the given program that are covered by at least one existing rule.
+// knownSubcmds is the list of subcommand strings observed in the analytics window;
+// it is used to test regex-based CommandPatterns against synthetic "<program> <subcommand>" strings.
+func (rs *RulesService) coveredSubcommands(program string, knownSubcmds []string) map[string]bool {
+	specs := rs.allRuleSpecs()
+	covered := make(map[string]bool)
+	for _, spec := range specs {
+		if !spec.Enabled {
+			continue
+		}
+		// Check for Bash tool match (exact or category)
+		isBashTool := strings.EqualFold(spec.ToolName, "Bash")
+		isBashCat := strings.EqualFold(spec.ToolCategory, "bash")
+		if !isBashTool && !isBashCat && spec.ToolName != "" {
+			continue
+		}
+		// Criteria-based matching: check Programs + Subcommands directly.
+		if len(spec.CriteriaPrograms) > 0 {
+			programMatched := false
+			for _, p := range spec.CriteriaPrograms {
+				if strings.EqualFold(p, program) {
+					programMatched = true
+					break
+				}
+			}
+			if programMatched {
+				if len(spec.CriteriaSubcommands) == 0 {
+					// No subcommand restriction — covers all subcommands.
+					covered[""] = true
+					for _, sub := range knownSubcmds {
+						covered[sub] = true
+					}
+				} else {
+					for _, sub := range spec.CriteriaSubcommands {
+						covered[sub] = true
+					}
+				}
+			}
+			continue
+		}
+
+		if spec.CommandPattern == "" {
+			// A rule with no CommandPattern matches all commands — every subcommand covered.
+			covered[""] = true
+			continue
+		}
+		// Compile the pattern once; skip invalid patterns rather than panicking.
+		re, err := regexp.Compile(spec.CommandPattern)
+		if err != nil {
+			continue
+		}
+		// Test each known subcommand against a synthetic "<program> <subcommand>" string.
+		// This correctly handles regex-style patterns (e.g. \bgit\b.*\bpush\b) that the
+		// previous strings.Fields tokenizer could not parse.
+		for _, sub := range knownSubcmds {
+			synthetic := program
+			if sub != "" {
+				synthetic = program + " " + sub
+			}
+			if re.MatchString(synthetic) {
+				covered[sub] = true
+			}
+		}
+		// Also check whether the pattern matches the bare program name (covers all subcommands).
+		if re.MatchString(program) {
+			covered[""] = true
+		}
+	}
+	return covered
+}
+
 // allRuleSpecs returns user rules + seed rules as specs (for listing).
 func (rs *RulesService) allRuleSpecs() []RuleSpec {
 	var all []RuleSpec
@@ -219,19 +402,21 @@ func (rs *RulesService) rebuildClassifier() {
 
 func specToProto(spec RuleSpec) *sessionv1.ApprovalRuleProto {
 	p := &sessionv1.ApprovalRuleProto{
-		Id:             spec.ID,
-		Name:           spec.Name,
-		ToolName:       spec.ToolName,
-		ToolPattern:    spec.ToolPattern,
-		CommandPattern: spec.CommandPattern,
-		FilePattern:    spec.FilePattern,
-		Decision:       stringToAutoDecision(spec.Decision),
-		RiskLevel:      spec.RiskLevel,
-		Reason:         spec.Reason,
-		Alternative:    spec.Alternative,
-		Priority:       int32(spec.Priority),
-		Enabled:        spec.Enabled,
-		Source:         spec.Source,
+		Id:                  spec.ID,
+		Name:                spec.Name,
+		ToolName:            spec.ToolName,
+		ToolPattern:         spec.ToolPattern,
+		CommandPattern:      spec.CommandPattern,
+		FilePattern:         spec.FilePattern,
+		CriteriaPrograms:    spec.CriteriaPrograms,
+		CriteriaSubcommands: spec.CriteriaSubcommands,
+		Decision:            stringToAutoDecision(spec.Decision),
+		RiskLevel:           spec.RiskLevel,
+		Reason:              spec.Reason,
+		Alternative:         spec.Alternative,
+		Priority:            int32(spec.Priority),
+		Enabled:             spec.Enabled,
+		Source:              spec.Source,
 	}
 	if !spec.CreatedAt.IsZero() {
 		p.CreatedAt = timestamppb.New(spec.CreatedAt)
@@ -260,6 +445,10 @@ func ruleToSpec(r classifier.Rule) RuleSpec {
 	}
 	if r.FilePattern != nil {
 		spec.FilePattern = r.FilePattern.String()
+	}
+	if r.Criteria != nil {
+		spec.CriteriaPrograms = r.Criteria.Programs
+		spec.CriteriaSubcommands = r.Criteria.Subcommands
 	}
 	return spec
 }
