@@ -74,7 +74,7 @@ func seedInstance(t *testing.T, storage *session.Storage, title string) {
 	inst := &session.Instance{
 		Title:   title,
 		Path:    "/tmp/test-workspace",
-		Status:  session.Active,
+		Status:  session.Stopped, // Stopped avoids tmux Start() in FromInstanceData
 		Program: "claude",
 	}
 	require.NoError(t, storage.AddInstance(inst))
