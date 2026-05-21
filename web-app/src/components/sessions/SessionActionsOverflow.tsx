@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
 import { MoreHorizontal } from "lucide-react";
 import type { Session, CheckpointProto } from "@/gen/session/v1/types_pb";
@@ -27,6 +27,11 @@ import {
   errorMessage,
 } from "./SessionActionsOverflow.css";
 
+export interface SessionActionsOverflowHandle {
+  /** Open the overflow menu anchored at the given viewport coordinates. */
+  openAt(x: number, y: number): void;
+}
+
 export interface SessionActionsOverflowProps {
   session: Session;
   /** Show Resume/Pause as a shortcut button before the ··· */
@@ -35,6 +40,10 @@ export interface SessionActionsOverflowProps {
   buttonClassName?: string;
   onResume?: () => void;
   onPause?: () => void;
+  /** Hibernate an Active session (writes checkpoint, kills process). */
+  onHibernate?: () => void;
+  /** Resume a Hibernated session (re-launches process). */
+  onResumeFromHibernation?: () => void;
   onDelete?: () => Promise<void> | void;
   onRestart?: (sessionId: string) => Promise<boolean | void>;
   onClone?: () => void;
@@ -51,12 +60,14 @@ export interface SessionActionsOverflowProps {
   onWorkspaceSwitchRequest?: () => void;
 }
 
-export function SessionActionsOverflow({
+export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, SessionActionsOverflowProps>(function SessionActionsOverflow({
   session,
   showPrimaryAction = false,
   buttonClassName,
   onResume,
   onPause,
+  onHibernate,
+  onResumeFromHibernation,
   onDelete,
   onRestart,
   onClone,
@@ -69,10 +80,12 @@ export function SessionActionsOverflow({
   onUpdateTags,
   onRenameRequest,
   onWorkspaceSwitchRequest,
-}: SessionActionsOverflowProps) {
+}: SessionActionsOverflowProps, ref) {
   const isPaused = session.status === SessionStatus.PAUSED;
   const isReady = session.status === SessionStatus.NEEDS_APPROVAL;
-  const isRunning = session.status === SessionStatus.RUNNING;
+  const isRunning = session.status === SessionStatus.ACTIVE;  // ACTIVE covers legacy RUNNING (same wire value via allow_alias)
+  const isHibernated = session.status === SessionStatus.HIBERNATED;
+  const isCreating = session.status === SessionStatus.CREATING;
 
   const [showOverflow, setShowOverflow] = useState(false);
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 });
@@ -124,6 +137,13 @@ export function SessionActionsOverflow({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showOverflow]);
+
+  useImperativeHandle(ref, () => ({
+    openAt(x: number, y: number) {
+      setMenuPos({ top: y, right: window.innerWidth - x });
+      setShowOverflow(true);
+    },
+  }), []);
 
   const openMenu = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -321,7 +341,7 @@ export function SessionActionsOverflow({
             <span aria-hidden="true">▶️</span> Resume
           </button>
         )}
-        {showPrimaryAction && isRunning && (
+        {showPrimaryAction && isRunning && !isCreating && (
           <button
             className={actionButton}
             onClick={(e) => { e.stopPropagation(); onPause?.(); }}
@@ -364,12 +384,28 @@ export function SessionActionsOverflow({
                   <span aria-hidden="true">▶️</span> Resume
                 </button>
               )}
-              {!isRunning && onPause && (
+              {!isRunning && !isCreating && onPause && (
                 <button role="menuitem" className={overflowMenuItem}
                   onClick={(e) => { e.stopPropagation(); close(); onPause(); }}
                   aria-label={`Pause session ${session.title}`}
                 >
                   <span aria-hidden="true">⏸️</span> Pause
+                </button>
+              )}
+              {isRunning && onHibernate && (
+                <button role="menuitem" className={overflowMenuItem}
+                  onClick={(e) => { e.stopPropagation(); close(); onHibernate(); }}
+                  aria-label={`Hibernate session ${session.title}`}
+                >
+                  <span aria-hidden="true">❄️</span> Hibernate
+                </button>
+              )}
+              {isHibernated && onResumeFromHibernation && (
+                <button role="menuitem" className={overflowMenuItem}
+                  onClick={(e) => { e.stopPropagation(); close(); onResumeFromHibernation(); }}
+                  aria-label={`Resume hibernated session ${session.title}`}
+                >
+                  <span aria-hidden="true">▶️</span> Resume
                 </button>
               )}
               {onRenameRequest && (
@@ -380,7 +416,7 @@ export function SessionActionsOverflow({
                   <span aria-hidden="true">✏️</span> Rename
                 </button>
               )}
-              {onRestart && (
+              {onRestart && !isCreating && (
                 <button
                   ref={restartTriggerRef}
                   role="menuitem"
@@ -485,4 +521,4 @@ export function SessionActionsOverflow({
       </div>
     </>
   );
-}
+});

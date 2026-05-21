@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/session/detection"
 )
 
 const (
@@ -204,13 +205,15 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 
 		// After the initial prompt is sent, watch for NeedsApproval to handle
 		// directory-access dialogs that AutoYes (-y) doesn't cover.
-		if st == NeedsApproval {
-			if previewErr == nil && output != "" && shouldApprovePrompt(output, allowedPath) {
-				if err := inst.SendKeys("1\n"); err != nil {
-					log.Warn("SessionDriver: failed to approve prompt",
-						"session", inst.Title,
-						"err", err,
-					)
+		if mgr := inst.GetStatusManager(); mgr != nil {
+			if si := mgr.GetStatus(inst); si.ClaudeStatus == detection.StatusNeedsApproval {
+				if previewErr == nil && output != "" && shouldApprovePrompt(output, allowedPath) {
+					if err := inst.SendKeys("1\n"); err != nil {
+						log.Warn("SessionDriver: failed to approve prompt",
+							"session", inst.Title,
+							"err", err,
+						)
+					}
 				}
 			}
 		}

@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Session, SessionStatus, ReviewItem, InstanceType, RateLimitState, CheckpointProto } from "@/gen/session/v1/types_pb";
+import { Session, SessionStatus, SubStatus, ReviewItem, InstanceType, RateLimitState, CheckpointProto } from "@/gen/session/v1/types_pb";
 import { ReviewQueueBadge } from "./ReviewQueueBadge";
 import { StatusBadge } from "./StatusBadge";
+import { SubStatusChip } from "./SubStatusChip";
 import { GitHubBadge } from "./GitHubBadge";
 import { TagEditor } from "./TagEditor";
 import { useTerminalSnapshot } from "@/lib/hooks/useTerminalSnapshot";
@@ -78,6 +79,8 @@ interface SessionCardProps {
   onRunOneShot?: (sessionId: string) => Promise<void>;
   onSetRateLimitEnabled?: (sessionId: string, enabled: boolean) => void;
   onClearConversationState?: (sessionId: string) => Promise<boolean>;
+  onHibernate?: () => void;
+  onResumeFromHibernation?: () => void;
   selectMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: () => void;
@@ -104,6 +107,8 @@ export function SessionCard({
   onRunOneShot,
   onSetRateLimitEnabled,
   onClearConversationState,
+  onHibernate,
+  onResumeFromHibernation,
   selectMode = false,
   isSelected = false,
   onToggleSelect,
@@ -119,14 +124,16 @@ export function SessionCard({
   const inlineSavingRef = useRef(false);
   const [isSnapshotOpen, setIsSnapshotOpen] = useState(false);
 
-  // Only fetch snapshot for running sessions (paused/loading sessions have stale output)
-  const isSnapshotEnabled = session.status === SessionStatus.RUNNING && isSnapshotOpen;
+  // Only fetch snapshot for active sessions (creating/paused/loading sessions have stale output).
+  // SessionStatus.ACTIVE covers both ACTIVE and legacy RUNNING (same wire value = 1).
+  const isSnapshotEnabled = session.status === SessionStatus.ACTIVE && isSnapshotOpen;
+  const isCreating = session.status === SessionStatus.CREATING;
   const { html: snapshotHtml, isEmpty: snapshotIsEmpty, loading: snapshotLoadingState, error: snapshotErrorMsg } =
     useTerminalSnapshot(session.id, isSnapshotEnabled);
 
   const getStatusColor = (sessionStatus: SessionStatus): string => {
     switch (sessionStatus) {
-      case SessionStatus.RUNNING:
+      case SessionStatus.ACTIVE:  // includes RUNNING (same wire value = 1)
         return statusRunning;
       case SessionStatus.READY:
         return statusReady;
@@ -134,12 +141,14 @@ export function SessionCard({
         return statusPaused;
       case SessionStatus.LOADING:
         return statusLoading;
-      case SessionStatus.NEEDS_APPROVAL:
-        return statusNeedsApproval;
       case SessionStatus.CREATING:
         return statusLoading;
+      case SessionStatus.NEEDS_APPROVAL:
+        return statusNeedsApproval;
       case SessionStatus.STOPPED:
         return statusPaused;
+      case SessionStatus.HIBERNATED:
+        return statusPaused;  // no distinct style yet; reuses paused (session is idle/stopped)
       default:
         return statusUnknown;
     }
@@ -147,8 +156,8 @@ export function SessionCard({
 
   const getStatusText = (sessionStatus: SessionStatus): string => {
     switch (sessionStatus) {
-      case SessionStatus.RUNNING:
-        return "Running";
+      case SessionStatus.ACTIVE:  // includes RUNNING (same wire value = 1)
+        return "Active";
       case SessionStatus.READY:
         return "Ready";
       case SessionStatus.PAUSED:
@@ -158,9 +167,11 @@ export function SessionCard({
       case SessionStatus.NEEDS_APPROVAL:
         return "Needs Approval";
       case SessionStatus.CREATING:
-        return "Creating";
+        return "Starting…";
       case SessionStatus.STOPPED:
         return "Stopped";
+      case SessionStatus.HIBERNATED:
+        return "Hibernated";
       default:
         return "Unknown";
     }
@@ -431,6 +442,14 @@ export function SessionCard({
             {detectedStatus && (
               <StatusBadge detectedStatus={detectedStatus} context={detectedContext} />
             )}
+            {/* Sub-status chip from the proto sub_status field.
+                ACTIVE covers legacy RUNNING (same wire value via allow_alias).
+                Cast to number to bypass TS's duplicate-value narrowing for allow_alias enums. */}
+            {(session.status as number) === (SessionStatus.ACTIVE as number) &&
+              session.subStatus !== SubStatus.UNSPECIFIED &&
+              session.subStatus !== SubStatus.IDLE && (
+                <SubStatusChip subStatus={session.subStatus} />
+              )}
           </div>
         </div>
         {session.category && (
@@ -561,8 +580,20 @@ export function SessionCard({
           </div>
         )}
 
-        {/* Terminal snapshot preview — only for running sessions */}
-        {session.status === SessionStatus.RUNNING && (
+        {/* Creation progress spinner — only for Creating sessions */}
+        {isCreating && (
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0", color: "var(--text-secondary)", fontSize: "0.875rem" }}>
+            <span
+              role="status"
+              aria-label="Session is starting"
+              style={{ display: "inline-block", width: "14px", height: "14px", border: "2px solid var(--primary)", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }}
+            />
+            <span>{session.creationProgress || "Starting session..."}</span>
+          </div>
+        )}
+
+        {/* Terminal snapshot preview — only for active sessions (ACTIVE covers legacy RUNNING) */}
+        {session.status === SessionStatus.ACTIVE && (
           <div className={snapshotSection} onClick={(e) => e.stopPropagation()}>
             <button
               className={snapshotToggle}
@@ -615,6 +646,8 @@ export function SessionCard({
           showPrimaryAction
           onResume={onResume}
           onPause={onPause}
+          onHibernate={onHibernate}
+          onResumeFromHibernation={onResumeFromHibernation}
           onDelete={async () => {
             setIsDeleting(true);
             try { await onDelete?.(); } finally { setIsDeleting(false); }

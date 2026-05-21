@@ -2,11 +2,14 @@
 // +feature: review-queue-pr-creation
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useReviewQueueContext } from "@/lib/contexts/ReviewQueueContext";
 import { useApprovalsContext } from "@/lib/contexts/ApprovalsContext";
 import { useReviewQueueNavigation } from "@/lib/hooks/useReviewQueueNavigation";
+import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
 import { ReviewQueueBadge } from "./ReviewQueueBadge";
-import { Priority, AttentionReason, ReviewItem, WorkingState } from "@/gen/session/v1/types_pb";
+import { SuggestedRuleCard } from "./SuggestedRuleCard";
+import { Priority, AttentionReason, ReviewItem, WorkingState, SuggestionSource } from "@/gen/session/v1/types_pb";
 import {
   panel,
   header,
@@ -59,6 +62,10 @@ import {
   filterToggle,
   filterToggleActive,
   filterClear,
+  modalOverlay,
+  modalContent,
+  ruleModalContent,
+  divergedBadge,
 } from "./ReviewQueuePanel.css";
 import { Button } from "@/components/ui";
 
@@ -104,6 +111,12 @@ export function ReviewQueuePanel({
   const [prModal, setPrModal] = useState<{ sessionId: string; prompt: string } | null>(null);
   const [prRunning, setPrRunning] = useState(false);
   const [prResult, setPrResult] = useState<{ prUrl?: string; error?: string } | null>(null);
+
+  // Epic 4: Create Rule modal state
+  // activeRuleItemId tracks which item's "Create Rule" modal is currently open.
+  const [activeRuleItemId, setActiveRuleItemId] = useState<string | null>(null);
+  const [ruleSaved, setRuleSaved] = useState(false);
+  const { suggestions, loading: ruleLoading, error: ruleError, generate: generateRule, clear: clearRule } = useGenerateRule();
   const [priorityFilter, setPriorityFilter] = useState<Priority | undefined>(
     undefined
   );
@@ -662,6 +675,27 @@ export function ReviewQueuePanel({
                       >
                         ✗ Deny
                       </Button>
+                      {queueItem.metadata?.["tool_input_command"] && (
+                        <Button
+                          intent="ghost"
+                          size="md"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRuleSaved(false);
+                            setActiveRuleItemId(queueItem.sessionId);
+                            void generateRule({
+                              source: SuggestionSource.COMMAND_SAMPLE,
+                              commandSample: queueItem.metadata!["tool_input_command"],
+                              toolNameFilter: queueItem.metadata?.["tool_name"] ?? "",
+                            });
+                          }}
+                          title="Generate an auto-approval rule from this command"
+                          aria-label="Create Rule"
+                          data-testid={`create-rule-${queueItem.sessionId}`}
+                        >
+                          ✦ Create Rule
+                        </Button>
+                      )}
                     </>
                   )}
                   {/* Skip button: only shown for non-approval items.
@@ -692,16 +726,7 @@ export function ReviewQueuePanel({
                     onRunOneShot && (
                       <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                         {queueItem.branchDivergedFromBase && (
-                          <span
-                            style={{
-                              fontSize: "0.75rem",
-                              padding: "2px 6px",
-                              background: "var(--warning-bg)",
-                              color: "var(--warning)",
-                              borderRadius: "4px",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
+                          <span className={divergedBadge}>
                             ⚠ Diverged from main
                           </span>
                         )}
@@ -729,17 +754,9 @@ export function ReviewQueuePanel({
       </div>
 
       {/* S3-3: Create PR confirmation modal */}
-      {prModal && (
+      {prModal && createPortal(
         <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "var(--overlay-background)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-          }}
+          className={modalOverlay}
           onClick={() => {
             if (!prRunning) {
               setPrModal(null);
@@ -748,17 +765,7 @@ export function ReviewQueuePanel({
           }}
         >
           <div
-            style={{
-              background: "var(--modal-background)",
-              border: "1px solid var(--modal-border)",
-              borderRadius: "8px",
-              padding: "1.5rem",
-              maxWidth: "520px",
-              width: "90%",
-              display: "flex",
-              flexDirection: "column",
-              gap: "1rem",
-            }}
+            className={modalContent}
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -841,7 +848,100 @@ export function ReviewQueuePanel({
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Epic 4: Create Rule modal */}
+      {activeRuleItemId && createPortal(
+        <div
+          className={modalOverlay}
+          onClick={() => {
+            setActiveRuleItemId(null);
+            clearRule();
+          }}
+        >
+          <div
+            className={ruleModalContent}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Create Auto-Approval Rule"
+            data-testid="create-rule-modal"
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0, fontSize: "1.125rem", fontWeight: 600, color: "var(--text-primary)" }}>
+                Create Auto-Approval Rule
+              </h3>
+              <button
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "var(--text-secondary)",
+                  fontSize: "1.25rem",
+                  padding: "0.25rem",
+                  lineHeight: 1,
+                }}
+                onClick={() => {
+                  setActiveRuleItemId(null);
+                  clearRule();
+                }}
+                aria-label="Close"
+                data-testid="create-rule-modal-close"
+              >
+                ✕
+              </button>
+            </div>
+
+            {ruleSaved && (
+              <p
+                role="status"
+                style={{ margin: 0, fontSize: "0.875rem", color: "var(--success)" }}
+                data-testid="rule-saved-indicator"
+              >
+                ✓ Rule saved
+              </p>
+            )}
+
+            {ruleLoading && (
+              <p
+                style={{ margin: 0, fontSize: "0.875rem", color: "var(--text-secondary)", fontStyle: "italic" }}
+                data-testid="create-rule-loading"
+              >
+                ⏳ Generating suggestion…
+              </p>
+            )}
+
+            {ruleError && !ruleLoading && (
+              <p role="alert" style={{ margin: 0, fontSize: "0.875rem", color: "var(--error)" }}>
+                ✗ {ruleError.message}
+              </p>
+            )}
+
+            {!ruleLoading && suggestions.length > 0 && (
+              <SuggestedRuleCard
+                suggestion={suggestions[0]}
+                onAccept={() => {
+                  setRuleSaved(true);
+                  setActiveRuleItemId(null);
+                  clearRule();
+                }}
+                onDiscard={() => {
+                  setActiveRuleItemId(null);
+                  clearRule();
+                }}
+              />
+            )}
+
+            {!ruleLoading && suggestions.length === 0 && !ruleError && (
+              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--text-secondary)", fontStyle: "italic" }}>
+                Waiting for suggestion…
+              </p>
+            )}
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );
