@@ -9,6 +9,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/analyticsevent"
 	"github.com/tstapler/stapler-squad/session/ent/approvalrule"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
 	"github.com/tstapler/stapler-squad/session/ent/classificationanalytics"
 	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
 	"github.com/tstapler/stapler-squad/session/ent/claudesession"
@@ -136,6 +137,20 @@ func init() {
 	backlogitemDescID := backlogitemFields[0].Descriptor()
 	// backlogitem.DefaultID holds the default value on creation for the id field.
 	backlogitem.DefaultID = backlogitemDescID.Default.(func() uuid.UUID)
+	backlogstatuseventFields := schema.BacklogStatusEvent{}.Fields()
+	_ = backlogstatuseventFields
+	// backlogstatuseventDescTriggeredBy is the schema descriptor for triggered_by field.
+	backlogstatuseventDescTriggeredBy := backlogstatuseventFields[4].Descriptor()
+	// backlogstatusevent.DefaultTriggeredBy holds the default value on creation for the triggered_by field.
+	backlogstatusevent.DefaultTriggeredBy = backlogstatuseventDescTriggeredBy.Default.(string)
+	// backlogstatuseventDescCreatedAt is the schema descriptor for created_at field.
+	backlogstatuseventDescCreatedAt := backlogstatuseventFields[5].Descriptor()
+	// backlogstatusevent.DefaultCreatedAt holds the default value on creation for the created_at field.
+	backlogstatusevent.DefaultCreatedAt = backlogstatuseventDescCreatedAt.Default.(func() time.Time)
+	// backlogstatuseventDescID is the schema descriptor for id field.
+	backlogstatuseventDescID := backlogstatuseventFields[0].Descriptor()
+	// backlogstatusevent.DefaultID holds the default value on creation for the id field.
+	backlogstatusevent.DefaultID = backlogstatuseventDescID.Default.(func() uuid.UUID)
 	classificationanalyticsFields := schema.ClassificationAnalytics{}.Fields()
 	_ = classificationanalyticsFields
 	// classificationanalyticsDescAnalyticsID is the schema descriptor for analytics_id field.

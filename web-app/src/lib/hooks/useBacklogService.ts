@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useEffect, useState } from "react";
+import { useCallback, useRef, useEffect, useState, useMemo } from "react";
 import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
@@ -9,19 +9,17 @@ import {
   BacklogItem as BacklogItemProto,
   AcCriterion as AcCriterionProto,
   ItemSession as ItemSessionProto,
+  TriageTask as TriageTaskProto,
 } from "@/gen/session/v1/backlog_pb";
 
 // ---------------------------------------------------------------------------
 // Domain types exposed to UI (mapped from proto, but without Message<> noise)
 // ---------------------------------------------------------------------------
 
-export type BacklogItemStatus =
-  | "idea"
-  | "ready"
-  | "in_progress"
-  | "review"
-  | "done"
-  | "archived";
+export type KnownBacklogStatus = "idea" | "refining" | "ready" | "in_progress" | "review" | "done" | "archived";
+// (string & {}) preserves autocomplete for KnownBacklogStatus values while still
+// accepting unknown statuses returned by newer server versions.
+export type BacklogItemStatus = KnownBacklogStatus | (string & {});
 
 export type AcCriterionStatus = "pending" | "in_progress" | "done";
 
@@ -29,6 +27,24 @@ export interface AcCriterion {
   index: number;
   text: string;
   status: AcCriterionStatus;
+}
+
+export interface TriageSuggestion {
+  text: string;
+  rationale: string; // "question" for R7-lite clarifying questions
+}
+
+export interface TriageTask {
+  text: string;
+  estimate: string;
+  category: string;
+}
+
+export interface TriageResult {
+  summary: string;
+  suggestions: TriageSuggestion[];
+  clarifyingQuestions: string[];
+  tasks?: TriageTask[];
 }
 
 export interface LinkedSession {
@@ -44,6 +60,7 @@ export interface LinkedSession {
     summary?: string;
     perCriterion?: Array<{ criterionIndex: number; outcome: string }>;
   };
+  triageResult?: TriageResult;
 }
 
 export interface BacklogItem {
@@ -69,6 +86,8 @@ export interface BacklogItem {
   gateCriteria?: Array<{ label: string; passed: boolean }>;
   /** Triage progress indicator: when item is in "idea" status being triaged */
   triageStatus?: "running" | "completed" | "failed";
+  /** Triage result from the most recent triage session (populated when triageStatus === "completed") */
+  triageResult?: TriageResult;
 }
 
 export interface BacklogItemInput {
@@ -80,6 +99,7 @@ export interface BacklogItemInput {
   skipReviewGate?: boolean;
   acCriteria?: AcCriterion[];
   notes?: string;
+  skipTriage?: boolean;
 }
 
 export interface ListBacklogItemsFilter {
@@ -129,6 +149,24 @@ function mapItemSession(s: ItemSessionProto): LinkedSession {
     };
   }
 
+  // Map triage result if present
+  if (s.triageResult) {
+    const tr = s.triageResult;
+    session.triageResult = {
+      summary: tr.summary,
+      suggestions: (tr.suggestions ?? []).map((sg) => ({
+        text: sg.text,
+        rationale: sg.rationale,
+      })),
+      clarifyingQuestions: tr.clarifyingQuestions ?? [],
+      tasks: (tr.tasks ?? []).map((t: TriageTaskProto) => ({
+        text: t.text,
+        estimate: t.estimate,
+        category: t.category,
+      })),
+    };
+  }
+
   return session;
 }
 
@@ -157,11 +195,19 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
   }
 
   // Derive triageStatus from linked sessions: running if a triage session has no endedAt.
+  // P12 fix: only mark "completed" if the session ended AND has a non-empty summary.
+  // A session that ended without storing a result (e.g. crashed) shows as "failed".
   let triageStatus: BacklogItem["triageStatus"];
   const triageSession = linkedSessions.filter((s) => s.role === "triage").at(-1);
   if (triageSession) {
-    triageStatus = triageSession.endedAt ? "completed" : "running";
+    if (triageSession.endedAt) {
+      triageStatus = triageSession.triageResult?.summary ? "completed" : "failed";
+    } else {
+      triageStatus = "running";
+    }
   }
+
+  const triageResult = triageSession?.triageResult;
 
   return {
     id: p.id,
@@ -183,6 +229,7 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
     gateVerdictSummary,
     gateCriteria,
     triageStatus,
+    triageResult,
   };
 }
 
@@ -202,7 +249,7 @@ function toProtoAcCriteria(criteria: AcCriterion[]): AcCriterionProto[] {
 interface UseBacklogServiceReturn {
   listBacklogItems: (filter?: ListBacklogItemsFilter) => Promise<BacklogItem[]>;
   getBacklogItem: (id: string) => Promise<BacklogItem | null>;
-  createBacklogItem: (data: BacklogItemInput) => Promise<BacklogItem | null>;
+  createBacklogItem: (data: BacklogItemInput) => Promise<{ item: BacklogItem; triageTriggered: boolean } | null>;
   updateBacklogItem: (id: string, data: Partial<BacklogItemInput>) => Promise<BacklogItem | null>;
   archiveBacklogItem: (id: string) => Promise<boolean>;
   transitionStatus: (
@@ -275,7 +322,7 @@ export function useBacklogService(): UseBacklogServiceReturn {
   }, []);
 
   const createBacklogItem = useCallback(
-    async (data: BacklogItemInput): Promise<BacklogItem | null> => {
+    async (data: BacklogItemInput): Promise<{ item: BacklogItem; triageTriggered: boolean } | null> => {
       if (!clientRef.current) return null;
       try {
         setLastError(null);
@@ -288,8 +335,11 @@ export function useBacklogService(): UseBacklogServiceReturn {
           skipReviewGate: data.skipReviewGate ?? false,
           acceptanceCriteria: toProtoAcCriteria(data.acCriteria ?? []),
           notes: data.notes ?? "",
+          skipTriage: data.skipTriage ?? false,
         });
-        return resp.item ? mapBacklogItem(resp.item) : null;
+        return resp.item
+          ? { item: mapBacklogItem(resp.item), triageTriggered: resp.triageTriggered }
+          : null;
       } catch (err) {
         console.error("[useBacklogService] createBacklogItem:", err);
         setLastError(err instanceof Error ? err : new Error(String(err)));
@@ -332,7 +382,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
       return true;
     } catch (err) {
       console.error("[useBacklogService] archiveBacklogItem:", err);
-      return false;
+      setLastError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
   }, []);
 
@@ -385,7 +436,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
         return { itemSessionId: resp.itemSession?.id ?? "" };
       } catch (err) {
         console.error("[useBacklogService] triggerTriage:", err);
-        return null;
+        setLastError(err instanceof Error ? err : new Error(String(err)));
+        throw err;
       }
     },
     []
@@ -398,7 +450,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
       return resp.item ? mapBacklogItem(resp.item) : null;
     } catch (err) {
       console.error("[useBacklogService] approvePlan:", err);
-      return null;
+      setLastError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
   }, []);
 
@@ -414,7 +467,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
         return true;
       } catch (err) {
         console.error("[useBacklogService] overrideVerdict:", err);
-        return false;
+        setLastError(err instanceof Error ? err : new Error(String(err)));
+        throw err;
       }
     },
     []
@@ -427,23 +481,31 @@ export function useBacklogService(): UseBacklogServiceReturn {
       return true;
     } catch (err) {
       console.error("[useBacklogService] triggerReReview:", err);
-      return false;
+      setLastError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
   }, []);
 
-  return {
-    listBacklogItems,
-    getBacklogItem,
-    createBacklogItem,
-    updateBacklogItem,
-    archiveBacklogItem,
-    transitionStatus,
-    spawnSessionFromItem,
-    triggerTriage,
-    approvePlan,
-    overrideVerdict,
-    triggerReReview,
-    lastError,
-    clearError,
-  };
+  // Stable object reference: all methods are useCallback(fn,[]) — only lastError changes.
+  // Without useMemo, every render creates a new object, making callers' useCallback deps
+  // fire on every render and causing infinite reload loops.
+  return useMemo(
+    () => ({
+      listBacklogItems,
+      getBacklogItem,
+      createBacklogItem,
+      updateBacklogItem,
+      archiveBacklogItem,
+      transitionStatus,
+      spawnSessionFromItem,
+      triggerTriage,
+      approvePlan,
+      overrideVerdict,
+      triggerReReview,
+      lastError,
+      clearError,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lastError]
+  );
 }

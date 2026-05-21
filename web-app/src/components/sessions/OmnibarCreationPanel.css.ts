@@ -8,9 +8,7 @@ export const pathDisplay = style({
   fontSize: vars.fontSize.sm,
   color: vars.color.textSecondary,
   fontFamily: "monospace",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
+  wordBreak: "break-all",
 });
 
 export const radioGroup = style({

@@ -47,7 +47,7 @@ func main() {
 	}
 
 	// Wait for sessions
-	fmt.Println("Watching for claude-mux sessions...")
+	fmt.Println("Watching for ssq-mux sessions...")
 	fmt.Println("Press Ctrl+C to exit")
 
 	// Periodically report discovered sessions

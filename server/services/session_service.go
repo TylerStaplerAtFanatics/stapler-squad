@@ -213,7 +213,7 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 
 	workspaceSvc := NewWorkspaceService(concStorage, eventBus)
 
-	return &SessionService{
+	svc := &SessionService{
 		storage:           storage,
 		eventBus:          eventBus,
 		reviewQueueSvc:    reviewQueueSvc,
@@ -233,6 +233,10 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 		projectSvc:        NewProjectService(concStorage),
 		promptStore:       newPromptStore(),
 	}
+	// Wire the fast-path live-instance lookup so WorkspaceService read-only RPCs
+	// (GetVCSStatus, GetWorkspaceInfo, ListWorkspaceTargets) bypass LoadInstances.
+	workspaceSvc.SetLiveFinder(svc)
+	return svc
 }
 
 // newPromptStore creates a PromptStore backed by ~/.stapler-squad/prompts.json.
@@ -465,9 +469,13 @@ func (s *SessionService) SpawnReviewSession(ctx context.Context, item *ent.Backl
 // It creates a directory-type session with the given title, path, system prompt,
 // tags, and oneShot flag, wires it into the live poller, and returns the Instance.
 func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, appendSystemPrompt string, tags []string, oneShot bool) (*session.Instance, error) {
+	cfg := config.LoadConfig()
+	resolved := config.ResolveDefaults(cfg, path, "")
 	opts := session.InstanceOptions{
 		Title:              title,
 		Path:               path,
+		Program:            resolved.Program,
+		AutoYes:            true, // automated sessions must not block on permission prompts
 		SessionType:        session.SessionTypeDirectory,
 		AppendSystemPrompt: appendSystemPrompt,
 		Tags:               tags,
@@ -482,6 +490,7 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 	if err := instance.Start(true); err != nil {
 		return nil, fmt.Errorf("CreateDirectorySession start: %w", err)
 	}
+	session.StartSessionDriver(instance, path)
 	s.wireRateLimitCallbacks(instance)
 	s.wireStatusChangeCallback(instance)
 	if err := s.storage.AddInstance(instance); err != nil {
@@ -2932,6 +2941,53 @@ func (s *SessionService) GetTerminalSnapshot(
 }
 
 // +api: session:log-client-events
+// +api: session:write-to-session
+// WriteToSession sends raw text input to a running session's PTY.
+func (s *SessionService) WriteToSession(
+	ctx context.Context,
+	req *connect.Request[sessionv1.WriteToSessionRequest],
+) (*connect.Response[sessionv1.WriteToSessionResponse], error) {
+	if req.Msg.SessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+	if req.Msg.Input == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("input is required"))
+	}
+
+	var inst *session.Instance
+	if s.reviewQueuePoller != nil {
+		inst = s.reviewQueuePoller.FindInstance(req.Msg.SessionId)
+	}
+	if inst == nil && s.externalDiscovery != nil {
+		inst = s.externalDiscovery.GetSession(req.Msg.SessionId)
+	}
+	if inst == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
+	}
+
+	text := req.Msg.Input
+	if req.Msg.PressEnter {
+		text += "\n"
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- inst.SendKeys(text) }()
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send keys failed: %w", err))
+		}
+	case <-timeoutCtx.Done():
+		return nil, connect.NewError(connect.CodeDeadlineExceeded, fmt.Errorf("timed out writing to session PTY"))
+	}
+
+	return connect.NewResponse(&sessionv1.WriteToSessionResponse{Success: true}), nil
+}
+
 // LogClientEvents receives batched browser console log entries from the web UI.
 // Used for remote debugging of mobile browser sessions where DevTools are unavailable.
 // Never returns an error — malformed or oversized entries are silently discarded.
@@ -3103,6 +3159,10 @@ var knownFeatureFlags = []struct {
 	{
 		name:        "browser-passthrough",
 		description: "Browser passthrough: stream Chrome/Chromium via CDP in the Browser tab",
+	},
+	{
+		name:        "backlog:conversation-view",
+		description: "Show JSONL conversation messages in the session monitor (default: terminal scrollback view)",
 	},
 }
 

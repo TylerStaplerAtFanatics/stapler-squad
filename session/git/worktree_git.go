@@ -123,6 +123,15 @@ func (g *GitWorktree) CommitChanges(commitMessage string) error {
 	return nil
 }
 
+// PrimeDirtyCacheAt sets the dirty-cache timestamp to t without running git status.
+// Use this to stagger per-session cache expiry so sessions added to the poller
+// within a short window don't all expire simultaneously and burst-launch git subprocesses.
+func (g *GitWorktree) PrimeDirtyCacheAt(t time.Time) {
+	g.isDirtyCacheMu.Lock()
+	g.isDirtyCacheTime = t
+	g.isDirtyCacheMu.Unlock()
+}
+
 // InvalidateDirtyCache clears the IsDirty cache so the next call re-runs git status.
 // Call this whenever worktree state changes outside of Claude's control (e.g. after a
 // manual commit, after running git operations, or in tests after writing files directly).
@@ -133,7 +142,7 @@ func (g *GitWorktree) InvalidateDirtyCache() {
 }
 
 // IsDirty checks if the worktree has uncommitted changes.
-// Results are cached for isDirtyCacheTTL (15 s) to avoid spawning a subprocess on every call.
+// Results are cached for IsDirtyCacheTTL (15 s) to avoid spawning a subprocess on every call.
 func (g *GitWorktree) IsDirty() (bool, error) {
 	return g.IsDirtyWithHint(false)
 }
@@ -145,7 +154,7 @@ func (g *GitWorktree) IsDirty() (bool, error) {
 func (g *GitWorktree) IsDirtyWithHint(claudeActive bool) (bool, error) {
 	// Fast path: hold read lock and check whether the cache is still fresh.
 	g.isDirtyCacheMu.RLock()
-	cacheValid := !g.isDirtyCacheTime.IsZero() && time.Since(g.isDirtyCacheTime) < isDirtyCacheTTL
+	cacheValid := !g.isDirtyCacheTime.IsZero() && time.Since(g.isDirtyCacheTime) < IsDirtyCacheTTL
 	if cacheValid || claudeActive {
 		cached := g.isDirtyCache
 		g.isDirtyCacheMu.RUnlock()
@@ -165,7 +174,7 @@ func (g *GitWorktree) IsDirtyWithHint(claudeActive bool) (bool, error) {
 	// not the cache slot: re-reading the slot after a lost write race could return
 	// a different goroutine's observation, which may be stale relative to ours.
 	g.isDirtyCacheMu.Lock()
-	if g.isDirtyCacheTime.IsZero() || time.Since(g.isDirtyCacheTime) >= isDirtyCacheTTL {
+	if g.isDirtyCacheTime.IsZero() || time.Since(g.isDirtyCacheTime) >= IsDirtyCacheTTL {
 		g.isDirtyCache = dirty
 		g.isDirtyCacheTime = time.Now()
 	}

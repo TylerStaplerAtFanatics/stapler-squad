@@ -1,13 +1,13 @@
 # External Session Monitoring (PTY Multiplexing)
 
-Monitor and interact with Claude sessions running in external terminals (IntelliJ, VS Code, etc.) through the `claude-mux` PTY multiplexer. Enables bidirectional terminal streaming without requiring sessions to be started from stapler-squad.
+Monitor and interact with Claude sessions running in external terminals (IntelliJ, VS Code, etc.) through the `ssq-mux` PTY multiplexer. Enables bidirectional terminal streaming without requiring sessions to be started from stapler-squad.
 
 ## Architecture
 
 ```
-External Terminal (IntelliJ) → claude-mux → PTY → Claude Process
+External Terminal (IntelliJ) → ssq-mux → PTY → Claude Process
                                     ↓
-                            Unix Socket (/tmp/claude-mux-<PID>.sock)
+                            Unix Socket (/tmp/ssq-mux-<PID>.sock)
                                     ↓
                           stapler-squad (auto-discovers & connects)
 ```
@@ -17,7 +17,7 @@ External Terminal (IntelliJ) → claude-mux → PTY → Claude Process
 ```bash
 cd /path/to/stapler-squad
 ./scripts/install-mux.sh
-# Installs to ~/.local/bin/claude-mux
+# Installs to ~/.local/bin/ssq-mux
 ```
 
 ## Setup Methods
@@ -26,7 +26,7 @@ cd /path/to/stapler-squad
 
 ```bash
 # Add to ~/.zshrc or ~/.bashrc
-alias claude='claude-mux claude'
+alias claude='ssq-mux claude'
 source ~/.zshrc
 ```
 
@@ -35,7 +35,7 @@ source ~/.zshrc
 ```bash
 # Create wrapper script at ~/bin/claude
 #!/bin/bash
-exec claude-mux /usr/local/bin/claude "$@"
+exec ssq-mux /usr/local/bin/claude "$@"
 chmod +x ~/bin/claude
 export PATH="$HOME/bin:$PATH"
 ```
@@ -44,14 +44,14 @@ export PATH="$HOME/bin:$PATH"
 
 **IntelliJ IDEA / PyCharm / WebStorm:**
 1. Settings → Tools → Terminal
-2. Shell path: `~/.local/bin/claude-mux`
+2. Shell path: `~/.local/bin/ssq-mux`
 3. Shell arguments: `claude`
 
 **VS Code:**
 ```json
 "terminal.integrated.profiles.osx": {
-  "claude-mux": {
-    "path": "~/.local/bin/claude-mux",
+  "ssq-mux": {
+    "path": "~/.local/bin/ssq-mux",
     "args": ["claude"]
   }
 }
@@ -63,18 +63,18 @@ Uses `fsnotify` to watch `/tmp/` for socket creation/deletion — immediate dete
 
 ```bash
 # Verify
-ls /tmp/claude-mux-*.sock
+ls /tmp/ssq-mux-*.sock
 ```
 
 ## Troubleshooting
 
 | Issue | Fix |
 |---|---|
-| `claude-mux: command not found` | `export PATH="$HOME/.local/bin:$PATH"` |
+| `ssq-mux: command not found` | `export PATH="$HOME/.local/bin:$PATH"` |
 | `stdin is not a terminal` | Must run from real terminal, not script/pipe |
 | Sessions not discovered | Check socket exists, verify permissions (0600), check logs at `~/.stapler-squad/logs/stapler-squad.log` |
 | Terminal output garbled | Resize the terminal window (SIGWINCH forwarded automatically) |
-| Stale sockets | `rm /tmp/claude-mux-*.sock` (when no sessions running) |
+| Stale sockets | `rm /tmp/ssq-mux-*.sock` (when no sessions running) |
 
 ## Protocol Details
 

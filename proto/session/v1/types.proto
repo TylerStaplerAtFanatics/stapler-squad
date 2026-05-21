@@ -272,7 +272,7 @@ enum InstanceType {
   INSTANCE_TYPE_UNSPECIFIED = 0;
   // Session fully managed by claude-squad with complete lifecycle control.
   INSTANCE_TYPE_MANAGED = 1;
-  // Session discovered externally (e.g., via claude-mux) with limited interaction.
+  // Session discovered externally (e.g., via ssq-mux) with limited interaction.
   INSTANCE_TYPE_EXTERNAL = 2;
 }
 
@@ -341,7 +341,7 @@ message ExternalInstanceMetadata {
   // Original process ID when first discovered
   int32 original_pid = 5;
 
-  // Path to claude-mux Unix domain socket (if mux-enabled)
+  // Path to ssq-mux Unix domain socket (if mux-enabled)
   string mux_socket_path = 6;
 
   // Whether this instance supports mux protocol for bidirectional terminal access
