@@ -267,6 +267,11 @@ service SessionService {
   // without requiring an active stream. Suitable for session card previews.
   rpc GetTerminalSnapshot(GetTerminalSnapshotRequest) returns (GetTerminalSnapshotResponse) {}
 
+  // WriteToSession sends raw text input to a running session's PTY.
+  // Use for unblocking approval prompts or injecting ad-hoc input.
+  // Returns immediately after queueing the write; does not wait for output.
+  rpc WriteToSession(WriteToSessionRequest) returns (WriteToSessionResponse) {}
+
   // LogClientEvents receives batched browser console log entries from the web UI.
   // Used for remote debugging of mobile browser sessions where DevTools are unavailable.
   // Always returns an empty response; malformed entries are silently discarded.
@@ -1755,6 +1760,22 @@ message GetTerminalSnapshotResponse {
   string content = 1;
   // True when content is entirely whitespace (cleared terminal).
   bool is_empty = 2;
+}
+
+// WriteToSession
+
+message WriteToSessionRequest {
+  // ID (title) of the session to write to.
+  string session_id = 1;
+  // Text to send to the terminal PTY.
+  string input = 2;
+  // When true, append a newline after input. Callers should set this explicitly.
+  bool press_enter = 3;
+}
+
+message WriteToSessionResponse {
+  // True when write was queued successfully.
+  bool success = 1;
 }
 
 // LogClientEvents

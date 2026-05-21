@@ -162,7 +162,7 @@ const (
 	InstanceType_INSTANCE_TYPE_UNSPECIFIED InstanceType = 0
 	// Session fully managed by claude-squad with complete lifecycle control.
 	InstanceType_INSTANCE_TYPE_MANAGED InstanceType = 1
-	// Session discovered externally (e.g., via claude-mux) with limited interaction.
+	// Session discovered externally (e.g., via ssq-mux) with limited interaction.
 	InstanceType_INSTANCE_TYPE_EXTERNAL InstanceType = 2
 )
 
@@ -1457,7 +1457,7 @@ type ExternalInstanceMetadata struct {
 	LastSeen *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
 	// Original process ID when first discovered
 	OriginalPid int32 `protobuf:"varint,5,opt,name=original_pid,json=originalPid,proto3" json:"original_pid,omitempty"`
-	// Path to claude-mux Unix domain socket (if mux-enabled)
+	// Path to ssq-mux Unix domain socket (if mux-enabled)
 	MuxSocketPath string `protobuf:"bytes,6,opt,name=mux_socket_path,json=muxSocketPath,proto3" json:"mux_socket_path,omitempty"`
 	// Whether this instance supports mux protocol for bidirectional terminal access
 	MuxEnabled bool `protobuf:"varint,7,opt,name=mux_enabled,json=muxEnabled,proto3" json:"mux_enabled,omitempty"`
