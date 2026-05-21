@@ -252,6 +252,9 @@ const (
 	// SessionServiceGetTerminalSnapshotProcedure is the fully-qualified name of the SessionService's
 	// GetTerminalSnapshot RPC.
 	SessionServiceGetTerminalSnapshotProcedure = "/session.v1.SessionService/GetTerminalSnapshot"
+	// SessionServiceWriteToSessionProcedure is the fully-qualified name of the SessionService's
+	// WriteToSession RPC.
+	SessionServiceWriteToSessionProcedure = "/session.v1.SessionService/WriteToSession"
 	// SessionServiceLogClientEventsProcedure is the fully-qualified name of the SessionService's
 	// LogClientEvents RPC.
 	SessionServiceLogClientEventsProcedure = "/session.v1.SessionService/LogClientEvents"
@@ -462,6 +465,10 @@ type SessionServiceClient interface {
 	// GetTerminalSnapshot returns the last N lines of terminal output for a session
 	// without requiring an active stream. Suitable for session card previews.
 	GetTerminalSnapshot(context.Context, *connect.Request[v1.GetTerminalSnapshotRequest]) (*connect.Response[v1.GetTerminalSnapshotResponse], error)
+	// WriteToSession sends raw text input to a running session's PTY.
+	// Use for unblocking approval prompts or injecting ad-hoc input.
+	// Returns immediately after queueing the write; does not wait for output.
+	WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error)
 	// LogClientEvents receives batched browser console log entries from the web UI.
 	// Used for remote debugging of mobile browser sessions where DevTools are unavailable.
 	// Always returns an empty response; malformed entries are silently discarded.
@@ -938,6 +945,12 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("GetTerminalSnapshot")),
 			connect.WithClientOptions(opts...),
 		),
+		writeToSession: connect.NewClient[v1.WriteToSessionRequest, v1.WriteToSessionResponse](
+			httpClient,
+			baseURL+SessionServiceWriteToSessionProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("WriteToSession")),
+			connect.WithClientOptions(opts...),
+		),
 		logClientEvents: connect.NewClient[v1.LogClientEventsRequest, v1.LogClientEventsResponse](
 			httpClient,
 			baseURL+SessionServiceLogClientEventsProcedure,
@@ -1059,6 +1072,7 @@ type sessionServiceClient struct {
 	assignSessionsToProject   *connect.Client[v1.AssignSessionsToProjectRequest, v1.AssignSessionsToProjectResponse]
 	listBranches              *connect.Client[v1.ListBranchesRequest, v1.ListBranchesResponse]
 	getTerminalSnapshot       *connect.Client[v1.GetTerminalSnapshotRequest, v1.GetTerminalSnapshotResponse]
+	writeToSession            *connect.Client[v1.WriteToSessionRequest, v1.WriteToSessionResponse]
 	logClientEvents           *connect.Client[v1.LogClientEventsRequest, v1.LogClientEventsResponse]
 	listErrors                *connect.Client[v1.ListErrorsRequest, v1.ListErrorsResponse]
 	acknowledgeError          *connect.Client[v1.AcknowledgeErrorRequest, v1.AcknowledgeErrorResponse]
@@ -1438,6 +1452,11 @@ func (c *sessionServiceClient) GetTerminalSnapshot(ctx context.Context, req *con
 	return c.getTerminalSnapshot.CallUnary(ctx, req)
 }
 
+// WriteToSession calls session.v1.SessionService.WriteToSession.
+func (c *sessionServiceClient) WriteToSession(ctx context.Context, req *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error) {
+	return c.writeToSession.CallUnary(ctx, req)
+}
+
 // LogClientEvents calls session.v1.SessionService.LogClientEvents.
 func (c *sessionServiceClient) LogClientEvents(ctx context.Context, req *connect.Request[v1.LogClientEventsRequest]) (*connect.Response[v1.LogClientEventsResponse], error) {
 	return c.logClientEvents.CallUnary(ctx, req)
@@ -1660,6 +1679,10 @@ type SessionServiceHandler interface {
 	// GetTerminalSnapshot returns the last N lines of terminal output for a session
 	// without requiring an active stream. Suitable for session card previews.
 	GetTerminalSnapshot(context.Context, *connect.Request[v1.GetTerminalSnapshotRequest]) (*connect.Response[v1.GetTerminalSnapshotResponse], error)
+	// WriteToSession sends raw text input to a running session's PTY.
+	// Use for unblocking approval prompts or injecting ad-hoc input.
+	// Returns immediately after queueing the write; does not wait for output.
+	WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error)
 	// LogClientEvents receives batched browser console log entries from the web UI.
 	// Used for remote debugging of mobile browser sessions where DevTools are unavailable.
 	// Always returns an empty response; malformed entries are silently discarded.
@@ -2132,6 +2155,12 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("GetTerminalSnapshot")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionServiceWriteToSessionHandler := connect.NewUnaryHandler(
+		SessionServiceWriteToSessionProcedure,
+		svc.WriteToSession,
+		connect.WithSchema(sessionServiceMethods.ByName("WriteToSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	sessionServiceLogClientEventsHandler := connect.NewUnaryHandler(
 		SessionServiceLogClientEventsProcedure,
 		svc.LogClientEvents,
@@ -2324,6 +2353,8 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceListBranchesHandler.ServeHTTP(w, r)
 		case SessionServiceGetTerminalSnapshotProcedure:
 			sessionServiceGetTerminalSnapshotHandler.ServeHTTP(w, r)
+		case SessionServiceWriteToSessionProcedure:
+			sessionServiceWriteToSessionHandler.ServeHTTP(w, r)
 		case SessionServiceLogClientEventsProcedure:
 			sessionServiceLogClientEventsHandler.ServeHTTP(w, r)
 		case SessionServiceListErrorsProcedure:
@@ -2641,6 +2672,10 @@ func (UnimplementedSessionServiceHandler) ListBranches(context.Context, *connect
 
 func (UnimplementedSessionServiceHandler) GetTerminalSnapshot(context.Context, *connect.Request[v1.GetTerminalSnapshotRequest]) (*connect.Response[v1.GetTerminalSnapshotResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetTerminalSnapshot is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.WriteToSession is not implemented"))
 }
 
 func (UnimplementedSessionServiceHandler) LogClientEvents(context.Context, *connect.Request[v1.LogClientEventsRequest]) (*connect.Response[v1.LogClientEventsResponse], error) {

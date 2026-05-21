@@ -414,7 +414,7 @@ export type ExternalInstanceMetadata = Message<"session.v1.ExternalInstanceMetad
   originalPid: number;
 
   /**
-   * Path to claude-mux Unix domain socket (if mux-enabled)
+   * Path to ssq-mux Unix domain socket (if mux-enabled)
    *
    * @generated from field: string mux_socket_path = 6;
    */
@@ -2596,7 +2596,7 @@ export enum InstanceType {
   MANAGED = 1,
 
   /**
-   * Session discovered externally (e.g., via claude-mux) with limited interaction.
+   * Session discovered externally (e.g., via ssq-mux) with limited interaction.
    *
    * @generated from enum value: INSTANCE_TYPE_EXTERNAL = 2;
    */
