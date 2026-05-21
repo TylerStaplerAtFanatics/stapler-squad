@@ -770,8 +770,10 @@ export function SessionList({
           {rowVirtualizer.getVirtualItems().map((virtualItem) => {
             const item = flatItems[virtualItem.index];
             if (!item) return null;
+            const isSessionItem = item.kind === "session";
+            const WrapperTag = isSessionItem ? "ul" : "div";
             return (
-              <div
+              <WrapperTag
                 key={virtualItem.key}
                 data-index={virtualItem.index}
                 style={{
@@ -780,6 +782,7 @@ export function SessionList({
                   left: 0,
                   width: "100%",
                   transform: `translateY(${virtualItem.start}px)`,
+                  ...(isSessionItem ? { listStyle: "none", margin: 0, padding: 0 } : {}),
                 }}
               >
                 {item.kind === "header" ? (
@@ -896,7 +899,7 @@ export function SessionList({
                     onUpdateTags={onUpdateTags}
                   />
                 )}
-              </div>
+              </WrapperTag>
             );
           })}
         </div>
