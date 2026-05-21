@@ -69,12 +69,16 @@ func setupWorkspaceTestFixture(t *testing.T) *workspaceTestFixture {
 
 // seedInstance creates a minimal Instance with the given title and persists it
 // via AddInstance so that WorkspaceService.findInstance can resolve it.
+//
+// Status is set to Paused to avoid triggering tmux session start in LoadInstances;
+// Running status causes FromInstanceData to call Start(), which spawns PTY
+// subprocesses and times out in environments without a real tmux server.
 func seedInstance(t *testing.T, storage *session.Storage, title string) {
 	t.Helper()
 	inst := &session.Instance{
 		Title:   title,
 		Path:    "/tmp/test-workspace",
-		Status:  session.Running,
+		Status:  session.Paused, // Paused avoids tmux setup in LoadInstances (no CI tmux)
 		Program: "claude",
 	}
 	require.NoError(t, storage.AddInstance(inst))
