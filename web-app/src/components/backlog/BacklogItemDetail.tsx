@@ -2,9 +2,12 @@
 // +feature: backlog:item-detail
 
 import { useState, useEffect, useCallback } from "react";
-import type { BacklogItem, BacklogItemStatus, AcCriterion } from "@/lib/hooks/useBacklogService";
+import type { BacklogItem, AcCriterion, BacklogItemInput } from "@/lib/hooks/useBacklogService";
 import { useBacklogService } from "@/lib/hooks/useBacklogService";
+import { getStatusLabel } from "@/lib/backlog/status";
+import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
+import { SessionMonitor } from "./SessionMonitor";
 import { GateVerdictBox } from "./GateVerdictBox";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import { TriageReviewPanel } from "./TriageReviewPanel";
@@ -15,23 +18,17 @@ interface BacklogItemDetailProps {
   onClose?: () => void;
 }
 
-const STATUS_LABELS: Record<BacklogItemStatus, string> = {
-  idea: "Idea",
-  ready: "Ready",
-  in_progress: "In Progress",
-  review: "Review",
-  done: "Done",
-  archived: "Archived",
-};
-
-const STATUS_CLASS: Record<BacklogItemStatus, string> = {
+const STATUS_CLASS: Record<string, string> = {
   idea: styles.statusIdea,
+  refining: styles.statusRefining,
   ready: styles.statusReady,
   in_progress: styles.statusInProgress,
   review: styles.statusReview,
   done: styles.statusDone,
   archived: styles.statusArchived,
 };
+
+const getStatusClass = (s: string): string => STATUS_CLASS[s] ?? styles.statusArchived;
 
 const PRIORITY_LABELS: Record<number, string> = { 1: "P1", 2: "P2", 3: "P3", 4: "P4", 5: "P5" };
 
@@ -63,6 +60,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [editMode, setEditMode] = useState(false);
 
   // Notes inline editing
   const [editingNotes, setEditingNotes] = useState(false);
@@ -175,6 +173,19 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     }
   }, [item, notesValue, updateBacklogItem]);
 
+  const handleUpdateItem = useCallback(
+    async (data: BacklogItemInput) => {
+      if (!item) return;
+      const updated = await updateBacklogItem(item.id, data);
+      if (updated) {
+        setItem(updated);
+        setNotesValue(updated.notes ?? "");
+      }
+      setEditMode(false);
+    },
+    [item, updateBacklogItem]
+  );
+
   const handleCancelTriage = useCallback(async () => {
     // TODO: implement cancel triage RPC call (if backend supports it)
     // For now, just reload the item to reflect the current state
@@ -260,6 +271,8 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         }
         await overrideVerdict(reviewSession.entityId, reason, "done");
         await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Override failed.");
       } finally {
         setActionLoading(false);
       }
@@ -283,6 +296,8 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         }
       }
       await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Skip gate failed.");
     } finally {
       setActionLoading(false);
     }
@@ -290,21 +305,41 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
 
   if (loading) {
     return (
-      <div className={styles.container} data-testid="backlog-item-detail">
+      <article className={styles.container} data-testid="backlog-item-detail">
+        {onClose && (
+          <div className={styles.header}>
+            <div className={styles.headerRow}>
+              <span />
+              <div className={styles.headerActions}>
+                <button className={styles.closeButton} onClick={onClose} aria-label="Close">×</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className={styles.loadingState} role="status" aria-label="Loading backlog item">
           Loading…
         </div>
-      </div>
+      </article>
     );
   }
 
-  if (error || !item) {
+  if (!item) {
     return (
-      <div className={styles.container} data-testid="backlog-item-detail">
+      <article className={styles.container} data-testid="backlog-item-detail">
+        {onClose && (
+          <div className={styles.header}>
+            <div className={styles.headerRow}>
+              <span />
+              <div className={styles.headerActions}>
+                <button className={styles.closeButton} onClick={onClose} aria-label="Close">×</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className={styles.errorState} role="alert">
           {error ?? "Item not found."}
         </div>
-      </div>
+      </article>
     );
   }
 
@@ -312,43 +347,86 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     item.status === "ready" &&
     (item.skipPlanning || item.planApproved);
 
+  if (editMode) {
+    return (
+      <article
+        className={styles.container}
+        data-testid="backlog-item-detail"
+        aria-label={`Edit backlog item: ${item.title}`}
+      >
+        <div className={styles.header}>
+          <div className={styles.headerRow}>
+            <div className={styles.titleGroup}>
+              <h2 className={styles.itemTitle}>{item.title}</h2>
+            </div>
+            <div className={styles.headerActions}>
+              <button
+                className={styles.closeButton}
+                onClick={() => setEditMode(false)}
+                aria-label="Cancel editing"
+                data-testid="backlog-detail-cancel-edit"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className={styles.scrollArea}>
+          <BacklogItemForm
+            initialValues={item}
+            onSubmit={handleUpdateItem}
+            onCancel={() => setEditMode(false)}
+          />
+        </div>
+      </article>
+    );
+  }
+
   return (
     <article
       className={styles.container}
       data-testid="backlog-item-detail"
       aria-label={`Backlog item: ${item.title}`}
     >
-      <div className={styles.scrollArea}>
-        {/* Header */}
-        <div className={styles.header}>
-          <div className={styles.headerRow}>
-            <div className={styles.titleGroup}>
-              <h2 className={styles.itemTitle}>{item.title}</h2>
-              <div className={styles.metaRow}>
-                <span
-                  className={`${styles.statusBadge} ${STATUS_CLASS[item.status]}`}
-                  aria-label={`Status: ${STATUS_LABELS[item.status]}`}
-                >
-                  {STATUS_LABELS[item.status]}
+      {/* Sticky header — always visible regardless of scroll */}
+      <div className={styles.header}>
+        <div className={styles.headerRow}>
+          <div className={styles.titleGroup}>
+            <h2 className={styles.itemTitle}>{item.title}</h2>
+            <div className={styles.metaRow}>
+              <span
+                className={`${styles.statusBadge} ${getStatusClass(item.status)}`}
+                aria-label={`Status: ${getStatusLabel(item.status)}`}
+              >
+                {getStatusLabel(item.status)}
+              </span>
+              <span
+                className={styles.priorityBadge}
+                aria-label={`Priority: ${PRIORITY_LABELS[item.priority] ?? "Unknown"}`}
+              >
+                {PRIORITY_LABELS[item.priority] ?? "P?"}
+              </span>
+              {item.createdAt && (
+                <span className={styles.dateMeta}>
+                  Created {formatDate(item.createdAt)}
                 </span>
-                <span
-                  className={styles.priorityBadge}
-                  aria-label={`Priority: ${PRIORITY_LABELS[item.priority] ?? "Unknown"}`}
-                >
-                  {PRIORITY_LABELS[item.priority] ?? "P?"}
+              )}
+              {item.updatedAt && (
+                <span className={styles.dateMeta}>
+                  · Updated {formatDate(item.updatedAt)}
                 </span>
-                {item.createdAt && (
-                  <span className={styles.dateMeta}>
-                    Created {formatDate(item.createdAt)}
-                  </span>
-                )}
-                {item.updatedAt && (
-                  <span className={styles.dateMeta}>
-                    · Updated {formatDate(item.updatedAt)}
-                  </span>
-                )}
-              </div>
+              )}
             </div>
+          </div>
+          <div className={styles.headerActions}>
+            <button
+              className={styles.editButton}
+              onClick={() => setEditMode(true)}
+              aria-label="Edit item"
+              data-testid="backlog-detail-edit"
+            >
+              Edit
+            </button>
             {onClose && (
               <button
                 className={styles.closeButton}
@@ -361,6 +439,22 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             )}
           </div>
         </div>
+      </div>
+
+      <div className={styles.scrollArea}>
+        {/* Inline action error banner */}
+        {error && (
+          <div className={styles.errorBanner} role="alert">
+            <span>{error}</span>
+            <button
+              className={styles.errorBannerDismiss}
+              onClick={() => setError(null)}
+              aria-label="Dismiss error"
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         {/* Triage Progress Indicator */}
         {(item.status === "idea" || item.status === "ready") && item.triageStatus === "running" && (
@@ -449,6 +543,16 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 >
                   Mark Ready
                 </button>
+                {item.triageStatus !== "running" && (
+                  <button
+                    className={styles.actionButton}
+                    onClick={() => handleAction("trigger_triage")}
+                    disabled={actionLoading}
+                    data-testid="backlog-action-trigger-triage"
+                  >
+                    Trigger Triage
+                  </button>
+                )}
               </>
             )}
 
@@ -557,7 +661,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             <h3 className={styles.sectionTitle}>Sessions ({item.linkedSessions.length})</h3>
             <div className={styles.sessionList} role="list" aria-label="Linked sessions">
               {item.linkedSessions.map((s) => (
-                <div key={s.sessionId} className={styles.sessionRow} role="listitem">
+                <a
+                  key={s.sessionId}
+                  className={styles.sessionRow}
+                  href={`/?session=${s.sessionId}`}
+                  role="listitem"
+                  title="Open in terminal"
+                  style={{ textDecoration: "none" }}
+                >
                   <span className={styles.sessionId} title={s.sessionId}>
                     {s.sessionId}
                   </span>
@@ -565,9 +676,22 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   {s.startedAt && (
                     <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
                   )}
-                </div>
+                </a>
               ))}
             </div>
+
+            {/* Session monitor for the most recent active session */}
+            {(() => {
+              const active = [...item.linkedSessions].reverse().find((s) => !s.endedAt);
+              if (!active) return null;
+              return (
+                <SessionMonitor
+                  sessionId={active.sessionId}
+                  sessionRole={active.role}
+                  isRunning={!active.endedAt}
+                />
+              );
+            })()}
           </div>
         )}
 
