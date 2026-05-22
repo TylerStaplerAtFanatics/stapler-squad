@@ -240,3 +240,69 @@ func TestSweeper_sweepResourcePressure_should_respectGracePeriod_When_SessionHad
 
 	assert.Equal(t, Active, inst.Status)
 }
+
+// --- Benchmarks for ListSessions hot path ---
+
+// BenchmarkSessionMemoryCache_Get_CacheHit measures the read-only cache path called on every
+// ListSessions RPC per active session. Must stay sub-microsecond (map + mutex).
+func BenchmarkSessionMemoryCache_Get_CacheHit(b *testing.B) {
+	c := newSessionMemoryCache()
+	c.mu.Lock()
+	c.entries["uuid-bench"] = memoryCacheEntry{rssMB: 42, fetchedAt: time.Now()}
+	c.mu.Unlock()
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = c.Get("uuid-bench")
+	}
+}
+
+// BenchmarkSessionMemoryCache_GetOrFetch_CacheHit measures GetOrFetch when the
+// entry is already warm — fetchFn must NOT be called. Called by sweepResourcePressure.
+func BenchmarkSessionMemoryCache_GetOrFetch_CacheHit(b *testing.B) {
+	c := newSessionMemoryCache()
+	neverCalled := func() int64 { b.Fatal("fetchFn called on cache hit"); return 0 }
+	c.GetOrFetch("uuid-bench", func() int64 { return 42 }) // warm the cache
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = c.GetOrFetch("uuid-bench", neverCalled)
+	}
+}
+
+// BenchmarkSessionMemoryCache_Get_Concurrent measures contention under many parallel
+// goroutines — simulates burst of ListSessions requests hitting the same session.
+func BenchmarkSessionMemoryCache_Get_Concurrent(b *testing.B) {
+	c := newSessionMemoryCache()
+	c.mu.Lock()
+	c.entries["uuid-bench"] = memoryCacheEntry{rssMB: 42, fetchedAt: time.Now()}
+	c.mu.Unlock()
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = c.Get("uuid-bench")
+		}
+	})
+}
+
+// BenchmarkSweeper_SystemMemoryPct_Cached measures the TTL-cached SystemMemoryPct path
+// called on every ListSessions RPC. Must not invoke the underlying reader when cached.
+func BenchmarkSweeper_SystemMemoryPct_Cached(b *testing.B) {
+	reader := &memorytest.FakeReader{SystemPct: 55}
+	cfg := &appconfig.Config{
+		Hibernation: appconfig.HibernationConfig{
+			Enabled:                   true,
+			ResourcePressureThreshold: 85,
+		},
+	}
+	sweeper := NewHibernationSweeper(nil, cfg, reader)
+
+	// Warm the cache.
+	_, _ = sweeper.SystemMemoryPct()
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = sweeper.SystemMemoryPct()
+	}
+}
