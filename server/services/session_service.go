@@ -533,6 +533,7 @@ func (s *SessionService) SetMemoryCacheReader(r session.MemoryCacheReader) {
 	s.memoryCacheReader = r
 }
 
+
 // SetStatusManager wires the InstanceStatusManager so that instances loaded via
 // loadInstancesWithWiring (e.g., fallback path in ListSessions) receive status tracking.
 // Must be called during server startup.
