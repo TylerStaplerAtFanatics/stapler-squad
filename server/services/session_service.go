@@ -3156,13 +3156,6 @@ var knownFeatureFlags = []struct {
 		name:        "backlog",
 		description: "Backlog management with external sync sources and AI-driven triage",
 	},
-<<<<<<< HEAD
-	{
-		name:        "backlog:conversation-view",
-		description: "Show JSONL conversation messages in the session monitor (default: terminal scrollback view)",
-	},
-||||||| 41cb0ca6
-=======
 	{
 		name:        "browser-passthrough",
 		description: "Browser passthrough: stream Chrome/Chromium via CDP in the Browser tab",
@@ -3171,7 +3164,6 @@ var knownFeatureFlags = []struct {
 		name:        "backlog:conversation-view",
 		description: "Show JSONL conversation messages in the session monitor (default: terminal scrollback view)",
 	},
->>>>>>> origin/main
 }
 
 // +api: feature-flags:list

@@ -619,13 +619,7 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 
 	s.AddTool(
 		mcpgo.NewTool("submit_triage_result",
-<<<<<<< HEAD
-			mcpgo.WithDescription("Record triage analysis results for a backlog item. Only sessions with role='triage' may call this tool. Pass tasks to surface an implementation checklist in the UI."),
-||||||| 41cb0ca6
-			mcpgo.WithDescription("Record triage analysis results for a backlog item. Only sessions with role='triage' may call this tool."),
-=======
 			mcpgo.WithDescription("Record completed triage analysis for a backlog item. Role: triage only. Call this LAST — after all research/*.md, plan.md, and validation.md files are written. 'suggestions' = proposed additions or improvements to acceptance criteria/spec (include clarifying questions here with rationale='question'). 'tasks' = implementation task breakdown shown as an interactive checklist to the operator (max 12, each needs text + estimate + category). 'plan_artifact_path' = absolute path to the docs/tasks/[slug] directory. Calling this notifies the operator that triage is complete and ready for review."),
->>>>>>> origin/main
 			mcpgo.WithString("item_id",
 				mcpgo.Description("UUID of the backlog item"),
 				mcpgo.Required(),

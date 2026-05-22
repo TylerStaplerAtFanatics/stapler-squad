@@ -288,22 +288,10 @@ func (c *Client) Close() error {
 // In order to add hooks to a specific client, call: `client.Node.Use(...)`.
 func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
-<<<<<<< HEAD
-		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.ClassificationAnalytics,
-		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
-		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session, c.Shell,
-		c.SourceSyncEvent, c.Tag, c.Worktree,
-||||||| 41cb0ca6
-		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.ClassificationAnalytics,
-		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
-		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session,
-		c.SourceSyncEvent, c.Tag, c.Worktree,
-=======
 		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.BacklogStatusEvent,
 		c.ClassificationAnalytics, c.ClaudeMetadata, c.ClaudeSession, c.DiffStats,
 		c.ErrorEvent, c.EscapeEvent, c.ItemSession, c.ItemSource, c.Project,
-		c.ReviewVerdict, c.Session, c.SourceSyncEvent, c.Tag, c.Worktree,
->>>>>>> origin/main
+		c.ReviewVerdict, c.Session, c.Shell, c.SourceSyncEvent, c.Tag, c.Worktree,
 	} {
 		n.Use(hooks...)
 	}
@@ -313,22 +301,10 @@ func (c *Client) Use(hooks ...Hook) {
 // In order to add interceptors to a specific client, call: `client.Node.Intercept(...)`.
 func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
-<<<<<<< HEAD
-		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.ClassificationAnalytics,
-		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
-		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session, c.Shell,
-		c.SourceSyncEvent, c.Tag, c.Worktree,
-||||||| 41cb0ca6
-		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.ClassificationAnalytics,
-		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
-		c.ItemSession, c.ItemSource, c.Project, c.ReviewVerdict, c.Session,
-		c.SourceSyncEvent, c.Tag, c.Worktree,
-=======
 		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.BacklogStatusEvent,
 		c.ClassificationAnalytics, c.ClaudeMetadata, c.ClaudeSession, c.DiffStats,
 		c.ErrorEvent, c.EscapeEvent, c.ItemSession, c.ItemSource, c.Project,
-		c.ReviewVerdict, c.Session, c.SourceSyncEvent, c.Tag, c.Worktree,
->>>>>>> origin/main
+		c.ReviewVerdict, c.Session, c.Shell, c.SourceSyncEvent, c.Tag, c.Worktree,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -3326,39 +3302,15 @@ func (c *WorktreeClient) mutate(ctx context.Context, m *WorktreeMutation) (Value
 // hooks and interceptors per client, for fast access.
 type (
 	hooks struct {
-<<<<<<< HEAD
-		AnalyticsEvent, ApprovalRule, BacklogItem, ClassificationAnalytics,
-		ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession,
-		ItemSource, Project, ReviewVerdict, Session, Shell, SourceSyncEvent, Tag,
-		Worktree []ent.Hook
-||||||| 41cb0ca6
-		AnalyticsEvent, ApprovalRule, BacklogItem, ClassificationAnalytics,
-		ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession,
-		ItemSource, Project, ReviewVerdict, Session, SourceSyncEvent, Tag,
-		Worktree []ent.Hook
-=======
 		AnalyticsEvent, ApprovalRule, BacklogItem, BacklogStatusEvent,
 		ClassificationAnalytics, ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent,
-		EscapeEvent, ItemSession, ItemSource, Project, ReviewVerdict, Session,
+		EscapeEvent, ItemSession, ItemSource, Project, ReviewVerdict, Session, Shell,
 		SourceSyncEvent, Tag, Worktree []ent.Hook
->>>>>>> origin/main
 	}
 	inters struct {
-<<<<<<< HEAD
-		AnalyticsEvent, ApprovalRule, BacklogItem, ClassificationAnalytics,
-		ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession,
-		ItemSource, Project, ReviewVerdict, Session, Shell, SourceSyncEvent, Tag,
-		Worktree []ent.Interceptor
-||||||| 41cb0ca6
-		AnalyticsEvent, ApprovalRule, BacklogItem, ClassificationAnalytics,
-		ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession,
-		ItemSource, Project, ReviewVerdict, Session, SourceSyncEvent, Tag,
-		Worktree []ent.Interceptor
-=======
 		AnalyticsEvent, ApprovalRule, BacklogItem, BacklogStatusEvent,
 		ClassificationAnalytics, ClaudeMetadata, ClaudeSession, DiffStats, ErrorEvent,
-		EscapeEvent, ItemSession, ItemSource, Project, ReviewVerdict, Session,
+		EscapeEvent, ItemSession, ItemSource, Project, ReviewVerdict, Session, Shell,
 		SourceSyncEvent, Tag, Worktree []ent.Interceptor
->>>>>>> origin/main
 	}
 )

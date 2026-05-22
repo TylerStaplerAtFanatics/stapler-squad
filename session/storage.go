@@ -292,8 +292,10 @@ func (s *Storage) AddInstance(instance *Instance) error {
 	data := instance.ToInstanceData()
 	ctx := context.Background()
 	if err := s.repo.Create(ctx, data); err != nil {
-<<<<<<< HEAD
-		// Already exists → update instead
+		if !ent.IsConstraintError(err) {
+			return fmt.Errorf("failed to persist session %q: %w", data.Title, err)
+		}
+		// Unique constraint violation → session already exists, update instead.
 		if updateErr := s.repo.Update(ctx, data); updateErr != nil {
 			return updateErr
 		}
@@ -301,16 +303,6 @@ func (s *Storage) AddInstance(instance *Instance) error {
 	// Inject shell repository so shell operations can persist to the DB.
 	if sr, ok := s.repo.(ShellRepository); ok {
 		instance.SetShellRepository(sr)
-||||||| 41cb0ca6
-		// Already exists → update instead
-		return s.repo.Update(ctx, data)
-=======
-		if !ent.IsConstraintError(err) {
-			return fmt.Errorf("failed to persist session %q: %w", data.Title, err)
-		}
-		// Unique constraint violation → session already exists, update instead.
-		return s.repo.Update(ctx, data)
->>>>>>> origin/main
 	}
 	return nil
 }

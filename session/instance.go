@@ -225,7 +225,6 @@ type Instance struct {
 	// production inspector is used. Set in tests to inject a fake home dir.
 	historyDetector *HistoryFileDetector
 
-<<<<<<< HEAD
 	// shellRepo is the persistence backend for shell operations. Injected by Storage
 	// after instance creation/loading; nil disables persistence (tests, external instances).
 	shellRepo ShellRepository
@@ -234,13 +233,11 @@ type Instance struct {
 	// Initialized by initShellRegistry(); shell operations go through instance_shells.go.
 	shellRegistry
 
-||||||| 41cb0ca6
-=======
 	// hibernateReason records why this session was hibernated.
 	// Values: "manual", "idle", "resource_pressure". Read by hibernateProcess.
 	hibernateReason string
 
->>>>>>> origin/main
+
 	// Claude Code session information for persistence and re-attachment
 	claudeSession *ClaudeSessionData
 

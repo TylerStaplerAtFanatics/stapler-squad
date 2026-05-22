@@ -14,12 +14,8 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
 	"github.com/tstapler/stapler-squad/session/ent/claudesession"
 	"github.com/tstapler/stapler-squad/session/ent/diffstats"
-<<<<<<< HEAD
-	entshell "github.com/tstapler/stapler-squad/session/ent/shell"
-||||||| 41cb0ca6
-=======
 	"github.com/tstapler/stapler-squad/session/ent/predicate"
->>>>>>> origin/main
+	entshell "github.com/tstapler/stapler-squad/session/ent/shell"
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/session"
 	"github.com/tstapler/stapler-squad/session/ent/tag"
