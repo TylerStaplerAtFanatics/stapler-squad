@@ -22,6 +22,8 @@ interface SessionServiceContextValue {
   loading: boolean;
   error: Error | null;
   connectionState: ConnectionState;
+  /** System-wide memory usage percentage (0–100). Zero when unavailable. */
+  systemMemoryPct: number;
   listSessions: (options?: { category?: string; status?: SessionStatus }) => Promise<void>;
   getSession: (id: string) => Promise<Session | null>;
   createSession: (request: Partial<CreateSessionRequest>) => Promise<Session | null>;

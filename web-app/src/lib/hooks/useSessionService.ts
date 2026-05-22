@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback, useRef, useMemo } from "react";
+import { useEffect, useCallback, useRef, useMemo, useState } from "react";
 import { createClient } from "@connectrpc/connect";
 import { createWatchTransport } from "@/lib/transport/watch-ws-transport";
 import { SessionService } from "@/gen/session/v1/session_pb";
@@ -56,6 +56,8 @@ interface UseSessionServiceReturn {
   loading: boolean;
   error: Error | null;
   connectionState: import("@/lib/store/sessionsSlice").ConnectionState;
+  /** System-wide memory usage percentage (0–100). Zero when unavailable. */
+  systemMemoryPct: number;
 
   // Methods
   listSessions: (options?: { category?: string; status?: SessionStatus }) => Promise<void>;
@@ -107,6 +109,7 @@ export function useSessionService(
   }, [onApprovalResponse]);
 
   const dispatch = useAppDispatch();
+  const [systemMemoryPct, setSystemMemoryPct] = useState<number>(0);
   const sessions = useAppSelector(selectAllSessions);
   const loading = useAppSelector(selectSessionsLoading);
   const errorStr = useAppSelector(selectSessionsError);
@@ -152,6 +155,9 @@ export function useSessionService(
 
         dispatch(setSessions(response.sessions));
         dispatch(setError(null)); // Clear any previous errors
+        if (response.systemMemoryPct > 0) {
+          setSystemMemoryPct(response.systemMemoryPct);
+        }
       } catch (err) {
         const error = err instanceof Error ? err : new Error("Failed to list sessions");
         dispatch(setError(error.message));
@@ -739,6 +745,7 @@ export function useSessionService(
     loading,
     error,
     connectionState,
+    systemMemoryPct,
     listSessions,
     getSession,
     createSession,
