@@ -1323,7 +1323,7 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
                 title="Attach image(s) from gallery — multi-select supported"
                 aria-label={uploadingCount > 0 ? `Uploading ${uploadingCount} file(s)...` : "Attach images from gallery"}
               >
-                {uploadSuccess ? `✅ ${uploadSuccess}` : uploadError ? `⚠️ ${uploadError}` : uploadingCount > 0 ? `⏳ ${uploadingCount}…` : "🖼️ Gallery"}
+                {uploadSuccess ? `✅ ${uploadSuccess}` : uploadError ? `⚠️ ${uploadError}` : uploadingCount > 0 ? `⏳ ${uploadingCount}…` : "🖼️ Images"}
               </button>
               {/* Files button — any file type, always visible */}
               <button
