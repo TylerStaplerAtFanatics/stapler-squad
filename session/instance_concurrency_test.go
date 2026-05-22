@@ -5,7 +5,51 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// TestPause_should_skipGitOps_When_IsWorktreeIsFalse verifies that Pause() on a
+// non-worktree session does not call git operations. If the IsWorktree guard were
+// absent, IsDirty() on an uninitialized GitWorktreeManager would return
+// "git worktree not initialized", which would propagate into the error chain.
+func TestPause_should_skipGitOps_When_IsWorktreeIsFalse(t *testing.T) {
+	inst := &Instance{
+		Title:      "test-non-worktree",
+		Status:     Active,
+		started:    true,
+		IsWorktree: false,
+		// gitManager left as zero value — IsDirty() returns error if called
+	}
+
+	err := inst.Pause()
+
+	// Pause must succeed: no tmux session (DetachSafely is a no-op when session==nil),
+	// no git operations, transitionTo(Paused) sets the status.
+	require.NoError(t, err, "Pause() on a non-worktree session must not return an error")
+	assert.Equal(t, Paused, inst.Status, "instance should be Paused after successful Pause()")
+}
+
+// TestPause_should_returnGitError_When_IsWorktreeIsTrueAndGitUninitialized verifies
+// that the IsWorktree=true path does attempt git operations. An uninitialized
+// GitWorktreeManager returns an error, confirming the guard condition is honored.
+func TestPause_should_returnGitError_When_IsWorktreeIsTrueAndGitUninitialized(t *testing.T) {
+	inst := &Instance{
+		Title:      "test-worktree-uninit",
+		Status:     Active,
+		started:    true,
+		IsWorktree: true,
+		// gitManager.worktree == nil → IsDirty returns "git worktree not initialized"
+	}
+
+	err := inst.Pause()
+
+	// With IsWorktree=true, IsDirty is called. Since gitManager.worktree is nil,
+	// IsDirty returns an error that is appended to errs. combineErrors returns it.
+	assert.Error(t, err, "Pause() on an uninitialized worktree session should propagate git error")
+	assert.Contains(t, err.Error(), "worktree", "error should mention the worktree problem")
+}
 
 func TestTransitionTo_ConcurrentPause(t *testing.T) {
 	// Create an instance in Active status.

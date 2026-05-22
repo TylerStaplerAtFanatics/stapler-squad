@@ -25,12 +25,22 @@ type MemoryCacheReader interface {
 	SystemMemoryPct() (float64, error)
 }
 
+// sweepInterval is how often the sweeper checks for idle or pressure-driven hibernation.
+const sweepInterval = 5 * time.Minute
+
 // cacheTTL is the duration a per-session RSS reading remains valid before refresh.
 const cacheTTL = 30 * time.Second
 
 // pressureGracePeriod is the minimum idle time before a session is eligible for
 // resource-pressure hibernation (prevents interrupting recently active sessions).
 const pressureGracePeriod = 5 * time.Minute
+
+// sysMemCacheTTL is how long a system memory percentage reading remains valid.
+const sysMemCacheTTL = 5 * time.Second
+
+// rssWarmTimeout caps total wall-clock time spent warming the RSS cache per sweep
+// so a hung /proc read cannot block the sweep goroutine indefinitely.
+const rssWarmTimeout = 30 * time.Second
 
 // memoryCacheEntry holds one cached RSS measurement.
 type memoryCacheEntry struct {
@@ -49,18 +59,27 @@ func newSessionMemoryCache() *sessionMemoryCache {
 }
 
 // GetOrFetch returns the cached RSS for uuid, or calls fetchFn if the entry is
-// absent or expired.
+// absent or expired. The mutex is released before calling fetchFn to avoid
+// holding the lock during potentially slow I/O.
 func (c *sessionMemoryCache) GetOrFetch(uuid string, fetchFn func() int64) int64 {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	entry, ok := c.entries[uuid]
 	if ok && time.Since(entry.fetchedAt) < cacheTTL {
+		c.mu.Unlock()
 		return entry.rssMB
 	}
+	c.mu.Unlock()
 
 	val := fetchFn()
+
+	c.mu.Lock()
+	// Re-check: another goroutine may have fetched while we computed.
+	if e, ok := c.entries[uuid]; ok && time.Since(e.fetchedAt) < cacheTTL {
+		c.mu.Unlock()
+		return e.rssMB
+	}
 	c.entries[uuid] = memoryCacheEntry{rssMB: val, fetchedAt: time.Now()}
+	c.mu.Unlock()
 	return val
 }
 
@@ -92,6 +111,10 @@ type HibernationSweeper struct {
 	liveProvider LiveInstancesProvider
 	memReader    memory.Reader
 	memCache     *sessionMemoryCache
+
+	sysMemPct float64
+	sysMemAt  time.Time
+	sysMemMu  sync.Mutex
 }
 
 // NewHibernationSweeper creates a HibernationSweeper using the given storage, config,
@@ -119,17 +142,39 @@ func (s *HibernationSweeper) GetCachedRSSMB(sessionUUID string) int64 {
 }
 
 // SystemMemoryPct returns the current system memory usage percentage.
-// Delegates to the underlying memory reader. Implements MemoryCacheReader.
+// The result is cached for sysMemCacheTTL to avoid a syscall on every
+// ListSessions request. The mutex is released before calling the reader to
+// avoid holding the lock during /proc I/O. Implements MemoryCacheReader.
 func (s *HibernationSweeper) SystemMemoryPct() (float64, error) {
 	if s.memReader == nil {
 		return 0, nil
 	}
-	return s.memReader.SystemMemoryPct()
+	s.sysMemMu.Lock()
+	if time.Since(s.sysMemAt) < sysMemCacheTTL {
+		cached := s.sysMemPct
+		s.sysMemMu.Unlock()
+		return cached, nil
+	}
+	s.sysMemMu.Unlock()
+
+	pct, err := s.memReader.SystemMemoryPct()
+	if err != nil {
+		return 0, err
+	}
+
+	s.sysMemMu.Lock()
+	// Re-check: another goroutine may have refreshed while we read /proc.
+	if time.Since(s.sysMemAt) >= sysMemCacheTTL {
+		s.sysMemPct = pct
+		s.sysMemAt = time.Now()
+	}
+	s.sysMemMu.Unlock()
+	return pct, nil
 }
 
 // Start runs the periodic sweep loop. Blocks until ctx is cancelled.
 func (s *HibernationSweeper) Start(ctx context.Context) {
-	interval := 5 * time.Minute
+	interval := sweepInterval
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -196,8 +241,45 @@ func (s *HibernationSweeper) sweep(ctx context.Context) {
 		}
 	}
 
+	// Warm per-session RSS cache so GetCachedRSSMB returns current values to
+	// ListSessions regardless of whether resource-pressure hibernation is enabled.
+	s.warmRSSCache(ctx, instances)
+
 	// Resource-pressure hibernation (new behaviour).
 	s.sweepResourcePressure(ctx, instances)
+}
+
+// warmRSSCache reads current RSS for all active sessions and stores results in
+// the cache. Called from sweep() on every tick — not gated on ResourcePressureThreshold
+// — so that memory_rss_mb in the UI is always populated when memReader is configured.
+func (s *HibernationSweeper) warmRSSCache(ctx context.Context, instances []*Instance) {
+	if s.memReader == nil {
+		return
+	}
+	deadline := time.Now().Add(rssWarmTimeout)
+	for _, inst := range instances {
+		if !inst.IsActive() {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if time.Now().After(deadline) {
+			log.Warn("hibernation sweeper: RSS warming timed out, some sessions skipped")
+			return
+		}
+		capturedName := inst.tmuxManager.GetTmuxSessionName()
+		capturedUUID := inst.UUID
+		s.memCache.GetOrFetch(capturedUUID, func() int64 {
+			rss, err := s.memReader.SessionRSSMB(capturedName)
+			if err != nil {
+				return 0
+			}
+			return rss
+		})
+	}
 }
 
 // sweepResourcePressure hibernates the single longest-idle eligible session when
@@ -209,7 +291,7 @@ func (s *HibernationSweeper) sweepResourcePressure(ctx context.Context, instance
 		return
 	}
 
-	sysPct, err := s.memReader.SystemMemoryPct()
+	sysPct, err := s.SystemMemoryPct()
 	if err != nil {
 		log.Warn("hibernation sweeper: cannot read system memory", "err", err)
 		return
