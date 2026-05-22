@@ -129,14 +129,7 @@ type SessionService struct {
 
 	// memoryCacheReader provides per-session RSS and system memory percentage.
 	// Wired to the HibernationSweeper after startup. May be nil (fields default to 0).
-	memoryCacheReader SystemMemoryReader
-}
-
-// SystemMemoryReader is the minimal interface SessionService needs from HibernationSweeper
-// to populate memory fields in list/watch responses.
-type SystemMemoryReader interface {
-	GetCachedRSSMB(sessionUUID string) int64
-	SystemMemoryPct() (float64, error)
+	memoryCacheReader session.MemoryCacheReader
 }
 
 // ScrollbackSequencer is the minimal interface SessionService needs from ScrollbackManager.
@@ -536,7 +529,7 @@ func (s *SessionService) SetReviewQueuePoller(poller *session.ReviewQueuePoller)
 
 // SetMemoryCacheReader wires the HibernationSweeper so that ListSessions can
 // populate memory_rss_mb, estimated_savings_mb, and system_memory_pct fields.
-func (s *SessionService) SetMemoryCacheReader(r SystemMemoryReader) {
+func (s *SessionService) SetMemoryCacheReader(r session.MemoryCacheReader) {
 	s.memoryCacheReader = r
 }
 

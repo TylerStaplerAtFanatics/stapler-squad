@@ -6,7 +6,7 @@ import (
 	"time"
 
 	appconfig "github.com/tstapler/stapler-squad/config"
-	"github.com/tstapler/stapler-squad/session/memory"
+	"github.com/tstapler/stapler-squad/session/memory/memorytest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,7 +72,7 @@ func TestSessionMemoryCache_Get_should_returnZero_When_EntryAbsent(t *testing.T)
 // --- HibernationSweeper resource-pressure tests ---
 
 // makeTestSweeper builds a minimal HibernationSweeper with a fake reader and in-memory storage.
-func makeTestSweeper(t *testing.T, memReader *memory.FakeReader, threshold int) (*HibernationSweeper, *Storage, func()) {
+func makeTestSweeper(t *testing.T, memReader *memorytest.FakeReader, threshold int) (*HibernationSweeper, *Storage, func()) {
 	t.Helper()
 	storage, cleanup := createTestStorage(t)
 	cfg := &appconfig.Config{
@@ -107,7 +107,7 @@ func makeIdleInstance(t *testing.T, uuid, title string, idleFor time.Duration) *
 // TestSweeper_should_callSystemMemory_When_SweepRuns verifies that sweepResourcePressure
 // calls the memory reader when the threshold is configured.
 func TestSweeper_should_callSystemMemory_When_SweepRuns(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 80}
+	reader := &memorytest.FakeReader{SystemPct: 80}
 	sweeper, _, cleanup := makeTestSweeper(t, reader, 85)
 	defer cleanup()
 
@@ -121,7 +121,7 @@ func TestSweeper_should_callSystemMemory_When_SweepRuns(t *testing.T) {
 // TestSweeper_sweepResourcePressure_should_notHibernate_When_BelowThreshold verifies
 // that no hibernation occurs when memory is below the configured threshold.
 func TestSweeper_sweepResourcePressure_should_notHibernate_When_BelowThreshold(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 80}
+	reader := &memorytest.FakeReader{SystemPct: 80}
 	sweeper, _, cleanup := makeTestSweeper(t, reader, 85)
 	defer cleanup()
 
@@ -137,7 +137,7 @@ func TestSweeper_sweepResourcePressure_should_notHibernate_When_BelowThreshold(t
 // TestSweeper_sweepResourcePressure_should_skip_When_SystemPctIsZero verifies that
 // UsedPct=0 (macOS sentinel) skips pressure hibernation entirely.
 func TestSweeper_sweepResourcePressure_should_skip_When_SystemPctIsZero(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 0}
+	reader := &memorytest.FakeReader{SystemPct: 0}
 	sweeper, _, cleanup := makeTestSweeper(t, reader, 85)
 	defer cleanup()
 
@@ -150,7 +150,7 @@ func TestSweeper_sweepResourcePressure_should_skip_When_SystemPctIsZero(t *testi
 // TestSweeper_sweepResourcePressure_should_beSkipped_When_ThresholdIsZero verifies that
 // threshold=0 prevents the pressure block from running at all.
 func TestSweeper_sweepResourcePressure_should_beSkipped_When_ThresholdIsZero(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 90}
+	reader := &memorytest.FakeReader{SystemPct: 90}
 	sweeper, _, cleanup := makeTestSweeper(t, reader, 0)
 	defer cleanup()
 
@@ -167,7 +167,7 @@ func TestSweeper_sweepResourcePressure_should_beSkipped_When_ThresholdIsZero(t *
 // TestSweeper_sweepResourcePressure_should_notHibernate_When_NoEligibleIdleSessions verifies
 // that sessions with recent output (< 5 min) are not auto-hibernated for resource pressure.
 func TestSweeper_sweepResourcePressure_should_notHibernate_When_NoEligibleIdleSessions(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 90}
+	reader := &memorytest.FakeReader{SystemPct: 90}
 	sweeper, _, cleanup := makeTestSweeper(t, reader, 85)
 	defer cleanup()
 
@@ -183,7 +183,7 @@ func TestSweeper_sweepResourcePressure_should_notHibernate_When_NoEligibleIdleSe
 // Since Hibernate() requires tmux which is unavailable in unit tests, we assert that
 // candidate selection is correct (no panic, status unchanged because Hibernate fails).
 func TestSweeper_sweepResourcePressure_should_hibernateOnlyOne_When_MultipleEligible(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 90}
+	reader := &memorytest.FakeReader{SystemPct: 90}
 	sweeper, storage, cleanup := makeTestSweeper(t, reader, 85)
 	defer cleanup()
 
@@ -208,7 +208,7 @@ func TestSweeper_sweepResourcePressure_should_hibernateOnlyOne_When_MultipleElig
 // TestSweeper_sweepResourcePressure_should_setReasonResourcePressure_When_AutoHibernating verifies
 // structural integrity of the sweeper (fields wired correctly).
 func TestSweeper_sweepResourcePressure_should_setReasonResourcePressure_When_AutoHibernating(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 90}
+	reader := &memorytest.FakeReader{SystemPct: 90}
 	sweeper, _, cleanup := makeTestSweeper(t, reader, 85)
 	defer cleanup()
 
@@ -220,7 +220,7 @@ func TestSweeper_sweepResourcePressure_should_setReasonResourcePressure_When_Aut
 // TestSweeper_GetCachedRSSMB_should_returnZero_When_Empty verifies that GetCachedRSSMB
 // returns 0 for unknown UUIDs (satisfies MemoryCacheReader interface).
 func TestSweeper_GetCachedRSSMB_should_returnZero_When_Empty(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 80}
+	reader := &memorytest.FakeReader{SystemPct: 80}
 	sweeper, _, cleanup := makeTestSweeper(t, reader, 85)
 	defer cleanup()
 
@@ -230,7 +230,7 @@ func TestSweeper_GetCachedRSSMB_should_returnZero_When_Empty(t *testing.T) {
 // TestSweeper_sweepResourcePressure_should_respectGracePeriod_When_SessionHadRecentOutput verifies
 // that a session idle 4m59s is skipped (grace period is 5 minutes).
 func TestSweeper_sweepResourcePressure_should_respectGracePeriod_When_SessionHadRecentOutput(t *testing.T) {
-	reader := &memory.FakeReader{SystemPct: 92}
+	reader := &memorytest.FakeReader{SystemPct: 92}
 	sweeper, _, cleanup := makeTestSweeper(t, reader, 85)
 	defer cleanup()
 

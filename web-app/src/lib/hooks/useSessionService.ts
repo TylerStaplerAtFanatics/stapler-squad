@@ -250,7 +250,7 @@ export function useSessionService(
 
         return response.session ?? null;
       } catch (err) {
-        dispatch(setError(err instanceof Error ? err.message : "Failed to update session"));
+        console.error("[useSessionService] updateSession failed:", err);
         return null;
       }
     },
@@ -307,13 +307,12 @@ export function useSessionService(
   const hibernateSession = useCallback(
     async (id: string): Promise<Session | null> => {
       if (!clientRef.current) return null;
-      dispatch(setError(null));
       try {
         const response = await clientRef.current.hibernateSession({ id, reason: "manual" });
         if (response.session) dispatch(upsertSession(response.session));
         return response.session ?? null;
       } catch (err) {
-        dispatch(setError(err instanceof Error ? err.message : "Failed to hibernate session"));
+        console.error("[useSessionService] hibernateSession failed:", err);
         return null;
       }
     },
@@ -324,13 +323,12 @@ export function useSessionService(
   const resumeHibernatedSession = useCallback(
     async (id: string): Promise<Session | null> => {
       if (!clientRef.current) return null;
-      dispatch(setError(null));
       try {
         const response = await clientRef.current.resumeHibernatedSession({ id });
         if (response.session) dispatch(upsertSession(response.session));
         return response.session ?? null;
       } catch (err) {
-        dispatch(setError(err instanceof Error ? err.message : "Failed to resume hibernated session"));
+        console.error("[useSessionService] resumeHibernatedSession failed:", err);
         return null;
       }
     },
