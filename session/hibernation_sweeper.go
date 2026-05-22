@@ -241,8 +241,45 @@ func (s *HibernationSweeper) sweep(ctx context.Context) {
 		}
 	}
 
+	// Warm per-session RSS cache so GetCachedRSSMB returns current values to
+	// ListSessions regardless of whether resource-pressure hibernation is enabled.
+	s.warmRSSCache(ctx, instances)
+
 	// Resource-pressure hibernation (new behaviour).
 	s.sweepResourcePressure(ctx, instances)
+}
+
+// warmRSSCache reads current RSS for all active sessions and stores results in
+// the cache. Called from sweep() on every tick — not gated on ResourcePressureThreshold
+// — so that memory_rss_mb in the UI is always populated when memReader is configured.
+func (s *HibernationSweeper) warmRSSCache(ctx context.Context, instances []*Instance) {
+	if s.memReader == nil {
+		return
+	}
+	deadline := time.Now().Add(rssWarmTimeout)
+	for _, inst := range instances {
+		if !inst.IsActive() {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if time.Now().After(deadline) {
+			log.Warn("hibernation sweeper: RSS warming timed out, some sessions skipped")
+			return
+		}
+		capturedName := inst.tmuxManager.GetTmuxSessionName()
+		capturedUUID := inst.UUID
+		s.memCache.GetOrFetch(capturedUUID, func() int64 {
+			rss, err := s.memReader.SessionRSSMB(capturedName)
+			if err != nil {
+				return 0
+			}
+			return rss
+		})
+	}
 }
 
 // sweepResourcePressure hibernates the single longest-idle eligible session when
@@ -270,23 +307,6 @@ func (s *HibernationSweeper) sweepResourcePressure(ctx context.Context, instance
 	log.Info("system memory pressure detected",
 		"used_pct", sysPct,
 		"threshold", threshold)
-
-	// Proactively measure RSS for all active sessions so GetCachedRSSMB
-	// in ListSessions can return fresh values to the UI.
-	for _, inst := range instances {
-		if !inst.IsActive() {
-			continue
-		}
-		capturedName := inst.tmuxManager.GetTmuxSessionName()
-		capturedUUID := inst.UUID
-		s.memCache.GetOrFetch(capturedUUID, func() int64 {
-			rss, err := s.memReader.SessionRSSMB(capturedName)
-			if err != nil {
-				return 0
-			}
-			return rss
-		})
-	}
 
 	// Collect eligible candidates: Active sessions idle > pressureGracePeriod.
 	type candidate struct {

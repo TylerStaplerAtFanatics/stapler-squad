@@ -217,6 +217,56 @@ func TestSweeper_sweepResourcePressure_should_setReasonResourcePressure_When_Aut
 	require.NotNil(t, sweeper.memReader)
 }
 
+// TestSweeper_SystemMemoryPct_should_notCallReader_When_CacheIsWarm verifies that
+// the 5-second TTL cache prevents the underlying syscall on subsequent calls.
+func TestSweeper_SystemMemoryPct_should_notCallReader_When_CacheIsWarm(t *testing.T) {
+	reader := &memorytest.FakeReader{SystemPct: 55}
+	cfg := &appconfig.Config{
+		Hibernation: appconfig.HibernationConfig{
+			Enabled:                   true,
+			ResourcePressureThreshold: 85,
+		},
+	}
+	sweeper := NewHibernationSweeper(nil, cfg, reader)
+
+	_, _ = sweeper.SystemMemoryPct() // first call — populates cache
+	_, _ = sweeper.SystemMemoryPct() // second call — should hit TTL cache
+	_, _ = sweeper.SystemMemoryPct() // third call — still within sysMemCacheTTL
+
+	assert.Equal(t, 1, reader.GetSystemMemoryCalls(), "reader should not be called on cache hit within sysMemCacheTTL")
+}
+
+// TestSweeper_warmRSSCache_should_populateCache_When_ActiveSession verifies that
+// warmRSSCache calls SessionRSSMB for active sessions and stores the result.
+func TestSweeper_warmRSSCache_should_populateCache_When_ActiveSession(t *testing.T) {
+	reader := &memorytest.FakeReader{
+		SystemPct:    90,
+		RSSBySession: map[string]int64{"": 128}, // "" = zero-value GetTmuxSessionName()
+	}
+	sweeper, _, cleanup := makeTestSweeper(t, reader, 0) // threshold=0: pressure hibernation disabled
+	defer cleanup()
+
+	inst := makeIdleInstance(t, "uuid-rss", "rss-session", 10*time.Minute)
+	sweeper.warmRSSCache(context.Background(), []*Instance{inst})
+
+	assert.Equal(t, 1, reader.GetSessionRSSCalls(), "SessionRSSMB should be called for each active session")
+	assert.Equal(t, int64(128), sweeper.GetCachedRSSMB("uuid-rss"), "cache should be warm after warmRSSCache")
+}
+
+// TestSweeper_warmRSSCache_should_skipInactive_When_InstanceNotActive verifies that
+// inactive (paused/hibernated) sessions are not measured.
+func TestSweeper_warmRSSCache_should_skipInactive_When_InstanceNotActive(t *testing.T) {
+	reader := &memorytest.FakeReader{SystemPct: 90}
+	sweeper, _, cleanup := makeTestSweeper(t, reader, 85)
+	defer cleanup()
+
+	inst := makeIdleInstance(t, "uuid-inactive", "paused-session", 10*time.Minute)
+	inst.Status = Paused
+	sweeper.warmRSSCache(context.Background(), []*Instance{inst})
+
+	assert.Equal(t, 0, reader.GetSessionRSSCalls(), "SessionRSSMB should not be called for inactive sessions")
+}
+
 // TestSweeper_GetCachedRSSMB_should_returnZero_When_Empty verifies that GetCachedRSSMB
 // returns 0 for unknown UUIDs (satisfies MemoryCacheReader interface).
 func TestSweeper_GetCachedRSSMB_should_returnZero_When_Empty(t *testing.T) {
