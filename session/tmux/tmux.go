@@ -1904,17 +1904,20 @@ func CleanupSessionsOnServer(cmdExec executor.Executor, serverSocket string) err
 	return nil
 }
 
-// sanitizeUTF8String converts raw bytes to valid UTF-8 string, replacing invalid sequences
-// This prevents xterm.js parsing errors from invalid byte sequences while maintaining
-// terminal formatting and color information
+// sanitizerInitialCap is the pre-allocated capacity for each pooled strings.Builder.
+// Sized to cover typical tmux pane output without reallocation.
+const sanitizerInitialCap = 4096
+
 // sanitizerPool reuses strings.Builder allocations across sanitizeUTF8String calls.
-// Pre-grown to 4KB to cover typical pane content without reallocation.
 var sanitizerPool = sync.Pool{New: func() any {
 	b := new(strings.Builder)
-	b.Grow(4096)
+	b.Grow(sanitizerInitialCap)
 	return b
 }}
 
+// sanitizeUTF8String converts raw bytes to valid UTF-8 string, replacing invalid sequences
+// This prevents xterm.js parsing errors from invalid byte sequences while maintaining
+// terminal formatting and color information
 func sanitizeUTF8String(rawBytes []byte) string {
 	if len(rawBytes) == 0 {
 		return ""
@@ -1922,6 +1925,8 @@ func sanitizeUTF8String(rawBytes []byte) string {
 
 	result := sanitizerPool.Get().(*strings.Builder)
 	result.Reset()
+	// result.String() below copies bytes into a new string before defer fires, so
+	// returning the copy and then returning result to the pool is safe.
 	defer sanitizerPool.Put(result)
 	inEscape := false
 
