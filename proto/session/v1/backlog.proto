@@ -71,6 +71,15 @@ message ItemSession {
   TriageResult triage_result = 12;
 }
 
+// BacklogStatusEvent records a single status transition for a backlog item.
+message BacklogStatusEvent {
+  string id = 1;
+  string from_status = 2;
+  string to_status = 3;
+  string triggered_by = 4; // "user" or "system"
+  google.protobuf.Timestamp created_at = 5;
+}
+
 // BacklogItem represents a unit of work in the backlog.
 message BacklogItem {
   string id = 1;
@@ -92,6 +101,7 @@ message BacklogItem {
   google.protobuf.Timestamp updated_at = 17;
   repeated ItemSession item_sessions = 18;
   string source_id = 19;
+  repeated BacklogStatusEvent status_events = 20;
 }
 
 // ItemSource represents an external plugin source that syncs items into the

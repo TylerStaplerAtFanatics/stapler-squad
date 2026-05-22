@@ -386,6 +386,59 @@ export const artifactsPath = style({
   wordBreak: "break-all",
 });
 
+export const workflowTimeline = style({
+  display: "flex",
+  flexDirection: "column",
+  gap: 0,
+  paddingLeft: vars.space["2"],
+  borderLeft: `2px solid ${vars.color.borderSubtle}`,
+});
+
+export const workflowEvent = style({
+  display: "flex",
+  alignItems: "baseline",
+  gap: vars.space["3"],
+  padding: `${vars.space["1"]} ${vars.space["2"]}`,
+  position: "relative",
+  fontSize: vars.fontSize.sm,
+  "::before": {
+    content: '""',
+    position: "absolute",
+    left: `calc(-1 * ${vars.space["2"]} - 1px)`,
+    top: "50%",
+    transform: "translateY(-50%)",
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    background: vars.color.borderSubtle,
+    border: `2px solid ${vars.color.modalBackground}`,
+  },
+});
+
+export const workflowEventFrom = style({
+  color: vars.color.textMuted,
+  fontSize: vars.fontSize.xs,
+  flexShrink: 0,
+});
+
+export const workflowEventArrow = style({
+  color: vars.color.textMuted,
+  flexShrink: 0,
+});
+
+export const workflowEventTo = style({
+  fontWeight: 600,
+  color: vars.color.textPrimary,
+  flexShrink: 0,
+});
+
+export const workflowEventMeta = style({
+  marginLeft: "auto",
+  color: vars.color.textMuted,
+  fontSize: vars.fontSize.xs,
+  whiteSpace: "nowrap",
+});
+
 export const loadingState = style({
   display: "flex",
   alignItems: "center",
@@ -393,6 +446,63 @@ export const loadingState = style({
   padding: vars.space["12"],
   color: vars.color.textMuted,
   fontSize: vars.fontSize.sm,
+});
+
+export const planSummary = style({
+  fontSize: vars.fontSize.sm,
+  color: vars.color.textSecondary,
+  lineHeight: "1.6",
+  marginBottom: vars.space["3"],
+});
+
+export const planTaskList = style({
+  display: "flex",
+  flexDirection: "column",
+  gap: vars.space["1"],
+  marginTop: vars.space["2"],
+});
+
+export const planTask = style({
+  display: "flex",
+  alignItems: "baseline",
+  gap: vars.space["2"],
+  fontSize: vars.fontSize.sm,
+  padding: `${vars.space["1"]} 0`,
+  borderBottom: `1px solid ${vars.color.borderSubtle}`,
+  selectors: {
+    "&:last-child": {
+      borderBottom: "none",
+    },
+  },
+});
+
+export const planTaskText = style({
+  flex: 1,
+  color: vars.color.textPrimary,
+});
+
+export const planTaskMeta = style({
+  display: "flex",
+  gap: vars.space["2"],
+  flexShrink: 0,
+});
+
+export const planTaskBadge = style({
+  fontSize: vars.fontSize.xs,
+  padding: `2px ${vars.space["2"]}`,
+  borderRadius: vars.radii.sm,
+  background: vars.color.hoverBackground,
+  color: vars.color.textMuted,
+  whiteSpace: "nowrap",
+});
+
+export const sessionEndedBadge = style({
+  fontSize: vars.fontSize.xs,
+  padding: `1px ${vars.space["1"]}`,
+  borderRadius: vars.radii.sm,
+  background: vars.color.hoverBackground,
+  color: vars.color.textMuted,
+  marginLeft: vars.space["2"],
 });
 
 export const errorState = style({

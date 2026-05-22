@@ -342,6 +342,64 @@ func (s *SessionService) FindLiveInstance(id string) *session.Instance {
 	return s.reviewQueuePoller.FindInstance(id)
 }
 
+// StopSessionByUUID satisfies the BacklogService.SessionStopper interface.
+// It kills the live tmux session identified by UUID (best-effort; errors are non-fatal).
+func (s *SessionService) StopSessionByUUID(ctx context.Context, sessionUUID string) error {
+	inst := s.FindLiveInstance(sessionUUID)
+	if inst == nil {
+		return nil // already gone
+	}
+	if err := inst.Kill(); err != nil {
+		log.Warn("StopSessionByUUID: kill failed", "uuid", sessionUUID, "err", err)
+		return err
+	}
+	return nil
+}
+
+// IsSessionLive satisfies the BacklogService.SessionStopper interface.
+// It returns true if the session UUID is currently tracked in the live in-memory poller.
+func (s *SessionService) IsSessionLive(sessionUUID string) bool {
+	return s.FindLiveInstance(sessionUUID) != nil
+}
+
+// KillTmuxSessionByTitle satisfies the BacklogService.SessionStopper interface.
+// It kills the tmux session whose name is derived from title using the same sanitization
+// as initTmuxSession (whitespace stripped, "." and ":" replaced with "_", "staplersquad_"
+// prefix). This handles the case where the Instance is no longer tracked in memory
+// but the underlying tmux session is still alive.
+func (s *SessionService) KillTmuxSessionByTitle(ctx context.Context, title string) error {
+	name := stapleSquadTmuxName(title)
+	killCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := safeexec.CommandContext(killCtx, "tmux", "kill-session", "-t", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		combined := strings.ToLower(string(out))
+		if strings.Contains(combined, "can't find session") ||
+			strings.Contains(combined, "no server running") ||
+			strings.Contains(combined, "error connecting to") {
+			return nil // session already gone — not an error
+		}
+		return fmt.Errorf("tmux kill-session %q: %w (output: %s)", name, err, out)
+	}
+	return nil
+}
+
+// stapleSquadTmuxName computes the sanitized tmux session name for a given title,
+// matching the logic in session/tmux.toStaplerSquadTmuxNameWithPrefix.
+func stapleSquadTmuxName(title string) string {
+	var sb strings.Builder
+	for _, r := range title {
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
+			sb.WriteRune(r)
+		}
+	}
+	sanitized := sb.String()
+	sanitized = strings.ReplaceAll(sanitized, ".", "_")
+	sanitized = strings.ReplaceAll(sanitized, ":", "_")
+	return "staplersquad_" + sanitized
+}
+
 // GetApprovalStore returns the approval store for wiring up the HTTP hook handler.
 func (s *SessionService) GetApprovalStore() *ApprovalStore {
 	return s.approvalStore

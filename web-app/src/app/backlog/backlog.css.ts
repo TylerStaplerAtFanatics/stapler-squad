@@ -153,7 +153,9 @@ export const listPane = style({
 });
 
 export const detailPane = style({
-  width: "420px",
+  // width is set via inline style (resizable)
+  minWidth: "240px",
+  maxWidth: "800px",
   borderLeft: `1px solid ${vars.color.borderColor}`,
   flexShrink: 0,
   overflow: "hidden",
@@ -163,7 +165,7 @@ export const detailPane = style({
     "(max-width: 768px)": {
       position: "fixed",
       inset: 0,
-      width: "100%",
+      width: "100% !important" as "inherit",
       zIndex: "500",
       background: vars.color.modalBackground,
     },
@@ -288,7 +290,7 @@ export const modalBox = style({
   borderRadius: vars.radii.lg,
   padding: vars.space["6"],
   width: "100%",
-  maxWidth: "580px",
+  maxWidth: "720px",
   maxHeight: "90vh",
   overflowY: "auto",
   boxShadow: vars.shadow.lg,

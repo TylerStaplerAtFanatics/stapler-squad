@@ -263,6 +263,9 @@ type BacklogItemData struct {
 	// ItemSessions holds the eagerly-loaded item sessions for this backlog item.
 	// Only populated when explicitly loaded by the caller (e.g. GetBacklogItem).
 	ItemSessions []*ent.ItemSession
+	// StatusEvents holds the eagerly-loaded status transition history.
+	// Only populated when explicitly loaded by the caller (e.g. GetBacklogItem).
+	StatusEvents []*ent.BacklogStatusEvent
 }
 
 // BacklogItemFilter controls which items ListBacklogItems returns.
