@@ -41,6 +41,21 @@ type SessionStopper interface {
 	IsSessionLive(sessionUUID string) bool
 }
 
+// SessionStopper allows BacklogService to kill live sessions.
+// It is nil-safe: BacklogService degrades gracefully when not wired.
+type SessionStopper interface {
+	StopSessionByUUID(ctx context.Context, sessionUUID string) error
+	// KillTmuxSessionByTitle kills a tmux session by its title, regardless of
+	// whether the Instance is still tracked in memory. Used to clear stale tmux
+	// sessions before re-triggering so the fresh session gets its --append-system-prompt.
+	KillTmuxSessionByTitle(ctx context.Context, title string) error
+	// IsSessionLive returns true if the session UUID is currently tracked in the
+	// live in-memory poller. Used to distinguish genuinely-running sessions from
+	// sessions that exited but whose DB records were not closed (e.g. after a
+	// server restart that killed the underlying process).
+	IsSessionLive(sessionUUID string) bool
+}
+
 // itemSourceBackend is a narrow interface for item source persistence; satisfied by *session.Storage.
 type itemSourceBackend interface {
 	CreateItemSource(ctx context.Context, data session.ItemSourceData) (*session.ItemSourceData, error)
