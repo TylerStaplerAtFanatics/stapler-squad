@@ -115,4 +115,3 @@ func sumRSS(pid int32, seen map[int32]bool, depth int) int64 {
 
 	return rssKB
 }
-
