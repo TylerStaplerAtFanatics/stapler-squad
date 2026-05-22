@@ -250,6 +250,7 @@ export function useSessionService(
 
         return response.session ?? null;
       } catch (err) {
+        console.error("[useSessionService] updateSession failed:", err);
         dispatch(setError(err instanceof Error ? err.message : "Failed to update session"));
         return null;
       }
@@ -313,6 +314,7 @@ export function useSessionService(
         if (response.session) dispatch(upsertSession(response.session));
         return response.session ?? null;
       } catch (err) {
+        console.error("[useSessionService] hibernateSession failed:", err);
         dispatch(setError(err instanceof Error ? err.message : "Failed to hibernate session"));
         return null;
       }
@@ -330,6 +332,7 @@ export function useSessionService(
         if (response.session) dispatch(upsertSession(response.session));
         return response.session ?? null;
       } catch (err) {
+        console.error("[useSessionService] resumeHibernatedSession failed:", err);
         dispatch(setError(err instanceof Error ? err.message : "Failed to resume hibernated session"));
         return null;
       }

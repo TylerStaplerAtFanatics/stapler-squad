@@ -134,16 +134,16 @@ describe("FT2-02: upload button click triggers hidden file input click", () => {
     clickSpy.mockRestore();
   });
 
-  it("hidden file input has accept='image/*' and no capture attribute", () => {
+  it("gallery file input has accept='image/*', multiple, and no capture attribute", () => {
     renderTerminal();
-    // The hidden input is aria-hidden but we can query by type
-    const inputs = document.querySelectorAll('input[type="file"]');
-    // There's one file input for the upload button
-    const uploadInput = Array.from(inputs).find(
-      (el) => el.getAttribute("accept") === "image/*"
+    // The gallery input: accept="image/*", multiple, no capture (camera input also has
+    // accept="image/*" but adds capture="environment"). Use :not([capture]) to target gallery.
+    const galleryInput = document.querySelector(
+      'input[type="file"][accept="image/*"]:not([capture])'
     );
-    expect(uploadInput).toBeTruthy();
-    expect(uploadInput).not.toHaveAttribute("capture");
+    expect(galleryInput).toBeTruthy();
+    expect(galleryInput).not.toHaveAttribute("capture");
+    expect(galleryInput).toHaveAttribute("multiple");
   });
 });
 
@@ -204,14 +204,14 @@ describe("FT2-04: upload 413 error shows 'File too large' message", () => {
   });
 });
 
-// ── FT2-05: 400 error shows "Invalid image type" ─────────────────────────────
+// ── FT2-05: non-413/404 error shows generic "Upload failed" message ───────────
 
-describe("FT2-05: upload 400 error shows 'Invalid image type' message", () => {
-  it("button text shows invalid image type on 400", async () => {
+describe("FT2-05: upload non-413/404 error shows generic message", () => {
+  it("button text shows 'Upload failed' on 400", async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: false,
       status: 400,
-      text: async () => "unsupported",
+      text: async () => "bad request",
     });
 
     renderTerminal();
@@ -226,7 +226,7 @@ describe("FT2-05: upload 400 error shows 'Invalid image type' message", () => {
 
     await waitFor(() => {
       const btn = screen.getByRole("button", { name: /attach image/i });
-      expect(btn.textContent).toMatch(/Invalid image type/i);
+      expect(btn.textContent).toMatch(/Upload failed/i);
     });
   });
 });
@@ -279,7 +279,7 @@ describe("FT2-07: error message clears after 3 seconds", () => {
     // Error should be showing
     await waitFor(() => {
       const btn = screen.getByRole("button", { name: /attach image/i });
-      expect(btn.textContent).toMatch(/Invalid image type/i);
+      expect(btn.textContent).toMatch(/Upload failed/i);
     });
 
     // Advance timer past 3000ms
@@ -289,7 +289,7 @@ describe("FT2-07: error message clears after 3 seconds", () => {
 
     // Error should be gone
     const btn = screen.getByRole("button", { name: /attach image/i });
-    expect(btn.textContent).not.toMatch(/Invalid image type/i);
+    expect(btn.textContent).not.toMatch(/Upload failed/i);
 
     jest.useRealTimers();
   });
@@ -313,9 +313,14 @@ describe("FT2-08: isUploading disables button and shows uploading text", () => {
     });
 
     await waitFor(() => {
-      const btn = screen.getByRole("button", { name: /uploading image/i });
-      expect(btn).toBeDisabled();
-      expect(btn.textContent).toMatch(/Uploading/i);
+      // All upload buttons are disabled during an in-flight upload and show ⏳ text.
+      // Use getAllByRole since both gallery and camera buttons match the uploading label.
+      const uploadingBtns = screen.getAllByRole("button").filter(
+        b => b.getAttribute("aria-label")?.match(/uploading/i)
+      );
+      expect(uploadingBtns.length).toBeGreaterThan(0);
+      expect(uploadingBtns[0]).toBeDisabled();
+      expect(uploadingBtns[0].textContent).toMatch(/⏳/);
     });
   });
 });

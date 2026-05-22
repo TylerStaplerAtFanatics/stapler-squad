@@ -992,6 +992,7 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     setUploadSuccess(null);
 
     let successCount = 0;
+    let lastUploadedPath = "";
     for (let i = 0; i < total; i++) {
       const file = files[i];
       // Update count as we progress through the batch.
@@ -1009,9 +1010,10 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
 
         if (resp.ok) {
           const data = await resp.json() as { path: string; filename: string };
-          // Insert path into terminal with trailing space so user can type after it.
+          // Always attempt to insert — sendInput silently no-ops when disconnected.
           handleTerminalData(data.path + " ");
           successCount++;
+          lastUploadedPath = data.path;
         } else {
           let msg = "Upload failed";
           if (resp.status === 413) msg = "File too large (max 10 MB)";
@@ -1031,12 +1033,20 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
 
     setUploadingCount(0);
     if (successCount > 0) {
-      const msg = `${successCount} file${successCount === 1 ? '' : 's'} attached`;
+      // If terminal is disconnected, the path silently dropped — copy it to clipboard
+      // and show the filename so the user can see what was uploaded.
+      if (!isConnected && lastUploadedPath) {
+        navigator.clipboard?.writeText(lastUploadedPath).catch(() => {});
+      }
+      const label = successCount === 1 && lastUploadedPath
+        ? lastUploadedPath.split("/").pop() ?? "file"
+        : `${successCount} files`;
+      const msg = isConnected ? `✓ ${label} inserted` : `✓ ${label} saved — path copied`;
       setUploadSuccess(msg);
       if (uploadSuccessTimerRef.current) clearTimeout(uploadSuccessTimerRef.current);
-      uploadSuccessTimerRef.current = setTimeout(() => setUploadSuccess(null), 3000);
+      uploadSuccessTimerRef.current = setTimeout(() => setUploadSuccess(null), 4000);
     }
-  }, [sessionId, baseUrl, handleTerminalData]);
+  }, [sessionId, baseUrl, handleTerminalData, isConnected]);
 
   // Synchronous click handlers — MUST NOT have await before .click() (iOS Safari requirement).
   const handleCameraButtonClick = useCallback(() => {
@@ -1323,7 +1333,7 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
                 title="Attach image(s) from gallery — multi-select supported"
                 aria-label={uploadingCount > 0 ? `Uploading ${uploadingCount} file(s)...` : "Attach images from gallery"}
               >
-                {uploadSuccess ? `✅ ${uploadSuccess}` : uploadError ? `⚠️ ${uploadError}` : uploadingCount > 0 ? `⏳ ${uploadingCount}…` : "🖼️ Images"}
+                {uploadSuccess ? `✅ ${uploadSuccess}` : uploadError ? `⚠️ ${uploadError}` : uploadingCount > 0 ? `⏳ ${uploadingCount}…` : "🖼️ Gallery"}
               </button>
               {/* Files button — any file type, always visible */}
               <button
