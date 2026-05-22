@@ -214,21 +214,29 @@ func TestSessionImageUpload_OversizedFile(t *testing.T) {
 	}
 }
 
-// ── BT-05: Invalid MIME type → 400 ──────────────────────────────────────────
+// ── BT-05: Any file type accepted → 200 ─────────────────────────────────────
+// The MIME allowlist was removed; any non-empty file is now accepted.
 
-func TestSessionImageUpload_InvalidMIMEType(t *testing.T) {
-	store, _ := fixtureStore(t)
+func TestSessionImageUpload_AnyFileTypeAccepted(t *testing.T) {
+	store, dir := fixtureStore(t)
 	h := NewSessionImageUploadHandler(store, nil)
 
 	req := buildUploadRequest(t, "session-123", "page.html", []byte("<html>hello</html>"))
 	rr := httptest.NewRecorder()
 	h.HandleUpload(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (any file type accepted), got %d: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(strings.ToLower(rr.Body.String()), "unsupported") {
-		t.Errorf("response does not mention 'unsupported': %q", rr.Body.String())
+	var resp sessionImageUploadResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.HasPrefix(resp.Path, filepath.Join(dir, "uploads")) {
+		t.Errorf("path %q not under uploads dir", resp.Path)
+	}
+	if _, err := os.Stat(resp.Path); err != nil {
+		t.Errorf("saved file not found: %v", err)
 	}
 }
 
@@ -429,20 +437,6 @@ func TestSessionImageUpload_ConcurrentUploads(t *testing.T) {
 		if _, err := os.Stat(r.path); err != nil {
 			t.Errorf("file not found: %s: %v", r.path, err)
 		}
-	}
-}
-
-// ── Additional: detectWebP helper ────────────────────────────────────────────
-
-func TestDetectWebP(t *testing.T) {
-	if !detectWebP(webPMagic()) {
-		t.Error("detectWebP returned false for valid WebP magic bytes")
-	}
-	if detectWebP(jpegMagic()) {
-		t.Error("detectWebP returned true for JPEG bytes")
-	}
-	if detectWebP([]byte{}) {
-		t.Error("detectWebP returned true for empty bytes")
 	}
 }
 
