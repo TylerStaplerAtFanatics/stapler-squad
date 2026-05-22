@@ -10,7 +10,7 @@ import (
 	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
-// tmux user option keys for claude-mux session metadata.
+// tmux user option keys for ssq-mux session metadata.
 // User options are @-prefixed and stored natively on the tmux session,
 // surviving server restarts and enabling socket-free discovery via
 // a single `tmux list-sessions` call.
@@ -49,7 +49,7 @@ func WriteSessionUserOptions(sessionName, socketPath, cwd, command string, pid i
 	return nil
 }
 
-// ScanByUserOptions discovers active claude-mux sessions via a single
+// ScanByUserOptions discovers active ssq-mux sessions via a single
 // `tmux list-sessions` call, reading user options written by WriteSessionUserOptions.
 //
 // This is faster than probing N sockets because:
@@ -58,7 +58,7 @@ func WriteSessionUserOptions(sessionName, socketPath, cwd, command string, pid i
 //   - Works immediately after a server restart before sockets are re-probed
 //
 // Returns an empty slice (not an error) when tmux is not running or has no sessions.
-// Sessions without @cs_socket_path set are silently skipped (not claude-mux sessions).
+// Sessions without @cs_socket_path set are silently skipped (not ssq-mux sessions).
 func ScanByUserOptions() ([]*DiscoveredSession, error) {
 	format := strings.Join([]string{
 		"#{session_name}",
@@ -91,7 +91,7 @@ func ScanByUserOptions() ([]*DiscoveredSession, error) {
 
 		socketPath := fields[1]
 		if socketPath == "" {
-			// @cs_socket_path not set — not a claude-mux session.
+			// @cs_socket_path not set — not a ssq-mux session.
 			continue
 		}
 

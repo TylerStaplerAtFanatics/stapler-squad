@@ -68,6 +68,8 @@ interface UseSessionServiceReturn {
   listPromptHistory: (limit?: number) => Promise<PromptHistoryEntry[]>;
   pauseSession: (id: string) => Promise<Session | null>;
   resumeSession: (id: string, updates?: { title?: string; tags?: string[] }) => Promise<Session | null>;
+  hibernateSession: (id: string) => Promise<Session | null>;
+  resumeHibernatedSession: (id: string) => Promise<Session | null>;
   renameSession: (id: string, newTitle: string) => Promise<boolean>;
   restartSession: (id: string) => Promise<boolean>;
   clearConversationState: (id: string) => Promise<boolean>;
@@ -86,6 +88,11 @@ interface UseSessionServiceReturn {
   // Real-time updates
   watchSessions: (options?: { categoryFilter?: string; statusFilter?: SessionStatus }) => void;
   stopWatching: () => void;
+
+  // Session monitor
+  getTerminalSnapshot: (sessionId: string, lastNLines?: number) => Promise<string>;
+  writeToSession: (sessionId: string, input: string, pressEnter?: boolean) => Promise<boolean>;
+  getConversationMessages: (sessionId: string, limit?: number) => Promise<Array<{ role: string; content: string; timestamp?: string; model?: string }>>;
 }
 
 export function useSessionService(
@@ -296,6 +303,40 @@ export function useSessionService(
       });
     },
     [updateSession]
+  );
+
+  // Hibernate session (Active → Hibernated)
+  const hibernateSession = useCallback(
+    async (id: string): Promise<Session | null> => {
+      if (!clientRef.current) return null;
+      dispatch(setError(null));
+      try {
+        const response = await clientRef.current.hibernateSession({ id, reason: "manual" });
+        if (response.session) dispatch(upsertSession(response.session));
+        return response.session ?? null;
+      } catch (err) {
+        dispatch(setError(err instanceof Error ? err.message : "Failed to hibernate session"));
+        return null;
+      }
+    },
+    [dispatch]
+  );
+
+  // Resume a hibernated session (Hibernated → Active)
+  const resumeHibernatedSession = useCallback(
+    async (id: string): Promise<Session | null> => {
+      if (!clientRef.current) return null;
+      dispatch(setError(null));
+      try {
+        const response = await clientRef.current.resumeHibernatedSession({ id });
+        if (response.session) dispatch(upsertSession(response.session));
+        return response.session ?? null;
+      } catch (err) {
+        dispatch(setError(err instanceof Error ? err.message : "Failed to resume hibernated session"));
+        return null;
+      }
+    },
+    [dispatch]
   );
 
   // Rename session
@@ -736,6 +777,50 @@ export function useSessionService(
 
   const connectionState = useAppSelector(selectConnectionState);
 
+  const getTerminalSnapshot = useCallback(
+    async (sessionId: string, lastNLines = 50): Promise<string> => {
+      if (!clientRef.current) return "";
+      try {
+        const resp = await clientRef.current.getTerminalSnapshot({ sessionId, lastNLines });
+        return resp.content ?? "";
+      } catch {
+        return "";
+      }
+    },
+    []
+  );
+
+  const writeToSession = useCallback(
+    async (sessionId: string, input: string, pressEnter = true): Promise<boolean> => {
+      if (!clientRef.current) return false;
+      try {
+        const resp = await clientRef.current.writeToSession({ sessionId, input, pressEnter });
+        return resp.success ?? false;
+      } catch {
+        return false;
+      }
+    },
+    []
+  );
+
+  const getConversationMessages = useCallback(
+    async (sessionId: string, limit = 30): Promise<Array<{ role: string; content: string; timestamp?: string; model?: string }>> => {
+      if (!clientRef.current) return [];
+      try {
+        const resp = await clientRef.current.getClaudeHistoryMessages({ id: sessionId, limit, tail: true });
+        return (resp.messages ?? []).map((m) => ({
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp ? new Date(Number(m.timestamp.seconds) * 1000).toISOString() : undefined,
+          model: m.model,
+        }));
+      } catch {
+        return [];
+      }
+    },
+    []
+  );
+
   return {
     sessions,
     loading,
@@ -748,6 +833,8 @@ export function useSessionService(
     deleteSession,
     pauseSession,
     resumeSession,
+    hibernateSession,
+    resumeHibernatedSession,
     renameSession,
     restartSession,
     clearConversationState,
@@ -759,10 +846,17 @@ export function useSessionService(
     listPromptHistory,
     watchSessions,
     stopWatching,
+<<<<<<< HEAD
     spawnShell,
     stopShell,
     restartShell,
     listShells,
     deleteShell,
+||||||| 41cb0ca6
+=======
+    getTerminalSnapshot,
+    writeToSession,
+    getConversationMessages,
+>>>>>>> origin/main
   };
 }

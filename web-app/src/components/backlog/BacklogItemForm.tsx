@@ -3,6 +3,7 @@
 
 import { useState, useCallback } from "react";
 import type { BacklogItem, BacklogItemInput, AcCriterion, AcCriterionStatus } from "@/lib/hooks/useBacklogService";
+import { RepoPathInput } from "@/components/ui/RepoPathInput";
 import * as styles from "./BacklogItemForm.css";
 
 interface BacklogItemFormProps {
@@ -14,6 +15,7 @@ interface BacklogItemFormProps {
 
 interface FormErrors {
   title?: string;
+  repoPath?: string;
   acCriteria?: string;
 }
 
@@ -46,8 +48,11 @@ export function BacklogItemForm({
     if (!title.trim()) {
       errs.title = "Title is required.";
     }
+    if (!initialValues?.id && !repoPath.trim()) {
+      errs.repoPath = "Repository path is required for automated triage.";
+    }
     return errs;
-  }, [title]);
+  }, [title, repoPath, initialValues?.id]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -65,8 +70,16 @@ export function BacklogItemForm({
         const isVague = descriptionText.length < 80 && acCriteria.length === 0;
         await onSubmit({
           title: title.trim(),
+<<<<<<< HEAD
           description: descriptionText || undefined,
           repoPath: repoPath.trim() || undefined,
+||||||| 41cb0ca6
+          description: description.trim() || undefined,
+          repoPath: repoPath.trim() || undefined,
+=======
+          description: descriptionText || undefined,
+          repoPath: repoPath.trim(),
+>>>>>>> origin/main
           priority,
           skipPlanning,
           skipReviewGate,
@@ -159,18 +172,23 @@ export function BacklogItemForm({
       <div className={styles.twoColumn}>
         <div className={styles.fieldGroup}>
           <label htmlFor="backlog-repo-path" className={styles.label}>
-            Repository Path
+            Repository Path <span className={styles.required} aria-hidden="true">*</span>
           </label>
-          <input
+          <RepoPathInput
             id="backlog-repo-path"
-            type="text"
-            className={styles.input}
             value={repoPath}
-            onChange={(e) => setRepoPath(e.target.value)}
+            onChange={setRepoPath}
             placeholder="/home/user/project"
+            required
             disabled={busy}
+            error={errors.repoPath}
             data-testid="backlog-repo-path-input"
           />
+          {errors.repoPath && (
+            <span id="backlog-repo-path-error" className={styles.errorMessage} role="alert">
+              {errors.repoPath}
+            </span>
+          )}
         </div>
 
         <div className={styles.fieldGroup}>

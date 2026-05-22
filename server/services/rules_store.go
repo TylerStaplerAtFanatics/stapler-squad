@@ -18,21 +18,23 @@ import (
 // RuleSpec is the JSON-serializable form of a Rule.
 // CommandPattern and FilePattern are stored as strings (compiled on load).
 type RuleSpec struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	ToolName       string    `json:"tool_name,omitempty"`
-	ToolPattern    string    `json:"tool_pattern,omitempty"`
-	ToolCategory   string    `json:"tool_category,omitempty"`
-	CommandPattern string    `json:"command_pattern,omitempty"`
-	FilePattern    string    `json:"file_pattern,omitempty"`
-	Decision       string    `json:"decision"`   // "auto_allow" | "auto_deny" | "escalate"
-	RiskLevel      string    `json:"risk_level"` // "low" | "medium" | "high" | "critical"
-	Reason         string    `json:"reason,omitempty"`
-	Alternative    string    `json:"alternative,omitempty"`
-	Priority       int       `json:"priority"`
-	Enabled        bool      `json:"enabled"`
-	Source         string    `json:"source"` // "user" | "seed" | "claude-settings"
-	CreatedAt      time.Time `json:"created_at"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	ToolName            string   `json:"tool_name,omitempty"`
+	ToolPattern         string   `json:"tool_pattern,omitempty"`
+	ToolCategory        string   `json:"tool_category,omitempty"`
+	CommandPattern      string   `json:"command_pattern,omitempty"`
+	FilePattern         string   `json:"file_pattern,omitempty"`
+	CriteriaPrograms    []string `json:"criteria_programs,omitempty"`
+	CriteriaSubcommands []string `json:"criteria_subcommands,omitempty"`
+	Decision            string   `json:"decision"`   // "auto_allow" | "auto_deny" | "escalate"
+	RiskLevel           string   `json:"risk_level"` // "low" | "medium" | "high" | "critical"
+	Reason              string   `json:"reason,omitempty"`
+	Alternative         string   `json:"alternative,omitempty"`
+	Priority            int      `json:"priority"`
+	Enabled             bool     `json:"enabled"`
+	Source              string   `json:"source"` // "user" | "seed" | "claude-settings"
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 // RulesFile is the top-level structure of auto_approve_rules.json.
@@ -112,22 +114,24 @@ func (s *RulesStore) Upsert(spec RuleSpec) (RuleSpec, error) {
 
 	// Persist to SQLite via Storage.
 	ruleData := session.ApprovalRuleData{
-		ID:             spec.ID,
-		Name:           spec.Name,
-		ToolName:       spec.ToolName,
-		ToolPattern:    spec.ToolPattern,
-		ToolCategory:   spec.ToolCategory,
-		CommandPattern: spec.CommandPattern,
-		FilePattern:    spec.FilePattern,
-		Decision:       decisionToInt(spec.Decision),
-		RiskLevel:      riskLevelToInt(spec.RiskLevel),
-		Reason:         spec.Reason,
-		Alternative:    spec.Alternative,
-		Priority:       spec.Priority,
-		Enabled:        spec.Enabled,
-		Source:         spec.Source,
-		CreatedAt:      spec.CreatedAt,
-		UpdatedAt:      time.Now(),
+		ID:                  spec.ID,
+		Name:                spec.Name,
+		ToolName:            spec.ToolName,
+		ToolPattern:         spec.ToolPattern,
+		ToolCategory:        spec.ToolCategory,
+		CommandPattern:      spec.CommandPattern,
+		FilePattern:         spec.FilePattern,
+		CriteriaPrograms:    spec.CriteriaPrograms,
+		CriteriaSubcommands: spec.CriteriaSubcommands,
+		Decision:            decisionToInt(spec.Decision),
+		RiskLevel:           riskLevelToInt(spec.RiskLevel),
+		Reason:              spec.Reason,
+		Alternative:         spec.Alternative,
+		Priority:            spec.Priority,
+		Enabled:             spec.Enabled,
+		Source:              spec.Source,
+		CreatedAt:           spec.CreatedAt,
+		UpdatedAt:           time.Now(),
 	}
 
 	if err := s.storage.UpsertRule(context.Background(), ruleData); err != nil {
@@ -175,21 +179,23 @@ func (s *RulesStore) reload() error {
 	specs := make([]RuleSpec, len(rules))
 	for i, r := range rules {
 		specs[i] = RuleSpec{
-			ID:             r.ID,
-			Name:           r.Name,
-			ToolName:       r.ToolName,
-			ToolPattern:    r.ToolPattern,
-			ToolCategory:   r.ToolCategory,
-			CommandPattern: r.CommandPattern,
-			FilePattern:    r.FilePattern,
-			Decision:       decisionStringFromInt(r.Decision),
-			RiskLevel:      riskLevelStringFromInt(r.RiskLevel),
-			Reason:         r.Reason,
-			Alternative:    r.Alternative,
-			Priority:       r.Priority,
-			Enabled:        r.Enabled,
-			Source:         r.Source,
-			CreatedAt:      r.CreatedAt,
+			ID:                  r.ID,
+			Name:                r.Name,
+			ToolName:            r.ToolName,
+			ToolPattern:         r.ToolPattern,
+			ToolCategory:        r.ToolCategory,
+			CommandPattern:      r.CommandPattern,
+			FilePattern:         r.FilePattern,
+			CriteriaPrograms:    r.CriteriaPrograms,
+			CriteriaSubcommands: r.CriteriaSubcommands,
+			Decision:            decisionStringFromInt(r.Decision),
+			RiskLevel:           riskLevelStringFromInt(r.RiskLevel),
+			Reason:              r.Reason,
+			Alternative:         r.Alternative,
+			Priority:            r.Priority,
+			Enabled:             r.Enabled,
+			Source:              r.Source,
+			CreatedAt:           r.CreatedAt,
 		}
 	}
 
@@ -268,6 +274,12 @@ func specsToRules(specs []RuleSpec) []classifier.Rule {
 			}
 			r.FilePattern = re
 		}
+		if len(spec.CriteriaPrograms) > 0 {
+			r.Criteria = &classifier.CommandCriteria{
+				Programs:    spec.CriteriaPrograms,
+				Subcommands: spec.CriteriaSubcommands,
+			}
+		}
 		rules = append(rules, r)
 	}
 	return rules
@@ -325,28 +337,12 @@ func riskLevelToInt(s string) int {
 	}
 }
 
+// decisionStringFromInt delegates to the canonical decisionString in analytics_store.go.
 func decisionStringFromInt(d int) string {
-	switch classifier.ClassificationDecision(d) {
-	case classifier.AutoAllow:
-		return "auto_allow"
-	case classifier.AutoDeny:
-		return "auto_deny"
-	default:
-		return "escalate"
-	}
+	return decisionString(classifier.ClassificationDecision(d))
 }
 
+// riskLevelStringFromInt delegates to the canonical riskLevelString in analytics_store.go.
 func riskLevelStringFromInt(r int) string {
-	switch classifier.RiskLevel(r) {
-	case classifier.RiskLow:
-		return "low"
-	case classifier.RiskMedium:
-		return "medium"
-	case classifier.RiskHigh:
-		return "high"
-	case classifier.RiskCritical:
-		return "critical"
-	default:
-		return "medium"
-	}
+	return riskLevelString(classifier.RiskLevel(r))
 }

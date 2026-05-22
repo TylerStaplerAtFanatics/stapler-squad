@@ -7,6 +7,7 @@ import (
 
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/tokens"
 )
 
 // InstanceData represents the serializable data of an Instance
@@ -257,6 +258,29 @@ func (s *Storage) ListInstanceData() ([]InstanceData, error) {
 	return s.repo.List(context.Background())
 }
 
+// ListSessionRecords returns a snapshot of all sessions as SessionRecords,
+// for use by the tokens.Associator to match JSONL files to stapler-squad sessions.
+func (s *Storage) ListSessionRecords() []tokens.SessionRecord {
+	data, err := s.ListInstanceData()
+	if err != nil {
+		return nil
+	}
+	records := make([]tokens.SessionRecord, 0, len(data))
+	for _, d := range data {
+		sessionID := d.UUID
+		if sessionID == "" {
+			sessionID = d.Title
+		}
+		records = append(records, tokens.SessionRecord{
+			SessionID:      sessionID,
+			ConversationID: d.ClaudeSession.ConversationUUID,
+			Path:           d.Path,
+			CreatedAt:      d.CreatedAt,
+		})
+	}
+	return records
+}
+
 // DeleteInstance removes an instance from storage.
 func (s *Storage) DeleteInstance(title string) error {
 	return s.repo.Delete(context.Background(), title)
@@ -268,6 +292,7 @@ func (s *Storage) AddInstance(instance *Instance) error {
 	data := instance.ToInstanceData()
 	ctx := context.Background()
 	if err := s.repo.Create(ctx, data); err != nil {
+<<<<<<< HEAD
 		// Already exists → update instead
 		if updateErr := s.repo.Update(ctx, data); updateErr != nil {
 			return updateErr
@@ -276,6 +301,16 @@ func (s *Storage) AddInstance(instance *Instance) error {
 	// Inject shell repository so shell operations can persist to the DB.
 	if sr, ok := s.repo.(ShellRepository); ok {
 		instance.SetShellRepository(sr)
+||||||| 41cb0ca6
+		// Already exists → update instead
+		return s.repo.Update(ctx, data)
+=======
+		if !ent.IsConstraintError(err) {
+			return fmt.Errorf("failed to persist session %q: %w", data.Title, err)
+		}
+		// Unique constraint violation → session already exists, update instead.
+		return s.repo.Update(ctx, data)
+>>>>>>> origin/main
 	}
 	return nil
 }
@@ -408,6 +443,31 @@ func (s *Storage) RecordAnalytics(ctx context.Context, data AnalyticsData) error
 // ListAnalytics retrieves recent classification decisions from the repository.
 func (s *Storage) ListAnalytics(ctx context.Context, limit int) ([]AnalyticsData, error) {
 	return s.repo.ListAnalytics(ctx, limit)
+}
+
+// ListAnalyticsSince retrieves analytics entries with created_at >= since.
+func (s *Storage) ListAnalyticsSince(ctx context.Context, since time.Time, limit int) ([]AnalyticsData, error) {
+	return s.repo.ListAnalyticsSince(ctx, since, limit)
+}
+
+// ListAnalyticsByProgramSince retrieves entries for a specific program since a time.
+func (s *Storage) ListAnalyticsByProgramSince(ctx context.Context, program string, since time.Time, limit int) ([]AnalyticsData, error) {
+	return s.repo.ListAnalyticsByProgramSince(ctx, program, since, limit)
+}
+
+// GetSubcommandBreakdown returns per-(subcommand, decision) counts for a program.
+func (s *Storage) GetSubcommandBreakdown(ctx context.Context, program string, since time.Time) ([]SubcommandDecisionCount, error) {
+	return s.repo.GetSubcommandBreakdown(ctx, program, since)
+}
+
+// ListRecentCommandsByProgram returns the most recent n command_preview strings.
+func (s *Storage) ListRecentCommandsByProgram(ctx context.Context, program, subcommand string, since time.Time, n int) ([]string, error) {
+	return s.repo.ListRecentCommandsByProgram(ctx, program, subcommand, since, n)
+}
+
+// GetSubcommandTrend returns raw analytics rows for (program, subcommand) since a time.
+func (s *Storage) GetSubcommandTrend(ctx context.Context, program, subcommand string, since time.Time) ([]AnalyticsData, error) {
+	return s.repo.GetSubcommandTrend(ctx, program, subcommand, since)
 }
 
 // --- Projects ---

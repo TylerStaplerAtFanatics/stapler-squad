@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { createClient } from "@connectrpc/connect";
 import { SessionService, Project } from "@/gen/session/v1/session_pb";
 import { getConnectTransport } from "@/lib/api/transport";
 import { AppLink } from "@/components/ui/AppLink";
-import { Session, SessionStatus, CheckpointProto } from "@/gen/session/v1/types_pb";
+import { Session, SessionStatus, SubStatus, CheckpointProto } from "@/gen/session/v1/types_pb";
 import { SessionCard } from "./SessionCard";
 import { SessionRow } from "./SessionRow";
 import { SessionListEmptyState } from "./SessionListEmptyState";
@@ -68,6 +69,8 @@ interface SessionListProps {
   onRunOneShot?: (sessionId: string) => Promise<void>;
   onSetRateLimitEnabled?: (sessionId: string, enabled: boolean) => void;
   onClearConversationState?: (sessionId: string) => Promise<boolean>;
+  onHibernateSession?: (sessionId: string) => void;
+  onResumeHibernatedSession?: (sessionId: string) => void;
   /** When true, renders the loading skeleton instead of the session list. */
   isLoading?: boolean;
   /** Prefix for localStorage keys, used when multiple instances are rendered (e.g. split view). */
@@ -87,6 +90,7 @@ const BASE_STORAGE_KEYS = {
   SELECTED_CATEGORY: 'stapler-squad-selected-category',
   SELECTED_TAG: 'stapler-squad-selected-tag',
   HIDE_PAUSED: 'stapler-squad-hide-paused',
+  FILTER_NEEDS_APPROVAL: 'stapler-squad-filter-needs-approval',
   GROUPING_STRATEGY: 'stapler-squad-grouping-strategy',
   SORT_FIELD: 'stapler-squad-sort-field',
   SORT_DIR: 'stapler-squad-sort-dir',
@@ -145,6 +149,8 @@ export function SessionList({
   onRunOneShot,
   onSetRateLimitEnabled,
   onClearConversationState,
+  onHibernateSession,
+  onResumeHibernatedSession,
   isLoading = false,
   storageKeyPrefix,
   extraHeaderActions,
@@ -176,6 +182,11 @@ export function SessionList({
   const [hidePaused, setHidePaused] = useState(() =>
     loadFromStorage(STORAGE_KEYS.HIDE_PAUSED, false)
   );
+  // filterNeedsApproval: when true, show only Active sessions with subStatus === NEEDS_APPROVAL.
+  // Replaces the old lifecycle-status NEEDS_APPROVAL filter (which was status===5).
+  const [filterNeedsApproval, setFilterNeedsApproval] = useState(() =>
+    loadFromStorage(STORAGE_KEYS.FILTER_NEEDS_APPROVAL, false)
+  );
   const [groupingStrategy, setGroupingStrategy] = useState<GroupingStrategy>(() =>
     loadFromStorage(STORAGE_KEYS.GROUPING_STRATEGY, GroupingStrategy.Category)
   );
@@ -198,6 +209,7 @@ export function SessionList({
 
   // S4: Project data for grouping headers and "Group as..." functionality
   const [projects, setProjects] = useState<Project[]>([]);
+  const containerRef = useRef<HTMLDivElement>(null);
   const projectClientRef = useRef(
     createClient(SessionService, getConnectTransport())
   );
@@ -279,6 +291,10 @@ export function SessionList({
   }, [STORAGE_KEYS, hidePaused]);
 
   useEffect(() => {
+    saveToStorage(STORAGE_KEYS.FILTER_NEEDS_APPROVAL, filterNeedsApproval);
+  }, [STORAGE_KEYS, filterNeedsApproval]);
+
+  useEffect(() => {
     saveToStorage(STORAGE_KEYS.GROUPING_STRATEGY, groupingStrategy);
   }, [STORAGE_KEYS, groupingStrategy]);
 
@@ -351,9 +367,14 @@ export function SessionList({
         return false;
       }
 
+      // Needs-approval quick filter — show only Active sessions with subStatus === NEEDS_APPROVAL
+      if (filterNeedsApproval && session.subStatus !== SubStatus.NEEDS_APPROVAL) {
+        return false;
+      }
+
       return true;
     });
-  }, [sessions, searchQuery, selectedStatus, selectedCategory, selectedTag, hidePaused]);
+  }, [sessions, searchQuery, selectedStatus, selectedCategory, selectedTag, hidePaused, filterNeedsApproval]);
 
   // Sort filtered sessions
   const sortedSessions = useMemo(() => {
@@ -388,6 +409,35 @@ export function SessionList({
   const groupedSessions = useMemo(() => {
     return groupSessions(sortedSessions, groupingStrategy);
   }, [sortedSessions, groupingStrategy]);
+
+  // Flat item list for row-mode virtualizer: headers and sessions interleaved.
+  type FlatItem =
+    | { kind: "header"; groupKey: string; displayName: string; groupSessions: Session[]; projectData?: Project; isProjectGrouping: boolean; isUngrouped: boolean }
+    | { kind: "session"; session: Session };
+
+  const flatItems = useMemo<FlatItem[]>(() => {
+    if (viewMode !== "row") return [];
+    const items: FlatItem[] = [];
+    const isProjectGrouping = groupingStrategy === GroupingStrategy.Project;
+    for (const { groupKey, displayName, sessions: grpSessions } of groupedSessions) {
+      const projectData = isProjectGrouping
+        ? projects.find((p) => p.id === groupKey || p.name === displayName)
+        : undefined;
+      const isUngrouped = groupKey === "No Project";
+      items.push({ kind: "header", groupKey, displayName, groupSessions: grpSessions, projectData, isProjectGrouping, isUngrouped });
+      for (const s of grpSessions) {
+        items.push({ kind: "session", session: s });
+      }
+    }
+    return items;
+  }, [groupedSessions, groupingStrategy, projects, viewMode]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: viewMode === "row" ? flatItems.length : 0,
+    getScrollElement: () => containerRef.current,
+    estimateSize: (i) => (flatItems[i]?.kind === "header" ? 40 : 50),
+    overscan: 8,
+  });
 
   // Handler for cycling grouping strategy (keyboard shortcut 'G')
   const handleCycleGrouping = () => {
@@ -510,7 +560,7 @@ export function SessionList({
   };
 
   return (
-    <div className={container} data-context="session-list">
+    <div ref={containerRef} className={container} data-context="session-list">
       <div className={header}>
         <div className={headerTop}>
           <h2 className={title}>Sessions ({filteredSessions.length})</h2>
@@ -548,7 +598,7 @@ export function SessionList({
             {/* Filter toggle — only shown on mobile via CSS */}
             <button
               className={`${filterToggle} ${
-                selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused
+                selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused || filterNeedsApproval
                   ? filterToggleActive
                   : ""
               }`}
@@ -557,7 +607,7 @@ export function SessionList({
               onClick={() => setFiltersOpen((prev) => !prev)}
             >
               Filters
-              {(selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused) && (
+              {(selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused || filterNeedsApproval) && (
                 <span className={filterActiveDot} aria-hidden="true" />
               )}
             </button>
@@ -583,13 +633,10 @@ export function SessionList({
               aria-label="Filter by status"
             >
               <option value="all">All Statuses</option>
-              <option value={SessionStatus.RUNNING}>Running</option>
-              <option value={SessionStatus.READY}>Ready</option>
+              <option value={SessionStatus.ACTIVE}>Active</option>
               <option value={SessionStatus.PAUSED}>Paused</option>
-              <option value={SessionStatus.LOADING}>Loading</option>
-              <option value={SessionStatus.NEEDS_APPROVAL}>
-                Needs Approval
-              </option>
+              <option value={SessionStatus.STOPPED}>Stopped</option>
+              <option value={SessionStatus.CREATING}>Creating</option>
             </select>
 
             {/* Category filter */}
@@ -631,6 +678,17 @@ export function SessionList({
                 aria-label="Hide paused sessions"
               />
               <span>Hide Paused</span>
+            </label>
+
+            {/* Needs-approval quick filter */}
+            <label className={checkboxLabel}>
+              <input
+                type="checkbox"
+                checked={filterNeedsApproval}
+                onChange={(e) => setFilterNeedsApproval(e.target.checked)}
+                aria-label="Show only sessions needing approval"
+              />
+              <span>Needs Approval</span>
             </label>
 
             {/* Grouping strategy selector */}
@@ -706,7 +764,7 @@ export function SessionList({
         <SessionListSkeleton />
       ) : filteredSessions.length === 0 ? (
         (() => {
-          const hasActiveFilters = !!(searchQuery || selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused);
+          const hasActiveFilters = !!(searchQuery || selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused || filterNeedsApproval);
           return hasActiveFilters ? (
             <div className={empty}>
               <p>No sessions found</p>
@@ -718,6 +776,7 @@ export function SessionList({
                   setSelectedCategory("all");
                   setSelectedTag("all");
                   setHidePaused(false);
+                  setFilterNeedsApproval(false);
                 }}
               >
                 Clear filters
@@ -727,137 +786,255 @@ export function SessionList({
             <SessionListEmptyState />
           );
         })()
+      ) : viewMode === "row" ? (
+        // Row mode: virtualized — only renders visible items (~20 rows at a time).
+        <div
+          style={{
+            height: rowVirtualizer.getTotalSize(),
+            width: "100%",
+            position: "relative",
+          }}
+        >
+          {rowVirtualizer.getVirtualItems().map((virtualItem) => {
+            const item = flatItems[virtualItem.index];
+            if (!item) return null;
+            const isSessionItem = item.kind === "session";
+            const WrapperTag = isSessionItem ? "ul" : "div";
+            return (
+              <WrapperTag
+                key={virtualItem.key}
+                data-index={virtualItem.index}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  transform: `translateY(${virtualItem.start}px)`,
+                  ...(isSessionItem ? { listStyle: "none", margin: 0, padding: 0 } : {}),
+                }}
+              >
+                {item.kind === "header" ? (
+                  <h3
+                    className={groupHeaderStyle}
+                    style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+                  >
+                    {item.isProjectGrouping && item.projectData && renamingProjectId === item.projectData.id ? (
+                      <form
+                        style={{ display: "flex", gap: "6px", alignItems: "center" }}
+                        onSubmit={(e) => { e.preventDefault(); handleProjectRename(item.projectData!.id, renameValue); }}
+                      >
+                        <input
+                          autoFocus
+                          type="text"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Escape") setRenamingProjectId(null); }}
+                          style={{
+                            padding: "2px 6px",
+                            border: "1px solid var(--input-focus-border)",
+                            borderRadius: "4px",
+                            fontSize: "inherit",
+                            fontWeight: "inherit",
+                            background: "var(--input-background)",
+                            color: "var(--text-primary)",
+                          }}
+                        />
+                        <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--success)", fontSize: "1rem" }} title="Save">✓</button>
+                        <button type="button" onClick={() => setRenamingProjectId(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "1rem" }} title="Cancel">✕</button>
+                      </form>
+                    ) : (
+                      <>
+                        <span>{item.displayName} ({item.groupSessions.length})</span>
+                        {item.isProjectGrouping && item.projectData && (
+                          <>
+                            {item.projectData.runningCount > 0 && (
+                              <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--success-bg)", color: "var(--success)", borderRadius: "10px" }}>
+                                {item.projectData.runningCount} Running
+                              </span>
+                            )}
+                            {item.projectData.completeCount > 0 && (
+                              <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--primary)", color: "white", borderRadius: "10px", opacity: 0.85 }}>
+                                {item.projectData.completeCount} Complete
+                              </span>
+                            )}
+                            {item.projectData.reviewReadyCount > 0 && (
+                              <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--warning-bg)", color: "var(--warning)", borderRadius: "10px" }}>
+                                {item.projectData.reviewReadyCount} Review
+                              </span>
+                            )}
+                          </>
+                        )}
+                        {item.isProjectGrouping && item.projectData && !item.isUngrouped && (
+                          <span style={{ marginLeft: "auto", display: "flex", gap: "4px" }}>
+                            <button
+                              type="button"
+                              onClick={() => { setRenamingProjectId(item.projectData!.id); setRenameValue(item.projectData!.name); }}
+                              title="Rename project"
+                              aria-label={`Rename project ${item.displayName}`}
+                              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
+                            >
+                              ✏️
+                            </button>
+                            {deletingProjectId === item.projectData.id ? (
+                              <span style={{ display: "flex", gap: "4px", alignItems: "center", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                                Remove project? {item.groupSessions.length} session{item.groupSessions.length !== 1 ? "s" : ""} will become ungrouped.
+                                <button
+                                  type="button"
+                                  onClick={() => handleProjectDelete(item.projectData!.id)}
+                                  style={{ background: "var(--error)", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem" }}
+                                >
+                                  Delete
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setDeletingProjectId(null)}
+                                  style={{ background: "none", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem", color: "var(--text-secondary)" }}
+                                >
+                                  Cancel
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setDeletingProjectId(item.projectData!.id)}
+                                title="Delete project"
+                                aria-label={`Delete project ${item.displayName}`}
+                                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
+                              >
+                                🗑️
+                              </button>
+                            )}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </h3>
+                ) : (
+                  <SessionRow
+                    session={item.session}
+                    onClick={() => onSessionClick?.(item.session)}
+                    onPause={onPauseSession ? () => onPauseSession(item.session.id) : undefined}
+                    onResume={onResumeSession ? () => onResumeSession(item.session) : undefined}
+                    onDelete={onDeleteSession ? () => onDeleteSession(item.session.id) : undefined}
+                    onClone={onCloneSession ? () => onCloneSession(item.session.id) : undefined}
+                    onOpenInNewPane={onSessionOpenInNewPane ? () => onSessionOpenInNewPane(item.session) : undefined}
+                    onNewWorkspace={onNewWorkspaceSession ? () => onNewWorkspaceSession(item.session.id) : undefined}
+                    onRestart={onRestartSession}
+                    onCreateCheckpoint={onCreateCheckpoint}
+                    onRunOneShot={onRunOneShot}
+                    onSetRateLimitEnabled={onSetRateLimitEnabled}
+                    onClearConversationState={onClearConversationState}
+                    onUpdateTags={onUpdateTags}
+                  />
+                )}
+              </WrapperTag>
+            );
+          })}
+        </div>
       ) : (
+        // Card mode: non-virtualized (cards are variable-height; fewer are typically shown)
         <div className={sessionList}>
           {groupedSessions.map(({ groupKey, displayName, sessions: groupSessions }) => {
-            // S4-5: Enhanced project group headers when GroupByProject is active
             const isProjectGrouping = groupingStrategy === GroupingStrategy.Project;
             const projectData = isProjectGrouping
               ? projects.find((p) => p.id === groupKey || p.name === displayName)
               : undefined;
             const isUngrouped = groupKey === "No Project";
-
             return (
-            <div key={groupKey} className={categoryGroup}>
-              <h3 className={viewMode === "row" ? groupHeaderStyle : categoryTitle} style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                {/* Inline rename input for project groups */}
-                {isProjectGrouping && projectData && renamingProjectId === projectData.id ? (
-                  <form
-                    style={{ display: "flex", gap: "6px", alignItems: "center" }}
-                    onSubmit={(e) => { e.preventDefault(); handleProjectRename(projectData.id, renameValue); }}
-                  >
-                    <input
-                      autoFocus
-                      type="text"
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Escape") setRenamingProjectId(null); }}
-                      style={{
-                        padding: "2px 6px",
-                        border: "1px solid var(--input-focus-border)",
-                        borderRadius: "4px",
-                        fontSize: "inherit",
-                        fontWeight: "inherit",
-                        background: "var(--input-background)",
-                        color: "var(--text-primary)",
-                      }}
-                    />
-                    <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--success)", fontSize: "1rem" }} title="Save">✓</button>
-                    <button type="button" onClick={() => setRenamingProjectId(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "1rem" }} title="Cancel">✕</button>
-                  </form>
-                ) : (
-                  <>
-                    <span>{displayName} ({groupSessions.length})</span>
-                    {/* Project stats pills */}
-                    {isProjectGrouping && projectData && (
-                      <>
-                        {projectData.runningCount > 0 && (
-                          <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--success-bg)", color: "var(--success)", borderRadius: "10px" }}>
-                            {projectData.runningCount} Running
-                          </span>
-                        )}
-                        {projectData.completeCount > 0 && (
-                          <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--primary)", color: "white", borderRadius: "10px", opacity: 0.85 }}>
-                            {projectData.completeCount} Complete
-                          </span>
-                        )}
-                        {projectData.reviewReadyCount > 0 && (
-                          <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--warning-bg)", color: "var(--warning)", borderRadius: "10px" }}>
-                            {projectData.reviewReadyCount} Review
-                          </span>
-                        )}
-                      </>
-                    )}
-                    {/* Inline rename/delete actions for project groups */}
-                    {isProjectGrouping && projectData && !isUngrouped && (
-                      <span style={{ marginLeft: "auto", display: "flex", gap: "4px" }}>
-                        <button
-                          type="button"
-                          onClick={() => { setRenamingProjectId(projectData.id); setRenameValue(projectData.name); }}
-                          title="Rename project"
-                          aria-label={`Rename project ${displayName}`}
-                          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
-                        >
-                          ✏️
-                        </button>
-                        {deletingProjectId === projectData.id ? (
-                          <span style={{ display: "flex", gap: "4px", alignItems: "center", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-                            Remove project? {groupSessions.length} session{groupSessions.length !== 1 ? "s" : ""} will become ungrouped.
-                            <button
-                              type="button"
-                              onClick={() => handleProjectDelete(projectData.id)}
-                              style={{ background: "var(--error)", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem" }}
-                            >
-                              Delete
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDeletingProjectId(null)}
-                              style={{ background: "none", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem", color: "var(--text-secondary)" }}
-                            >
-                              Cancel
-                            </button>
-                          </span>
-                        ) : (
+              <div key={groupKey} className={categoryGroup}>
+                <h3 className={categoryTitle} style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                  {isProjectGrouping && projectData && renamingProjectId === projectData.id ? (
+                    <form
+                      style={{ display: "flex", gap: "6px", alignItems: "center" }}
+                      onSubmit={(e) => { e.preventDefault(); handleProjectRename(projectData.id, renameValue); }}
+                    >
+                      <input
+                        autoFocus
+                        type="text"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Escape") setRenamingProjectId(null); }}
+                        style={{
+                          padding: "2px 6px",
+                          border: "1px solid var(--input-focus-border)",
+                          borderRadius: "4px",
+                          fontSize: "inherit",
+                          fontWeight: "inherit",
+                          background: "var(--input-background)",
+                          color: "var(--text-primary)",
+                        }}
+                      />
+                      <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--success)", fontSize: "1rem" }} title="Save">✓</button>
+                      <button type="button" onClick={() => setRenamingProjectId(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "1rem" }} title="Cancel">✕</button>
+                    </form>
+                  ) : (
+                    <>
+                      <span>{displayName} ({groupSessions.length})</span>
+                      {isProjectGrouping && projectData && (
+                        <>
+                          {projectData.runningCount > 0 && (
+                            <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--success-bg)", color: "var(--success)", borderRadius: "10px" }}>
+                              {projectData.runningCount} Running
+                            </span>
+                          )}
+                          {projectData.completeCount > 0 && (
+                            <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--primary)", color: "white", borderRadius: "10px", opacity: 0.85 }}>
+                              {projectData.completeCount} Complete
+                            </span>
+                          )}
+                          {projectData.reviewReadyCount > 0 && (
+                            <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--warning-bg)", color: "var(--warning)", borderRadius: "10px" }}>
+                              {projectData.reviewReadyCount} Review
+                            </span>
+                          )}
+                        </>
+                      )}
+                      {isProjectGrouping && projectData && !isUngrouped && (
+                        <span style={{ marginLeft: "auto", display: "flex", gap: "4px" }}>
                           <button
                             type="button"
-                            onClick={() => setDeletingProjectId(projectData.id)}
-                            title="Delete project"
-                            aria-label={`Delete project ${displayName}`}
+                            onClick={() => { setRenamingProjectId(projectData.id); setRenameValue(projectData.name); }}
+                            title="Rename project"
+                            aria-label={`Rename project ${displayName}`}
                             style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
                           >
-                            🗑️
+                            ✏️
                           </button>
-                        )}
-                      </span>
-                    )}
-                  </>
-                )}
-              </h3>
-              {viewMode === "row" ? (
-                <ul style={{ margin: 0, padding: 0 }}>
-                  {groupSessions.map((session) => (
-                    <SessionRow
-                      key={session.id}
-                      session={session}
-                      onClick={() => onSessionClick?.(session)}
-                      onPause={onPauseSession ? () => onPauseSession(session.id) : undefined}
-                      onResume={onResumeSession ? () => onResumeSession(session) : undefined}
-                      onDelete={onDeleteSession ? () => onDeleteSession(session.id) : undefined}
-                      onClone={onCloneSession ? () => onCloneSession(session.id) : undefined}
-                      onOpenInNewPane={onSessionOpenInNewPane ? () => onSessionOpenInNewPane(session) : undefined}
-                      onNewWorkspace={onNewWorkspaceSession ? () => onNewWorkspaceSession(session.id) : undefined}
-                      onRestart={onRestartSession}
-                      onCreateCheckpoint={onCreateCheckpoint}
-                      onRunOneShot={onRunOneShot}
-                      onSetRateLimitEnabled={onSetRateLimitEnabled}
-                      onClearConversationState={onClearConversationState}
-                      onUpdateTags={onUpdateTags}
-                    />
-                  ))}
-                </ul>
-              ) : (
-                <div className={categoryContent}>
+                          {deletingProjectId === projectData.id ? (
+                            <span style={{ display: "flex", gap: "4px", alignItems: "center", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                              Remove project? {groupSessions.length} session{groupSessions.length !== 1 ? "s" : ""} will become ungrouped.
+                              <button
+                                type="button"
+                                onClick={() => handleProjectDelete(projectData.id)}
+                                style={{ background: "var(--error)", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem" }}
+                              >
+                                Delete
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeletingProjectId(null)}
+                                style={{ background: "none", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem", color: "var(--text-secondary)" }}
+                              >
+                                Cancel
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setDeletingProjectId(projectData.id)}
+                              title="Delete project"
+                              aria-label={`Delete project ${displayName}`}
+                              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
+                            >
+                              🗑️
+                            </button>
+                          )}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </h3>
+              <div className={categoryContent}>
                   {groupSessions.map((session, index) => (
                     <div key={session.id} style={{'--card-index': index} as React.CSSProperties}>
                       <SessionCard
@@ -878,6 +1055,8 @@ export function SessionList({
                         onRunOneShot={onRunOneShot}
                         onSetRateLimitEnabled={onSetRateLimitEnabled}
                         onClearConversationState={onClearConversationState}
+                        onHibernate={onHibernateSession ? () => onHibernateSession(session.id) : undefined}
+                        onResumeFromHibernation={onResumeHibernatedSession ? () => onResumeHibernatedSession(session.id) : undefined}
                         selectMode={selectMode}
                         isSelected={selectedSessions.has(session.id)}
                         onToggleSelect={() => handleToggleSession(session.id)}
@@ -888,9 +1067,8 @@ export function SessionList({
                     </div>
                   ))}
                 </div>
-              )}
             </div>
-          );
+            );
           })}
         </div>
       )}

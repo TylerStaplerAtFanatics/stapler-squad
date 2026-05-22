@@ -154,7 +154,17 @@ func (h *ApprovalHandler) HandlePermissionRequest(w http.ResponseWriter, r *http
 			msg := FormatSecretDenyMessage(hit.PatternName)
 			log.ForSession(sessionID).Info("[ApprovalHandler] auto-denied — plaintext secret detected", "tool", payload.ToolName, "pattern", hit.PatternName)
 			if h.analyticsStore != nil {
-				h.analyticsStore.RecordFromResult(payload, classifier.ClassificationResult{
+				// Before recording to analytics, replace the command so the secret is not persisted.
+				// Shallow-copy the payload and replace ToolInput to avoid mutating the original
+				// (the original payload pointer may be used after this branch for the response).
+				sanitizedInput := make(map[string]interface{}, len(payload.ToolInput))
+				for k, v := range payload.ToolInput {
+					sanitizedInput[k] = v
+				}
+				sanitizedInput["command"] = redactedSecret
+				sanitizedPayload := payload
+				sanitizedPayload.ToolInput = sanitizedInput
+				h.analyticsStore.RecordFromResult(sanitizedPayload, classifier.ClassificationResult{
 					Decision:  classifier.AutoDeny,
 					RiskLevel: classifier.RiskCritical,
 					RuleID:    "secret-scan",
@@ -416,36 +426,59 @@ func buildApprovalMessage(approval *PendingApproval) string {
 
 // resolveSessionID returns the stable session ID (UUID) for a given raw header
 // value and cwd. It tries the header first (matching by title or UUID via
-// MatchesID), then falls back to cwd prefix matching.
+// stableIDForData/matchesIDData), then falls back to cwd prefix matching.
+// Uses ListInstanceData to avoid constructing Instance objects and spawning
+// tmux subprocesses for every stopped session.
 func (h *ApprovalHandler) resolveSessionID(headerVal, cwd string) string {
 	if h.storage == nil {
 		return headerVal
 	}
-	instances, err := h.storage.LoadInstances()
+	instances, err := h.storage.ListInstanceData()
 	if err != nil {
 		return ""
 	}
 	if headerVal != "" {
-		for _, inst := range instances {
-			if inst.MatchesID(headerVal) {
-				return inst.GetStableID()
+		for _, d := range instances {
+			if matchesIDData(d, headerVal) {
+				return stableIDForData(d)
 			}
 		}
 	}
 	// Fall back to cwd prefix matching
 	bestID := ""
 	bestLen := 0
-	for _, inst := range instances {
-		if p := inst.Path; p != "" && strings.HasPrefix(cwd, p) && len(p) > bestLen {
-			bestID = inst.GetStableID()
+	for _, d := range instances {
+		if p := d.Path; p != "" && strings.HasPrefix(cwd, p) && len(p) > bestLen {
+			bestID = stableIDForData(d)
 			bestLen = len(p)
 		}
-		if wd := inst.WorkingDir; wd != "" && strings.HasPrefix(cwd, wd) && len(wd) > bestLen {
-			bestID = inst.GetStableID()
+		if wd := d.WorkingDir; wd != "" && strings.HasPrefix(cwd, wd) && len(wd) > bestLen {
+			bestID = stableIDForData(d)
 			bestLen = len(wd)
 		}
 	}
 	return bestID
+}
+
+// stableIDForData mirrors Instance.GetStableID for raw InstanceData.
+func stableIDForData(d session.InstanceData) string {
+	if d.UUID != "" {
+		return d.UUID
+	}
+	return d.Title
+}
+
+// matchesIDData mirrors Instance.MatchesID for raw InstanceData without constructing
+// an Instance or spawning any subprocesses. Matches by title, UUID, or computed
+// tmux session name (prefix + sanitized title).
+func matchesIDData(d session.InstanceData, id string) bool {
+	if d.Title == id || stableIDForData(d) == id {
+		return true
+	}
+	// Replicate tmux name sanitization: strip whitespace, replace . and : with _
+	title := strings.Join(strings.Fields(d.Title), "")
+	title = strings.NewReplacer(".", "_", ":", "_").Replace(title)
+	return d.TmuxPrefix+title == id
 }
 
 // writeDeferDecision returns an empty HTTP 200 with no body.

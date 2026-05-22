@@ -14,7 +14,7 @@ import (
 )
 
 // ExternalSessionDiscovery discovers and manages external Claude sessions
-// from claude-mux multiplexed terminals.
+// from ssq-mux multiplexed terminals.
 type ExternalSessionDiscovery struct {
 	discovery *mux.Discovery
 
@@ -138,7 +138,7 @@ func (e *ExternalSessionDiscovery) handleNewSession(discovered *mux.DiscoveredSe
 		Title:        title,
 		Path:         discovered.Metadata.Cwd,
 		Program:      discovered.Metadata.Command,
-		Status:       Running,
+		Status:       Active,
 		InstanceType: InstanceTypeExternal,
 		Category:     "External",
 		Tags:         []string{"external", "mux"},

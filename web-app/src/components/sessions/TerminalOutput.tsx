@@ -1135,7 +1135,7 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
       <div className={styles.toolbar}>
         <div className={styles.status}>
           {isExternal && (
-            <span className={styles.externalLabel} title="External session via claude-mux">
+            <span className={styles.externalLabel} title="External session via ssq-mux">
               🔗 External
             </span>
           )}

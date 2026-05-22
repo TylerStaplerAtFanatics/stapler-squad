@@ -38,11 +38,11 @@ func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, pa
 
 func newBacklogService(t *testing.T) *BacklogService {
 	t.Helper()
-	return NewBacklogService(createTestStorage(t), nil, nil)
+	return NewBacklogService(createTestStorage(t), nil, nil, nil)
 }
 
 func newBacklogServiceNilStorage() *BacklogService {
-	return NewBacklogService(nil, nil, nil)
+	return NewBacklogService(nil, nil, nil, nil)
 }
 
 // ─── CreateBacklogItem ────────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ func TestApprovePlan_MissingPlanArtifactsPath_ReturnsFailedPrecondition(t *testi
 // UT-032b: ApprovePlan happy path — sets plan_approved=true and plan_approved_at
 func TestApprovePlan_HappyPath_SetsPlanApprovedAndTimestamp(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil)
 
 	// Create item.
 	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
@@ -226,7 +226,7 @@ func TestTriggerReReview_NotInReviewStatus_ReturnsFailedPrecondition(t *testing.
 // UT-040b: TriggerReReview on item with no repo_path → CodeFailedPrecondition
 func TestTriggerReReview_MissingRepoPath_ReturnsFailedPrecondition(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil)
 
 	// Create item with AC so it can transition to ready.
 	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
@@ -314,6 +314,7 @@ func TestTriggerReReview_HappyPath_NoSessionCreator_ReturnsPlaceholder(t *testin
 	assert.Equal(t, itemID, resp.Msg.ItemSession.Id)
 	assert.Equal(t, "re-review-triggered", resp.Msg.ItemSession.SessionRole)
 }
+<<<<<<< HEAD
 
 // ─── T-11: Auto-triage, double-trigger guard, itemSessionToProto ─────────────
 
@@ -483,3 +484,279 @@ func TestCreateBacklogItem_AutoTriggersTriageWhenRepoPathSet(t *testing.T) {
 	assert.False(t, resp.Msg.TriageTriggered, "triage_triggered should be false when session spawn errors")
 	assert.NotEmpty(t, resp.Msg.Item.Id, "item should still be created")
 }
+||||||| 41cb0ca6
+=======
+
+// ─── T-11: Auto-triage, double-trigger guard, itemSessionToProto ─────────────
+
+// TestCreateBacklogItem_SkipsTriageWhenSkipTriageTrue: skip_triage=true → triage_triggered=false,
+// no CreateDirectorySession call.
+func TestCreateBacklogItem_SkipsTriageWhenSkipTriageTrue(t *testing.T) {
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
+
+	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:     "item with repo",
+		RepoPath:  "/tmp/some-repo",
+		SkipTriage: true,
+	}))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.TriageTriggered, "triage_triggered should be false when skip_triage=true")
+	assert.Empty(t, creator.calls, "CreateDirectorySession should not be called when skip_triage=true")
+}
+
+// TestCreateBacklogItem_SkipsTriageWhenRepoPathEmpty: no repo_path → triage_triggered=false.
+func TestCreateBacklogItem_SkipsTriageWhenRepoPathEmpty(t *testing.T) {
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
+
+	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    "item without repo",
+		RepoPath: "", // empty — triage auto-trigger skipped
+	}))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.TriageTriggered, "triage_triggered should be false when repo_path is empty")
+	assert.Empty(t, creator.calls, "CreateDirectorySession should not be called when repo_path is empty")
+}
+
+// TestTriggerTriage_DoubleTriggerGuard: when a triage session already exists with no ended_at,
+// TriggerTriage returns CodeAlreadyExists.
+func TestTriggerTriage_DoubleTriggerGuard(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	// Create an item with a repo path so TriggerTriage can reach the guard.
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:     "item for double-trigger test",
+		RepoPath:  t.TempDir(),
+		SkipTriage: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	// Manually insert a triage ItemSession with no ended_at (simulates a running triage).
+	_, isErr := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: "00000000-0000-0000-0000-000000000001",
+		SessionRole: string(session.SessionRoleTriage),
+	})
+	require.NoError(t, isErr)
+
+	// TriggerTriage should refuse because a triage session is already running.
+	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId: itemID,
+	}))
+	require.Error(t, trigErr)
+	var connErr *connect.Error
+	require.ErrorAs(t, trigErr, &connErr)
+	assert.Equal(t, connect.CodeAlreadyExists, connErr.Code())
+}
+
+// TestItemSessionToProto_MapsTriageResult: valid triage_result JSON on ItemSession →
+// populated TriageResult proto fields.
+func TestItemSessionToProto_MapsTriageResult(t *testing.T) {
+	storage := createTestStorage(t)
+
+	// Create a backing item so we can create an ItemSession.
+	itemData := session.BacklogItemData{
+		Title:    "proto mapping test",
+		Status:   string(session.BacklogStatusIdea),
+		Priority: 3,
+	}
+	item, err := storage.CreateBacklogItem(t.Context(), itemData)
+	require.NoError(t, err)
+
+	isData := session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "00000000-0000-0000-0000-000000000002",
+		SessionRole: string(session.SessionRoleTriage),
+	}
+	is, isErr := storage.CreateItemSession(t.Context(), isData)
+	require.NoError(t, isErr)
+
+	// Store triage result JSON.
+	triageJSON := `{"summary":"looks good","suggestions":[{"text":"Add error handling","rationale":"robustness"}],"clarifying_questions":["Is this P1?"]}`
+	require.NoError(t, storage.UpdateItemSessionTriageResult(t.Context(), is.ID.String(), triageJSON))
+
+	// Re-load and convert.
+	sessions, loadErr := storage.ListItemSessions(t.Context(), item.ID)
+	require.NoError(t, loadErr)
+	require.Len(t, sessions, 1)
+
+	proto := itemSessionToProto(sessions[0])
+	require.NotNil(t, proto.TriageResult, "TriageResult should be populated")
+	assert.Equal(t, "looks good", proto.TriageResult.Summary)
+	require.Len(t, proto.TriageResult.Suggestions, 1)
+	assert.Equal(t, "Add error handling", proto.TriageResult.Suggestions[0].Text)
+	assert.Equal(t, "robustness", proto.TriageResult.Suggestions[0].Rationale)
+	require.Len(t, proto.TriageResult.ClarifyingQuestions, 1)
+	assert.Equal(t, "Is this P1?", proto.TriageResult.ClarifyingQuestions[0])
+}
+
+// TestItemSessionToProto_HandlesInvalidTriageResultJSON: malformed JSON → no panic,
+// TriageResult is nil in the returned proto.
+func TestItemSessionToProto_HandlesInvalidTriageResultJSON(t *testing.T) {
+	storage := createTestStorage(t)
+
+	itemData := session.BacklogItemData{
+		Title:    "invalid json test",
+		Status:   string(session.BacklogStatusIdea),
+		Priority: 3,
+	}
+	item, err := storage.CreateBacklogItem(t.Context(), itemData)
+	require.NoError(t, err)
+
+	isData := session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "00000000-0000-0000-0000-000000000003",
+		SessionRole: string(session.SessionRoleTriage),
+	}
+	is, isErr := storage.CreateItemSession(t.Context(), isData)
+	require.NoError(t, isErr)
+
+	// Store malformed JSON.
+	require.NoError(t, storage.UpdateItemSessionTriageResult(t.Context(), is.ID.String(), "{not valid json"))
+
+	// Must not panic.
+	require.NotPanics(t, func() {
+		sessions, _ := storage.ListItemSessions(t.Context(), item.ID)
+		if len(sessions) > 0 {
+			proto := itemSessionToProto(sessions[0])
+			// TriageResult should be nil because JSON was invalid.
+			assert.Nil(t, proto.TriageResult)
+		}
+	})
+}
+
+// errSessionCreator always returns an error from CreateDirectorySession.
+// ─── WorkflowEngine integration ───────────────────────────────────────────────
+
+// UT-WE-001: DefaultWorkflowEngine rejects a structurally invalid transition.
+func TestTransitionBacklogItemStatus_InvalidTransition_ReturnsInvalidArgument(t *testing.T) {
+	svc := newBacklogService(t)
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title: "engine test item",
+	}))
+	require.NoError(t, err)
+
+	// idea → in_progress is not a valid edge in the workflow graph.
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       createResp.Msg.Item.Id,
+		TargetStatus: string(session.BacklogStatusInProgress),
+	}))
+	require.Error(t, err)
+	var connErr *connect.Error
+	require.ErrorAs(t, err, &connErr)
+	assert.Equal(t, connect.CodeInvalidArgument, connErr.Code())
+}
+
+// UT-WE-002: idea → refining is permitted with no gates.
+func TestTransitionBacklogItemStatus_IdeaToRefining_Succeeds(t *testing.T) {
+	svc := newBacklogService(t)
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title: "needs refining",
+	}))
+	require.NoError(t, err)
+
+	transResp, err := svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       createResp.Msg.Item.Id,
+		TargetStatus: string(session.BacklogStatusRefining),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusRefining), transResp.Msg.Item.Status)
+}
+
+// UT-WE-003: refining → ready is blocked without AC criteria.
+func TestTransitionBacklogItemStatus_RefiningToReady_BlockedWithoutAC(t *testing.T) {
+	svc := newBacklogService(t)
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title: "no ac yet",
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	// Advance to refining.
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusRefining),
+	}))
+	require.NoError(t, err)
+
+	// refining → ready without AC must fail.
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusReady),
+	}))
+	require.Error(t, err)
+	var connErr *connect.Error
+	require.ErrorAs(t, err, &connErr)
+	assert.Equal(t, connect.CodeFailedPrecondition, connErr.Code())
+}
+
+// UT-WE-004: custom engine stub is exercised — verifies the injection seam works.
+func TestTransitionBacklogItemStatus_CustomEngine_IsInvoked(t *testing.T) {
+	stub := &stubWorkflowEngine{canTransition: false}
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, stub)
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title: "stub engine test",
+	}))
+	require.NoError(t, err)
+
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       createResp.Msg.Item.Id,
+		TargetStatus: string(session.BacklogStatusRefining),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, 1, stub.canTransitionCalls, "engine.CanTransition must be called")
+}
+
+type stubWorkflowEngine struct {
+	canTransition      bool
+	canTransitionCalls int
+}
+
+func (s *stubWorkflowEngine) CanTransition(_, _ session.BacklogStatus) bool {
+	s.canTransitionCalls++
+	return s.canTransition
+}
+
+func (s *stubWorkflowEngine) ValidateGates(_ session.BacklogItemTransitionInput, _ session.BacklogStatus) error {
+	return nil
+}
+
+func (s *stubWorkflowEngine) AllowedTransitions(_ session.BacklogStatus) []session.BacklogStatus {
+	return nil
+}
+
+type errSessionCreator struct{ err error }
+
+func (e *errSessionCreator) CreateDirectorySession(_ context.Context, _, _, _ string, _ []string, _ bool) (*session.Instance, error) {
+	return nil, e.err
+}
+
+// TestCreateBacklogItem_AutoTriggersTriageWhenRepoPathSet: when repo_path is set and
+// sessionCreator is present, CreateBacklogItem calls TriggerTriage. Because TriggerTriage
+// needs a real filesystem path for artifact creation, we verify the attempt is made
+// by using an errSessionCreator that rejects the spawn — auto-triage still fails
+// gracefully and TriageTriggered is false.
+func TestCreateBacklogItem_AutoTriggersTriageWhenRepoPathSet(t *testing.T) {
+	creator := &errSessionCreator{err: errors.New("no tmux in tests")}
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
+
+	// The auto-trigger code path is gated on: !SkipTriage && RepoPath != "" && sessionCreator != nil.
+	// TriggerTriage will reach MkdirAll on a real path and then try CreateDirectorySession.
+	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    "item triggers triage",
+		RepoPath: t.TempDir(), // real path so TriggerTriage can create artifact dir
+	}))
+	require.NoError(t, err, "CreateBacklogItem must succeed even if auto-triage fails")
+	// Session spawn failed, so triage_triggered is false, but the item was created.
+	assert.False(t, resp.Msg.TriageTriggered, "triage_triggered should be false when session spawn errors")
+	assert.NotEmpty(t, resp.Msg.Item.Id, "item should still be created")
+}
+>>>>>>> origin/main

@@ -16,6 +16,7 @@ import {
   type BacklogItemStatus,
   type BacklogItemInput,
 } from "@/lib/hooks/useBacklogService";
+import { getStatusLabel } from "@/lib/backlog/status";
 import * as styles from "./backlog.css";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,7 @@ type SortColumn = "title" | "status" | "priority" | "updatedAt";
 
 const ALL_STATUSES: BacklogItemStatus[] = [
   "idea",
+  "refining",
   "ready",
   "in_progress",
   "review",
@@ -33,23 +35,17 @@ const ALL_STATUSES: BacklogItemStatus[] = [
   "archived",
 ];
 
-const STATUS_LABELS: Record<BacklogItemStatus, string> = {
-  idea: "Idea",
-  ready: "Ready",
-  in_progress: "In Progress",
-  review: "Review",
-  done: "Done",
-  archived: "Archived",
-};
-
-const STATUS_CSS: Record<BacklogItemStatus, string> = {
+const STATUS_CSS: Record<string, string> = {
   idea: styles.statusIdea,
+  refining: styles.statusRefining,
   ready: styles.statusReady,
   in_progress: styles.statusInProgress,
   review: styles.statusReview,
   done: styles.statusDone,
   archived: styles.statusArchived,
 };
+
+const getStatusClass = (s: string): string => STATUS_CSS[s] ?? styles.statusArchived;
 
 const PRIORITY_LABELS: Record<number, string> = {
   1: "P1",
@@ -103,7 +99,7 @@ function StatusFilterChips({
             aria-pressed={active}
             data-testid={`backlog-filter-status-${status}`}
           >
-            {STATUS_LABELS[status]}
+            {getStatusLabel(status)}
           </button>
         );
       })}
@@ -392,10 +388,10 @@ function BacklogPageInner() {
                       </td>
                       <td className={styles.tableCell}>
                         <span
-                          className={`${styles.statusBadge} ${STATUS_CSS[item.status]}`}
-                          aria-label={`Status: ${STATUS_LABELS[item.status]}`}
+                          className={`${styles.statusBadge} ${getStatusClass(item.status)}`}
+                          aria-label={`Status: ${getStatusLabel(item.status)}`}
                         >
-                          {STATUS_LABELS[item.status]}
+                          {getStatusLabel(item.status)}
                         </span>
                       </td>
                       <td className={styles.tableCell}>

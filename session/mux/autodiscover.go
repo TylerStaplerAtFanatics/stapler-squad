@@ -12,7 +12,7 @@ import (
 )
 
 // AutoDiscovery provides filesystem watching for immediate session discovery.
-// It watches /tmp/ for claude-mux-*.sock file creation/deletion and immediately
+// It watches /tmp/ for ssq-mux-*.sock file creation/deletion and immediately
 // connects to new sessions without polling delay.
 type AutoDiscovery struct {
 	*Discovery
@@ -96,8 +96,8 @@ func (ad *AutoDiscovery) startWatching(ctx context.Context) (<-chan struct{}, er
 					return
 				}
 
-				// Only process claude-mux socket files
-				if !isClaudeMuxSocket(event.Name) {
+				// Only process ssq-mux socket files
+				if !isSsqMuxSocket(event.Name) {
 					continue
 				}
 
@@ -225,10 +225,10 @@ func (ad *AutoDiscovery) handleSocketModified(socketPath string) {
 	}
 }
 
-// isClaudeMuxSocket checks if a file path is a claude-mux socket.
-func isClaudeMuxSocket(path string) bool {
+// isSsqMuxSocket checks if a file path is an ssq-mux socket.
+func isSsqMuxSocket(path string) bool {
 	base := filepath.Base(path)
-	return strings.HasPrefix(base, "claude-mux-") && strings.HasSuffix(base, ".sock")
+	return strings.HasPrefix(base, "ssq-mux-") && strings.HasSuffix(base, ".sock")
 }
 
 // WatcherActive returns true if filesystem watching is active (not in fallback mode).

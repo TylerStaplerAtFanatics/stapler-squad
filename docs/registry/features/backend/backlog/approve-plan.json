@@ -11,5 +11,11 @@
     "TestApprovePlan_MissingPlanArtifactsPath_ReturnsFailedPrecondition",
     "TestApprovePlan_HappyPath_SetsPlanApprovedAndTimestamp"
   ],
+<<<<<<< HEAD
   "lastModified": "2026-05-21T09:40:04.892555763-07:00"
+||||||| 41cb0ca6
+  "lastModified": "2026-05-14T11:42:01.29751718-07:00"
+=======
+  "lastModified": "2026-05-18T08:01:05.099337344-07:00"
+>>>>>>> origin/main
 }

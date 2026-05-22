@@ -51,6 +51,7 @@ linters:
       - \.stapler-squad
       - \.claude-squad
     rules:
+<<<<<<< HEAD
       # LoadInstances: allow in the storage implementation itself, in bulk-startup wiring,
       # and in the fallback path of findInstanceFast (workspace_service.go) which is
       # intentionally guarded by the live-finder fast path.
@@ -81,6 +82,44 @@ linters:
       - path: "_test\\.go"
         linters: [forbidigo]
         text: "LoadInstances"
+||||||| 41cb0ca6
+=======
+      # LoadInstances: allow in the storage implementation itself, in bulk-startup wiring,
+      # and in the fallback path of findInstanceFast (workspace_service.go) which is
+      # intentionally guarded by the live-finder fast path.
+      - path: "session/storage\\.go"
+        linters: [forbidigo]
+        text: "LoadInstances"
+      - path: "server/dependencies\\.go"
+        linters: [forbidigo]
+        text: "LoadInstances"
+      - path: "server/services/workspace_service\\.go"
+        linters: [forbidigo]
+        text: "LoadInstances"
+      - path: "server/services/session_service\\.go"
+        linters: [forbidigo]
+        text: "LoadInstances"
+      # MCP tools have their own per-tool LoadInstances calls that are aware of the
+      # side-effect but have not yet been migrated to FindLiveInstance.
+      - path: "server/mcp/"
+        linters: [forbidigo]
+        text: "LoadInstances"
+      # Remaining services with intentional LoadInstances uses (health, backlog, etc.)
+      - path: "server/services/(approval_handler|review_queue_service|notification_service|backlog_service|unfinished_work_service|terminal_websocket|github_service|session_image_upload_handler)\\.go"
+        linters: [forbidigo]
+        text: "LoadInstances"
+      - path: "session/health\\.go"
+        linters: [forbidigo]
+        text: "LoadInstances"
+      # hibernation_sweeper uses the liveProvider fast path when wired; LoadInstances
+      # is only reached in the fallback path (e.g. tests without the poller).
+      - path: "session/hibernation_sweeper\\.go"
+        linters: [forbidigo]
+        text: "LoadInstances"
+      - path: "_test\\.go"
+        linters: [forbidigo]
+        text: "LoadInstances"
+>>>>>>> origin/main
       # Allow fmt.Print* in main.go, test files, cmd/, and tests/demo/ (CLI/test output)
       - path: "main\\.go"
         linters: [forbidigo]

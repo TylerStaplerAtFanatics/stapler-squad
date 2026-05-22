@@ -20,24 +20,28 @@ export interface NavPage {
   href: string;
   /** Full label used in Header desktop nav */
   label: string;
-  /** Abbreviated label for BottomNav (falls back to label) */
+  /** Abbreviated label for BottomNav primary bar (falls back to label) */
   shortLabel?: string;
   /** Lucide icon component */
   icon: LucideIcon;
-  /** Set false to exclude from BottomNav (desktop-only routes) */
+  /** Set false to exclude from BottomNav entirely (desktop-only routes) */
   mobileNav?: boolean;
   /** Set false to hide from the always-visible header nav row (still in hamburger) */
   headerNav?: boolean;
+  /** True = rendered in the BottomNav primary bar; absent = goes into the More sheet */
+  bottomNavPrimary?: boolean;
 }
 
 export const NAV_PAGES: NavPage[] = [
-  { href: routes.home,          label: "Sessions",      icon: LayoutGrid },
-  { href: routes.backlog,       label: "Backlog",       icon: LayoutList },
-  { href: routes.unfinished,    label: "Unfinished",    icon: Clock4 },
-  { href: routes.reviewQueue,   label: "Review Queue",  shortLabel: "Review", icon: ClipboardCheck },
-  { href: routes.notifications, label: "Notifications", shortLabel: "Alerts", icon: Bell },
+  { href: routes.home,          label: "Sessions",      icon: LayoutGrid,     bottomNavPrimary: true },
+  { href: routes.backlog,       label: "Backlog",       icon: LayoutList,     bottomNavPrimary: true },
+  { href: routes.unfinished,    label: "Unfinished",    icon: Clock4,         bottomNavPrimary: true },
+  { href: routes.reviewQueue,   label: "Review Queue",  shortLabel: "Review", icon: ClipboardCheck, bottomNavPrimary: true },
+  // Notifications is custom-rendered in BottomNav (badge logic) — marked primary to keep it out of the More sheet
+  { href: routes.notifications, label: "Notifications", shortLabel: "Alerts", icon: Bell, bottomNavPrimary: true },
   { href: routes.settings,      label: "Settings",      icon: Settings, mobileNav: false },
   // Secondary — hamburger / More-sheet only
+  { href: routes.insights, label: "Insights", icon: BarChart2, mobileNav: false, headerNav: false },
   { href: routes.rules,   label: "Rules",   icon: BookOpen,          headerNav: false },
   { href: routes.history, label: "History", icon: History,           headerNav: false },
   { href: routes.settings + "?tab=config-files", label: "Config Files", icon: SlidersHorizontal, headerNav: false },
@@ -51,3 +55,11 @@ export const NAV_PAGES: NavPage[] = [
 export const MOBILE_NAV_PAGES = NAV_PAGES.filter((p) => p.mobileNav !== false);
 /** Items shown in the always-visible header nav row on wide desktop (≥1100px). */
 export const HEADER_NAV_PAGES = NAV_PAGES.filter((p) => p.headerNav !== false);
+/** Items rendered in the BottomNav primary bar (excluding Notifications which is custom-rendered). */
+export const BOTTOM_NAV_PRIMARY = NAV_PAGES.filter(
+  (p) => p.bottomNavPrimary && p.mobileNav !== false && p.href !== routes.notifications
+);
+/** Items that fall into the BottomNav More sheet (mobile-visible, not primary). */
+export const BOTTOM_NAV_MORE = NAV_PAGES.filter(
+  (p) => p.mobileNav !== false && !p.bottomNavPrimary
+);

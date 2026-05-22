@@ -100,6 +100,63 @@ cp stapler-squad ~/.local/bin/ssq
 - [tmux](https://github.com/tmux/tmux/wiki/Installing)
 - [gh](https://cli.github.com/)
 
+### Browser Passthrough
+
+Browser passthrough lets agents (or you) open a real browser inside a session. The stapler-squad UI shows a live, interactive view of that browser in a **Browser** tab — mouse clicks, scrolls, drags, and keyboard input all work from the UI.
+
+Each session with browser passthrough enabled gets its own isolated virtual display (Xvfb). The `DISPLAY` environment variable is injected automatically into the tmux session so any GUI application the agent launches appears on that display. When a Chrome or Chromium window is detected, the Browser tab becomes active and streams the live view via noVNC.
+
+#### Required packages
+
+| Package | Arch | Debian / Ubuntu |
+|---|---|---|
+| Xvfb (virtual framebuffer) | `xorg-server-xvfb` | `xvfb` |
+| x11vnc (VNC server) | `x11vnc` | `x11vnc` |
+| xdotool (window detection) | `xdotool` | `xdotool` |
+| Chrome (recommended) | `google-chrome` (AUR) | via [Google's apt repo](https://www.google.com/chrome/) |
+| Chromium (alternative) | `chromium` | `chromium-browser` |
+
+**Arch:**
+```bash
+sudo pacman -S xorg-server-xvfb x11vnc xdotool chromium
+# or install google-chrome from AUR: yay -S google-chrome
+```
+
+**Debian / Ubuntu:**
+```bash
+sudo apt install xvfb x11vnc xdotool chromium-browser
+# or install Google Chrome from https://www.google.com/chrome/
+```
+
+#### Graceful degradation
+
+Stapler Squad detects missing dependencies at startup and degrades gracefully — the Browser tab is hidden entirely on hosts where the required packages are absent. All other features continue to work normally. A warning is logged listing the missing binaries.
+
+#### Opening a browser
+
+Agents can launch Chrome or Chromium directly — any command that starts the browser will be detected automatically within ~500 ms. The `$DISPLAY` variable is already set in the session environment.
+
+For convenience, the `scripts/launch-browser.sh` helper selects the available browser and applies the correct flags:
+
+```bash
+# Open the default blank page
+scripts/launch-browser.sh
+
+# Open a specific URL
+scripts/launch-browser.sh https://example.com
+```
+
+Agents can also call the browser directly:
+
+```bash
+google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu "$URL"
+chromium --no-sandbox --disable-dev-shm-usage --disable-gpu "$URL"
+```
+
+#### macOS
+
+Browser passthrough is Linux-only in v1 (requires Xvfb). macOS support via Apple Remote Desktop / Screen Sharing is planned for a future release.
+
 ### Configuration
 
 Configuration is stored in `~/.stapler-squad/config.json`. You can view the location with `ssq debug`.
@@ -306,9 +363,9 @@ make lint             # Multi-tool linting suite
 
 Install all tools with: `make install-tools`
 
-#### claude-mux (External Terminal Multiplexer)
+#### ssq-mux (External Terminal Multiplexer)
 
-`claude-mux` wraps AI assistant commands with a PTY multiplexer so Stapler Squad can stream terminal output from any external terminal (IntelliJ, VS Code, etc.) into the web UI in real time.
+`ssq-mux` wraps AI assistant commands with a PTY multiplexer so Stapler Squad can stream terminal output from any external terminal (IntelliJ, VS Code, etc.) into the web UI in real time.
 
 **Build and install:**
 
@@ -335,7 +392,7 @@ export PATH="$HOME/.local/bin:$PATH"
 **Shell alias (recommended):**
 
 ```bash
-alias claude='claude-mux claude'
+alias claude='ssq-mux claude'
 ```
 
 Add this to `~/.zshrc`, `~/.bashrc`, or equivalent, then reload: `source ~/.zshrc`.
@@ -344,22 +401,22 @@ Add this to `~/.zshrc`, `~/.bashrc`, or equivalent, then reload: `source ~/.zshr
 
 ```bash
 # Start a Claude session — automatically discovered by Stapler Squad
-claude-mux claude
+ssq-mux claude
 
 # Custom session name
-claude-mux -n "api-refactor" claude
+ssq-mux -n "api-refactor" claude
 
 # List active sessions
-claude-mux --list
+ssq-mux --list
 
 # Reattach to an existing session after restart
-claude-mux --attach <session-name>
+ssq-mux --attach <session-name>
 ```
 
 **IDE configuration — IntelliJ IDEA / PyCharm / WebStorm:**
 
 1. Settings → Tools → Terminal
-2. Set **Shell path** to: `~/.local/bin/claude-mux`
+2. Set **Shell path** to: `~/.local/bin/ssq-mux`
 3. Set **Shell arguments** to: `claude`
 4. Restart the IDE terminal
 
@@ -369,14 +426,14 @@ Add to `settings.json`:
 
 ```json
 "terminal.integrated.profiles.osx": {
-  "claude-mux": {
-    "path": "~/.local/bin/claude-mux",
+  "ssq-mux": {
+    "path": "~/.local/bin/ssq-mux",
     "args": ["claude"]
   }
 }
 ```
 
-Set `terminal.integrated.defaultProfile.osx` to `"claude-mux"`.
+Set `terminal.integrated.defaultProfile.osx` to `"ssq-mux"`.
 
 <br />
 

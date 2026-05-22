@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"entgo.io/ent"
+	"entgo.io/ent/dialect/entsql"
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
@@ -73,6 +74,8 @@ func (BacklogItem) Edges() []ent.Edge {
 	return []ent.Edge{
 		edge.To("item_sessions", ItemSession.Type),
 		edge.To("sessions", Session.Type),
+		edge.To("status_events", BacklogStatusEvent.Type).
+			Annotations(entsql.OnDelete(entsql.Cascade)),
 		edge.From("source", ItemSource.Type).
 			Ref("backlog_items").
 			Unique(),

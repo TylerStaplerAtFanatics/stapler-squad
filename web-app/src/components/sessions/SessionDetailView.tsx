@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Terminal, GitCompare, GitBranch, FolderOpen, ScrollText, Info } from "lucide-react";
+import { Terminal, GitCompare, GitBranch, FolderOpen, ScrollText, Info, Globe } from "lucide-react";
 import dynamic from "next/dynamic";
 import { Session, InstanceType, SessionStatus, SessionType } from "@/gen/session/v1/types_pb";
 import { DiffViewer } from "./DiffViewer";
@@ -10,6 +10,8 @@ import { VcsPanel } from "./VcsPanel";
 import { WorkspaceSwitchModal } from "./WorkspaceSwitchModal";
 import { SessionLogsTab } from "./SessionLogsTab";
 import { FilesTab } from "./FilesTab";
+import { BrowserTab } from "./BrowserTab";
+import { VNCStatus } from "@/gen/session/v1/types_pb";
 import { ActionBar } from "@/components/ui/ActionBar";
 import { useSessionActions } from "@/lib/hooks/useSessionActions";
 import { getApiBaseUrl } from "@/lib/config";
@@ -23,6 +25,7 @@ import { ShellTabLabel } from "./ShellTab";
 import { NewShellDialog } from "./NewShellDialog";
 import * as styles from "./SessionDetail.css";
 import { diffAdded } from "./SessionDetailView.css";
+import { tabDisabled } from "./SessionDetail.css";
 import type { SessionDetailTab } from "./SessionDetail";
 
 // Dynamically import TerminalOutput with SSR disabled (xterm.js requires browser environment)
@@ -204,13 +207,18 @@ export function SessionDetailView({
     onFullscreenChange?.(isFullscreen);
   }, [isFullscreen, onFullscreenChange]);
 
-  const tabs: { id: SessionDetailTab; label: string; icon: LucideIcon }[] = [
+  const vncState = session.vncState;
+  const vncStatus = vncState?.status ?? VNCStatus.VNC_STATUS_UNSPECIFIED;
+  const isBrowserAvailable = vncStatus !== VNCStatus.VNC_STATUS_UNAVAILABLE && vncStatus !== VNCStatus.VNC_STATUS_UNSPECIFIED;
+
+  const tabs: { id: SessionDetailTab; label: string; icon: LucideIcon; disabled?: boolean }[] = [
     { id: "terminal", label: "Terminal", icon: Terminal },
     { id: "diff", label: "Diff", icon: GitCompare },
     { id: "vcs", label: "VCS", icon: GitBranch },
     { id: "files", label: "Files", icon: FolderOpen },
     { id: "logs", label: "Logs", icon: ScrollText },
     { id: "info", label: "Info", icon: Info },
+    { id: "browser", label: "Browser", icon: Globe, disabled: !isBrowserAvailable },
   ];
 
   const handleTabChange = (tabId: string) => {
@@ -471,8 +479,10 @@ export function SessionDetailView({
               id={`tab-${tab.id}`}
               role="tab"
               aria-selected={activeTabId === tab.id}
-              className={`${styles.tab} ${activeTabId === tab.id ? styles.active : ""}`}
-              onClick={() => handleTabChange(tab.id)}
+              aria-disabled={tab.disabled}
+              className={`${styles.tab} ${activeTabId === tab.id ? styles.active : ""} ${tab.disabled ? tabDisabled : ""}`}
+              onClick={() => { if (!tab.disabled) handleTabChange(tab.id); }}
+              title={tab.disabled && tab.id === "browser" ? "Browser passthrough requires Linux with Xvfb, x11vnc, and xdotool" : undefined}
             >
               <span className={styles.tabIcon}><Icon size={16} /></span>
               <span className={styles.tabLabel}>{tab.label}</span>
@@ -630,6 +640,24 @@ export function SessionDetailView({
             defaultWorkingDir={session.workingDir}
           />
         )}
+
+        {/* Browser tab: always mounted (not conditionally rendered) so the noVNC RFB
+            connection persists across tab switches. Visibility controlled via CSS,
+            matching the TerminalOutput keep-alive pattern exactly. */}
+        <div
+          className={styles.tabContent}
+          role="tabpanel"
+          aria-labelledby="tab-browser"
+          aria-hidden={activeTab !== "browser"}
+          style={{ display: activeTab === "browser" ? undefined : 'none' }}
+        >
+          <BrowserTab
+            sessionId={session.id}
+            baseUrl={getApiBaseUrl()}
+            isVisible={activeTab === "browser"}
+            vncState={vncState}
+          />
+        </div>
 
         {activeTab === "diff" && (
           <div className={styles.tabContent} role="tabpanel" aria-labelledby="tab-diff">

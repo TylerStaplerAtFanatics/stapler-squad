@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/user"
@@ -13,6 +14,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/google/uuid"
 	"github.com/linkdata/deadlock"
+	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/detection"
 	"github.com/tstapler/stapler-squad/session/tmux"
@@ -21,39 +23,39 @@ import (
 type Status int
 
 const (
-	// Running is the status when the instance is running and claude is working.
-	Running Status = iota
-	// Ready is if the claude instance is ready to be interacted with (waiting for user input).
-	Ready
-	// Loading is if the instance is loading (if we are starting it up or something).
-	Loading
-	// Paused is if the instance is paused (worktree removed but branch preserved).
-	Paused
-	// NeedsApproval is if the instance is waiting for user approval on a prompt.
-	NeedsApproval
 	// Creating is the status when the instance is being initialized.
-	Creating
+	Creating Status = 0
+	// Active is the status when the instance has a live AI process (running or ready).
+	Active Status = 1
+	// Paused is if the instance is paused (worktree removed but branch preserved).
+	Paused Status = 2
 	// Stopped is a terminal state: the instance has been shut down and cannot transition further.
-	Stopped
+	Stopped Status = 3
+	// Hibernated is the status when the instance has been checkpointed and the tmux session killed.
+	Hibernated Status = 4
+
+	// Deprecated: use Active.
+	Running = Active
+	// Deprecated: use Active.
+	Ready = Active
+	// Deprecated: use Creating.
+	Loading = Creating
+
 )
 
 // String returns a human-readable name for the status.
 func (s Status) String() string {
 	switch s {
-	case Running:
-		return "Running"
-	case Ready:
-		return "Ready"
-	case Loading:
-		return "Loading"
-	case Paused:
-		return "Paused"
-	case NeedsApproval:
-		return "NeedsApproval"
 	case Creating:
 		return "Creating"
+	case Active:
+		return "Active"
+	case Paused:
+		return "Paused"
 	case Stopped:
 		return "Stopped"
+	case Hibernated:
+		return "Hibernated"
 	default:
 		return fmt.Sprintf("Status(%d)", int(s))
 	}
@@ -204,6 +206,11 @@ type Instance struct {
 	// without modifying any file on disk. Survives context compaction.
 	AppendSystemPrompt string `json:"append_system_prompt,omitempty"`
 
+	// CreationProgress holds a human-readable progress message during Creating state.
+	// Set by the async creation goroutine; cleared once the session becomes Active.
+	// Not persisted to the database — only meaningful in-memory during startup.
+	CreationProgress string `json:"-"`
+
 	// LaunchCommand is the full command passed to tmux on session start, including
 	// any injected flags (--resume, --mcp-config, -y, initial prompt). Set once on
 	// first start and updated on restart. Empty for external (mux-discovered) sessions.
@@ -218,6 +225,7 @@ type Instance struct {
 	// production inspector is used. Set in tests to inject a fake home dir.
 	historyDetector *HistoryFileDetector
 
+<<<<<<< HEAD
 	// shellRepo is the persistence backend for shell operations. Injected by Storage
 	// after instance creation/loading; nil disables persistence (tests, external instances).
 	shellRepo ShellRepository
@@ -226,6 +234,13 @@ type Instance struct {
 	// Initialized by initShellRegistry(); shell operations go through instance_shells.go.
 	shellRegistry
 
+||||||| 41cb0ca6
+=======
+	// hibernateReason records why this session was hibernated.
+	// Values: "manual", "idle", "resource_pressure". Read by hibernateProcess.
+	hibernateReason string
+
+>>>>>>> origin/main
 	// Claude Code session information for persistence and re-attachment
 	claudeSession *ClaudeSessionData
 
@@ -257,6 +272,14 @@ type Instance struct {
 	tmuxManager TmuxProcessManager
 	// gitManager owns the git worktree and diff stats.
 	gitManager GitWorktreeManager
+	// vncManager owns the Xvfb + x11vnc lifecycle for this session.
+	// Always non-nil after NewInstance() — on unsupported platforms or missing deps,
+	// a no-op manager is returned. VNCManager() returns it for external access.
+	vncManager VNCProcessManager
+	// cdpManager owns the Chrome DevTools Protocol screencast lifecycle for this
+	// session. Always non-nil after NewInstance() — when Chrome is absent, a
+	// no-op manager is returned. CDPManager() returns it for external access.
+	cdpManager CDPStreamManager
 
 	// tagManager provides CRUD operations for session tags.
 	// Backed by a pointer to Instance.Tags for zero-sync compatibility with
@@ -427,7 +450,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	instance := &Instance{
 		Title:            opts.Title,
 		UUID:             uuid.New().String(),
-		Status:           Ready,
+		Status:           Creating,
 		Path:             absPath,
 		Branch:           opts.Branch,
 		Program:          opts.Program,
@@ -496,6 +519,12 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		}
 		log.Info("instance configured to resume claude conversation", "session", opts.Title, "resume_id", opts.ResumeId)
 	}
+
+	// Initialize the VNC manager (noop when deps are absent or platform is not Linux).
+	cfg := config.LoadConfig()
+	instance.initVNCManager(cfg)
+	// Initialize the CDP manager (noop when Chrome is absent on any platform).
+	instance.initCDPManager(cfg)
 
 	return instance, nil
 }
@@ -574,8 +603,8 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 		log.Info("unexpected exit detected via control mode", "session", i.Title, "reason", reason)
 		log.ForSession(i.Title).Info("session exited unexpectedly", "reason", reason)
 		i.stateMutex.Lock()
-		if i.Status == Running || i.Status == Ready {
-			if err := i.transitionTo(Stopped); err != nil {
+		if i.Status == Active {
+			if err := i.transitionTo(context.Background(), Stopped); err != nil {
 				log.Warn("exit callback transition failed", "session", i.Title, "err", err)
 			}
 		}
@@ -615,6 +644,24 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 				// Dead tmux, no UUID — start a fresh session without --resume.
 				log.Warn("cold start: tmux dead, no conversation UUID, starting fresh", "session", i.Title, "path", startPath)
 			}
+			// Phase 1: Allocate X display before creating the tmux session so DISPLAY
+			// can be injected via ExtraEnv at new-session time.
+			// context.Background() is safe here: the VNC manager creates its own internal
+			// cancellable context; goroutines are stopped via vncManager.Stop() in Destroy().
+			i.startVNCDisplay(context.Background())
+			// Allocate CDP port before creating the tmux session so CDP_PORT and the
+			// updated PATH (wrapper dir) can be injected via ExtraEnv at new-session time.
+			i.allocateCDPPort()
+			if displayEnv := i.VNCDisplayEnv(); displayEnv != "" {
+				if sess := i.tmuxManager.Session(); sess != nil {
+					sess.ExtraEnv = append(sess.ExtraEnv, displayEnv)
+				}
+			}
+			if cdpEnvs := i.CDPDisplayEnv(); len(cdpEnvs) > 0 {
+				if sess := i.tmuxManager.Session(); sess != nil {
+					sess.ExtraEnv = append(sess.ExtraEnv, cdpEnvs...)
+				}
+			}
 			if err := i.tmuxManager.Start(startPath); err != nil {
 				setupErr = fmt.Errorf("cold restore Start failed for '%s': %w", i.Title, err)
 				return setupErr
@@ -636,6 +683,15 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 			}
 		} else {
 			// Hot restore: tmux session is alive — attach to it.
+			// Phase 1 (display) runs here too so VNC is available for the browser tab.
+			// DISPLAY injection via ExtraEnv is not possible for an already-running
+			// session, but x11vnc still needs to start so the browser passthrough works.
+			// context.Background() is safe: VNC goroutines are cancelled via vncManager.Stop().
+			i.startVNCDisplay(context.Background())
+			// Allocate CDP port for hot-restore too. ExtraEnv injection is not possible
+			// for an already-running session, but we still allocate so the screencast
+			// goroutine can connect to Chrome if it is already running.
+			i.allocateCDPPort()
 			workDir := i.Path
 			if i.gitManager.HasWorktree() {
 				workDir = i.gitManager.GetWorktreePath()
@@ -659,6 +715,25 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 			basePath = i.gitManager.GetWorktreePath()
 		}
 		startPath := i.resolveStartPath(basePath)
+		// Phase 1: Allocate X display before creating the tmux session so DISPLAY
+		// can be injected via ExtraEnv at new-session time. This ensures the agent
+		// process inherits the correct DISPLAY from the start rather than relying on
+		// a post-hoc `tmux setenv` call that would miss the already-running process.
+		// context.Background() is safe: VNC goroutines are cancelled via vncManager.Stop().
+		i.startVNCDisplay(context.Background())
+		// Allocate CDP port before creating the tmux session so CDP_PORT and the
+		// updated PATH (wrapper dir) can be injected via ExtraEnv at new-session time.
+		i.allocateCDPPort()
+		if displayEnv := i.VNCDisplayEnv(); displayEnv != "" {
+			if sess := i.tmuxManager.Session(); sess != nil {
+				sess.ExtraEnv = append(sess.ExtraEnv, displayEnv)
+			}
+		}
+		if cdpEnvs := i.CDPDisplayEnv(); len(cdpEnvs) > 0 {
+			if sess := i.tmuxManager.Session(); sess != nil {
+				sess.ExtraEnv = append(sess.ExtraEnv, cdpEnvs...)
+			}
+		}
 		if err := i.tmuxManager.Start(startPath); err != nil {
 			if i.gitManager.HasWorktree() {
 				if cleanupErr := i.gitManager.Cleanup(); cleanupErr != nil {
@@ -680,18 +755,26 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 	}
 
 	i.stateMutex.Lock()
-	// Only transition if not already Running (e.g., recovery/restart after KillSession
-	// preserves the Running status).
-	if i.Status != Running {
-		if err := i.transitionTo(Running); err != nil {
+	// Only transition if not already Active (e.g., recovery/restart after KillSession
+	// preserves the Active status).
+	if i.Status != Active {
+		if err := i.transitionTo(context.Background(), Active); err != nil {
 			i.stateMutex.Unlock()
-			setupErr = fmt.Errorf("failed to transition to Running: %w", err)
+			setupErr = fmt.Errorf("failed to transition to Active: %w", err)
 			return setupErr
 		}
 	}
 	i.stateMutex.Unlock()
 	i.started = true
 	i.fireLifecycleEvent(EventStarted, "")
+
+	// Phase 2: Start x11vnc and window tracker now that the tmux session is live.
+	// Run unconditionally (not gated on firstTimeSetup) so hot-restores also get VNC.
+	// context.Background() is safe: VNC goroutines are cancelled via vncManager.Stop().
+	i.startVNCServer(context.Background())
+	// Phase 2b: Start CDP screencast goroutine now that the tmux session is live.
+	// context.Background() is safe: CDP goroutines are cancelled via cdpManager.Stop().
+	i.startCDP(context.Background())
 	log.ForSession(i.Title).Info("session started", "first_time_setup", firstTimeSetup)
 
 	// Start controller for new sessions only; loaded sessions are wired later by server.go.
@@ -731,6 +814,11 @@ func (i *Instance) Destroy() error {
 
 	// Stop the controller first
 	i.StopController()
+
+	// Stop VNC before killing tmux (x11vnc must stop before Xvfb).
+	i.stopVNC()
+	// Stop CDP screencast goroutines and clean up wrapper scripts.
+	i.stopCDP()
 
 	var errs []error
 
@@ -807,7 +895,7 @@ func (i *Instance) Pause() error {
 	}
 
 	i.stateMutex.Lock()
-	if err := i.transitionTo(Paused); err != nil {
+	if err := i.transitionTo(context.Background(), Paused); err != nil {
 		i.stateMutex.Unlock()
 		return fmt.Errorf("failed to transition to Paused: %w", err)
 	}
@@ -890,9 +978,9 @@ func (i *Instance) Resume() error {
 	}
 
 	i.stateMutex.Lock()
-	if err := i.transitionTo(Running); err != nil {
+	if err := i.transitionTo(context.Background(), Active); err != nil {
 		i.stateMutex.Unlock()
-		return fmt.Errorf("failed to transition to Running on resume: %w", err)
+		return fmt.Errorf("failed to transition to Active on resume: %w", err)
 	}
 	i.stateMutex.Unlock()
 	log.ForSession(i.Title).Info("session resumed")
@@ -1019,13 +1107,13 @@ func (i *Instance) Restart(preserveOutput bool) error {
 		// Continue - controller is optional functionality
 	}
 
-	// For paused sessions, transition to Running now that the new tmux session is live.
-	// For already-running sessions, preserve the existing status.
+	// For paused sessions, transition to Active now that the new tmux session is live.
+	// For already-active sessions, preserve the existing status.
 	i.stateMutex.Lock()
 	if waspaused {
-		if err := i.transitionTo(Running); err != nil {
-			log.Warn("restart: failed to transition from paused to running", "session", i.Title, "err", err)
-			i.setStatus(Running)
+		if err := i.transitionTo(context.Background(), Active); err != nil {
+			log.Warn("restart: failed to transition from paused to active", "session", i.Title, "err", err)
+			i.setStatus(Active)
 		}
 		i.started = true
 	}

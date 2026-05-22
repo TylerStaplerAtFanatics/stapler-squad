@@ -63,6 +63,8 @@ var (
 		{Name: "tool_category", Type: field.TypeString, Nullable: true},
 		{Name: "command_pattern", Type: field.TypeString, Nullable: true},
 		{Name: "file_pattern", Type: field.TypeString, Nullable: true},
+		{Name: "criteria_programs", Type: field.TypeJSON, Nullable: true},
+		{Name: "criteria_subcommands", Type: field.TypeJSON, Nullable: true},
 		{Name: "decision", Type: field.TypeInt},
 		{Name: "risk_level", Type: field.TypeInt},
 		{Name: "reason", Type: field.TypeString, Nullable: true},
@@ -87,12 +89,12 @@ var (
 			{
 				Name:    "approvalrule_priority",
 				Unique:  false,
-				Columns: []*schema.Column{ApprovalRulesColumns[12]},
+				Columns: []*schema.Column{ApprovalRulesColumns[14]},
 			},
 			{
 				Name:    "approvalrule_enabled",
 				Unique:  false,
-				Columns: []*schema.Column{ApprovalRulesColumns[13]},
+				Columns: []*schema.Column{ApprovalRulesColumns[15]},
 			},
 		},
 	}
@@ -155,6 +157,36 @@ var (
 			},
 		},
 	}
+	// BacklogStatusEventsColumns holds the columns for the "backlog_status_events" table.
+	BacklogStatusEventsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeUUID},
+		{Name: "from_status", Type: field.TypeString},
+		{Name: "to_status", Type: field.TypeString},
+		{Name: "triggered_by", Type: field.TypeString, Default: "user"},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "item_id", Type: field.TypeUUID},
+	}
+	// BacklogStatusEventsTable holds the schema information for the "backlog_status_events" table.
+	BacklogStatusEventsTable = &schema.Table{
+		Name:       "backlog_status_events",
+		Columns:    BacklogStatusEventsColumns,
+		PrimaryKey: []*schema.Column{BacklogStatusEventsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "backlog_status_events_backlog_items_status_events",
+				Columns:    []*schema.Column{BacklogStatusEventsColumns[5]},
+				RefColumns: []*schema.Column{BacklogItemsColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "backlogstatusevent_item_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{BacklogStatusEventsColumns[5], BacklogStatusEventsColumns[4]},
+			},
+		},
+	}
 	// ClassificationAnalyticsColumns holds the columns for the "classification_analytics" table.
 	ClassificationAnalyticsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt, Increment: true},
@@ -207,6 +239,11 @@ var (
 				Name:    "classificationanalytics_created_at",
 				Unique:  false,
 				Columns: []*schema.Column{ClassificationAnalyticsColumns[18]},
+			},
+			{
+				Name:    "classificationanalytics_command_program_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{ClassificationAnalyticsColumns[14], ClassificationAnalyticsColumns[18]},
 			},
 		},
 	}
@@ -746,6 +783,7 @@ var (
 		AnalyticsEventsTable,
 		ApprovalRulesTable,
 		BacklogItemsTable,
+		BacklogStatusEventsTable,
 		ClassificationAnalyticsTable,
 		ClaudeMetadataTable,
 		ClaudeSessionsTable,
@@ -768,6 +806,7 @@ var (
 
 func init() {
 	BacklogItemsTable.ForeignKeys[0].RefTable = ItemSourcesTable
+	BacklogStatusEventsTable.ForeignKeys[0].RefTable = BacklogItemsTable
 	ClaudeMetadataTable.ForeignKeys[0].RefTable = ClaudeSessionsTable
 	ClaudeSessionsTable.ForeignKeys[0].RefTable = SessionsTable
 	DiffStatsTable.ForeignKeys[0].RefTable = SessionsTable

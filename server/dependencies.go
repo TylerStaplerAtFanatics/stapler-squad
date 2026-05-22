@@ -14,10 +14,13 @@ import (
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/cdp"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/scrollback"
 	"github.com/tstapler/stapler-squad/session/tmux"
+	"github.com/tstapler/stapler-squad/session/tokens"
 	"github.com/tstapler/stapler-squad/session/unfinished"
+	"github.com/tstapler/stapler-squad/session/vnc"
 )
 
 // ServerDependencies holds all wired service components for the HTTP server.
@@ -45,12 +48,23 @@ type ServerDependencies struct {
 	UnfinishedStateStore  *unfinished.StateStore
 	UnfinishedWorkService *services.UnfinishedWorkService
 
+	// Token usage analytics.
+	InsightsService *services.InsightsService
+
 	BacklogService *services.BacklogService
 	SyncLoop       *session.SyncLoop
 
 	// Analytics storage. Nil when the analytics DB failed to open (LogAnalyticsProvider
 	// is used as a fallback in that case).
 	AnalyticsEntClient *ent.Client
+
+	// VNCDeps holds the result of the startup VNC dependency check.
+	// Available=false means the Browser tab will be hidden on all sessions.
+	VNCDeps vnc.DepsResult
+
+	// CDPDeps holds the result of the startup CDP (Chrome) dependency check.
+	// Available=false means CDP browser streaming is unavailable on this host.
+	CDPDeps cdp.DepsResult
 }
 
 // ToServerDeps converts RuntimeDeps to the flat ServerDependencies struct consumed
@@ -75,9 +89,12 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		UnfinishedScanner:       rt.UnfinishedScanner,
 		UnfinishedStateStore:    rt.UnfinishedStateStore,
 		UnfinishedWorkService:   rt.UnfinishedWorkService,
+		InsightsService:         rt.InsightsService,
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
 		AnalyticsEntClient:      rt.AnalyticsEntClient,
+		VNCDeps:                 rt.VNCDeps,
+		CDPDeps:                 rt.CDPDeps,
 	}
 }
 
@@ -330,12 +347,21 @@ type RuntimeDeps struct {
 	UnfinishedStateStore  *unfinished.StateStore
 	UnfinishedWorkService *services.UnfinishedWorkService
 
+	// Token usage analytics.
+	InsightsService *services.InsightsService
+
 	BacklogService *services.BacklogService
 	SyncLoop       *session.SyncLoop
 	Config         *config.Config // Used for encryption of sensitive data
 
 	// Analytics storage.
 	AnalyticsEntClient *ent.Client
+
+	// VNCDeps holds the result of the startup VNC dependency check.
+	VNCDeps vnc.DepsResult
+
+	// CDPDeps holds the result of the startup CDP (Chrome) dependency check.
+	CDPDeps cdp.DepsResult
 }
 
 // BuildRuntimeDeps constructs Phase 3 dependencies using Phase 2 outputs.
@@ -376,8 +402,12 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		return nil, fmt.Errorf("load instances: %w", err)
 	}
 
+	// WorkflowEngine governs backlog state transitions; constructed once and shared
+	// by both the service layer and the lifecycle listener.
+	workflowEngine := session.NewDefaultWorkflowEngine()
+
 	// Backlog lifecycle listener — always created, enabled state set from config below.
-	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithSpawner(storage, sessionService)
+	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithSpawner(storage, sessionService, workflowEngine)
 
 	// Step 5 (continued): wire dependencies to each instance
 	// inst.SetReviewQueue and inst.SetStatusManager are called per-instance in a loop;
@@ -455,6 +485,20 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 			} else {
 				log.Info("persisted migrated instance data", "count", len(instances))
 			}
+		}
+
+		// Step 6.6: Reconcile CDP orphan wrapper directories.
+		// Collect active session IDs, then remove any cdp-bins subdirectory that
+		// does not belong to a known session (left behind by crashed or deleted sessions).
+		// Both the real manager and the noop manager implement ReconcileOrphans with
+		// filesystem-only cleanup (no Chrome binary required).
+		activeSessionIDs := make([]string, 0, len(instances))
+		for _, inst := range instances {
+			activeSessionIDs = append(activeSessionIDs, inst.GetStableID())
+		}
+		cdpCleanupMgr := cdp.New(cdp.CDPConfig{}) // noop when Chrome is absent; still cleans up dirs
+		if err := cdpCleanupMgr.ReconcileOrphans(activeSessionIDs); err != nil {
+			log.Warn("cdp: orphan cleanup failed (non-fatal)", "err", err)
 		}
 
 		// Step 7: start controllers (requires started instances + StatusManager)
@@ -623,8 +667,6 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}
 
 	// 60 s reconcile ticker: safety net for abnormal exits where EventExited cannot fire.
-	// ReconcileStuck is a no-op when the listener is disabled, so this goroutine
-	// can run unconditionally.
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
@@ -641,8 +683,6 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		keyFunc = cfg.GetOrCreateEncryptionKey
 	}
 	backlogCtrl := session.NewBacklogController(backlogLifecycleListener, storage, syncRegistry, keyFunc)
-	// GetFeatureFlag is nil-safe (returns false when cfg == nil), so no additional
-	// nil guard is needed here even though cfg may be nil when LoadConfig failed.
 	if cfg.GetFeatureFlag("backlog") {
 		if err := backlogCtrl.Enable(context.Background()); err != nil {
 			log.Warn("failed to enable backlog feature on startup", "err", err)
@@ -652,13 +692,42 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Info("backlog feature disabled (toggle via Settings → Features)")
 	}
 
-	// Create BacklogService — wire sessionService as the SessionCreator so
-	// SpawnSessionFromItem, TriggerTriage, and TriggerReReview can spawn real sessions.
-	backlogSvc := services.NewBacklogService(storage, sessionService, cfg)
+	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
-
-	// Wire the BacklogController so UpdateFeatureFlag can enable/disable at runtime.
 	sessionService.SetFeatureController("backlog", backlogCtrl)
+
+	// Check VNC dependencies once at startup so the server knows whether browser
+	// passthrough is available on this host. Non-fatal: Missing deps log a warning.
+	vncDeps := vnc.CheckDependencies()
+	if !vncDeps.Available {
+		log.Warn("VNC browser passthrough unavailable", "reason", vncDeps.Reason, "missing", vncDeps.Missing)
+	} else {
+		log.Info("VNC browser passthrough available")
+	}
+
+	// Check CDP (Chrome) dependencies once at startup. Non-fatal.
+	cdpDeps := cdp.CheckDependencies()
+	if !cdpDeps.Available {
+		log.Warn("CDP browser streaming unavailable", "reason", cdpDeps.Reason)
+	} else {
+		log.Info("CDP browser streaming available", "chrome", cdpDeps.ChromePath)
+	}
+
+	// Initialize TokenStore and InsightsService for token usage analytics.
+	var insightsSvc *services.InsightsService
+	if homeDir, homeDirErr := os.UserHomeDir(); homeDirErr == nil {
+		historyDir := filepath.Join(homeDir, ".claude", "projects")
+		tokenStore := tokens.NewTokenStore(historyDir)
+		pricing := tokens.DefaultPricingTable()
+		associator := tokens.NewAssociator(storage)
+		historyLinker.RegisterFileCallback(tokenStore.OnHistoryFileChanged)
+		tokenStore.Start(context.Background())
+		insightsSvc = services.NewInsightsService(tokenStore, pricing, associator)
+		log.Info("InsightsService initialized", "historyDir", historyDir)
+	} else {
+		log.Warn("could not determine home dir for InsightsService token store", "err", homeDirErr)
+	}
+
 
 	return &RuntimeDeps{
 		ServiceDeps:             svc,
@@ -674,9 +743,12 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		UnfinishedScanner:       unfinishedScanner,
 		UnfinishedStateStore:    unfinishedStateStore,
 		UnfinishedWorkService:   unfinishedWorkSvc,
+		InsightsService:         insightsSvc,
 		BacklogService:          backlogSvc,
 		SyncLoop:                nil, // managed by BacklogController
 		Config:                  cfg,
 		AnalyticsEntClient:      analyticsClient,
+		VNCDeps:                 vncDeps,
+		CDPDeps:                 cdpDeps,
 	}, nil
 }

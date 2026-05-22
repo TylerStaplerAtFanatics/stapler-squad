@@ -9,5 +9,11 @@
   "testIds": [
     "TestGetUnfinishedWorkConfig_ReturnsConfig"
   ],
+<<<<<<< HEAD
   "lastModified": "2026-05-21T09:40:04.893812107-07:00"
+||||||| 41cb0ca6
+  "lastModified": "2026-05-10T16:57:49.798616056-07:00"
+=======
+  "lastModified": "2026-05-02T19:34:43.996497514-07:00"
+>>>>>>> origin/main
 }

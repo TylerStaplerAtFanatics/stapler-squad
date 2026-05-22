@@ -38,6 +38,7 @@ type BacklogService struct {
 	sourceBackend  itemSourceBackend
 	sessionCreator SessionCreator
 	cfg            *config.Config
+	engine         session.WorkflowEngine
 	// worktreeMu serializes context-file writes to the same worktree path so that
 	// concurrent SpawnSessionFromItem / AttachSessionToItem calls cannot produce
 	// a partially-written .claude/backlog-context.md.
@@ -51,12 +52,16 @@ type BacklogService struct {
 // Degradation contract: If creator is nil, RPCs that spawn sessions will return
 // CodeUnimplemented. This is expected in test environments where a real session
 // manager is unavailable.
-func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *config.Config) *BacklogService {
+func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *config.Config, engine session.WorkflowEngine) *BacklogService {
+	if engine == nil {
+		engine = session.NewDefaultWorkflowEngine()
+	}
 	return &BacklogService{
 		storage:        storage,
 		sourceBackend:  storage,
 		sessionCreator: creator,
 		cfg:            cfg,
+		engine:         engine,
 	}
 }
 
@@ -573,7 +578,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 	from := session.BacklogStatus(item.Status)
 	to := session.BacklogStatus(req.Msg.TargetStatus)
 
-	if !session.CanTransitionBacklog(from, to) {
+	if !s.engine.CanTransition(from, to) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("invalid transition from %q to %q", from, to))
 	}
@@ -596,7 +601,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 		OverallOutcome:    overallOutcome,
 		OverrideReason:    req.Msg.OverrideReason,
 	}
-	if guardErr := session.TransitionGuard(guardInput, to); guardErr != nil {
+	if guardErr := s.engine.ValidateGates(guardInput, to); guardErr != nil {
 		if errors.Is(guardErr, session.ErrACRequired) ||
 			errors.Is(guardErr, session.ErrPlanRequired) ||
 			errors.Is(guardErr, session.ErrPlanArtifactsRequired) ||

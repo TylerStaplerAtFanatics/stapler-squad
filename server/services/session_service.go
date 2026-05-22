@@ -194,7 +194,22 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 	if userRules := rulesStore.ToRules(); len(userRules) > 0 {
 		classifierObj.AddRules(userRules)
 	}
-	rulesSvc := NewRulesService(rulesStore, analyticsStore, classifierObj)
+	// Wire AI rule generation. NewBestAvailableAIClient selects the highest-priority
+	// available backend: Anthropic HTTP API (if ANTHROPIC_API_KEY is set) → claude CLI
+	// → gemini CLI → opencode CLI. Returns nil when no backend is available.
+	var promptBuilder RulePromptBuilder
+	var aiClientImpl AIClient
+	{
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if c, backend := NewBestAvailableAIClient(apiKey, knownCLIAgents); c != nil {
+			promptBuilder = &DefaultRulePromptBuilder{}
+			aiClientImpl = c
+			log.Info("[SessionService] AI rule generation enabled", "backend", backend)
+		} else {
+			log.Info("[SessionService] AI rule generation unavailable: set ANTHROPIC_API_KEY or install claude/gemini/opencode CLI")
+		}
+	}
+	rulesSvc := NewRulesService(rulesStore, analyticsStore, classifierObj, promptBuilder, aiClientImpl)
 
 	workspaceSvc := NewWorkspaceService(concStorage, eventBus)
 
@@ -592,7 +607,7 @@ func (s *SessionService) ListSessions(
 			// Apply optional status filter (external sessions are always "running")
 			if req.Msg.Status != nil && *req.Msg.Status != sessionv1.SessionStatus_SESSION_STATUS_UNSPECIFIED {
 				// External sessions are running
-				if *req.Msg.Status != sessionv1.SessionStatus_SESSION_STATUS_RUNNING {
+				if *req.Msg.Status != sessionv1.SessionStatus_SESSION_STATUS_ACTIVE {
 					continue
 				}
 			}
@@ -796,38 +811,13 @@ func (s *SessionService) CreateSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("failed to create instance: %w", err))
 	}
 
-	// Start the session (initializes tmux + git worktree)
-	// Use Start(true) to indicate this is a first-time setup
-	if err := instance.Start(true); err != nil {
-		log.Error("[CreateSession] failed to start session", "session", instance.Title, "err", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to start session: %w", err))
-	}
-
-	// Wire rate limit event callbacks so detection/recovery fire server-level notifications.
-	s.wireRateLimitCallbacks(instance)
-	s.wireStatusChangeCallback(instance)
-
-	// Inject Claude Code HTTP hook config for remote approval from the web UI.
-	// Non-fatal: session is fully functional even without this config.
-	if err := InjectHookConfig(instance.GetEffectiveRootDir(), instance.Title); err != nil {
-		log.Warn("[CreateSession] failed to inject hook config", "session", instance.Title, "err", err)
-	}
-
-	// Save only the new instance to storage.
-	// Using AddInstance avoids loading and re-writing all instances (which would call
-	// FromInstanceData/Start on every session and replace live poller instances with
-	// cold storage copies).
+	// Save the instance to storage with Creating status immediately so the client
+	// can receive the session and show a spinner while initialization proceeds.
 	if err := s.storage.AddInstance(instance); err != nil {
-		// Cleanup on save failure
-		if destroyErr := instance.Destroy(); destroyErr != nil {
-			// Log cleanup error but return original save error
-			log.Error("failed to cleanup after save error", "err", destroyErr)
-		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
 	}
 
-	// Add only the new session to the poller, preserving all existing live instances.
-	// Using AddInstance (not SetInstances) avoids replacing live instances with cold copies.
+	// Add the session to the poller so WatchSessions picks it up immediately.
 	if s.reviewQueuePoller != nil {
 		s.reviewQueuePoller.AddInstance(instance)
 		log.Info("[ReviewQueue] added new session to poller", "session", instance.Title)
@@ -838,11 +828,58 @@ func (s *SessionService) CreateSession(
 		s.promptStore.RecordUsage(req.Msg.InitialPrompt)
 	}
 
-	// Publish SessionCreated event to all watchers
+	// Publish SessionCreated event so watchers see the Creating-status session immediately.
 	s.eventBus.Publish(events.NewSessionCreatedEvent(instance))
 
+	// Capture refs needed inside the goroutine (avoid capturing req.Msg which may be GC'd).
+	instanceTitle := instance.Title
+	instanceRootDir := instance.GetEffectiveRootDir()
+
+	// Snapshot the proto before spawning the goroutine to avoid a data race between
+	// the goroutine writing CreationProgress and the return statement reading instance.
+	creatingProto := adapters.InstanceToProto(instance)
+
+	// Perform the actual initialization asynchronously so the RPC returns within milliseconds.
+	go func() {
+		// Wire callbacks before starting so rate-limit and status-change events fire.
+		s.wireRateLimitCallbacks(instance)
+		s.wireStatusChangeCallback(instance)
+
+		instance.CreationProgress = "Starting session..."
+		s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"creation_progress"}))
+
+		// Start the session (initializes tmux + git worktree).
+		if startErr := instance.Start(true); startErr != nil {
+			log.Error("[CreateSession] async start failed", "session", instanceTitle, "err", startErr)
+			// Transition to Stopped on failure.
+			instance.CreationProgress = fmt.Sprintf("Startup failed: %s", startErr.Error())
+			instance.ForceStatus(session.Stopped)
+			_ = s.storage.SaveInstances([]*session.Instance{instance})
+			s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"status", "creation_progress"}))
+			return
+		}
+
+		// Clear progress message now that we are Active.
+		instance.CreationProgress = ""
+
+		// Inject Claude Code HTTP hook config for remote approval from the web UI.
+		// Non-fatal: session is fully functional even without this config.
+		if err := InjectHookConfig(instanceRootDir, instanceTitle); err != nil {
+			log.Warn("[CreateSession] failed to inject hook config", "session", instanceTitle, "err", err)
+		}
+
+		if s.backlogLifecycleListener != nil {
+			s.backlogLifecycleListener.WireToInstance(instance)
+		}
+
+		_ = s.storage.SaveInstances([]*session.Instance{instance})
+		s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"status", "creation_progress"}))
+		log.Info("[CreateSession] async start complete", "session", instanceTitle)
+	}()
+
+
 	return connect.NewResponse(&sessionv1.CreateSessionResponse{
-		Session: adapters.InstanceToProto(instance),
+		Session: creatingProto,
 	}), nil
 }
 
@@ -949,7 +986,7 @@ func (s *SessionService) UpdateSession(
 		updatedFields = append(updatedFields, "program")
 
 		// If the session is running, restart it with the new program
-		if instance.Status == session.Running {
+		if instance.Status == session.Active {
 			if err := instance.Restart(true); err != nil {
 				log.Error("[UpdateSession] failed to restart session after program change", "session", instance.Title, "err", err)
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restart session after program change: %w", err))
@@ -1029,6 +1066,103 @@ func (s *SessionService) UpdateSession(
 	}
 
 	return connect.NewResponse(&sessionv1.UpdateSessionResponse{
+		Session: adapters.InstanceToProto(instance),
+	}), nil
+}
+
+// HibernateSession checkpoints the session state, kills the AI process, and
+// transitions the session to Hibernated status.
+// +api: session:hibernate
+func (s *SessionService) HibernateSession(
+	ctx context.Context,
+	req *connect.Request[sessionv1.HibernateSessionRequest],
+) (*connect.Response[sessionv1.HibernateSessionResponse], error) {
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
+	}
+
+	instances, err := s.storage.LoadInstances()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	}
+
+	var instance *session.Instance
+	var instanceIndex int
+	for i, inst := range instances {
+		if inst.MatchesID(req.Msg.Id) {
+			instance = inst
+			instanceIndex = i
+			break
+		}
+	}
+	if instance == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.Id))
+	}
+
+	// Set reason before transitioning so the After hook can read it
+	reason := req.Msg.Reason
+	if reason == "" {
+		reason = "manual"
+	}
+	instance.SetHibernateReason(reason)
+
+	if err := instance.Hibernate(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+
+	instances[instanceIndex] = instance
+	if err := s.storage.SaveInstances(instances); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
+	}
+
+	s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"status"}))
+
+	return connect.NewResponse(&sessionv1.HibernateSessionResponse{
+		Session: adapters.InstanceToProto(instance),
+	}), nil
+}
+
+// ResumeHibernatedSession re-launches the AI process for a Hibernated session,
+// transitioning it back to Active status.
+// +api: session:resume_hibernated
+func (s *SessionService) ResumeHibernatedSession(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ResumeHibernatedSessionRequest],
+) (*connect.Response[sessionv1.ResumeHibernatedSessionResponse], error) {
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
+	}
+
+	instances, err := s.storage.LoadInstances()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	}
+
+	var instance *session.Instance
+	var instanceIndex int
+	for i, inst := range instances {
+		if inst.MatchesID(req.Msg.Id) {
+			instance = inst
+			instanceIndex = i
+			break
+		}
+	}
+	if instance == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.Id))
+	}
+
+	if err := instance.ResumeFromHibernation(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+
+	instances[instanceIndex] = instance
+	if err := s.storage.SaveInstances(instances); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
+	}
+
+	s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"status"}))
+
+	return connect.NewResponse(&sessionv1.ResumeHibernatedSessionResponse{
 		Session: adapters.InstanceToProto(instance),
 	}), nil
 }
@@ -1952,6 +2086,22 @@ func (s *SessionService) GetApprovalAnalytics(
 	req *connect.Request[sessionv1.GetApprovalAnalyticsRequest],
 ) (*connect.Response[sessionv1.GetApprovalAnalyticsResponse], error) {
 	return s.rulesSvc.GetApprovalAnalytics(ctx, req)
+}
+
+// GetProgramAnalytics returns drill-down analytics for a single command program.
+func (s *SessionService) GetProgramAnalytics(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetProgramAnalyticsRequest],
+) (*connect.Response[sessionv1.GetProgramAnalyticsResponse], error) {
+	return s.rulesSvc.GetProgramAnalytics(ctx, req)
+}
+
+// GenerateSuggestedRule asks an AI to propose new auto-approval rules.
+func (s *SessionService) GenerateSuggestedRule(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GenerateSuggestedRuleRequest],
+) (*connect.Response[sessionv1.GenerateSuggestedRuleResponse], error) {
+	return s.rulesSvc.GenerateSuggestedRule(ctx, req)
 }
 
 // ListDatabases returns all discovered workspace databases with metadata.
@@ -3006,10 +3156,22 @@ var knownFeatureFlags = []struct {
 		name:        "backlog",
 		description: "Backlog management with external sync sources and AI-driven triage",
 	},
+<<<<<<< HEAD
 	{
 		name:        "backlog:conversation-view",
 		description: "Show JSONL conversation messages in the session monitor (default: terminal scrollback view)",
 	},
+||||||| 41cb0ca6
+=======
+	{
+		name:        "browser-passthrough",
+		description: "Browser passthrough: stream Chrome/Chromium via CDP in the Browser tab",
+	},
+	{
+		name:        "backlog:conversation-view",
+		description: "Show JSONL conversation messages in the session monitor (default: terminal scrollback view)",
+	},
+>>>>>>> origin/main
 }
 
 // +api: feature-flags:list

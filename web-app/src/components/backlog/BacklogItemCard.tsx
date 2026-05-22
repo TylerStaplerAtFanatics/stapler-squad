@@ -25,6 +25,8 @@ function getActionSpec(item: BacklogItem): ActionSpec {
         action: "mark_ready",
         disabled: item.acCriteria.length === 0,
       };
+    case "refining":
+      return { label: "Refining…", action: "refining", isDone: true };
     case "ready":
       return { label: "Trigger Triage", action: "trigger_triage" };
     case "in_progress":
@@ -39,6 +41,8 @@ function getActionSpec(item: BacklogItem): ActionSpec {
       return { label: "Done ✓", action: "done", isDone: true };
     case "archived":
       return { label: "Archived", action: "archived", isDone: true };
+    default:
+      return { label: item.status, action: item.status, isDone: true };
   }
 }
 

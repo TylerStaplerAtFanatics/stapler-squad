@@ -16,13 +16,10 @@ import {
 // Domain types exposed to UI (mapped from proto, but without Message<> noise)
 // ---------------------------------------------------------------------------
 
-export type BacklogItemStatus =
-  | "idea"
-  | "ready"
-  | "in_progress"
-  | "review"
-  | "done"
-  | "archived";
+export type KnownBacklogStatus = "idea" | "refining" | "ready" | "in_progress" | "review" | "done" | "archived";
+// (string & {}) preserves autocomplete for KnownBacklogStatus values while still
+// accepting unknown statuses returned by newer server versions.
+export type BacklogItemStatus = KnownBacklogStatus | (string & {});
 
 export type AcCriterionStatus = "pending" | "in_progress" | "done";
 
@@ -385,7 +382,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
       return true;
     } catch (err) {
       console.error("[useBacklogService] archiveBacklogItem:", err);
-      return false;
+      setLastError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
   }, []);
 
@@ -438,7 +436,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
         return { itemSessionId: resp.itemSession?.id ?? "" };
       } catch (err) {
         console.error("[useBacklogService] triggerTriage:", err);
-        return null;
+        setLastError(err instanceof Error ? err : new Error(String(err)));
+        throw err;
       }
     },
     []
@@ -451,7 +450,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
       return resp.item ? mapBacklogItem(resp.item) : null;
     } catch (err) {
       console.error("[useBacklogService] approvePlan:", err);
-      return null;
+      setLastError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
   }, []);
 
@@ -467,7 +467,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
         return true;
       } catch (err) {
         console.error("[useBacklogService] overrideVerdict:", err);
-        return false;
+        setLastError(err instanceof Error ? err : new Error(String(err)));
+        throw err;
       }
     },
     []
@@ -480,7 +481,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
       return true;
     } catch (err) {
       console.error("[useBacklogService] triggerReReview:", err);
-      return false;
+      setLastError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
   }, []);
 
