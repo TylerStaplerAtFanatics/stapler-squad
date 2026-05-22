@@ -105,10 +105,13 @@ func (x *ListSessionsRequest) GetProjectId() string {
 }
 
 type ListSessionsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Sessions      []*Session             `protobuf:"bytes,1,rep,name=sessions,proto3" json:"sessions,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Sessions []*Session             `protobuf:"bytes,1,rep,name=sessions,proto3" json:"sessions,omitempty"`
+	// System-wide memory usage percentage (0–100). Populated by the server on each response.
+	// Zero when measurement is unavailable (e.g., macOS without /proc).
+	SystemMemoryPct float32 `protobuf:"fixed32,2,opt,name=system_memory_pct,json=systemMemoryPct,proto3" json:"system_memory_pct,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ListSessionsResponse) Reset() {
@@ -146,6 +149,13 @@ func (x *ListSessionsResponse) GetSessions() []*Session {
 		return x.Sessions
 	}
 	return nil
+}
+
+func (x *ListSessionsResponse) GetSystemMemoryPct() float32 {
+	if x != nil {
+		return x.SystemMemoryPct
+	}
+	return 0
 }
 
 type GetSessionRequest struct {
@@ -11448,9 +11458,10 @@ const file_session_v1_session_proto_rawDesc = "" +
 	"\a_statusB\v\n" +
 	"\t_categoryB\x0f\n" +
 	"\r_search_queryB\r\n" +
-	"\v_project_id\"G\n" +
+	"\v_project_id\"s\n" +
 	"\x14ListSessionsResponse\x12/\n" +
-	"\bsessions\x18\x01 \x03(\v2\x13.session.v1.SessionR\bsessions\"#\n" +
+	"\bsessions\x18\x01 \x03(\v2\x13.session.v1.SessionR\bsessions\x12*\n" +
+	"\x11system_memory_pct\x18\x02 \x01(\x02R\x0fsystemMemoryPct\"#\n" +
 	"\x11GetSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"C\n" +
 	"\x12GetSessionResponse\x12-\n" +

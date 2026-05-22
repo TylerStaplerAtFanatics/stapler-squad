@@ -145,6 +145,19 @@ export const actionButton = style({
   },
 });
 
+export const memoryBadge = style({
+  display: "inline-flex",
+  alignItems: "center",
+  fontSize: vars.fontSize.xs,
+  color: vars.color.textMuted,
+  fontVariantNumeric: "tabular-nums",
+  marginLeft: vars.space["1"],
+});
+
+export const rowMemoryPressure = style({
+  borderLeft: `3px solid ${vars.color.warning}`,
+});
+
 export const groupHeader = style({
   height: "24px",
   display: "flex",
