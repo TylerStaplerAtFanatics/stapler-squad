@@ -193,7 +193,7 @@ func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
 			}
 			continue
 		}
-		if uint32(info.Size()) != entry.Size ||
+		if info.Size() != int64(entry.Size) ||
 			!info.ModTime().Truncate(time.Second).Equal(entry.ModifiedAt.Truncate(time.Second)) {
 			return true, nil
 		}
@@ -540,12 +540,12 @@ func findMergeBase(repo *git.Repository, h1, h2 plumbing.Hash) (plumbing.Hash, e
 		q = append(q, c.ParentHashes...)
 	}
 
-	// Walk from h2; first ancestor also in anc is the merge base.
+	// Walk from h2 breadth-first; first ancestor also in anc is the nearest merge base.
 	seen := make(map[plumbing.Hash]bool)
 	q = []plumbing.Hash{h2}
 	for len(q) > 0 {
-		h := q[len(q)-1]
-		q = q[:len(q)-1]
+		h := q[0]
+		q = q[1:]
 		if seen[h] {
 			continue
 		}
