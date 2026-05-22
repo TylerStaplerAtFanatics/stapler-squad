@@ -321,7 +321,7 @@ func TestTriggerReReview_HappyPath_NoSessionCreator_ReturnsPlaceholder(t *testin
 // no CreateDirectorySession call.
 func TestCreateBacklogItem_SkipsTriageWhenSkipTriageTrue(t *testing.T) {
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(createTestStorage(t), creator, nil)
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
 
 	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
 		Title:     "item with repo",
@@ -336,7 +336,7 @@ func TestCreateBacklogItem_SkipsTriageWhenSkipTriageTrue(t *testing.T) {
 // TestCreateBacklogItem_SkipsTriageWhenRepoPathEmpty: no repo_path → triage_triggered=false.
 func TestCreateBacklogItem_SkipsTriageWhenRepoPathEmpty(t *testing.T) {
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(createTestStorage(t), creator, nil)
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
 
 	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
 		Title:    "item without repo",
@@ -351,7 +351,7 @@ func TestCreateBacklogItem_SkipsTriageWhenRepoPathEmpty(t *testing.T) {
 // TriggerTriage returns CodeAlreadyExists.
 func TestTriggerTriage_DoubleTriggerGuard(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil)
 
 	// Create an item with a repo path so TriggerTriage can reach the guard.
 	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
@@ -470,7 +470,7 @@ func (e *errSessionCreator) CreateDirectorySession(_ context.Context, _, _, _ st
 // gracefully and TriageTriggered is false.
 func TestCreateBacklogItem_AutoTriggersTriageWhenRepoPathSet(t *testing.T) {
 	creator := &errSessionCreator{err: errors.New("no tmux in tests")}
-	svc := NewBacklogService(createTestStorage(t), creator, nil)
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
 
 	// The auto-trigger code path is gated on: !SkipTriage && RepoPath != "" && sessionCreator != nil.
 	// TriggerTriage will reach MkdirAll on a real path and then try CreateDirectorySession.
