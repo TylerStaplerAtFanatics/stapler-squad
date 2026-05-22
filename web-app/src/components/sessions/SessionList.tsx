@@ -15,6 +15,7 @@ import { BulkActions } from "./BulkActions";
 import { TagEditor } from "./TagEditor";
 import { GroupingStrategy, GroupingStrategyLabels, groupSessions, cycleGroupingStrategy } from "@/lib/grouping/strategies";
 import { useReviewQueueContext } from "@/lib/contexts/ReviewQueueContext";
+import { MemoryPressureCallout } from "./MemoryPressureCallout";
 import { useAppSelector } from "@/lib/store";
 import { selectDetectedStatusMap } from "@/lib/store/sessionsSlice";
 import { ActionBar } from "@/components/ui/ActionBar";
@@ -700,6 +701,13 @@ export function SessionList({
           </ActionBar>
         </div>
       </div>
+
+      {onHibernateSession && (
+        <MemoryPressureCallout
+          sessions={filteredSessions}
+          onHibernate={onHibernateSession}
+        />
+      )}
 
       {/* Bulk actions bar — BulkActions renders null when selectedCount === 0 */}
       {selectMode && (

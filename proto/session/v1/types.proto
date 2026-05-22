@@ -176,6 +176,14 @@ message Session {
   // layer at read time; never stored in the database.
   // Only meaningful when lifecycle_status == SESSION_STATUS_ACTIVE.
   SubStatus sub_status = 54;
+
+  // Approximate resident set size (RSS) in MB for all processes in this session.
+  // Zero for hibernated sessions or when measurement is unavailable.
+  int64 memory_rss_mb = 55;
+
+  // Estimated RAM freed in MB if this session were hibernated now.
+  // Equal to memory_rss_mb for Active sessions; zero for Hibernated sessions.
+  int64 estimated_savings_mb = 56;
 }
 
 // VNCStatus represents the operational state of the VNC subsystem for a session.
