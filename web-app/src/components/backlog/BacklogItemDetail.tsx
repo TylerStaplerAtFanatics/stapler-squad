@@ -2,13 +2,7 @@
 // +feature: backlog:item-detail
 
 import { useState, useEffect, useCallback } from "react";
-<<<<<<< HEAD
-import type { BacklogItem, BacklogItemStatus, AcCriterion } from "@/lib/hooks/useBacklogService";
-||||||| 41cb0ca6
-import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
-=======
 import type { BacklogItem, AcCriterion, BacklogItemInput } from "@/lib/hooks/useBacklogService";
->>>>>>> origin/main
 import { useBacklogService } from "@/lib/hooks/useBacklogService";
 import { getStatusLabel } from "@/lib/backlog/status";
 import { BacklogItemForm } from "./BacklogItemForm";
@@ -177,11 +171,6 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     } finally {
       setActionLoading(false);
     }
-<<<<<<< HEAD
-  }, [item, notesValue, updateBacklogItem]);
-||||||| 41cb0ca6
-  }, [item, notesValue, service]);
-=======
   }, [item, notesValue, updateBacklogItem]);
 
   const handleUpdateItem = useCallback(
@@ -196,7 +185,6 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     },
     [item, updateBacklogItem]
   );
->>>>>>> origin/main
 
   const handleCancelTriage = useCallback(async () => {
     // TODO: implement cancel triage RPC call (if backend supports it)

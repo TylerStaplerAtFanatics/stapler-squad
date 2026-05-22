@@ -34,23 +34,6 @@ jest.mock("../FilesTab", () => ({ FilesTab: () => <div data-testid="files-tab" /
 jest.mock("../WorkspaceSwitchModal", () => ({ WorkspaceSwitchModal: () => null }));
 jest.mock("../TagEditor", () => ({ TagEditor: () => null }));
 jest.mock("../ResumeSessionModal", () => ({ ResumeSessionModal: () => null }));
-<<<<<<< HEAD
-jest.mock("../ShellTab", () => ({ ShellTabLabel: () => null }));
-jest.mock("../NewShellDialog", () => ({ NewShellDialog: () => null }));
-jest.mock("@/lib/hooks/useShells", () => ({
-  useShells: () => ({
-    shells: [],
-    isLoading: false,
-    spawnShell: jest.fn(),
-    stopShell: jest.fn(),
-    restartShell: jest.fn(),
-    deleteShell: jest.fn(),
-    updateShellStatus: jest.fn(),
-    refetch: jest.fn(),
-  }),
-}));
-||||||| 41cb0ca6
-=======
 jest.mock("../BrowserTab", () => ({
   BrowserTab: ({ sessionId }: { sessionId: string }) => (
     <div data-testid={`browser-tab-stub-${sessionId}`} />
@@ -61,7 +44,6 @@ jest.mock("../NoVNCViewer", () => ({
   __esModule: true,
   default: () => <div data-testid="novnc-viewer-stub" />,
 }));
->>>>>>> origin/main
 jest.mock("@/components/ui/ActionBar", () => ({
   ActionBar: ({ children, className }: { children: React.ReactNode; className?: string }) => (
     <div className={className}>{children}</div>

@@ -846,17 +846,13 @@ export function useSessionService(
     listPromptHistory,
     watchSessions,
     stopWatching,
-<<<<<<< HEAD
     spawnShell,
     stopShell,
     restartShell,
     listShells,
     deleteShell,
-||||||| 41cb0ca6
-=======
     getTerminalSnapshot,
     writeToSession,
     getConversationMessages,
->>>>>>> origin/main
   };
 }

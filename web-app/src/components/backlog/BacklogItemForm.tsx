@@ -70,16 +70,8 @@ export function BacklogItemForm({
         const isVague = descriptionText.length < 80 && acCriteria.length === 0;
         await onSubmit({
           title: title.trim(),
-<<<<<<< HEAD
-          description: descriptionText || undefined,
-          repoPath: repoPath.trim() || undefined,
-||||||| 41cb0ca6
-          description: description.trim() || undefined,
-          repoPath: repoPath.trim() || undefined,
-=======
           description: descriptionText || undefined,
           repoPath: repoPath.trim(),
->>>>>>> origin/main
           priority,
           skipPlanning,
           skipReviewGate,

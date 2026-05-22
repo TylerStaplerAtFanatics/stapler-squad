@@ -309,12 +309,14 @@ service SessionService {
 
   // GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
   rpc GetEscapeAnalyticsSummary(GetEscapeAnalyticsSummaryRequest) returns (GetEscapeAnalyticsSummaryResponse) {}
-<<<<<<< HEAD
 
-  // WriteToSession sends raw text input to a running session's PTY.
-  // Use for unblocking approval prompts or injecting ad-hoc input.
-  // Returns immediately after queueing the write; does not wait for output.
-  rpc WriteToSession(WriteToSessionRequest) returns (WriteToSessionResponse) {}
+  // HibernateSession checkpoints the session state, kills the AI process, and
+  // transitions the session to Hibernated status.
+  rpc HibernateSession(HibernateSessionRequest) returns (HibernateSessionResponse) {}
+
+  // ResumeHibernatedSession re-launches the AI process for a Hibernated session,
+  // transitioning it back to Active status.
+  rpc ResumeHibernatedSession(ResumeHibernatedSessionRequest) returns (ResumeHibernatedSessionResponse) {}
 
   // ============================================================================
   // Custom Shell RPCs
@@ -335,17 +337,6 @@ service SessionService {
 
   // DeleteShell stops a shell and removes it from storage.
   rpc DeleteShell(DeleteShellRequest) returns (DeleteShellResponse) {}
-||||||| 41cb0ca6
-=======
-
-  // HibernateSession checkpoints the session state, kills the AI process, and
-  // transitions the session to Hibernated status.
-  rpc HibernateSession(HibernateSessionRequest) returns (HibernateSessionResponse) {}
-
-  // ResumeHibernatedSession re-launches the AI process for a Hibernated session,
-  // transitioning it back to Active status.
-  rpc ResumeHibernatedSession(ResumeHibernatedSessionRequest) returns (ResumeHibernatedSessionResponse) {}
->>>>>>> origin/main
 }
 
 // ListSessionsRequest allows filtering sessions by various criteria.
@@ -1995,7 +1986,6 @@ message GetEscapeAnalyticsSummaryResponse {
   int64 total_mangled = 3;
   double mangle_rate = 4;
 }
-<<<<<<< HEAD
 
 // ============================================================================
 // Custom Shell Request / Response Messages
@@ -2068,8 +2058,6 @@ message DeleteShellResponse {
   bool success = 1;
   string message = 2;
 }
-||||||| 41cb0ca6
-=======
 
 message GenerateSuggestedRuleRequest {
   SuggestionSource source = 1;
@@ -2111,6 +2099,3 @@ message ResumeHibernatedSessionRequest {
 message ResumeHibernatedSessionResponse {
   Session session = 1;
 }
-
-
->>>>>>> origin/main

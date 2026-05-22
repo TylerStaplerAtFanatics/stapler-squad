@@ -282,10 +282,12 @@ const (
 	// SessionServiceGetEscapeAnalyticsSummaryProcedure is the fully-qualified name of the
 	// SessionService's GetEscapeAnalyticsSummary RPC.
 	SessionServiceGetEscapeAnalyticsSummaryProcedure = "/session.v1.SessionService/GetEscapeAnalyticsSummary"
-<<<<<<< HEAD
-	// SessionServiceWriteToSessionProcedure is the fully-qualified name of the SessionService's
-	// WriteToSession RPC.
-	SessionServiceWriteToSessionProcedure = "/session.v1.SessionService/WriteToSession"
+	// SessionServiceHibernateSessionProcedure is the fully-qualified name of the SessionService's
+	// HibernateSession RPC.
+	SessionServiceHibernateSessionProcedure = "/session.v1.SessionService/HibernateSession"
+	// SessionServiceResumeHibernatedSessionProcedure is the fully-qualified name of the
+	// SessionService's ResumeHibernatedSession RPC.
+	SessionServiceResumeHibernatedSessionProcedure = "/session.v1.SessionService/ResumeHibernatedSession"
 	// SessionServiceSpawnShellProcedure is the fully-qualified name of the SessionService's SpawnShell
 	// RPC.
 	SessionServiceSpawnShellProcedure = "/session.v1.SessionService/SpawnShell"
@@ -301,15 +303,6 @@ const (
 	// SessionServiceDeleteShellProcedure is the fully-qualified name of the SessionService's
 	// DeleteShell RPC.
 	SessionServiceDeleteShellProcedure = "/session.v1.SessionService/DeleteShell"
-||||||| 41cb0ca6
-=======
-	// SessionServiceHibernateSessionProcedure is the fully-qualified name of the SessionService's
-	// HibernateSession RPC.
-	SessionServiceHibernateSessionProcedure = "/session.v1.SessionService/HibernateSession"
-	// SessionServiceResumeHibernatedSessionProcedure is the fully-qualified name of the
-	// SessionService's ResumeHibernatedSession RPC.
-	SessionServiceResumeHibernatedSessionProcedure = "/session.v1.SessionService/ResumeHibernatedSession"
->>>>>>> origin/main
 )
 
 // SessionServiceClient is a client for the session.v1.SessionService service.
@@ -530,11 +523,12 @@ type SessionServiceClient interface {
 	QueryEscapeAnalytics(context.Context, *connect.Request[v1.QueryEscapeAnalyticsRequest]) (*connect.Response[v1.QueryEscapeAnalyticsResponse], error)
 	// GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
 	GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error)
-<<<<<<< HEAD
-	// WriteToSession sends raw text input to a running session's PTY.
-	// Use for unblocking approval prompts or injecting ad-hoc input.
-	// Returns immediately after queueing the write; does not wait for output.
-	WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error)
+	// HibernateSession checkpoints the session state, kills the AI process, and
+	// transitions the session to Hibernated status.
+	HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error)
+	// ResumeHibernatedSession re-launches the AI process for a Hibernated session,
+	// transitioning it back to Active status.
+	ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error)
 	// SpawnShell creates and starts a new custom shell attached to a session.
 	// The shell runs as an independent sibling tmux session.
 	SpawnShell(context.Context, *connect.Request[v1.SpawnShellRequest]) (*connect.Response[v1.SpawnShellResponse], error)
@@ -546,15 +540,6 @@ type SessionServiceClient interface {
 	ListShells(context.Context, *connect.Request[v1.ListShellsRequest]) (*connect.Response[v1.ListShellsResponse], error)
 	// DeleteShell stops a shell and removes it from storage.
 	DeleteShell(context.Context, *connect.Request[v1.DeleteShellRequest]) (*connect.Response[v1.DeleteShellResponse], error)
-||||||| 41cb0ca6
-=======
-	// HibernateSession checkpoints the session state, kills the AI process, and
-	// transitions the session to Hibernated status.
-	HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error)
-	// ResumeHibernatedSession re-launches the AI process for a Hibernated session,
-	// transitioning it back to Active status.
-	ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error)
->>>>>>> origin/main
 }
 
 // NewSessionServiceClient constructs a client for the session.v1.SessionService service. By
@@ -1072,11 +1057,16 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("GetEscapeAnalyticsSummary")),
 			connect.WithClientOptions(opts...),
 		),
-<<<<<<< HEAD
-		writeToSession: connect.NewClient[v1.WriteToSessionRequest, v1.WriteToSessionResponse](
+		hibernateSession: connect.NewClient[v1.HibernateSessionRequest, v1.HibernateSessionResponse](
 			httpClient,
-			baseURL+SessionServiceWriteToSessionProcedure,
-			connect.WithSchema(sessionServiceMethods.ByName("WriteToSession")),
+			baseURL+SessionServiceHibernateSessionProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("HibernateSession")),
+			connect.WithClientOptions(opts...),
+		),
+		resumeHibernatedSession: connect.NewClient[v1.ResumeHibernatedSessionRequest, v1.ResumeHibernatedSessionResponse](
+			httpClient,
+			baseURL+SessionServiceResumeHibernatedSessionProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("ResumeHibernatedSession")),
 			connect.WithClientOptions(opts...),
 		),
 		spawnShell: connect.NewClient[v1.SpawnShellRequest, v1.SpawnShellResponse](
@@ -1109,21 +1099,6 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("DeleteShell")),
 			connect.WithClientOptions(opts...),
 		),
-||||||| 41cb0ca6
-=======
-		hibernateSession: connect.NewClient[v1.HibernateSessionRequest, v1.HibernateSessionResponse](
-			httpClient,
-			baseURL+SessionServiceHibernateSessionProcedure,
-			connect.WithSchema(sessionServiceMethods.ByName("HibernateSession")),
-			connect.WithClientOptions(opts...),
-		),
-		resumeHibernatedSession: connect.NewClient[v1.ResumeHibernatedSessionRequest, v1.ResumeHibernatedSessionResponse](
-			httpClient,
-			baseURL+SessionServiceResumeHibernatedSessionProcedure,
-			connect.WithSchema(sessionServiceMethods.ByName("ResumeHibernatedSession")),
-			connect.WithClientOptions(opts...),
-		),
->>>>>>> origin/main
 	}
 }
 
@@ -1213,18 +1188,13 @@ type sessionServiceClient struct {
 	updateFeatureFlag         *connect.Client[v1.UpdateFeatureFlagRequest, v1.UpdateFeatureFlagResponse]
 	queryEscapeAnalytics      *connect.Client[v1.QueryEscapeAnalyticsRequest, v1.QueryEscapeAnalyticsResponse]
 	getEscapeAnalyticsSummary *connect.Client[v1.GetEscapeAnalyticsSummaryRequest, v1.GetEscapeAnalyticsSummaryResponse]
-<<<<<<< HEAD
-	writeToSession            *connect.Client[v1.WriteToSessionRequest, v1.WriteToSessionResponse]
+	hibernateSession          *connect.Client[v1.HibernateSessionRequest, v1.HibernateSessionResponse]
+	resumeHibernatedSession   *connect.Client[v1.ResumeHibernatedSessionRequest, v1.ResumeHibernatedSessionResponse]
 	spawnShell                *connect.Client[v1.SpawnShellRequest, v1.SpawnShellResponse]
 	stopShell                 *connect.Client[v1.StopShellRequest, v1.StopShellResponse]
 	restartShell              *connect.Client[v1.RestartShellRequest, v1.RestartShellResponse]
 	listShells                *connect.Client[v1.ListShellsRequest, v1.ListShellsResponse]
 	deleteShell               *connect.Client[v1.DeleteShellRequest, v1.DeleteShellResponse]
-||||||| 41cb0ca6
-=======
-	hibernateSession          *connect.Client[v1.HibernateSessionRequest, v1.HibernateSessionResponse]
-	resumeHibernatedSession   *connect.Client[v1.ResumeHibernatedSessionRequest, v1.ResumeHibernatedSessionResponse]
->>>>>>> origin/main
 }
 
 // ListSessions calls session.v1.SessionService.ListSessions.
@@ -1647,10 +1617,14 @@ func (c *sessionServiceClient) GetEscapeAnalyticsSummary(ctx context.Context, re
 	return c.getEscapeAnalyticsSummary.CallUnary(ctx, req)
 }
 
-<<<<<<< HEAD
-// WriteToSession calls session.v1.SessionService.WriteToSession.
-func (c *sessionServiceClient) WriteToSession(ctx context.Context, req *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error) {
-	return c.writeToSession.CallUnary(ctx, req)
+// HibernateSession calls session.v1.SessionService.HibernateSession.
+func (c *sessionServiceClient) HibernateSession(ctx context.Context, req *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error) {
+	return c.hibernateSession.CallUnary(ctx, req)
+}
+
+// ResumeHibernatedSession calls session.v1.SessionService.ResumeHibernatedSession.
+func (c *sessionServiceClient) ResumeHibernatedSession(ctx context.Context, req *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error) {
+	return c.resumeHibernatedSession.CallUnary(ctx, req)
 }
 
 // SpawnShell calls session.v1.SessionService.SpawnShell.
@@ -1678,19 +1652,6 @@ func (c *sessionServiceClient) DeleteShell(ctx context.Context, req *connect.Req
 	return c.deleteShell.CallUnary(ctx, req)
 }
 
-||||||| 41cb0ca6
-=======
-// HibernateSession calls session.v1.SessionService.HibernateSession.
-func (c *sessionServiceClient) HibernateSession(ctx context.Context, req *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error) {
-	return c.hibernateSession.CallUnary(ctx, req)
-}
-
-// ResumeHibernatedSession calls session.v1.SessionService.ResumeHibernatedSession.
-func (c *sessionServiceClient) ResumeHibernatedSession(ctx context.Context, req *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error) {
-	return c.resumeHibernatedSession.CallUnary(ctx, req)
-}
-
->>>>>>> origin/main
 // SessionServiceHandler is an implementation of the session.v1.SessionService service.
 type SessionServiceHandler interface {
 	// ListSessions returns all sessions with optional filtering.
@@ -1909,11 +1870,12 @@ type SessionServiceHandler interface {
 	QueryEscapeAnalytics(context.Context, *connect.Request[v1.QueryEscapeAnalyticsRequest]) (*connect.Response[v1.QueryEscapeAnalyticsResponse], error)
 	// GetEscapeAnalyticsSummary returns aggregate escape sequence statistics for a session.
 	GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error)
-<<<<<<< HEAD
-	// WriteToSession sends raw text input to a running session's PTY.
-	// Use for unblocking approval prompts or injecting ad-hoc input.
-	// Returns immediately after queueing the write; does not wait for output.
-	WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error)
+	// HibernateSession checkpoints the session state, kills the AI process, and
+	// transitions the session to Hibernated status.
+	HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error)
+	// ResumeHibernatedSession re-launches the AI process for a Hibernated session,
+	// transitioning it back to Active status.
+	ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error)
 	// SpawnShell creates and starts a new custom shell attached to a session.
 	// The shell runs as an independent sibling tmux session.
 	SpawnShell(context.Context, *connect.Request[v1.SpawnShellRequest]) (*connect.Response[v1.SpawnShellResponse], error)
@@ -1925,15 +1887,6 @@ type SessionServiceHandler interface {
 	ListShells(context.Context, *connect.Request[v1.ListShellsRequest]) (*connect.Response[v1.ListShellsResponse], error)
 	// DeleteShell stops a shell and removes it from storage.
 	DeleteShell(context.Context, *connect.Request[v1.DeleteShellRequest]) (*connect.Response[v1.DeleteShellResponse], error)
-||||||| 41cb0ca6
-=======
-	// HibernateSession checkpoints the session state, kills the AI process, and
-	// transitions the session to Hibernated status.
-	HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error)
-	// ResumeHibernatedSession re-launches the AI process for a Hibernated session,
-	// transitioning it back to Active status.
-	ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error)
->>>>>>> origin/main
 }
 
 // NewSessionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -2447,11 +2400,16 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("GetEscapeAnalyticsSummary")),
 		connect.WithHandlerOptions(opts...),
 	)
-<<<<<<< HEAD
-	sessionServiceWriteToSessionHandler := connect.NewUnaryHandler(
-		SessionServiceWriteToSessionProcedure,
-		svc.WriteToSession,
-		connect.WithSchema(sessionServiceMethods.ByName("WriteToSession")),
+	sessionServiceHibernateSessionHandler := connect.NewUnaryHandler(
+		SessionServiceHibernateSessionProcedure,
+		svc.HibernateSession,
+		connect.WithSchema(sessionServiceMethods.ByName("HibernateSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceResumeHibernatedSessionHandler := connect.NewUnaryHandler(
+		SessionServiceResumeHibernatedSessionProcedure,
+		svc.ResumeHibernatedSession,
+		connect.WithSchema(sessionServiceMethods.ByName("ResumeHibernatedSession")),
 		connect.WithHandlerOptions(opts...),
 	)
 	sessionServiceSpawnShellHandler := connect.NewUnaryHandler(
@@ -2484,21 +2442,6 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("DeleteShell")),
 		connect.WithHandlerOptions(opts...),
 	)
-||||||| 41cb0ca6
-=======
-	sessionServiceHibernateSessionHandler := connect.NewUnaryHandler(
-		SessionServiceHibernateSessionProcedure,
-		svc.HibernateSession,
-		connect.WithSchema(sessionServiceMethods.ByName("HibernateSession")),
-		connect.WithHandlerOptions(opts...),
-	)
-	sessionServiceResumeHibernatedSessionHandler := connect.NewUnaryHandler(
-		SessionServiceResumeHibernatedSessionProcedure,
-		svc.ResumeHibernatedSession,
-		connect.WithSchema(sessionServiceMethods.ByName("ResumeHibernatedSession")),
-		connect.WithHandlerOptions(opts...),
-	)
->>>>>>> origin/main
 	return "/session.v1.SessionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SessionServiceListSessionsProcedure:
@@ -2669,9 +2612,10 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceQueryEscapeAnalyticsHandler.ServeHTTP(w, r)
 		case SessionServiceGetEscapeAnalyticsSummaryProcedure:
 			sessionServiceGetEscapeAnalyticsSummaryHandler.ServeHTTP(w, r)
-<<<<<<< HEAD
-		case SessionServiceWriteToSessionProcedure:
-			sessionServiceWriteToSessionHandler.ServeHTTP(w, r)
+		case SessionServiceHibernateSessionProcedure:
+			sessionServiceHibernateSessionHandler.ServeHTTP(w, r)
+		case SessionServiceResumeHibernatedSessionProcedure:
+			sessionServiceResumeHibernatedSessionHandler.ServeHTTP(w, r)
 		case SessionServiceSpawnShellProcedure:
 			sessionServiceSpawnShellHandler.ServeHTTP(w, r)
 		case SessionServiceStopShellProcedure:
@@ -2682,13 +2626,6 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceListShellsHandler.ServeHTTP(w, r)
 		case SessionServiceDeleteShellProcedure:
 			sessionServiceDeleteShellHandler.ServeHTTP(w, r)
-||||||| 41cb0ca6
-=======
-		case SessionServiceHibernateSessionProcedure:
-			sessionServiceHibernateSessionHandler.ServeHTTP(w, r)
-		case SessionServiceResumeHibernatedSessionProcedure:
-			sessionServiceResumeHibernatedSessionHandler.ServeHTTP(w, r)
->>>>>>> origin/main
 		default:
 			http.NotFound(w, r)
 		}
@@ -3033,10 +2970,13 @@ func (UnimplementedSessionServiceHandler) QueryEscapeAnalytics(context.Context, 
 func (UnimplementedSessionServiceHandler) GetEscapeAnalyticsSummary(context.Context, *connect.Request[v1.GetEscapeAnalyticsSummaryRequest]) (*connect.Response[v1.GetEscapeAnalyticsSummaryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetEscapeAnalyticsSummary is not implemented"))
 }
-<<<<<<< HEAD
 
-func (UnimplementedSessionServiceHandler) WriteToSession(context.Context, *connect.Request[v1.WriteToSessionRequest]) (*connect.Response[v1.WriteToSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.WriteToSession is not implemented"))
+func (UnimplementedSessionServiceHandler) HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.HibernateSession is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.ResumeHibernatedSession is not implemented"))
 }
 
 func (UnimplementedSessionServiceHandler) SpawnShell(context.Context, *connect.Request[v1.SpawnShellRequest]) (*connect.Response[v1.SpawnShellResponse], error) {
@@ -3058,14 +2998,3 @@ func (UnimplementedSessionServiceHandler) ListShells(context.Context, *connect.R
 func (UnimplementedSessionServiceHandler) DeleteShell(context.Context, *connect.Request[v1.DeleteShellRequest]) (*connect.Response[v1.DeleteShellResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.DeleteShell is not implemented"))
 }
-||||||| 41cb0ca6
-=======
-
-func (UnimplementedSessionServiceHandler) HibernateSession(context.Context, *connect.Request[v1.HibernateSessionRequest]) (*connect.Response[v1.HibernateSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.HibernateSession is not implemented"))
-}
-
-func (UnimplementedSessionServiceHandler) ResumeHibernatedSession(context.Context, *connect.Request[v1.ResumeHibernatedSessionRequest]) (*connect.Response[v1.ResumeHibernatedSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.ResumeHibernatedSession is not implemented"))
-}
->>>>>>> origin/main

@@ -1210,7 +1210,6 @@ message UnfinishedWorkConfig {
   repeated string watch_dirs  = 2;
   repeated string pinned_repos = 3;
 }
-<<<<<<< HEAD
 
 // ============================================================================
 // Custom Shell Types
@@ -1257,8 +1256,6 @@ message Shell {
   // When the shell stopped (only set when status is STOPPED or ERROR).
   google.protobuf.Timestamp stopped_at = 9;
 }
-||||||| 41cb0ca6
-=======
 
 // SuggestionSource identifies what data was used to generate a rule suggestion.
 enum SuggestionSource {
@@ -1290,4 +1287,3 @@ message SuggestedRuleProto {
   repeated string shadowed_by_rule_ids  = 14; // IDs of higher-priority rules that may fire first
   repeated string shadows_rule_ids      = 15; // IDs of lower-priority rules this may suppress
 }
->>>>>>> origin/main
