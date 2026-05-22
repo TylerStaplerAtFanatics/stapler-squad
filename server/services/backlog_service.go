@@ -23,7 +23,7 @@ import (
 
 // SessionCreator allows BacklogService to spawn sessions without importing handler internals.
 type SessionCreator interface {
-	CreateDirectorySession(ctx context.Context, title, path, appendSystemPrompt string, tags []string, oneShot bool) (*session.Instance, error)
+	CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool) (*session.Instance, error)
 }
 
 // SessionStopper allows BacklogService to kill live sessions.

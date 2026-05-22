@@ -288,11 +288,11 @@ func TestBacklogIntegration_IT006_ReviewSessionExitDoesNotTransition(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, string(BacklogStatusReview), fetchedItem.Status, "review session exit should not transition item")
 
-	// 5. Verify ItemSession.EndedAt was NOT set (recursion guard)
+	// 5. Verify ItemSession.EndedAt IS set (exit is recorded for all roles)
 	repo := storage.repo.(*EntRepository)
 	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
 	require.NoError(t, err)
-	require.Nil(t, fetchedIS.EndedAt, "review session exit should not set EndedAt (recursion guard)")
+	require.NotNil(t, fetchedIS.EndedAt, "review session exit should set EndedAt")
 }
 
 // IT-007: Multiple ItemSessions for same item

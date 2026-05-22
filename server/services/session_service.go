@@ -524,22 +524,22 @@ func (s *SessionService) SpawnReviewSession(ctx context.Context, item *ent.Backl
 
 // CreateDirectorySession satisfies the services.SessionCreator interface so that
 // BacklogService can spawn sessions without importing SessionService directly.
-// It creates a directory-type session with the given title, path, system prompt,
+// It creates a directory-type session with the given title, path, initial prompt,
 // tags, and oneShot flag, wires it into the live poller, and returns the Instance.
-func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, appendSystemPrompt string, tags []string, oneShot bool) (*session.Instance, error) {
+func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool) (*session.Instance, error) {
 	cfg := config.LoadConfig()
 	resolved := config.ResolveDefaults(cfg, path, "")
 	opts := session.InstanceOptions{
-		Title:              title,
-		Path:               path,
-		Program:            resolved.Program,
-		AutoYes:            true, // automated sessions must not block on permission prompts
-		SessionType:        session.SessionTypeDirectory,
-		AppendSystemPrompt: appendSystemPrompt,
-		Tags:               tags,
-		OneShot:            oneShot,
-		MCPServerURL:       s.mcpServerURL,
-		CreateIfMissing:    true,
+		Title:           title,
+		Path:            path,
+		Program:         resolved.Program,
+		AutoYes:         true, // automated sessions must not block on permission prompts
+		SessionType:     session.SessionTypeDirectory,
+		Prompt:          prompt,
+		Tags:            tags,
+		OneShot:         oneShot,
+		MCPServerURL:    s.mcpServerURL,
+		CreateIfMissing: true,
 	}
 	instance, err := session.NewInstance(opts)
 	if err != nil {
