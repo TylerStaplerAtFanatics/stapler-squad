@@ -12,6 +12,11 @@ go build .                  # Build the application
 
 make install-service        # Build web UI + Go binary + install/restart system service (ALWAYS use this)
 make uninstall-service      # Remove the service
+make setup-codesign         # (macOS, one-time) Create self-signed cert for TCC grant persistence
+make verify-codesign        # Check binary signing status
+make tcc-reset              # Reset TCC grants (development/debugging only)
+
+See `.claude/docs/codesigning.md` for first-time setup and cert backup instructions.
 
 STAPLER_SQUAD_USE_CONTROL_MODE=false ./stapler-squad   # Disable tmux control mode (legacy polling)
 ./stapler-squad --tmux-keep-server                     # Keep tmux server alive after sessions close
@@ -217,6 +222,7 @@ make e2e-lighthouse
 |---|---|
 | Profiling / lock-up debugging | `.claude/docs/profiling.md` |
 | OpenTelemetry / Datadog setup | `.claude/docs/opentelemetry.md` |
+| macOS code signing / TCC | `.claude/docs/codesigning.md` |
 | PTY multiplexing (ssq-mux) | `.claude/docs/pty-multiplexing.md` |
 | State file isolation / multi-instance | `.claude/docs/state-isolation.md` |
 | Tag-based session organization | `.claude/docs/tag-organization.md` |
