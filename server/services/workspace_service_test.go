@@ -317,7 +317,7 @@ func TestWorkspaceService_FindInstanceFast_LiveFinderHit_BypassesStorage(t *test
 	liveInst := &session.Instance{
 		Title:   "live-session",
 		Path:    "/tmp/live-workspace",
-		Status:  session.Running,
+		Status:  session.Active,
 		Program: "claude",
 	}
 	fix.svc.SetLiveFinder(&stubLiveFinder{inst: liveInst})
