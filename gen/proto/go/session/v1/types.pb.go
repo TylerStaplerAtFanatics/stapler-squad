@@ -1348,9 +1348,15 @@ type Session struct {
 	// Fine-grained activity state for Active sessions. Derived from terminal detection
 	// layer at read time; never stored in the database.
 	// Only meaningful when lifecycle_status == SESSION_STATUS_ACTIVE.
-	SubStatus     SubStatus `protobuf:"varint,54,opt,name=sub_status,json=subStatus,proto3,enum=session.v1.SubStatus" json:"sub_status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SubStatus SubStatus `protobuf:"varint,54,opt,name=sub_status,json=subStatus,proto3,enum=session.v1.SubStatus" json:"sub_status,omitempty"`
+	// Approximate resident set size (RSS) in MB for all processes in this session.
+	// Zero for hibernated sessions or when measurement is unavailable.
+	MemoryRssMb int64 `protobuf:"varint,55,opt,name=memory_rss_mb,json=memoryRssMb,proto3" json:"memory_rss_mb,omitempty"`
+	// Estimated RAM freed in MB if this session were hibernated now.
+	// Equal to memory_rss_mb for Active sessions; zero for Hibernated sessions.
+	EstimatedSavingsMb int64 `protobuf:"varint,56,opt,name=estimated_savings_mb,json=estimatedSavingsMb,proto3" json:"estimated_savings_mb,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1745,6 +1751,20 @@ func (x *Session) GetSubStatus() SubStatus {
 		return x.SubStatus
 	}
 	return SubStatus_SUB_STATUS_UNSPECIFIED
+}
+
+func (x *Session) GetMemoryRssMb() int64 {
+	if x != nil {
+		return x.MemoryRssMb
+	}
+	return 0
+}
+
+func (x *Session) GetEstimatedSavingsMb() int64 {
+	if x != nil {
+		return x.EstimatedSavingsMb
+	}
+	return 0
 }
 
 // VNCState holds the browser-passthrough state for a session.
@@ -5517,7 +5537,7 @@ var File_session_v1_types_proto protoreflect.FileDescriptor
 const file_session_v1_types_proto_rawDesc = "" +
 	"\n" +
 	"\x16session/v1/types.proto\x12\n" +
-	"session.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdc\x12\n" +
+	"session.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb2\x13\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -5580,7 +5600,9 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\tcdp_state\x184 \x01(\v2\x14.session.v1.CDPStateR\bcdpState\x12+\n" +
 	"\x11creation_progress\x185 \x01(\tR\x10creationProgress\x124\n" +
 	"\n" +
-	"sub_status\x186 \x01(\x0e2\x15.session.v1.SubStatusR\tsubStatus\"\xbb\x01\n" +
+	"sub_status\x186 \x01(\x0e2\x15.session.v1.SubStatusR\tsubStatus\x12\"\n" +
+	"\rmemory_rss_mb\x187 \x01(\x03R\vmemoryRssMb\x120\n" +
+	"\x14estimated_savings_mb\x188 \x01(\x03R\x12estimatedSavingsMb\"\xbb\x01\n" +
 	"\bVNCState\x12-\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x15.session.v1.VNCStatusR\x06status\x12%\n" +
 	"\x0edisplay_number\x18\x02 \x01(\x05R\rdisplayNumber\x12!\n" +

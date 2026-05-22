@@ -126,6 +126,17 @@ type SessionService struct {
 	// analyticsClient is the ent client for the analytics database (escape events, etc.).
 	// May be nil when escape analytics is disabled or in tests that don't need it.
 	analyticsClient *ent.Client
+
+	// memoryCacheReader provides per-session RSS and system memory percentage.
+	// Wired to the HibernationSweeper after startup. May be nil (fields default to 0).
+	memoryCacheReader SystemMemoryReader
+}
+
+// SystemMemoryReader is the minimal interface SessionService needs from HibernationSweeper
+// to populate memory fields in list/watch responses.
+type SystemMemoryReader interface {
+	GetCachedRSSMB(sessionUUID string) int64
+	SystemMemoryPct() (float64, error)
 }
 
 // ScrollbackSequencer is the minimal interface SessionService needs from ScrollbackManager.
@@ -523,6 +534,12 @@ func (s *SessionService) SetReviewQueuePoller(poller *session.ReviewQueuePoller)
 	s.utilitySvc.SetReviewQueuePoller(poller)
 }
 
+// SetMemoryCacheReader wires the HibernationSweeper so that ListSessions can
+// populate memory_rss_mb, estimated_savings_mb, and system_memory_pct fields.
+func (s *SessionService) SetMemoryCacheReader(r SystemMemoryReader) {
+	s.memoryCacheReader = r
+}
+
 // SetStatusManager wires the InstanceStatusManager so that instances loaded via
 // loadInstancesWithWiring (e.g., fallback path in ListSessions) receive status tracking.
 // Must be called during server startup.
@@ -598,7 +615,13 @@ func (s *SessionService) ListSessions(
 			continue
 		}
 
-		sessions = append(sessions, adapters.InstanceToProto(inst))
+		protoSess := adapters.InstanceToProto(inst)
+		if s.memoryCacheReader != nil && inst.IsActive() {
+			rss := s.memoryCacheReader.GetCachedRSSMB(inst.UUID)
+			protoSess.MemoryRssMb = rss
+			protoSess.EstimatedSavingsMb = rss
+		}
+		sessions = append(sessions, protoSess)
 	}
 
 	// Include external sessions from mux discovery if available
@@ -621,8 +644,15 @@ func (s *SessionService) ListSessions(
 		}
 	}
 
+	var sysPct float32
+	if s.memoryCacheReader != nil {
+		pct, _ := s.memoryCacheReader.SystemMemoryPct()
+		sysPct = float32(pct)
+	}
+
 	return connect.NewResponse(&sessionv1.ListSessionsResponse{
-		Sessions: sessions,
+		Sessions:        sessions,
+		SystemMemoryPct: sysPct,
 	}), nil
 }
 

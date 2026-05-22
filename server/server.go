@@ -22,6 +22,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/server/web"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/memory"
 	"github.com/tstapler/stapler-squad/session/tmux"
 
 	"github.com/google/uuid"
@@ -492,10 +493,11 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 
 	// Start hibernation sweeper (auto-hibernates idle sessions and prunes stale checkpoints).
 	if cfg.Hibernation.Enabled {
-		sweeper := session.NewHibernationSweeper(deps.Storage, cfg)
+		sweeper := session.NewHibernationSweeper(deps.Storage, cfg, memory.NewGopsutilReader())
 		if deps.ReviewQueuePoller != nil {
 			sweeper.SetLiveProvider(deps.ReviewQueuePoller)
 		}
+		deps.SessionService.SetMemoryCacheReader(sweeper)
 		go sweeper.Start(serverCtx)
 		log.Info("Hibernation sweeper started",
 			"idle_timeout_minutes", cfg.Hibernation.IdleTimeoutMinutes)

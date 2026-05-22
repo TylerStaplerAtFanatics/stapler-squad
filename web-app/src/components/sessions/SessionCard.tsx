@@ -59,6 +59,8 @@ import {
   snapshotEmpty,
   snapshotLoading,
   snapshotError,
+  memoryBadge,
+  cardMemoryPressure,
 } from "./SessionCard.css";
 
 interface SessionCardProps {
@@ -341,6 +343,7 @@ export function SessionCard({
         isSelected ? cardSelected : "",
         isExternal ? cardExternal : "",
         isDeleting ? cardDeleting : "",
+        Number(session.estimatedSavingsMb ?? 0n) > 0 ? cardMemoryPressure : "",
       ].filter(Boolean).join(" ")}
       data-testid="session-card"
       onClick={handleCardClick}
@@ -450,6 +453,11 @@ export function SessionCard({
               session.subStatus !== SubStatus.IDLE && (
                 <SubStatusChip subStatus={session.subStatus} />
               )}
+            {Number(session.memoryRssMb ?? 0n) > 0 && (
+              <span className={memoryBadge}>
+                {Number(session.memoryRssMb)} MB
+              </span>
+            )}
           </div>
         </div>
         {session.category && (

@@ -753,3 +753,15 @@ export const snapshotError = styleVariants({
     textAlign: "center",
   },
 });
+
+export const memoryBadge = style({
+  display: "inline-flex",
+  alignItems: "center",
+  fontSize: "0.6875rem",
+  color: vars.color.textMuted,
+  fontVariantNumeric: "tabular-nums",
+});
+
+export const cardMemoryPressure = style({
+  borderLeft: `3px solid ${vars.color.warning}`,
+});

@@ -14,6 +14,8 @@ import {
   path as pathStyle,
   elapsed as elapsedStyle,
   actions as actionsStyle,
+  memoryBadge,
+  rowMemoryPressure,
 } from "./SessionRow.css";
 
 interface SessionRowProps {
@@ -115,7 +117,7 @@ export function SessionRow({
 
   return (
     <li
-      className={row}
+      className={[row, Number(session.estimatedSavingsMb ?? 0n) > 0 ? rowMemoryPressure : ""].filter(Boolean).join(" ")}
       data-testid="session-row"
       onClick={onClick}
       onContextMenu={handleContextMenu}
@@ -163,6 +165,13 @@ export function SessionRow({
       >
         {getAgentEmoji(session.program)}
       </span>
+
+      {/* Memory usage badge */}
+      {Number(session.memoryRssMb ?? 0n) > 0 && (
+        <span className={memoryBadge} aria-label={`${Number(session.memoryRssMb)} MB`}>
+          {Number(session.memoryRssMb)} MB
+        </span>
+      )}
 
       {/* Elapsed time */}
       <time
