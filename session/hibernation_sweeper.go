@@ -25,6 +25,9 @@ type MemoryCacheReader interface {
 	SystemMemoryPct() (float64, error)
 }
 
+// sweepInterval is how often the sweeper checks for idle or pressure-driven hibernation.
+const sweepInterval = 5 * time.Minute
+
 // cacheTTL is the duration a per-session RSS reading remains valid before refresh.
 const cacheTTL = 30 * time.Second
 
@@ -34,6 +37,10 @@ const pressureGracePeriod = 5 * time.Minute
 
 // sysMemCacheTTL is how long a system memory percentage reading remains valid.
 const sysMemCacheTTL = 5 * time.Second
+
+// rssWarmTimeout caps total wall-clock time spent warming the RSS cache per sweep
+// so a hung /proc read cannot block the sweep goroutine indefinitely.
+const rssWarmTimeout = 30 * time.Second
 
 // memoryCacheEntry holds one cached RSS measurement.
 type memoryCacheEntry struct {
@@ -136,28 +143,38 @@ func (s *HibernationSweeper) GetCachedRSSMB(sessionUUID string) int64 {
 
 // SystemMemoryPct returns the current system memory usage percentage.
 // The result is cached for sysMemCacheTTL to avoid a syscall on every
-// ListSessions request. Implements MemoryCacheReader.
+// ListSessions request. The mutex is released before calling the reader to
+// avoid holding the lock during /proc I/O. Implements MemoryCacheReader.
 func (s *HibernationSweeper) SystemMemoryPct() (float64, error) {
 	if s.memReader == nil {
 		return 0, nil
 	}
 	s.sysMemMu.Lock()
-	defer s.sysMemMu.Unlock()
 	if time.Since(s.sysMemAt) < sysMemCacheTTL {
-		return s.sysMemPct, nil
+		cached := s.sysMemPct
+		s.sysMemMu.Unlock()
+		return cached, nil
 	}
+	s.sysMemMu.Unlock()
+
 	pct, err := s.memReader.SystemMemoryPct()
 	if err != nil {
 		return 0, err
 	}
-	s.sysMemPct = pct
-	s.sysMemAt = time.Now()
+
+	s.sysMemMu.Lock()
+	// Re-check: another goroutine may have refreshed while we read /proc.
+	if time.Since(s.sysMemAt) >= sysMemCacheTTL {
+		s.sysMemPct = pct
+		s.sysMemAt = time.Now()
+	}
+	s.sysMemMu.Unlock()
 	return pct, nil
 }
 
 // Start runs the periodic sweep loop. Blocks until ctx is cancelled.
 func (s *HibernationSweeper) Start(ctx context.Context) {
-	interval := 5 * time.Minute
+	interval := sweepInterval
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
