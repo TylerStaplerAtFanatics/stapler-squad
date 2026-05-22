@@ -5,7 +5,6 @@ import (
 	"context"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/process"
@@ -81,10 +80,17 @@ func panePIDs(sessionName string) ([]int32, error) {
 	return pids, nil
 }
 
+const (
+	// maxProcessTreeDepth limits recursive process tree traversal.
+	maxProcessTreeDepth = 8
+	// maxProcessTreeSize limits total processes visited per session.
+	maxProcessTreeSize = 50
+)
+
 // sumRSS recursively sums RSS (in KB) for a process and its children.
-// depth caps at 8 to avoid runaway traversal.
+// depth caps at maxProcessTreeDepth to avoid runaway traversal.
 func sumRSS(pid int32, seen map[int32]bool, depth int) int64 {
-	if depth > 8 || len(seen) >= 50 || seen[pid] {
+	if depth > maxProcessTreeDepth || len(seen) >= maxProcessTreeSize || seen[pid] {
 		return 0
 	}
 	seen[pid] = true
@@ -110,46 +116,3 @@ func sumRSS(pid int32, seen map[int32]bool, depth int) int64 {
 	return rssKB
 }
 
-// FakeReader is a test double for Reader.
-type FakeReader struct {
-	SystemPct float64
-	// RSSBySession maps tmux session name to MB value returned by SessionRSSMB.
-	RSSBySession map[string]int64
-
-	mu          sync.Mutex
-	sysCalls    int
-	rssCalls    int
-}
-
-// SystemMemoryPct implements Reader.
-func (f *FakeReader) SystemMemoryPct() (float64, error) {
-	f.mu.Lock()
-	f.sysCalls++
-	f.mu.Unlock()
-	return f.SystemPct, nil
-}
-
-// SessionRSSMB implements Reader.
-func (f *FakeReader) SessionRSSMB(name string) (int64, error) {
-	f.mu.Lock()
-	f.rssCalls++
-	f.mu.Unlock()
-	if f.RSSBySession != nil {
-		return f.RSSBySession[name], nil
-	}
-	return 0, nil
-}
-
-// GetSystemMemoryCalls returns the number of SystemMemoryPct calls.
-func (f *FakeReader) GetSystemMemoryCalls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.sysCalls
-}
-
-// GetSessionRSSCalls returns the number of SessionRSSMB calls.
-func (f *FakeReader) GetSessionRSSCalls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.rssCalls
-}

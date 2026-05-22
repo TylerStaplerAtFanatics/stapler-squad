@@ -32,6 +32,9 @@ const cacheTTL = 30 * time.Second
 // resource-pressure hibernation (prevents interrupting recently active sessions).
 const pressureGracePeriod = 5 * time.Minute
 
+// sysMemCacheTTL is how long a system memory percentage reading remains valid.
+const sysMemCacheTTL = 5 * time.Second
+
 // memoryCacheEntry holds one cached RSS measurement.
 type memoryCacheEntry struct {
 	rssMB     int64
@@ -49,18 +52,27 @@ func newSessionMemoryCache() *sessionMemoryCache {
 }
 
 // GetOrFetch returns the cached RSS for uuid, or calls fetchFn if the entry is
-// absent or expired.
+// absent or expired. The mutex is released before calling fetchFn to avoid
+// holding the lock during potentially slow I/O.
 func (c *sessionMemoryCache) GetOrFetch(uuid string, fetchFn func() int64) int64 {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	entry, ok := c.entries[uuid]
 	if ok && time.Since(entry.fetchedAt) < cacheTTL {
+		c.mu.Unlock()
 		return entry.rssMB
 	}
+	c.mu.Unlock()
 
 	val := fetchFn()
+
+	c.mu.Lock()
+	// Re-check: another goroutine may have fetched while we computed.
+	if e, ok := c.entries[uuid]; ok && time.Since(e.fetchedAt) < cacheTTL {
+		c.mu.Unlock()
+		return e.rssMB
+	}
 	c.entries[uuid] = memoryCacheEntry{rssMB: val, fetchedAt: time.Now()}
+	c.mu.Unlock()
 	return val
 }
 
@@ -92,6 +104,10 @@ type HibernationSweeper struct {
 	liveProvider LiveInstancesProvider
 	memReader    memory.Reader
 	memCache     *sessionMemoryCache
+
+	sysMemPct float64
+	sysMemAt  time.Time
+	sysMemMu  sync.Mutex
 }
 
 // NewHibernationSweeper creates a HibernationSweeper using the given storage, config,
@@ -119,12 +135,24 @@ func (s *HibernationSweeper) GetCachedRSSMB(sessionUUID string) int64 {
 }
 
 // SystemMemoryPct returns the current system memory usage percentage.
-// Delegates to the underlying memory reader. Implements MemoryCacheReader.
+// The result is cached for sysMemCacheTTL to avoid a syscall on every
+// ListSessions request. Implements MemoryCacheReader.
 func (s *HibernationSweeper) SystemMemoryPct() (float64, error) {
 	if s.memReader == nil {
 		return 0, nil
 	}
-	return s.memReader.SystemMemoryPct()
+	s.sysMemMu.Lock()
+	defer s.sysMemMu.Unlock()
+	if time.Since(s.sysMemAt) < sysMemCacheTTL {
+		return s.sysMemPct, nil
+	}
+	pct, err := s.memReader.SystemMemoryPct()
+	if err != nil {
+		return 0, err
+	}
+	s.sysMemPct = pct
+	s.sysMemAt = time.Now()
+	return pct, nil
 }
 
 // Start runs the periodic sweep loop. Blocks until ctx is cancelled.
@@ -209,7 +237,7 @@ func (s *HibernationSweeper) sweepResourcePressure(ctx context.Context, instance
 		return
 	}
 
-	sysPct, err := s.memReader.SystemMemoryPct()
+	sysPct, err := s.SystemMemoryPct()
 	if err != nil {
 		log.Warn("hibernation sweeper: cannot read system memory", "err", err)
 		return
@@ -225,6 +253,23 @@ func (s *HibernationSweeper) sweepResourcePressure(ctx context.Context, instance
 	log.Info("system memory pressure detected",
 		"used_pct", sysPct,
 		"threshold", threshold)
+
+	// Proactively measure RSS for all active sessions so GetCachedRSSMB
+	// in ListSessions can return fresh values to the UI.
+	for _, inst := range instances {
+		if !inst.IsActive() {
+			continue
+		}
+		capturedName := inst.tmuxManager.GetTmuxSessionName()
+		capturedUUID := inst.UUID
+		s.memCache.GetOrFetch(capturedUUID, func() int64 {
+			rss, err := s.memReader.SessionRSSMB(capturedName)
+			if err != nil {
+				return 0
+			}
+			return rss
+		})
+	}
 
 	// Collect eligible candidates: Active sessions idle > pressureGracePeriod.
 	type candidate struct {

@@ -829,18 +829,18 @@ func (i *Instance) Pause() error {
 
 	var errs []error
 
-	// Check if there are any changes to commit
-	if dirty, err := i.gitManager.IsDirty(); err != nil {
-		errs = append(errs, fmt.Errorf("failed to check if worktree is dirty: %w", err))
-		log.Error("failed to check if worktree is dirty", "session", i.Title, "err", err)
-	} else if dirty {
-		// Commit changes locally (without pushing to GitHub)
-		commitMsg := fmt.Sprintf("[claudesquad] update from '%s' on %s (paused)", i.Title, time.Now().Format(time.RFC822))
-		if err := i.gitManager.CommitChanges(commitMsg); err != nil {
-			errs = append(errs, fmt.Errorf("failed to commit changes: %w", err))
-			log.Error("failed to commit changes on pause", "err", err)
-			// Return early if we can't commit changes to avoid corrupted state
-			return i.combineErrors(errs)
+	// Git operations only apply to worktree sessions.
+	if i.IsWorktree {
+		if dirty, err := i.gitManager.IsDirty(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to check if worktree is dirty: %w", err))
+			log.Error("failed to check if worktree is dirty", "session", i.Title, "err", err)
+		} else if dirty {
+			commitMsg := fmt.Sprintf("[claudesquad] update from '%s' on %s (paused)", i.Title, time.Now().Format(time.RFC822))
+			if err := i.gitManager.CommitChanges(commitMsg); err != nil {
+				errs = append(errs, fmt.Errorf("failed to commit changes: %w", err))
+				log.Error("failed to commit changes on pause", "err", err)
+				return i.combineErrors(errs)
+			}
 		}
 	}
 
@@ -852,19 +852,21 @@ func (i *Instance) Pause() error {
 	}
 
 	// Check if worktree exists before trying to remove it
-	if _, err := os.Stat(i.gitManager.GetWorktreePath()); err == nil {
-		// Remove worktree but keep branch
-		if err := i.gitManager.Remove(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to remove git worktree: %w", err))
-			log.Error("failed to remove git worktree", "err", err)
-			return i.combineErrors(errs)
-		}
+	if i.IsWorktree {
+		if _, err := os.Stat(i.gitManager.GetWorktreePath()); err == nil {
+			// Remove worktree but keep branch
+			if err := i.gitManager.Remove(); err != nil {
+				errs = append(errs, fmt.Errorf("failed to remove git worktree: %w", err))
+				log.Error("failed to remove git worktree", "err", err)
+				return i.combineErrors(errs)
+			}
 
-		// Only prune if remove was successful
-		if err := i.gitManager.Prune(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to prune git worktrees: %w", err))
-			log.Error("failed to prune git worktrees", "err", err)
-			return i.combineErrors(errs)
+			// Only prune if remove was successful
+			if err := i.gitManager.Prune(); err != nil {
+				errs = append(errs, fmt.Errorf("failed to prune git worktrees: %w", err))
+				log.Error("failed to prune git worktrees", "err", err)
+				return i.combineErrors(errs)
+			}
 		}
 	}
 
