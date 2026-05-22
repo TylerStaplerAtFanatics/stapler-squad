@@ -100,7 +100,7 @@ func makeIdleInstance(t *testing.T, uuid, title string, idleFor time.Duration) *
 		UpdatedAt: now,
 	}
 	// Set LastMeaningfulOutput so TimeSinceLastMeaningfulOutput returns idleFor.
-	inst.ReviewState.LastMeaningfulOutput = now.Add(-idleFor)
+	inst.LastMeaningfulOutput = now.Add(-idleFor)
 	return inst
 }
 
