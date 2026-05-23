@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seneschal Logo Preview — Iterations</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 2rem;
+    transition: background-color 0.3s, color 0.3s;
+  }
+  body.light { background: #f5f5f5; color: #333; }
+  body.dark { background: #1a1a1a; color: #eee; }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+  }
+  h1 { font-size: 1.5rem; font-weight: 600; }
+  .toggle {
+    padding: 0.5rem 1rem;
+    border: 1px solid currentColor;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.875rem;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 3rem;
+  }
+  .card {
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .card.current {
+    border-color: #C9A84C;
+    box-shadow: 0 0 0 1px #C9A84C40;
+  }
+  .card-img {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    min-height: 200px;
+  }
+  body.light .card-img { background: #fff; }
+  body.dark .card-img { background: #2a2a2a; }
+  .card-img img {
+    max-width: 100%;
+    max-height: 180px;
+  }
+  .card-label {
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border-top: 1px solid rgba(128, 128, 128, 0.3);
+  }
+  .card-label .badge {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    background: #C9A84C;
+    color: #0A0A0F;
+    letter-spacing: 0.05em;
+  }
+  .card-desc {
+    padding: 0 1rem 0.75rem;
+    font-size: 0.8rem;
+    opacity: 0.65;
+    line-height: 1.5;
+  }
+  body.light .card-label { background: #fafafa; }
+  body.dark .card-label { background: #222; }
+  body.light .card-desc { background: #fafafa; }
+  body.dark .card-desc { background: #222; }
+  h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    opacity: 0.7;
+  }
+  .favicon-strip {
+    display: flex;
+    gap: 2.5rem;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    margin-bottom: 2rem;
+  }
+  .favicon-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .favicon-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    opacity: 0.7;
+  }
+  .favicon-sizes {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-end;
+  }
+  .favicon-size {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .favicon-size span {
+    font-size: 0.7rem;
+    opacity: 0.5;
+  }
+  .section-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.4;
+    margin-bottom: 0.75rem;
+    margin-top: 2rem;
+  }
+</style>
+</head>
+<body class="dark">
+  <div class="header">
+    <h1>Seneschal Logo — Iteration History</h1>
+    <button class="toggle" onclick="document.body.classList.toggle('dark'); document.body.classList.toggle('light'); this.textContent = document.body.classList.contains('dark') ? '☀️ Light' : '🌙 Dark';">☀️ Light</button>
+  </div>
+
+  <div class="section-label">Current — iteration-11</div>
+  <div class="grid">
+    <div class="card current">
+      <div class="card-img">
+        <img src="iterations/iteration-11.svg" alt="iteration-11">
+      </div>
+      <div class="card-label">iteration-11 <span class="badge">CURRENT</span></div>
+      <div class="card-desc">Inner arch face lines lightened to stroke-width=1 (outer silhouette stays 1.5) — adds engraved depth distinction. Focal dot r=3→4 for clear intentionality. Tagline 13→14px for better legibility.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="iterations/iteration-10.svg" alt="iteration-10">
+      </div>
+      <div class="card-label">iteration-10 — Heraldic tagline + pairing</div>
+      <div class="card-desc">Tagline uses interpunct (·) instead of comma — matches heraldic language of motto dots. Tagline tightened to y=292 (was 301) for closer wordmark pairing.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="iterations/iteration-9.svg" alt="iteration-9">
+      </div>
+      <div class="card-label">iteration-9 — Four centering fixes</div>
+      <div class="card-desc">Middle word-break dot added in motto (· COMMITTE · MIHI ·). Wordmark x corrected to 693 (true zone center). Tagline letter-spacing 5→3. Text block shifted down 7px for vertical centering.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="iterations/iteration-8.svg" alt="iteration-8">
+      </div>
+      <div class="card-label">iteration-8 — Icon breathing room</div>
+      <div class="card-desc">Icon shifted 16px right (translate(16,0)) — improves left breathing room to 46px. Separator pushed to x=362 to clear seal. Focal dot opacity raised to 0.8. Everything Cinzel.</div>
+    </div>
+  </div>
+
+  <div class="section-label">Earlier iterations</div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-img">
+        <img src="iterations/iteration-7.svg" alt="iteration-7">
+      </div>
+      <div class="card-label">iteration-7 — Type consistency</div>
+      <div class="card-desc">Tagline switched to Cinzel Regular (matches wordmark family). Wordmark shifted to y=252/294 for better vertical centering. Small focal dot added in arch opening.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="iterations/iteration-6.svg" alt="iteration-6">
+      </div>
+      <div class="card-label">iteration-6 — Compound path, no corner joints</div>
+      <div class="card-desc">Staple redrawn as single evenodd compound path — eliminates corner seams between top bar and legs. Purple ring stroke-width bumped to 4 for visibility.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="iterations/iteration-5.svg" alt="iteration-5">
+      </div>
+      <div class="card-label">iteration-5 — Leg terminals</div>
+      <div class="card-desc">Column pedestal terminals at feet of legs. Gold pressed-relief outline stroke. Base rule below mark. Chunky 24px legs.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="iterations/iteration-4.svg" alt="iteration-4">
+      </div>
+      <div class="card-label">iteration-4 — Cinzel + structured seal</div>
+      <div class="card-desc">Cinzel wordmark (Roman inscriptional). Staple in upper face, clear of motto. Inner gold framing ring. 8-dot heraldic border. Thicker gold rim.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="iterations/iteration-3.svg" alt="iteration-3">
+      </div>
+      <div class="card-label">iteration-3 — Motto + enlarged staple</div>
+      <div class="card-desc">COMMITTE MIHI arc motto added (per-character Cinzel). Staple enlarged and repositioned. Georgia wordmark. Foundation for subsequent heraldic refinement.</div>
+    </div>
+  </div>
+
+  <div class="section-label">Earlier concepts</div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-img">
+        <img src="concepts/concept-1.svg" alt="concept-1 — Skeleton Key">
+      </div>
+      <div class="card-label">concept-1 — Skeleton Key</div>
+      <div class="card-desc">Solid burgundy key with 3 parallel bars in the bow. The seneschal's literal role: keeper of the keys. Bars represent parallel agent sessions.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="concepts/concept-2.svg" alt="concept-2 — Wax Seal (original)">
+      </div>
+      <div class="card-label">concept-2 — Wax Seal (original)</div>
+      <div class="card-desc">Circular signet seal with a staple (⊓) as the central mark. Smaller staple, no motto. Selected direction.</div>
+    </div>
+    <div class="card">
+      <div class="card-img">
+        <img src="concepts/concept-3.svg" alt="concept-3 — Battlement">
+      </div>
+      <div class="card-label">concept-3 — Battlement</div>
+      <div class="card-desc">4 castle merlons with status dots. Not selected.</div>
+    </div>
+  </div>
+
+  <h2>Small-size legibility check</h2>
+  <div class="favicon-strip">
+    <div class="favicon-item">
+      <div class="favicon-label">iteration-11 (current)</div>
+      <div class="favicon-sizes">
+        <div class="favicon-size"><img src="iterations/iteration-11.svg" width="256" height="128"><span>256px</span></div>
+        <div class="favicon-size"><img src="iterations/iteration-11.svg" width="128" height="64"><span>128px</span></div>
+        <div class="favicon-size"><img src="iterations/iteration-11.svg" width="64" height="32"><span>64px</span></div>
+        <div class="favicon-size"><img src="iterations/iteration-11.svg" width="32" height="16"><span>32px</span></div>
+      </div>
+    </div>
+    <div class="favicon-item">
+      <div class="favicon-label">concept-1 (key)</div>
+      <div class="favicon-sizes">
+        <div class="favicon-size"><img src="concepts/concept-1.svg" width="64" height="32"><span>64px</span></div>
+        <div class="favicon-size"><img src="concepts/concept-1.svg" width="32" height="16"><span>32px</span></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
