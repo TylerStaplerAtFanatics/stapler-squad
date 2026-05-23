@@ -980,13 +980,17 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
 
   // Upload a batch of files sequentially, inserting each path into the terminal.
   const handleFilesUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    // Extract File objects before resetting the input — iOS Safari invalidates FileList
+    // items after e.target.value = "" because it uses lazy references.
+    const fileArray = Array.from(fileList);
 
     // Reset input so the same file(s) can trigger onChange again.
     e.target.value = "";
 
-    const total = files.length;
+    const total = fileArray.length;
     setUploadingCount(total);
     setUploadError(null);
     setUploadSuccess(null);
@@ -994,7 +998,7 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     let successCount = 0;
     let lastUploadedPath = "";
     for (let i = 0; i < total; i++) {
-      const file = files[i];
+      const file = fileArray[i];
       // Update count as we progress through the batch.
       setUploadingCount(total - i);
       try {
