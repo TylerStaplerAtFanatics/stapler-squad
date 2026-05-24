@@ -395,7 +395,7 @@ export function ApprovalAnalyticsPanel() {
                                     Suggest Rule
                                   </button>
                                 )}
-                                <a href="/rules" className={addRuleManualLink} title="Add a rule manually">
+                                <a href={`/rules?tool=${encodeURIComponent(t.toolName)}`} className={addRuleManualLink} title="Add a rule manually">
                                   or add manually →
                                 </a>
                               </div>
@@ -504,7 +504,7 @@ export function ApprovalAnalyticsPanel() {
                                   </button>
                                 )}
                                 <a
-                                  href="/rules"
+                                  href={`/rules?program=${encodeURIComponent(p.programName)}`}
                                   className={addRuleManualLink}
                                   title="Add a rule manually"
                                   onClick={(e) => e.stopPropagation()}
@@ -618,7 +618,7 @@ function CommandDistributionTable({ stats }: { stats: SubcommandStatProto[] }) {
                 </td>
                 <td className={td}>
                   <a
-                    href="/rules"
+                    href={`/rules?program=${encodeURIComponent(s.programName)}&subcommand=${encodeURIComponent(s.subcommand)}`}
                     className={addRuleLink}
                     title={`Add a rule for ${s.programName} ${s.subcommand}`}
                   >
