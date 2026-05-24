@@ -1,5 +1,5 @@
 import { style, keyframes, globalStyle } from "@vanilla-extract/css";
-import { vars } from "@/styles/theme.css";
+import { vars, zIndex } from "@/styles/theme.css";
 
 const ring = keyframes({
   "0%, 100%": { transform: "rotate(0deg)" },
@@ -18,7 +18,7 @@ export const toast = style({
   borderRadius: "12px",
   // Story 5.3: Theme-aware glow on toast border
   boxShadow: `0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px ${vars.color.glowSecondary}`,
-  zIndex: 10000,
+  zIndex: zIndex.toast,
   overflow: "hidden",
   transform: "translateX(450px)",
   opacity: 0,

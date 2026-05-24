@@ -426,6 +426,10 @@ var recursiveEvalPrograms = map[string]recursiveEvalSpec{
 		passthroughSubcmds: map[string]bool{"proxy": true},
 	},
 }
+        "agy": {
+                flagArgs:           map[string]bool{},
+                passthroughSubcmds: map[string]bool{"proxy": true},
+        },
 
 // ExtractInnerCommand extracts the inner command string from a recursive-eval wrapper
 // invocation (e.g. xargs, parallel, timeout, sudo, nice, env, rtk). It skips the
