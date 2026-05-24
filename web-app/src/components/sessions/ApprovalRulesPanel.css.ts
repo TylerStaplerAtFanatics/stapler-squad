@@ -77,8 +77,9 @@ export const analyticsBar = style({
 });
 
 export const analyticsTotal = style({
-  color: vars.color.textSecondary,
-  fontWeight: 500,
+  color: vars.color.textPrimary,
+  fontWeight: 700,
+  fontSize: 14,
 });
 
 export const analyticsRate = style({
@@ -583,11 +584,32 @@ export const commandSampleSummary = style({
   fontWeight: 500,
   color: vars.color.textSecondary,
   userSelect: "none",
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "2px 0",
   selectors: {
     "&:hover": {
       color: vars.color.textPrimary,
     },
+    "&::marker": {
+      display: "none",
+    },
+    "&::-webkit-details-marker": {
+      display: "none",
+    },
   },
+  "::before": {
+    content: '"▶"',
+    fontSize: 10,
+    transition: "transform 0.2s ease",
+    display: "inline-block",
+  },
+});
+
+// Rotate the ▶ caret when the details element is open.
+globalStyle(`details[open] > summary${commandSampleSummary}::before`, {
+  transform: "rotate(90deg)",
 });
 
 export const commandSampleBody = style({
@@ -699,4 +721,119 @@ export const modalCloseButton = style({
       color: vars.color.textPrimary,
     },
   },
+});
+
+// ── Form sections (progressive disclosure in modal) ───────────────────────────
+
+export const formSection = style({
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+});
+
+export const formSectionHeader = style({
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: "0.06em",
+  textTransform: "uppercase",
+  color: vars.color.textMuted,
+  paddingBottom: 4,
+  borderBottom: `1px solid ${vars.color.borderSubtle}`,
+});
+
+// ── Priority hint text ────────────────────────────────────────────────────────
+
+export const priorityHint = style({
+  fontSize: 11,
+  color: vars.color.textMuted,
+  marginTop: 2,
+  lineHeight: 1.4,
+});
+
+// ── Built-in enabled badge (static, non-interactive) ─────────────────────────
+
+export const builtInBadge = style({
+  display: "inline-block",
+  padding: "3px 8px",
+  borderRadius: 4,
+  fontSize: 11,
+  fontWeight: 500,
+  background: vars.color.panelBgSecondary,
+  color: vars.color.textMuted,
+  border: `1px solid ${vars.color.borderSubtle}`,
+  cursor: "default",
+  whiteSpace: "nowrap",
+});
+
+// ── Mobile FAB (Floating Action Button) for "+ Add Rule" ─────────────────────
+
+export const mobileAddFab = style({
+  display: "none",
+  "@media": {
+    "screen and (max-width: 640px)": {
+      display: "flex",
+      position: "fixed",
+      bottom: "calc(var(--bottom-nav-height, 72px) + 16px)",
+      right: 16,
+      zIndex: zIndex.raised,
+      background: vars.color.primary,
+      color: vars.color.primaryText,
+      border: "none",
+      borderRadius: "50%",
+      width: 52,
+      height: 52,
+      fontSize: 24,
+      fontWeight: 700,
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: "pointer",
+      boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+      transition: "opacity 0.15s ease",
+      selectors: {
+        "&:hover": { opacity: 0.85 },
+        "&:active": { transform: "scale(0.95)" },
+      },
+    },
+  },
+});
+
+// On mobile, hide the header add-rule button and generate-suggestions button.
+// They are replaced by the FAB and a less prominent location respectively.
+export const headerButtonsHiddenOnMobile = style({
+  "@media": {
+    "screen and (max-width: 640px)": {
+      display: "none",
+    },
+  },
+});
+
+// ── Tab label: show abbreviated text on mobile ────────────────────────────────
+
+export const tabLabelShort = style({
+  display: "none",
+  "@media": {
+    "screen and (max-width: 640px)": {
+      display: "inline",
+    },
+  },
+});
+
+export const tabLabelFull = style({
+  "@media": {
+    "screen and (max-width: 640px)": {
+      display: "none",
+    },
+  },
+});
+
+// ── Row count indicator below table ──────────────────────────────────────────
+
+export const rowCount = style({
+  fontSize: 12,
+  color: vars.color.textMuted,
+  textAlign: "right",
+  paddingTop: 6,
 });
