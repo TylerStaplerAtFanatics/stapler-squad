@@ -1,5 +1,5 @@
 import { style, globalStyle } from "@vanilla-extract/css";
-import { vars } from "@/styles/theme.css";
+import { vars, zIndex } from "@/styles/theme.css";
 
 export const panel = style({
   background: vars.color.cardBackground,
@@ -169,6 +169,8 @@ export const empty = style({
 
 export const tableWrapper = style({
   overflowX: "auto",
+  overflowY: "auto",
+  maxHeight: 480,
   border: `1px solid ${vars.color.borderColor}`,
   borderRadius: 8,
 });
@@ -192,6 +194,9 @@ export const th = style({
   background: vars.color.panelBgSecondary,
   borderBottom: `1px solid ${vars.color.borderColor}`,
   whiteSpace: "nowrap",
+  position: "sticky",
+  top: 0,
+  zIndex: 1,
   "@media": {
     "screen and (max-width: 640px)": {
       padding: 8,
@@ -338,11 +343,6 @@ export const deleteButton = style({
       color: vars.color.error,
     },
   },
-});
-
-export const formSection = style({
-  borderTop: `1px solid ${vars.color.borderColor}`,
-  paddingTop: 16,
 });
 
 export const addButton = style({
@@ -632,4 +632,75 @@ export const aiGeneratedBadge = style({
   background: vars.color.warningBg,
   color: vars.color.warning,
   border: `1px solid ${vars.color.warning}`,
+});
+
+// ── Add Rule Modal ────────────────────────────────────────────────────────────
+
+// Backdrop — Radix Dialog.Overlay (sibling of Dialog.Content in portal)
+export const modalOverlay = style({
+  position: "fixed",
+  inset: 0,
+  background: vars.color.overlayBackground,
+  zIndex: zIndex.dialog,
+});
+
+// Panel — Radix Dialog.Content (renders after overlay, so stacks above it at same z-index)
+export const modalDialog = style({
+  position: "fixed",
+  top: "50%",
+  left: "50%",
+  transform: "translate(-50%, -50%)",
+  background: vars.color.cardBackground,
+  border: `1px solid ${vars.color.modalBorder}`,
+  borderRadius: 12,
+  width: "calc(100vw - 32px)",
+  maxWidth: 720,
+  maxHeight: "90vh",
+  display: "flex",
+  flexDirection: "column",
+  boxShadow: "0 20px 60px rgba(0, 0, 0, 0.5)",
+  zIndex: zIndex.dialog,
+});
+
+export const modalHeader = style({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "16px 20px",
+  borderBottom: `1px solid ${vars.color.borderColor}`,
+  flexShrink: 0,
+  gap: 12,
+});
+
+export const modalTitleRow = style({
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+});
+
+export const modalBody = style({
+  overflowY: "auto",
+  padding: "16px 20px",
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+  gap: 14,
+});
+
+export const modalCloseButton = style({
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  color: vars.color.textSecondary,
+  fontSize: 20,
+  lineHeight: 1,
+  padding: "4px 8px",
+  borderRadius: 6,
+  flexShrink: 0,
+  selectors: {
+    "&:hover": {
+      background: vars.color.hoverBackground,
+      color: vars.color.textPrimary,
+    },
+  },
 });

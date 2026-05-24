@@ -170,7 +170,6 @@ export const zIndex = {
   header: 100,
   dropdown: 500,
   modal: 1000,
-  tooltip: 1100,
   // Navigation overlay stack (1040–1065).  Values chosen so the bottom nav and its
   // sub-menus sit above all other page content, and the mobile pane picker sits above the nav.
   bottomNavMoreBackdrop: 1040,
@@ -178,4 +177,7 @@ export const zIndex = {
   bottomNav: 1050,
   mobilePickerBackdrop: 1060,
   mobilePickerSheet: 1065,
+  // Full-page dialog overlays must sit above the bottom nav stack.
+  dialog: 1070,
+  tooltip: 1100,
 } as const;

@@ -288,7 +288,7 @@ describe("ApprovalRulesPanel", () => {
       render(<ApprovalRulesPanel />);
 
       // Open the form.
-      fireEvent.click(screen.getByText("+ Add Custom Rule"));
+      fireEvent.click(screen.getByText("+ Add Rule"));
 
       const details = screen.getByTestId("generate-from-command-details");
       expect(details).toBeInTheDocument();
@@ -299,7 +299,7 @@ describe("ApprovalRulesPanel", () => {
 
     it("Generate button is disabled when textarea is empty", () => {
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Custom Rule"));
+      fireEvent.click(screen.getByText("+ Add Rule"));
 
       const genBtn = screen.getByTestId("command-sample-generate-button");
       expect(genBtn).toBeDisabled();
@@ -307,7 +307,7 @@ describe("ApprovalRulesPanel", () => {
 
     it("Generate button is enabled when textarea has content", () => {
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Custom Rule"));
+      fireEvent.click(screen.getByText("+ Add Rule"));
 
       const textarea = screen.getByTestId("command-sample-textarea");
       fireEvent.change(textarea, { target: { value: "git push origin main" } });
@@ -318,7 +318,7 @@ describe("ApprovalRulesPanel", () => {
 
     it("calls cmdGenerate with COMMAND_SAMPLE source when Generate clicked", async () => {
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Custom Rule"));
+      fireEvent.click(screen.getByText("+ Add Rule"));
 
       const textarea = screen.getByTestId("command-sample-textarea");
       fireEvent.change(textarea, { target: { value: "git push origin main" } });
@@ -341,7 +341,7 @@ describe("ApprovalRulesPanel", () => {
       ];
 
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Custom Rule"));
+      fireEvent.click(screen.getByText("+ Add Rule"));
 
       // The component should have pre-filled the commandPattern field.
       const cmdInput = screen.getByTestId("form-command-pattern-input") as HTMLInputElement;
@@ -354,7 +354,7 @@ describe("ApprovalRulesPanel", () => {
     it("does not overwrite a user-edited field with AI suggestion on re-render", () => {
       // No suggestions on initial render.
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Custom Rule"));
+      fireEvent.click(screen.getByText("+ Add Rule"));
 
       // User manually edits commandPattern BEFORE any AI suggestion arrives.
       const cmdInput = screen.getByTestId("form-command-pattern-input");
@@ -370,14 +370,14 @@ describe("ApprovalRulesPanel", () => {
       render(<ApprovalRulesPanel />);
 
       // Open.
-      fireEvent.click(screen.getByText("+ Add Custom Rule"));
+      fireEvent.click(screen.getByText("+ Add Rule"));
       // Close.
       fireEvent.click(screen.getByText("Cancel"));
 
       expect(hookConfig.cmd.clear).toHaveBeenCalled();
 
       // Reopen — form should be clean.
-      fireEvent.click(screen.getByText("+ Add Custom Rule"));
+      fireEvent.click(screen.getByText("+ Add Rule"));
       const nameInput = screen.getByTestId("form-name-input") as HTMLInputElement;
       expect(nameInput.value).toBe("");
     });

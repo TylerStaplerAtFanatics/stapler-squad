@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import * as RadixDialog from "@radix-ui/react-dialog";
 import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
 import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
@@ -16,12 +17,13 @@ import {
   ruleName, ruleReason, ruleAlt, matchInfo, matchChip,
   decisionBadge, decisionAllow, decisionDeny, decisionEscalate,
   sourceBadge, toggle, toggleOn, toggleOff, deleteButton,
-  formSection, addButton, form as formClass, formTitle, formError as formErrorClass, formGrid, label, input, select,
+  addButton, form as formClass, formTitle, formError as formErrorClass, formGrid, label, input, select,
   formActions, saveButton, cancelButton,
   generateButtonRow, generateButton, cancelGenerateButton,
   generateErrorBanner, dismissErrorButton, suggestionsContainer,
   commandSampleDetails, commandSampleSummary, commandSampleBody,
   commandSampleTextarea, commandSampleActions, aiGeneratedBadge,
+  modalOverlay, modalDialog, modalHeader, modalTitleRow, modalBody, modalCloseButton,
 } from "./ApprovalRulesPanel.css";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -118,7 +120,7 @@ export function ApprovalRulesPanel() {
     clear: cmdGenClear,
   } = useGenerateRule();
 
-  const formSectionRef = useRef<HTMLDivElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [showForm, setShowForm] = useState(false);
@@ -139,7 +141,8 @@ export function ApprovalRulesPanel() {
     const tool = params.get("tool");
     const program = params.get("program");
     const subcommand = params.get("subcommand");
-    if (!tool && !program) return;
+    const open = params.get("open");
+    if (!tool && !program && !open) return;
 
     const prefill: Partial<RuleFormState> = {};
     if (tool) {
@@ -163,10 +166,6 @@ export function ApprovalRulesPanel() {
     setCmdSampleValue("");
     touchedFieldsRef.current = new Set();
     cmdGenClear();
-
-    setTimeout(() => {
-      formSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 100);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -342,6 +341,9 @@ export function ApprovalRulesPanel() {
                 Cancel
               </button>
             )}
+            <button className={addButton} onClick={openForm}>
+              + Add Rule
+            </button>
             <button
               onClick={refresh}
               className={refreshButton}
@@ -446,7 +448,7 @@ export function ApprovalRulesPanel() {
           <div className={empty}>
             No rules found.{" "}
             {sourceFilter === "all" || sourceFilter === "user"
-              ? "Add a custom rule below."
+              ? "Use the '+ Add Rule' button above to create one."
               : ""}
           </div>
         ) : (
@@ -527,201 +529,211 @@ export function ApprovalRulesPanel() {
         )}
       </div>
 
-      {/* ── Add rule form ── */}
-      <div className={formSection} ref={formSectionRef}>
-        {!showForm ? (
-          <button className={addButton} onClick={openForm}>
-            + Add Custom Rule
-          </button>
-        ) : (
-          <div className={formClass}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <h3 className={formTitle}>New Rule</h3>
-              {aiPrefilled && (
-                <span className={aiGeneratedBadge} data-testid="ai-generated-badge">
-                  AI-generated — review before saving
-                </span>
-              )}
+      {/* ── Add Rule Modal — Radix Dialog handles portal, focus trap, Escape, body scroll ── */}
+      <RadixDialog.Root open={showForm} onOpenChange={(open) => { if (!open) closeForm(); }}>
+        <RadixDialog.Portal>
+          <RadixDialog.Overlay className={modalOverlay} />
+          <RadixDialog.Content
+            className={modalDialog}
+            onOpenAutoFocus={(e) => { e.preventDefault(); nameInputRef.current?.focus(); }}
+          >
+            <div className={modalHeader}>
+              <div className={modalTitleRow}>
+                <RadixDialog.Title className={formTitle}>New Custom Rule</RadixDialog.Title>
+                {aiPrefilled && (
+                  <span className={aiGeneratedBadge} data-testid="ai-generated-badge">
+                    AI-generated — review before saving
+                  </span>
+                )}
+              </div>
+              <RadixDialog.Close className={modalCloseButton} aria-label="Close dialog">
+                ×
+              </RadixDialog.Close>
             </div>
 
-            {/* ── Epic 6: Generate from command (collapsible) ── */}
-            <details className={commandSampleDetails} data-testid="generate-from-command-details">
-              <summary className={commandSampleSummary}>
-                Generate from command (optional)
-              </summary>
-              <div className={commandSampleBody}>
-                <textarea
-                  className={commandSampleTextarea}
-                  placeholder="Paste a raw command, e.g. git push origin main"
-                  value={cmdSampleValue}
-                  onChange={(e) => setCmdSampleValue(e.target.value)}
-                  aria-label="Command sample"
-                  data-testid="command-sample-textarea"
-                  rows={2}
-                />
-                <div className={commandSampleActions}>
+            <div className={modalBody}>
+              <div className={formClass}>
+                {/* ── Epic 6: Generate from command (collapsible) ── */}
+                <details className={commandSampleDetails} data-testid="generate-from-command-details">
+                  <summary className={commandSampleSummary}>
+                    Generate from command (optional)
+                  </summary>
+                  <div className={commandSampleBody}>
+                    <textarea
+                      className={commandSampleTextarea}
+                      placeholder="Paste a raw command, e.g. git push origin main"
+                      value={cmdSampleValue}
+                      onChange={(e) => setCmdSampleValue(e.target.value)}
+                      aria-label="Command sample"
+                      data-testid="command-sample-textarea"
+                      rows={2}
+                    />
+                    <div className={commandSampleActions}>
+                      <button
+                        className={generateButton}
+                        type="button"
+                        disabled={cmdGenLoading || !cmdSampleValue.trim()}
+                        onClick={() => {
+                          void cmdGenerate({
+                            source: SuggestionSource.COMMAND_SAMPLE,
+                            commandSample: cmdSampleValue.trim(),
+                          });
+                        }}
+                        data-testid="command-sample-generate-button"
+                      >
+                        {cmdGenLoading ? "Generating…" : "Generate"}
+                      </button>
+                    </div>
+                  </div>
+                </details>
+
+                {formError && <div className={formErrorClass}>{formError}</div>}
+
+                <div className={formGrid}>
+                  <label className={label}>
+                    Name *
+                    <input
+                      ref={nameInputRef}
+                      className={input}
+                      value={form.name}
+                      onChange={(e) => setFormField("name", e.target.value)}
+                      placeholder="e.g. Allow git log"
+                      data-testid="form-name-input"
+                    />
+                  </label>
+
+                  <label className={label}>
+                    Decision *
+                    <select
+                      className={select}
+                      value={form.decision}
+                      onChange={(e) => setFormField("decision", Number(e.target.value) as AutoDecision)}
+                    >
+                      <option value={AutoDecision.ALLOW}>Auto-Allow</option>
+                      <option value={AutoDecision.DENY}>Auto-Deny</option>
+                      <option value={AutoDecision.ESCALATE}>Escalate (manual)</option>
+                    </select>
+                  </label>
+
+                  <label className={label}>
+                    Tool Name
+                    <input
+                      className={input}
+                      value={form.toolName}
+                      onChange={(e) => setFormField("toolName", e.target.value)}
+                      placeholder="e.g. Bash"
+                    />
+                  </label>
+
+                  <label className={label}>
+                    Programs
+                    <input
+                      className={input}
+                      value={form.criteriaPrograms.join(", ")}
+                      onChange={(e) => setFormField("criteriaPrograms", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+                      placeholder="e.g. git, gh, npm"
+                      data-testid="form-criteria-programs-input"
+                    />
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 2 }}>
+                      Structural matching is preferred over Command Pattern regex for program/subcommand rules.
+                    </span>
+                  </label>
+
+                  <label className={label}>
+                    Subcommands
+                    <input
+                      className={input}
+                      value={form.criteriaSubcommands.join(", ")}
+                      onChange={(e) => setFormField("criteriaSubcommands", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+                      placeholder="e.g. push, publish, deploy"
+                      data-testid="form-criteria-subcommands-input"
+                    />
+                  </label>
+
+                  <label className={label}>
+                    Command Pattern (regex)
+                    <input
+                      className={input}
+                      value={form.commandPattern}
+                      onChange={(e) => setFormField("commandPattern", e.target.value)}
+                      placeholder="e.g. ^git log"
+                      data-testid="form-command-pattern-input"
+                    />
+                  </label>
+
+                  <label className={label}>
+                    Tool Pattern (regex)
+                    <input
+                      className={input}
+                      value={form.toolPattern}
+                      onChange={(e) => setFormField("toolPattern", e.target.value)}
+                      placeholder="e.g. Read|Glob"
+                    />
+                  </label>
+
+                  <label className={label}>
+                    File Pattern (regex)
+                    <input
+                      className={input}
+                      value={form.filePattern}
+                      onChange={(e) => setFormField("filePattern", e.target.value)}
+                      placeholder="e.g. \.md$"
+                    />
+                  </label>
+
+                  <label className={label}>
+                    Reason
+                    <input
+                      className={input}
+                      value={form.reason}
+                      onChange={(e) => setFormField("reason", e.target.value)}
+                      placeholder="Shown to Claude when denied"
+                    />
+                  </label>
+
+                  <label className={label}>
+                    Alternative
+                    <input
+                      className={input}
+                      value={form.alternative}
+                      onChange={(e) => setFormField("alternative", e.target.value)}
+                      placeholder="Safer command suggestion"
+                    />
+                  </label>
+
+                  <label className={label}>
+                    Priority
+                    <input
+                      className={input}
+                      type="number"
+                      min={1}
+                      max={999}
+                      value={form.priority}
+                      onChange={(e) => setFormField("priority", Number(e.target.value))}
+                    />
+                  </label>
+                </div>
+
+                <div className={formActions}>
                   <button
-                    className={generateButton}
-                    type="button"
-                    disabled={cmdGenLoading || !cmdSampleValue.trim()}
-                    onClick={() => {
-                      void cmdGenerate({
-                        source: SuggestionSource.COMMAND_SAMPLE,
-                        commandSample: cmdSampleValue.trim(),
-                      });
-                    }}
-                    data-testid="command-sample-generate-button"
+                    className={saveButton}
+                    onClick={handleSave}
+                    disabled={saving}
                   >
-                    {cmdGenLoading ? "Generating…" : "Generate"}
+                    {saving ? "Saving…" : "Save Rule"}
+                  </button>
+                  <button
+                    className={cancelButton}
+                    onClick={closeForm}
+                  >
+                    Cancel
                   </button>
                 </div>
               </div>
-            </details>
-
-            {formError && <div className={formErrorClass}>{formError}</div>}
-
-            <div className={formGrid}>
-              <label className={label}>
-                Name *
-                <input
-                  className={input}
-                  value={form.name}
-                  onChange={(e) => setFormField("name", e.target.value)}
-                  placeholder="e.g. Allow git log"
-                  data-testid="form-name-input"
-                />
-              </label>
-
-              <label className={label}>
-                Decision *
-                <select
-                  className={select}
-                  value={form.decision}
-                  onChange={(e) => setFormField("decision", Number(e.target.value) as AutoDecision)}
-                >
-                  <option value={AutoDecision.ALLOW}>Auto-Allow</option>
-                  <option value={AutoDecision.DENY}>Auto-Deny</option>
-                  <option value={AutoDecision.ESCALATE}>Escalate (manual)</option>
-                </select>
-              </label>
-
-              <label className={label}>
-                Tool Name
-                <input
-                  className={input}
-                  value={form.toolName}
-                  onChange={(e) => setFormField("toolName", e.target.value)}
-                  placeholder="e.g. Bash"
-                />
-              </label>
-
-              <label className={label}>
-                Programs
-                <input
-                  className={input}
-                  value={form.criteriaPrograms.join(", ")}
-                  onChange={(e) => setFormField("criteriaPrograms", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-                  placeholder="e.g. git, gh, npm"
-                  data-testid="form-criteria-programs-input"
-                />
-                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 2 }}>
-                  Structural matching is preferred over Command Pattern regex for program/subcommand rules.
-                </span>
-              </label>
-
-              <label className={label}>
-                Subcommands
-                <input
-                  className={input}
-                  value={form.criteriaSubcommands.join(", ")}
-                  onChange={(e) => setFormField("criteriaSubcommands", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-                  placeholder="e.g. push, publish, deploy"
-                  data-testid="form-criteria-subcommands-input"
-                />
-              </label>
-
-              <label className={label}>
-                Command Pattern (regex)
-                <input
-                  className={input}
-                  value={form.commandPattern}
-                  onChange={(e) => setFormField("commandPattern", e.target.value)}
-                  placeholder="e.g. ^git log"
-                  data-testid="form-command-pattern-input"
-                />
-              </label>
-
-              <label className={label}>
-                Tool Pattern (regex)
-                <input
-                  className={input}
-                  value={form.toolPattern}
-                  onChange={(e) => setFormField("toolPattern", e.target.value)}
-                  placeholder="e.g. Read|Glob"
-                />
-              </label>
-
-              <label className={label}>
-                File Pattern (regex)
-                <input
-                  className={input}
-                  value={form.filePattern}
-                  onChange={(e) => setFormField("filePattern", e.target.value)}
-                  placeholder="e.g. \.md$"
-                />
-              </label>
-
-              <label className={label}>
-                Reason
-                <input
-                  className={input}
-                  value={form.reason}
-                  onChange={(e) => setFormField("reason", e.target.value)}
-                  placeholder="Shown to Claude when denied"
-                />
-              </label>
-
-              <label className={label}>
-                Alternative
-                <input
-                  className={input}
-                  value={form.alternative}
-                  onChange={(e) => setFormField("alternative", e.target.value)}
-                  placeholder="Safer command suggestion"
-                />
-              </label>
-
-              <label className={label}>
-                Priority
-                <input
-                  className={input}
-                  type="number"
-                  min={1}
-                  max={999}
-                  value={form.priority}
-                  onChange={(e) => setFormField("priority", Number(e.target.value))}
-                />
-              </label>
             </div>
-
-            <div className={formActions}>
-              <button
-                className={saveButton}
-                onClick={handleSave}
-                disabled={saving}
-              >
-                {saving ? "Saving…" : "Save Rule"}
-              </button>
-              <button
-                className={cancelButton}
-                onClick={closeForm}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+          </RadixDialog.Content>
+        </RadixDialog.Portal>
+      </RadixDialog.Root>
     </div>
   );
 }
