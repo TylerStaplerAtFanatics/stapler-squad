@@ -10,20 +10,24 @@ import { SuggestedRuleCard } from "./SuggestedRuleCard";
 import {
   panel, header, titleRow, title, subtitle, refreshButton,
   analyticsBar, analyticsTotal, analyticsRate, rateAllow, rateManual, analyticsTopTool,
-  tabs, tab, tabActive,
+  tabs, tab, tabActive, tabLabelFull, tabLabelShort,
   error as errorClass, retryButton,
   loading as loadingClass, empty,
   tableWrapper, table, th, td, tdCenter, row, rowDisabled,
   ruleName, ruleReason, ruleAlt, matchInfo, matchChip,
   decisionBadge, decisionAllow, decisionDeny, decisionEscalate,
-  sourceBadge, toggle, toggleOn, toggleOff, deleteButton,
-  addButton, form as formClass, formTitle, formError as formErrorClass, formGrid, label, input, select,
+  sourceBadge, toggle, toggleOn, toggleOff, deleteButton, builtInBadge,
+  addButton, mobileAddFab, headerButtonsHiddenOnMobile,
+  form as formClass, formTitle, formError as formErrorClass,
+  formGrid, formSection, formSectionHeader, priorityHint,
+  label, input, select,
   formActions, saveButton, cancelButton,
   generateButtonRow, generateButton, cancelGenerateButton,
   generateErrorBanner, dismissErrorButton, suggestionsContainer,
   commandSampleDetails, commandSampleSummary, commandSampleBody,
   commandSampleTextarea, commandSampleActions, aiGeneratedBadge,
   ruleModalContent, modalHeader, modalTitleRow, modalBody, modalCloseButton,
+  rowCount,
 } from "./ApprovalRulesPanel.css";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -320,13 +324,13 @@ export function ApprovalRulesPanel() {
         <div className={titleRow}>
           <h2 className={title}>Approval Rules</h2>
           <div className={generateButtonRow}>
-            {/* Epic 3: Generate Suggestions button */}
+            {/* Epic 3: Generate Suggestions button — hidden on mobile (low priority action) */}
             <button
               onClick={() => {
                 setDismissedIndices(new Set());
                 void generate({ source: SuggestionSource.ANALYTICS_GAPS });
               }}
-              className={generateButton}
+              className={`${generateButton} ${headerButtonsHiddenOnMobile}`}
               disabled={genLoading}
               data-testid="generate-suggestions"
             >
@@ -335,13 +339,13 @@ export function ApprovalRulesPanel() {
             {genLoading && (
               <button
                 onClick={cancel}
-                className={cancelGenerateButton}
+                className={`${cancelGenerateButton} ${headerButtonsHiddenOnMobile}`}
                 data-testid="cancel-generate-button"
               >
                 Cancel
               </button>
             )}
-            <button className={addButton} onClick={openForm} data-testid="add-rule-button">
+            <button className={`${addButton} ${headerButtonsHiddenOnMobile}`} onClick={openForm} data-testid="add-rule-button">
               + Add Rule
             </button>
             <button
@@ -349,6 +353,7 @@ export function ApprovalRulesPanel() {
               className={refreshButton}
               disabled={loading}
               aria-label="Refresh rules"
+              title="Refresh rules"
             >
               {loading ? "⟳" : "↻"}
             </button>
@@ -386,7 +391,8 @@ export function ApprovalRulesPanel() {
       {/* ── 7-day analytics summary ── */}
       {!analyticsLoading && summary && total !== null && total > 0 && (
         <div className={analyticsBar}>
-          <span className={analyticsTotal}>{total} decisions (last 7 days)</span>
+          <span className={analyticsTotal}>{total.toLocaleString()} decisions</span>
+          <span style={{ color: "var(--text-muted)", fontSize: 12 }}>last 7 days</span>
           <span className={`${analyticsRate} ${rateAllow}`}>
             {autoAllowRate}% auto-allowed
           </span>
@@ -395,7 +401,7 @@ export function ApprovalRulesPanel() {
           </span>
           {summary.topTools.length > 0 && (
             <span className={analyticsTopTool}>
-              Top tool: {summary.topTools[0].toolName}
+              Top tool by decisions: {summary.topTools[0].toolName}
             </span>
           )}
         </div>
@@ -417,15 +423,18 @@ export function ApprovalRulesPanel() {
 
       {/* ── Source filter tabs ── */}
       <div className={tabs}>
-        {["all", "user", "seed", "claude-settings"].map((src) => {
+        {(["all", "user", "seed", "claude-settings"] as const).map((src) => {
           const count = src === "all" ? rules.length : rules.filter((r) => r.source === src).length;
+          const fullLabel = src === "all" ? "All" : sourceLabel(src);
+          const shortLabel = src === "claude-settings" ? "Settings" : fullLabel;
           return (
             <button
               key={src}
               className={`${tab} ${sourceFilter === src ? tabActive : ""}`}
               onClick={() => setSourceFilter(src)}
             >
-              {src === "all" ? "All" : sourceLabel(src)}
+              <span className={tabLabelFull}>{fullLabel}</span>
+              <span className={tabLabelShort}>{shortLabel}</span>
               {" "}({count})
             </button>
           );
@@ -459,7 +468,7 @@ export function ApprovalRulesPanel() {
                 <th className={th}>Match</th>
                 <th className={th}>Decision</th>
                 <th className={th}>Source</th>
-                <th className={th}>Priority</th>
+                <th className={th} title="Lower numbers run first. Custom rules (default: 10) are evaluated before built-in rules (default: 1000).">Priority ⓘ</th>
                 <th className={th}>Enabled</th>
                 <th className={th}></th>
               </tr>
@@ -478,16 +487,16 @@ export function ApprovalRulesPanel() {
                   </td>
                   <td className={td}>
                     <div className={matchInfo}>
-                      {rule.toolName && <code className={matchChip}>{rule.toolName}</code>}
+                      {rule.toolName && <code className={matchChip} title={rule.toolName}>{rule.toolName}</code>}
                       {rule.criteriaPrograms && rule.criteriaPrograms.length > 0 && (
-                        <code className={matchChip}>programs: {rule.criteriaPrograms.join(", ")}</code>
+                        <code className={matchChip} title={`programs: ${rule.criteriaPrograms.join(", ")}`}>programs: {rule.criteriaPrograms.join(", ")}</code>
                       )}
                       {rule.criteriaSubcommands && rule.criteriaSubcommands.length > 0 && (
-                        <code className={matchChip}>sub: {rule.criteriaSubcommands.join(", ")}</code>
+                        <code className={matchChip} title={`sub: ${rule.criteriaSubcommands.join(", ")}`}>sub: {rule.criteriaSubcommands.join(", ")}</code>
                       )}
-                      {rule.commandPattern && <code className={matchChip}>{rule.commandPattern}</code>}
-                      {rule.toolPattern && <code className={matchChip}>{rule.toolPattern}</code>}
-                      {rule.filePattern && <code className={matchChip}>{rule.filePattern}</code>}
+                      {rule.commandPattern && <code className={matchChip} title={rule.commandPattern}>{rule.commandPattern}</code>}
+                      {rule.toolPattern && <code className={matchChip} title={rule.toolPattern}>{rule.toolPattern}</code>}
+                      {rule.filePattern && <code className={matchChip} title={rule.filePattern}>{rule.filePattern}</code>}
                     </div>
                   </td>
                   <td className={td}>
@@ -500,15 +509,19 @@ export function ApprovalRulesPanel() {
                   </td>
                   <td className={`${td} ${tdCenter}`}>{rule.priority}</td>
                   <td className={`${td} ${tdCenter}`}>
-                    <button
-                      className={`${toggle} ${rule.enabled ? toggleOn : toggleOff}`}
-                      onClick={() => handleToggle(rule)}
-                      disabled={rule.source !== "user"}
-                      aria-label={rule.enabled ? "Disable rule" : "Enable rule"}
-                      title={rule.source !== "user" ? "Built-in rules cannot be toggled" : undefined}
-                    >
-                      {rule.enabled ? "ON" : "OFF"}
-                    </button>
+                    {rule.source === "user" ? (
+                      <button
+                        className={`${toggle} ${rule.enabled ? toggleOn : toggleOff}`}
+                        onClick={() => handleToggle(rule)}
+                        aria-label={rule.enabled ? "Disable rule" : "Enable rule"}
+                      >
+                        {rule.enabled ? "ON" : "OFF"}
+                      </button>
+                    ) : (
+                      <span className={builtInBadge} title="Built-in rules cannot be disabled">
+                        Always on
+                      </span>
+                    )}
                   </td>
                   <td className={`${td} ${tdCenter}`}>
                     {rule.source === "user" && (
@@ -528,6 +541,24 @@ export function ApprovalRulesPanel() {
           </table>
         )}
       </div>
+
+      {/* ── Row count indicator ── */}
+      {visibleRules.length > 0 && (
+        <div className={rowCount}>
+          {visibleRules.length} rule{visibleRules.length !== 1 ? "s" : ""}
+          {sourceFilter !== "all" && ` (filtered from ${rules.length} total)`}
+        </div>
+      )}
+
+      {/* ── Mobile FAB — replaces the header "+ Add Rule" button on small screens ── */}
+      <button
+        className={mobileAddFab}
+        onClick={openForm}
+        aria-label="Add rule"
+        data-testid="add-rule-fab"
+      >
+        +
+      </button>
 
       {/* ── Add Rule Modal — Modal handles portal, overlay, focus trap, Escape, body scroll ── */}
       <Modal open={showForm} onOpenChange={(open) => { if (!open) closeForm(); }}>
@@ -588,129 +619,144 @@ export function ApprovalRulesPanel() {
 
                 {formError && <div className={formErrorClass}>{formError}</div>}
 
-                <div className={formGrid}>
-                  <label className={label}>
-                    Name *
-                    <input
-                      ref={nameInputRef}
-                      className={input}
-                      value={form.name}
-                      onChange={(e) => setFormField("name", e.target.value)}
-                      placeholder="e.g. Allow git log"
-                      data-testid="form-name-input"
-                    />
-                  </label>
+                {/* ── Section 1: Identity ── */}
+                <div className={formSection}>
+                  <div className={formSectionHeader}>Rule identity</div>
+                  <div className={formGrid}>
+                    <label className={label}>
+                      Name *
+                      <input
+                        ref={nameInputRef}
+                        className={input}
+                        value={form.name}
+                        onChange={(e) => setFormField("name", e.target.value)}
+                        placeholder="e.g. Allow git log"
+                        data-testid="form-name-input"
+                      />
+                    </label>
 
-                  <label className={label}>
-                    Decision *
-                    <select
-                      className={select}
-                      value={form.decision}
-                      onChange={(e) => setFormField("decision", Number(e.target.value) as AutoDecision)}
-                    >
-                      <option value={AutoDecision.ALLOW}>Auto-Allow</option>
-                      <option value={AutoDecision.DENY}>Auto-Deny</option>
-                      <option value={AutoDecision.ESCALATE}>Escalate (manual)</option>
-                    </select>
-                  </label>
+                    <label className={label}>
+                      Decision *
+                      <select
+                        className={select}
+                        value={form.decision}
+                        onChange={(e) => setFormField("decision", Number(e.target.value) as AutoDecision)}
+                      >
+                        <option value={AutoDecision.ALLOW}>Auto-Allow</option>
+                        <option value={AutoDecision.DENY}>Auto-Deny</option>
+                        <option value={AutoDecision.ESCALATE}>Escalate (manual)</option>
+                      </select>
+                    </label>
 
-                  <label className={label}>
-                    Tool Name
-                    <input
-                      className={input}
-                      value={form.toolName}
-                      onChange={(e) => setFormField("toolName", e.target.value)}
-                      placeholder="e.g. Bash"
-                    />
-                  </label>
+                    <label className={label}>
+                      Priority
+                      <input
+                        className={input}
+                        type="number"
+                        min={1}
+                        max={999}
+                        value={form.priority}
+                        onChange={(e) => setFormField("priority", Number(e.target.value))}
+                      />
+                      <span className={priorityHint}>Lower numbers run first. Custom rules (default: 10) run before built-in rules (default: 1000).</span>
+                    </label>
+                  </div>
+                </div>
 
-                  <label className={label}>
-                    Programs
-                    <input
-                      className={input}
-                      value={form.criteriaPrograms.join(", ")}
-                      onChange={(e) => setFormField("criteriaPrograms", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-                      placeholder="e.g. git, gh, npm"
-                      data-testid="form-criteria-programs-input"
-                    />
-                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 2 }}>
-                      Structural matching is preferred over Command Pattern regex for program/subcommand rules.
-                    </span>
-                  </label>
+                {/* ── Section 2: Match conditions ── */}
+                <div className={formSection}>
+                  <div className={formSectionHeader}>Match conditions</div>
+                  <div className={formGrid}>
+                    <label className={label}>
+                      Tool Name
+                      <input
+                        className={input}
+                        value={form.toolName}
+                        onChange={(e) => setFormField("toolName", e.target.value)}
+                        placeholder="e.g. Bash"
+                      />
+                    </label>
 
-                  <label className={label}>
-                    Subcommands
-                    <input
-                      className={input}
-                      value={form.criteriaSubcommands.join(", ")}
-                      onChange={(e) => setFormField("criteriaSubcommands", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
-                      placeholder="e.g. push, publish, deploy"
-                      data-testid="form-criteria-subcommands-input"
-                    />
-                  </label>
+                    <label className={label}>
+                      Programs
+                      <input
+                        className={input}
+                        value={form.criteriaPrograms.join(", ")}
+                        onChange={(e) => setFormField("criteriaPrograms", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+                        placeholder="e.g. git, gh, npm"
+                        data-testid="form-criteria-programs-input"
+                      />
+                      <span className={priorityHint}>Preferred over Command Pattern for program/subcommand rules.</span>
+                    </label>
 
-                  <label className={label}>
-                    Command Pattern (regex)
-                    <input
-                      className={input}
-                      value={form.commandPattern}
-                      onChange={(e) => setFormField("commandPattern", e.target.value)}
-                      placeholder="e.g. ^git log"
-                      data-testid="form-command-pattern-input"
-                    />
-                  </label>
+                    <label className={label}>
+                      Subcommands
+                      <input
+                        className={input}
+                        value={form.criteriaSubcommands.join(", ")}
+                        onChange={(e) => setFormField("criteriaSubcommands", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+                        placeholder="e.g. push, publish, deploy"
+                        data-testid="form-criteria-subcommands-input"
+                      />
+                    </label>
 
-                  <label className={label}>
-                    Tool Pattern (regex)
-                    <input
-                      className={input}
-                      value={form.toolPattern}
-                      onChange={(e) => setFormField("toolPattern", e.target.value)}
-                      placeholder="e.g. Read|Glob"
-                    />
-                  </label>
+                    <label className={label}>
+                      Command Pattern (regex)
+                      <input
+                        className={input}
+                        value={form.commandPattern}
+                        onChange={(e) => setFormField("commandPattern", e.target.value)}
+                        placeholder="e.g. ^git log"
+                        data-testid="form-command-pattern-input"
+                      />
+                    </label>
 
-                  <label className={label}>
-                    File Pattern (regex)
-                    <input
-                      className={input}
-                      value={form.filePattern}
-                      onChange={(e) => setFormField("filePattern", e.target.value)}
-                      placeholder="e.g. \.md$"
-                    />
-                  </label>
+                    <label className={label}>
+                      Tool Pattern (regex)
+                      <input
+                        className={input}
+                        value={form.toolPattern}
+                        onChange={(e) => setFormField("toolPattern", e.target.value)}
+                        placeholder="e.g. Read|Glob"
+                      />
+                    </label>
 
-                  <label className={label}>
-                    Reason
-                    <input
-                      className={input}
-                      value={form.reason}
-                      onChange={(e) => setFormField("reason", e.target.value)}
-                      placeholder="Shown to Claude when denied"
-                    />
-                  </label>
+                    <label className={label}>
+                      File Pattern (regex)
+                      <input
+                        className={input}
+                        value={form.filePattern}
+                        onChange={(e) => setFormField("filePattern", e.target.value)}
+                        placeholder="e.g. \.md$"
+                      />
+                    </label>
+                  </div>
+                </div>
 
-                  <label className={label}>
-                    Alternative
-                    <input
-                      className={input}
-                      value={form.alternative}
-                      onChange={(e) => setFormField("alternative", e.target.value)}
-                      placeholder="Safer command suggestion"
-                    />
-                  </label>
+                {/* ── Section 3: Guidance (for Claude when rule triggers) ── */}
+                <div className={formSection}>
+                  <div className={formSectionHeader}>Guidance for Claude</div>
+                  <div className={formGrid}>
+                    <label className={label}>
+                      Reason
+                      <input
+                        className={input}
+                        value={form.reason}
+                        onChange={(e) => setFormField("reason", e.target.value)}
+                        placeholder="Shown to Claude when denied"
+                      />
+                    </label>
 
-                  <label className={label}>
-                    Priority
-                    <input
-                      className={input}
-                      type="number"
-                      min={1}
-                      max={999}
-                      value={form.priority}
-                      onChange={(e) => setFormField("priority", Number(e.target.value))}
-                    />
-                  </label>
+                    <label className={label}>
+                      Alternative
+                      <input
+                        className={input}
+                        value={form.alternative}
+                        onChange={(e) => setFormField("alternative", e.target.value)}
+                        placeholder="Safer command suggestion"
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 <div className={formActions}>

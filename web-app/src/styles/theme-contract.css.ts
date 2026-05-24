@@ -180,5 +180,8 @@ export const zIndex = {
   mobilePickerSheet: 1065,
   // Full-page dialog overlays must sit above the bottom nav stack.
   dialog: 1070,
+  // Toast sits above dialog-level overlays but below the Radix modal overlay (1100),
+  // so notifications are hidden behind modals rather than covering form actions.
+  toast: 1080,
   tooltip: 1100,
 } as const;

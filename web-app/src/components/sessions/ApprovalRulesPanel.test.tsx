@@ -478,7 +478,7 @@ describe("ApprovalRulesPanel", () => {
 
     it("hides add-rule hint for 'seed' source filter", () => {
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText(/Built-in/));
+      fireEvent.click(screen.getByRole("button", { name: /Built-in/ }));
       expect(screen.getByText(/No rules found\./)).toBeInTheDocument();
       expect(screen.queryByText(/Add Rule.*button above/i)).not.toBeInTheDocument();
     });
