@@ -288,7 +288,7 @@ describe("ApprovalRulesPanel", () => {
       render(<ApprovalRulesPanel />);
 
       // Open the form.
-      fireEvent.click(screen.getByText("+ Add Rule"));
+      fireEvent.click(screen.getByTestId("add-rule-button"));
 
       const details = screen.getByTestId("generate-from-command-details");
       expect(details).toBeInTheDocument();
@@ -299,7 +299,7 @@ describe("ApprovalRulesPanel", () => {
 
     it("Generate button is disabled when textarea is empty", () => {
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Rule"));
+      fireEvent.click(screen.getByTestId("add-rule-button"));
 
       const genBtn = screen.getByTestId("command-sample-generate-button");
       expect(genBtn).toBeDisabled();
@@ -307,7 +307,7 @@ describe("ApprovalRulesPanel", () => {
 
     it("Generate button is enabled when textarea has content", () => {
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Rule"));
+      fireEvent.click(screen.getByTestId("add-rule-button"));
 
       const textarea = screen.getByTestId("command-sample-textarea");
       fireEvent.change(textarea, { target: { value: "git push origin main" } });
@@ -318,7 +318,7 @@ describe("ApprovalRulesPanel", () => {
 
     it("calls cmdGenerate with COMMAND_SAMPLE source when Generate clicked", async () => {
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Rule"));
+      fireEvent.click(screen.getByTestId("add-rule-button"));
 
       const textarea = screen.getByTestId("command-sample-textarea");
       fireEvent.change(textarea, { target: { value: "git push origin main" } });
@@ -341,7 +341,7 @@ describe("ApprovalRulesPanel", () => {
       ];
 
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Rule"));
+      fireEvent.click(screen.getByTestId("add-rule-button"));
 
       // The component should have pre-filled the commandPattern field.
       const cmdInput = screen.getByTestId("form-command-pattern-input") as HTMLInputElement;
@@ -354,7 +354,7 @@ describe("ApprovalRulesPanel", () => {
     it("does not overwrite a user-edited field with AI suggestion on re-render", () => {
       // No suggestions on initial render.
       render(<ApprovalRulesPanel />);
-      fireEvent.click(screen.getByText("+ Add Rule"));
+      fireEvent.click(screen.getByTestId("add-rule-button"));
 
       // User manually edits commandPattern BEFORE any AI suggestion arrives.
       const cmdInput = screen.getByTestId("form-command-pattern-input");
@@ -370,16 +370,117 @@ describe("ApprovalRulesPanel", () => {
       render(<ApprovalRulesPanel />);
 
       // Open.
-      fireEvent.click(screen.getByText("+ Add Rule"));
+      fireEvent.click(screen.getByTestId("add-rule-button"));
       // Close.
       fireEvent.click(screen.getByText("Cancel"));
 
       expect(hookConfig.cmd.clear).toHaveBeenCalled();
 
       // Reopen — form should be clean.
-      fireEvent.click(screen.getByText("+ Add Rule"));
+      fireEvent.click(screen.getByTestId("add-rule-button"));
       const nameInput = screen.getByTestId("form-name-input") as HTMLInputElement;
       expect(nameInput.value).toBe("");
+    });
+  });
+
+  // ── URL param pre-fill (BLOCKER) ──────────────────────────────────────────
+
+  describe("URL param pre-fill", () => {
+    afterEach(() => {
+      window.history.pushState({}, "", "/");
+    });
+
+    it("opens modal and pre-fills name + toolName when ?tool param present", () => {
+      window.history.pushState({}, "", "?tool=Bash");
+      render(<ApprovalRulesPanel />);
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect((screen.getByTestId("form-name-input") as HTMLInputElement).value).toBe("Allow Bash");
+    });
+
+    it("pre-fills criteriaPrograms and name when ?program param present", () => {
+      window.history.pushState({}, "", "?program=git");
+      render(<ApprovalRulesPanel />);
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect((screen.getByTestId("form-name-input") as HTMLInputElement).value).toBe("Allow git");
+      expect((screen.getByTestId("form-criteria-programs-input") as HTMLInputElement).value).toBe("git");
+    });
+
+    it("includes subcommand in name and subcommands when ?program+?subcommand present", () => {
+      window.history.pushState({}, "", "?program=git&subcommand=push");
+      render(<ApprovalRulesPanel />);
+      expect((screen.getByTestId("form-name-input") as HTMLInputElement).value).toBe("Allow git push");
+      expect((screen.getByTestId("form-criteria-subcommands-input") as HTMLInputElement).value).toBe("push");
+    });
+
+    it("does not open modal when no known params present", () => {
+      window.history.pushState({}, "", "?unrelated=x");
+      render(<ApprovalRulesPanel />);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("opens modal blank when only ?open param present", () => {
+      window.history.pushState({}, "", "?open=1");
+      render(<ApprovalRulesPanel />);
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect((screen.getByTestId("form-name-input") as HTMLInputElement).value).toBe("");
+    });
+  });
+
+  // ── Modal open/close state ────────────────────────────────────────────────
+
+  describe("Modal open/close", () => {
+    it("dialog is not rendered on initial load", () => {
+      render(<ApprovalRulesPanel />);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("dialog opens when add-rule-button is clicked", () => {
+      render(<ApprovalRulesPanel />);
+      fireEvent.click(screen.getByTestId("add-rule-button"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+
+    it("dialog closes when Cancel is clicked", () => {
+      render(<ApprovalRulesPanel />);
+      fireEvent.click(screen.getByTestId("add-rule-button"));
+      fireEvent.click(screen.getByText("Cancel"));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+  });
+
+  // ── Modal dismiss paths (Escape key, × button) ────────────────────────────
+
+  describe("Modal dismiss paths", () => {
+    it("closes dialog when Escape is pressed", async () => {
+      render(<ApprovalRulesPanel />);
+      fireEvent.click(screen.getByTestId("add-rule-button"));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape", code: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+
+    it("closes dialog when × button is clicked", async () => {
+      render(<ApprovalRulesPanel />);
+      fireEvent.click(screen.getByTestId("add-rule-button"));
+      fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+  });
+
+  // ── Empty state copy ──────────────────────────────────────────────────────
+
+  describe("Empty state", () => {
+    it("shows add-rule hint for 'all' source filter", () => {
+      render(<ApprovalRulesPanel />);
+      expect(screen.getByText(/No rules found\./)).toBeInTheDocument();
+      expect(screen.getByText(/Add Rule.*button above to create one/i)).toBeInTheDocument();
+    });
+
+    it("hides add-rule hint for 'seed' source filter", () => {
+      render(<ApprovalRulesPanel />);
+      fireEvent.click(screen.getByText(/Built-in/));
+      expect(screen.getByText(/No rules found\./)).toBeInTheDocument();
+      expect(screen.queryByText(/Add Rule.*button above/i)).not.toBeInTheDocument();
     });
   });
 });

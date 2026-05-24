@@ -196,7 +196,7 @@ export const th = style({
   whiteSpace: "nowrap",
   position: "sticky",
   top: 0,
-  zIndex: 1,
+  zIndex: zIndex.tableHeader,
   "@media": {
     "screen and (max-width: 640px)": {
       padding: 8,
@@ -635,31 +635,27 @@ export const aiGeneratedBadge = style({
 });
 
 // ── Add Rule Modal ────────────────────────────────────────────────────────────
-
-// Backdrop — Radix Dialog.Overlay (sibling of Dialog.Content in portal)
-export const modalOverlay = style({
-  position: "fixed",
-  inset: 0,
-  background: vars.color.overlayBackground,
-  zIndex: zIndex.dialog,
-});
-
-// Panel — Radix Dialog.Content (renders after overlay, so stacks above it at same z-index)
-export const modalDialog = style({
-  position: "fixed",
-  top: "50%",
-  left: "50%",
-  transform: "translate(-50%, -50%)",
-  background: vars.color.cardBackground,
-  border: `1px solid ${vars.color.modalBorder}`,
-  borderRadius: 12,
-  width: "calc(100vw - 32px)",
-  maxWidth: 720,
-  maxHeight: "90vh",
-  display: "flex",
-  flexDirection: "column",
-  boxShadow: "0 20px 60px rgba(0, 0, 0, 0.5)",
-  zIndex: zIndex.dialog,
+// Portal, overlay, and ARIA are handled by the shared Modal/ModalContent component.
+// This class overrides only the properties that differ from ModalContent's defaults:
+// wider max-width, taller max-height, no internal padding (modalHeader/modalBody handle it),
+// and a flex-column layout so the header stays fixed and the body scrolls.
+// The "&&" selector doubles specificity to reliably beat the base `content` class from
+// Modal.css.ts regardless of CSS bundle injection order.
+export const ruleModalContent = style({
+  selectors: {
+    "&&": {
+      background: vars.color.cardBackground,
+      width: "calc(100vw - 32px)",
+      maxWidth: 720,
+      maxHeight: "90vh",
+      padding: 0,
+      paddingBottom: 0,
+      overflowY: "hidden",
+      display: "flex",
+      flexDirection: "column",
+      boxShadow: "0 20px 60px rgba(0, 0, 0, 0.5)",
+    },
+  },
 });
 
 export const modalHeader = style({

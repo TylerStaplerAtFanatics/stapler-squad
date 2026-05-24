@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import * as RadixDialog from "@radix-ui/react-dialog";
+import { Modal, ModalContent, ModalTitle, ModalClose } from "@/components/ui/Modal";
 import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
 import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
@@ -23,7 +23,7 @@ import {
   generateErrorBanner, dismissErrorButton, suggestionsContainer,
   commandSampleDetails, commandSampleSummary, commandSampleBody,
   commandSampleTextarea, commandSampleActions, aiGeneratedBadge,
-  modalOverlay, modalDialog, modalHeader, modalTitleRow, modalBody, modalCloseButton,
+  ruleModalContent, modalHeader, modalTitleRow, modalBody, modalCloseButton,
 } from "./ApprovalRulesPanel.css";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -341,7 +341,7 @@ export function ApprovalRulesPanel() {
                 Cancel
               </button>
             )}
-            <button className={addButton} onClick={openForm}>
+            <button className={addButton} onClick={openForm} data-testid="add-rule-button">
               + Add Rule
             </button>
             <button
@@ -529,29 +529,28 @@ export function ApprovalRulesPanel() {
         )}
       </div>
 
-      {/* ── Add Rule Modal — Radix Dialog handles portal, focus trap, Escape, body scroll ── */}
-      <RadixDialog.Root open={showForm} onOpenChange={(open) => { if (!open) closeForm(); }}>
-        <RadixDialog.Portal>
-          <RadixDialog.Overlay className={modalOverlay} />
-          <RadixDialog.Content
-            className={modalDialog}
-            onOpenAutoFocus={(e) => { e.preventDefault(); nameInputRef.current?.focus(); }}
-          >
-            <div className={modalHeader}>
-              <div className={modalTitleRow}>
-                <RadixDialog.Title className={formTitle}>New Custom Rule</RadixDialog.Title>
-                {aiPrefilled && (
-                  <span className={aiGeneratedBadge} data-testid="ai-generated-badge">
-                    AI-generated — review before saving
-                  </span>
-                )}
-              </div>
-              <RadixDialog.Close className={modalCloseButton} aria-label="Close dialog">
-                ×
-              </RadixDialog.Close>
+      {/* ── Add Rule Modal — Modal handles portal, overlay, focus trap, Escape, body scroll ── */}
+      <Modal open={showForm} onOpenChange={(open) => { if (!open) closeForm(); }}>
+        <ModalContent
+          showClose={false}
+          className={ruleModalContent}
+          onOpenAutoFocus={(e) => { e.preventDefault(); nameInputRef.current?.focus(); }}
+        >
+          <div className={modalHeader}>
+            <div className={modalTitleRow}>
+              <ModalTitle className={formTitle}>New Custom Rule</ModalTitle>
+              {aiPrefilled && (
+                <span className={aiGeneratedBadge} data-testid="ai-generated-badge">
+                  AI-generated — review before saving
+                </span>
+              )}
             </div>
+            <ModalClose className={modalCloseButton} aria-label="Close dialog">
+              ×
+            </ModalClose>
+          </div>
 
-            <div className={modalBody}>
+          <div className={modalBody}>
               <div className={formClass}>
                 {/* ── Epic 6: Generate from command (collapsible) ── */}
                 <details className={commandSampleDetails} data-testid="generate-from-command-details">
@@ -731,9 +730,8 @@ export function ApprovalRulesPanel() {
                 </div>
               </div>
             </div>
-          </RadixDialog.Content>
-        </RadixDialog.Portal>
-      </RadixDialog.Root>
+        </ModalContent>
+      </Modal>
     </div>
   );
 }

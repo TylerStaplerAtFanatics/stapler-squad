@@ -166,6 +166,7 @@ export const breakpoints = {
 // Adding a new layer requires updating this map, which makes ordering conflicts visible.
 export const zIndex = {
   base: 0,
+  tableHeader: 1,   // sticky <th> within a scroll container — only competes with sibling tds
   raised: 10,
   header: 100,
   dropdown: 500,
