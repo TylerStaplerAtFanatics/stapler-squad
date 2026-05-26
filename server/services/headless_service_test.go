@@ -2,7 +2,9 @@ package services
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +14,6 @@ import (
 	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"net/http"
 )
 
 // firstCallJSONHS returns a valid first-call JSON response for headless service tests.
@@ -102,7 +103,7 @@ func TestHeadlessService_RunHeadlessCall_InvalidFeatureKey_ReturnsInvalidArgumen
 
 // TestHeadlessService_RunHeadlessCall_AllowedFeatureKeys verifies all allowed keys.
 func TestHeadlessService_RunHeadlessCall_AllowedFeatureKeys(t *testing.T) {
-	allowedKeys := []string{"review", "summarize", "pr-description", "commit-message", "custom"}
+	allowedKeys := []string{"review", "summarize", "acceptance-criteria", "pr-description", "commit-message", "custom"}
 
 	runner := headless.NewFakeRunner(
 		firstCallJSONHS("s1", "ok"),
@@ -110,11 +111,10 @@ func TestHeadlessService_RunHeadlessCall_AllowedFeatureKeys(t *testing.T) {
 		firstCallJSONHS("s3", "ok"),
 		firstCallJSONHS("s4", "ok"),
 		firstCallJSONHS("s5", "ok"),
+		firstCallJSONHS("s6", "ok"),
 	)
 	pool := headless.NewPoolWithRunner(headless.PoolConfig{}, runner)
-	_, client := newHeadlessTestServer(t, nil)
 	_, clientWithPool := newHeadlessTestServer(t, pool)
-	_ = client // nil-pool server tested separately
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -164,9 +164,9 @@ func TestHeadlessService_RunHeadlessCall_PoolNil_ReturnsUnavailable(t *testing.T
 	}
 }
 
-// TestHeadlessService_RunHeadlessCall_DefaultTimeout_Is900s verifies the 900s default is enforced.
-func TestHeadlessService_RunHeadlessCall_DefaultTimeout_Is900s(t *testing.T) {
-	// We test this by checking the service accepts TimeoutSeconds=0 without error.
+// TestHeadlessService_RunHeadlessCall_ZeroTimeoutSeconds_UsesDefault verifies that
+// TimeoutSeconds=0 is accepted (uses default) and completes without error.
+func TestHeadlessService_RunHeadlessCall_ZeroTimeoutSeconds_UsesDefault(t *testing.T) {
 	runner := headless.NewFakeRunner(firstCallJSONHS("s1", "ok"))
 	pool := headless.NewPoolWithRunner(headless.PoolConfig{}, runner)
 	_, client := newHeadlessTestServer(t, pool)
@@ -177,7 +177,7 @@ func TestHeadlessService_RunHeadlessCall_DefaultTimeout_Is900s(t *testing.T) {
 	stream, err := client.RunHeadlessCall(ctx, connect.NewRequest(&sessionv1.RunHeadlessCallRequest{
 		FeatureKey:     "custom",
 		UserPrompt:     "prompt",
-		TimeoutSeconds: 0, // should use default 900s
+		TimeoutSeconds: 0, // service applies DefaultCallTimeout
 	}))
 	require.NoError(t, err)
 	defer stream.Close()
@@ -214,5 +214,58 @@ func TestHeadlessService_RunHeadlessCall_ContextCancel_StopsSubprocess(t *testin
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream did not complete after context cancellation within 5s")
+	}
+}
+
+// TestHeadlessService_RunHeadlessCall_SystemPromptOverLimit_ReturnsInvalidArgument
+// verifies that system_prompt exceeding maxPromptBytes is rejected.
+func TestHeadlessService_RunHeadlessCall_SystemPromptOverLimit_ReturnsInvalidArgument(t *testing.T) {
+	runner := headless.NewFakeRunner()
+	pool := headless.NewPoolWithRunner(headless.PoolConfig{}, runner)
+	_, client := newHeadlessTestServer(t, pool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.RunHeadlessCall(ctx, connect.NewRequest(&sessionv1.RunHeadlessCallRequest{
+		FeatureKey:   "custom",
+		UserPrompt:   "prompt",
+		SystemPrompt: strings.Repeat("x", 100_001),
+	}))
+	if err == nil {
+		for stream.Receive() {}
+		err = stream.Err()
+		stream.Close()
+	}
+	require.Error(t, err)
+	var connectErr *connect.Error
+	if assert.ErrorAs(t, err, &connectErr) {
+		assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+	}
+}
+
+// TestHeadlessService_RunHeadlessCall_UserPromptOverLimit_ReturnsInvalidArgument
+// verifies that user_prompt exceeding maxPromptBytes is rejected.
+func TestHeadlessService_RunHeadlessCall_UserPromptOverLimit_ReturnsInvalidArgument(t *testing.T) {
+	runner := headless.NewFakeRunner()
+	pool := headless.NewPoolWithRunner(headless.PoolConfig{}, runner)
+	_, client := newHeadlessTestServer(t, pool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.RunHeadlessCall(ctx, connect.NewRequest(&sessionv1.RunHeadlessCallRequest{
+		FeatureKey: "custom",
+		UserPrompt: strings.Repeat("y", 100_001),
+	}))
+	if err == nil {
+		for stream.Receive() {}
+		err = stream.Err()
+		stream.Close()
+	}
+	require.Error(t, err)
+	var connectErr *connect.Error
+	if assert.ErrorAs(t, err, &connectErr) {
+		assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
 	}
 }

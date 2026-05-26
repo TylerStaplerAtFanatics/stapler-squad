@@ -25,14 +25,11 @@ func NewHeadlessService(pool *headless.Pool) *HeadlessService {
 	return &HeadlessService{pool: pool}
 }
 
-// defaultHeadlessTimeout is applied when RunHeadlessCallRequest.TimeoutSeconds is 0.
-const defaultHeadlessTimeout = 900 * time.Second
-
-// maxHeadlessTimeout caps RunHeadlessCallRequest.TimeoutSeconds.
-const maxHeadlessTimeout = 1800 * time.Second
+// maxPromptBytes is the per-field byte limit for system_prompt and user_prompt.
+const maxPromptBytes = 100_000
 
 // RunHeadlessCall streams LLM output chunks back to the caller.
-// It validates the feature_key, applies a timeout, then drains the pool channel.
+// It validates the feature_key and prompt sizes, applies a timeout, then drains the pool channel.
 func (s *HeadlessService) RunHeadlessCall(
 	ctx context.Context,
 	req *connect.Request[sessionv1.RunHeadlessCallRequest],
@@ -45,23 +42,35 @@ func (s *HeadlessService) RunHeadlessCall(
 	featureKey := headless.FeatureKey(req.Msg.FeatureKey)
 	if !headless.AllowedFeatureKeys[featureKey] || featureKey == "" {
 		return connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("invalid feature_key %q: must be one of review, summarize, acceptance-criteria, pr-description, commit-message, custom", req.Msg.FeatureKey))
+			fmt.Errorf("invalid feature_key %q: must be one of %s", req.Msg.FeatureKey, headless.AllowedFeatureKeyList()))
+	}
+
+	if len(req.Msg.SystemPrompt) > maxPromptBytes {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("system_prompt exceeds maximum size of %d bytes", maxPromptBytes))
+	}
+	if len(req.Msg.UserPrompt) > maxPromptBytes {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("user_prompt exceeds maximum size of %d bytes", maxPromptBytes))
 	}
 
 	// Apply timeout.
 	timeoutSecs := int(req.Msg.TimeoutSeconds)
-	timeout := defaultHeadlessTimeout
+	timeout := headless.DefaultCallTimeout
 	if timeoutSecs > 0 {
 		timeout = time.Duration(timeoutSecs) * time.Second
 	}
-	if timeout > maxHeadlessTimeout {
-		timeout = maxHeadlessTimeout
+	if timeout > headless.MaxCallTimeout {
+		timeout = headless.MaxCallTimeout
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ch, err := s.pool.Call(callCtx, featureKey, req.Msg.SystemPrompt, req.Msg.UserPrompt)
+	// Forward model override from the request so callers can select a specific model.
+	ch, err := s.pool.CallWithOptions(callCtx, featureKey, req.Msg.SystemPrompt, req.Msg.UserPrompt, headless.CallOptions{
+		Model: req.Msg.Model,
+	})
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("headless call start: %w", err))
 	}
@@ -79,8 +88,9 @@ func (s *HeadlessService) RunHeadlessCall(
 			return nil
 		}
 		resp := &sessionv1.RunHeadlessCallResponse{
-			Text: chunk.Text,
-			Done: chunk.Done,
+			Text:    chunk.Text,
+			Done:    chunk.Done,
+			CostUsd: chunk.CostUSD,
 		}
 		if sendErr := stream.Send(resp); sendErr != nil {
 			return sendErr
@@ -90,7 +100,7 @@ func (s *HeadlessService) RunHeadlessCall(
 		}
 	}
 
-	// Channel closed without Done=true (context cancelled).
+	// Channel closed: either context cancelled or goroutine exited without sending Done.
 	if ctx.Err() != nil {
 		return nil // client disconnected; return nil per WatchSessions pattern
 	}

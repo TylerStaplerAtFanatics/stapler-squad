@@ -411,11 +411,32 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}
 
 	// WorkflowEngine governs backlog state transitions; constructed once and shared
-	// by both the service layer and the lifecycle listener.
+	// by the service layer.
 	workflowEngine := session.NewDefaultWorkflowEngine()
 
+	// Construct the headless LLM pool early so the lifecycle listener can receive it
+	// via constructor (eliminating the post-construction wiring race). Non-fatal if
+	// the claude binary is not found.
+	var headlessPool *headless.Pool
+	{
+		p, poolErr := headless.NewPool(headless.PoolConfig{
+			MaxCallsPerSession:    25,
+			MaxConcurrentSessions: 5,
+		})
+		if poolErr != nil {
+			log.Warn("headless pool disabled: claude binary not found", "err", poolErr)
+		} else {
+			headlessPool = p
+			headless.SetDefaultPool(p)
+			sessionService.SetHeadlessPool(p)
+			log.Info("headless LLM pool initialized")
+		}
+	}
+
 	// Backlog lifecycle listener — always created, enabled state set from config below.
-	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithSpawner(storage, sessionService, workflowEngine)
+	// The pool is passed at construction time to close the race window that existed when
+	// SetHeadlessPool was called hundreds of lines after instance wiring.
+	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithPool(storage, headlessPool)
 
 	// Step 5 (continued): wire dependencies to each instance
 	// inst.SetReviewQueue and inst.SetStatusManager are called per-instance in a loop;
@@ -697,25 +718,6 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
-	// Construct the headless LLM pool now (before wiring into services) so we can also
-	// wire it into SessionService for RunOneShot calls. Pool construction happens here so
-	// the BacklogLifecycleListener can also get the pool. Non-fatal if claude not found.
-	var headlessPoolEarly *headless.Pool
-	{
-		p, poolErr := headless.NewPool(headless.PoolConfig{
-			MaxCallsPerSession:    25,
-			MaxConcurrentSessions: 5,
-		})
-		if poolErr != nil {
-			log.Warn("headless pool disabled: claude binary not found", "err", poolErr)
-		} else {
-			headlessPoolEarly = p
-			headless.SetDefaultPool(p)
-			sessionService.SetHeadlessPool(p)
-			log.Info("headless LLM pool initialized, wired to SessionService")
-		}
-	}
-
 	// Check VNC dependencies once at startup so the server knows whether browser
 	// passthrough is available on this host. Non-fatal: Missing deps log a warning.
 	vncDeps := vnc.CheckDependencies()
@@ -750,7 +752,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 
 
 	return &RuntimeDeps{
-		HeadlessPool: headlessPoolEarly,
+		HeadlessPool: headlessPool,
 		ServiceDeps:             svc,
 		Instances:               instances,
 		ReactiveQueueMgr:        reactiveQueueMgr,

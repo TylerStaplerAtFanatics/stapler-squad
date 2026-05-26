@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +24,10 @@ type ReviewGateSpawner interface {
 	SpawnReviewSession(ctx context.Context, item *ent.BacklogItem, itemSessionID string, prompt string) (*Instance, error)
 }
 
+// maxConcurrentReviewGates is the maximum number of review gates that can run
+// concurrently. This caps goroutine fan-out when many sessions exit simultaneously.
+const maxConcurrentReviewGates = 8
+
 // BacklogLifecycleListener drives backlog item state transitions in response to
 // session lifecycle events. It must be registered via Instance.RegisterLifecycleListener.
 //
@@ -30,38 +36,79 @@ type ReviewGateSpawner interface {
 type BacklogLifecycleListener struct {
 	storage        *Storage
 	sessionCreator ReviewGateSpawner
-	headlessPool   *headless.Pool
-	engine         WorkflowEngine
-	enabled        atomic.Bool
+
+	// poolMu guards headlessPool for concurrent Set/get access.
+	poolMu       sync.RWMutex
+	headlessPool *headless.Pool
+
+	// reviewSem limits concurrent review gate goroutines.
+	reviewSem chan struct{}
+
+	// shutdownCtx is cancelled by Shutdown(); used by long-running review gate calls.
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+
+	enabled atomic.Bool
 }
 
 // SetEnabled toggles whether this listener processes lifecycle events.
 // Safe to call concurrently.
 func (l *BacklogLifecycleListener) SetEnabled(v bool) { l.enabled.Store(v) }
 
+// SetHeadlessPool wires in the headless LLM pool after construction.
+// Calling this enables the headless review gate path even when the listener was
+// created via NewBacklogLifecycleListenerWithSpawner.
+func (l *BacklogLifecycleListener) SetHeadlessPool(p *headless.Pool) {
+	l.poolMu.Lock()
+	defer l.poolMu.Unlock()
+	l.headlessPool = p
+}
+
+// getHeadlessPool returns the current headless pool under a read lock.
+func (l *BacklogLifecycleListener) getHeadlessPool() *headless.Pool {
+	l.poolMu.RLock()
+	defer l.poolMu.RUnlock()
+	return l.headlessPool
+}
+
+// Shutdown cancels in-flight review gate calls. Safe to call concurrently.
+func (l *BacklogLifecycleListener) Shutdown() {
+	if l.shutdownCancel != nil {
+		l.shutdownCancel()
+	}
+}
+
+// newListenerBase initialises fields common to all BacklogLifecycleListener constructors.
+func newListenerBase(storage *Storage) *BacklogLifecycleListener {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &BacklogLifecycleListener{
+		storage:        storage,
+		reviewSem:      make(chan struct{}, maxConcurrentReviewGates),
+		shutdownCtx:    ctx,
+		shutdownCancel: cancel,
+	}
+}
+
 // NewBacklogLifecycleListener creates a listener backed by the given storage.
 // The review gate is disabled (sessionCreator=nil, headlessPool=nil).
 func NewBacklogLifecycleListener(storage *Storage) *BacklogLifecycleListener {
-	return &BacklogLifecycleListener{storage: storage, engine: NewDefaultWorkflowEngine()}
+	return newListenerBase(storage)
 }
 
 // NewBacklogLifecycleListenerWithSpawner creates a listener that will spawn a
 // review gate session when a work session exits and SkipReviewGate is false.
-// When spawner also implements headless.Pool-compatible calling, pass it as spawner.
-func NewBacklogLifecycleListenerWithSpawner(storage *Storage, spawner ReviewGateSpawner, engine WorkflowEngine) *BacklogLifecycleListener {
-	if engine == nil {
-		engine = NewDefaultWorkflowEngine()
-	}
-	return &BacklogLifecycleListener{storage: storage, sessionCreator: spawner, engine: engine}
+func NewBacklogLifecycleListenerWithSpawner(storage *Storage, spawner ReviewGateSpawner) *BacklogLifecycleListener {
+	l := newListenerBase(storage)
+	l.sessionCreator = spawner
+	return l
 }
 
 // NewBacklogLifecycleListenerWithPool creates a listener that uses a headless.Pool
 // for review gate calls instead of spawning a tmux session.
-func NewBacklogLifecycleListenerWithPool(storage *Storage, pool *headless.Pool, engine WorkflowEngine) *BacklogLifecycleListener {
-	if engine == nil {
-		engine = NewDefaultWorkflowEngine()
-	}
-	return &BacklogLifecycleListener{storage: storage, headlessPool: pool, engine: engine}
+func NewBacklogLifecycleListenerWithPool(storage *Storage, pool *headless.Pool) *BacklogLifecycleListener {
+	l := newListenerBase(storage)
+	l.headlessPool = pool
+	return l
 }
 
 // instanceBacklogListener is a per-instance shim that binds the instance UUID into
@@ -161,15 +208,25 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 	log.InfoLog.Printf("[BacklogLifecycle] item %s transitioned to %s (session %s exited)", item.ID, toStatus, sessionUUID)
 
 	// Spawn review gate if the item moved to review and a review mechanism is configured.
-	if toStatus == BacklogStatusReview && !item.SkipReviewGate && (l.headlessPool != nil || l.sessionCreator != nil) {
-		go l.spawnReviewGate(item, is)
+	if toStatus == BacklogStatusReview && !item.SkipReviewGate && (l.getHeadlessPool() != nil || l.sessionCreator != nil) {
+		go func() {
+			// Acquire the bounded semaphore to prevent unbounded goroutine fan-out
+			// when many sessions exit simultaneously.
+			select {
+			case l.reviewSem <- struct{}{}:
+			case <-l.shutdownCtx.Done():
+				return
+			}
+			defer func() { <-l.reviewSem }()
+			l.spawnReviewGate(item, is)
+		}()
 	}
 }
 
 // spawnReviewGate creates a one-shot review session for item, using the diff
 // from the work session's worktree.
 func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *ent.ItemSession) {
-	ctx := context.Background()
+	ctx := l.shutdownCtx
 
 	// Precondition: repo_path must be set or we have nothing to review.
 	if item.RepoPath == "" {
@@ -190,22 +247,17 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate security check blocked item=%s: %v", item.ID, secErr)
 		// Record a failed review ItemSession with a FAIL verdict so the gate verdict
 		// is visible in the UI and operators can act (override or re-review).
-		blockedSession, createErr := l.storage.CreateItemSession(ctx, ItemSessionData{
+		summary := fmt.Sprintf("Review blocked by security check: %v. Override required to proceed.", secErr)
+		if _, _, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
 			ItemID:      item.ID.String(),
 			SessionUUID: "review-blocked-" + item.ID.String(),
 			SessionRole: SessionRoleReview,
-		})
-		if createErr != nil {
-			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSession (security block) item=%s: %v", item.ID, createErr)
-			return
-		}
-		summary := fmt.Sprintf("Review blocked by security check: %v. Override required to proceed.", secErr)
-		if _, verdictErr := l.storage.SaveReviewVerdict(ctx, blockedSession.ID.String(), ReviewVerdictData{
-			ItemSessionID:  blockedSession.ID.String(),
+		}, ReviewVerdictData{
 			OverallOutcome: ReviewVerdictFail,
 			Summary:        summary,
-		}); verdictErr != nil {
-			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate SaveReviewVerdict (security block) item=%s: %v", item.ID, verdictErr)
+		}); createErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (security block) item=%s: %v", item.ID, createErr)
+			return
 		}
 		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate security check blocked for item %s — FAIL verdict recorded", item.ID)
 		return
@@ -219,41 +271,42 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 
 	prompt := BuildReviewPrompt(item, acSnapshot, diff, truncated, is.ID.String())
 
-	if l.headlessPool != nil {
+	pool := l.getHeadlessPool()
+	if pool != nil {
 		// Headless path: call LLM directly without spawning a tmux session.
-		// Use a long-lived context (not the RPC context) with a generous timeout.
-		reviewCtx, reviewCancel := context.WithTimeout(context.Background(), 900*time.Second)
+		// Use JSON-output prompts because headless claude -p has no tool access.
+		reviewCtx, reviewCancel := context.WithTimeout(ctx, headless.DefaultCallTimeout)
 		defer reviewCancel()
 
-		reviewResult, callErr := l.headlessPool.CallBlocking(reviewCtx, headless.FeatureKeyReview, headless.ReviewSystemPrompt(), prompt)
+		headlessPrompt := BuildHeadlessReviewPrompt(item, acSnapshot, diff, truncated)
+		reviewResult, callErr := pool.CallBlocking(reviewCtx, headless.FeatureKeyReview, headless.HeadlessReviewSystemPrompt(), headlessPrompt)
 		if callErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate headless.CallBlocking item=%s: %v", item.ID, callErr)
 			return
 		}
 
-		// Create a synthetic ItemSession for this headless review.
+		overall, perCriterion, summary := ParseHeadlessVerdictResult(reviewResult)
+		perCriterionJSON, _ := json.Marshal(perCriterion)
+
+		// Create a synthetic ItemSession and its ReviewVerdict atomically so there
+		// is never a dangling session with no verdict if the verdict write fails.
 		reviewSessionUUID := "headless-review-" + uuid.New().String()
-		reviewIS, createErr := l.storage.CreateItemSession(ctx, ItemSessionData{
+		reviewIS, _, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
 			ItemID:      item.ID.String(),
 			SessionUUID: reviewSessionUUID,
 			SessionRole: SessionRoleReview,
 			AcSnapshot:  is.AcSnapshot,
+		}, ReviewVerdictData{
+			OverallOutcome: overall,
+			PerCriterion:   string(perCriterionJSON),
+			Summary:        summary,
 		})
 		if createErr != nil {
-			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSession (headless) item=%s: %v", item.ID, createErr)
+			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (headless) item=%s: %v", item.ID, createErr)
 			return
 		}
 
-		// Parse verdict from reviewResult and save.
-		if _, verdictErr := l.storage.SaveReviewVerdict(ctx, reviewIS.ID.String(), ReviewVerdictData{
-			ItemSessionID:  reviewIS.ID.String(),
-			OverallOutcome: ReviewVerdictPass, // default; real parsing can be added later
-			Summary:        reviewResult,
-		}); verdictErr != nil {
-			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate SaveReviewVerdict (headless) item=%s: %v", item.ID, verdictErr)
-		}
-
-		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate headless review complete for item %s (session %s)", item.ID, reviewSessionUUID)
+		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate headless review complete for item %s (session %s, outcome %s)", item.ID, reviewIS.ID, overall)
 		return
 	}
 

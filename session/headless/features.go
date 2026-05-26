@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
+	"time"
 )
 
 // Feature key constants for well-known AI features.
@@ -25,6 +28,26 @@ var AllowedFeatureKeys = map[FeatureKey]bool{
 	FeatureKeyCommitMessage: true,
 	FeatureKeyCustom:        true,
 }
+
+// AllowedFeatureKeyList returns a sorted comma-separated list of allowed feature keys
+// for use in error messages. Generated from AllowedFeatureKeys to stay in sync.
+func AllowedFeatureKeyList() string {
+	keys := make([]string, 0, len(AllowedFeatureKeys))
+	for k := range AllowedFeatureKeys {
+		keys = append(keys, string(k))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
+// DefaultCallTimeout is the default headless call timeout applied when timeout_seconds is 0.
+const DefaultCallTimeout = 900 * time.Second
+
+// MaxCallTimeout caps timeout_seconds.
+const MaxCallTimeout = 1800 * time.Second
+
+// MaxDiffSizeReview is the maximum number of bytes included in a review prompt diff.
+const MaxDiffSizeReview = 40_000
 
 // maxDiffSizePR is the max byte size for diffs passed to DraftPRDescription.
 const maxDiffSizePR = 40_000
@@ -49,9 +72,19 @@ const commitMessageSystemPrompt = `You are a commit message expert. Output a sin
 // This is separated from the per-call data payload (item, diff) to enable prefix-caching.
 const reviewSystemPrompt = `You are a code review agent. Your ONLY task is to evaluate the diff against the acceptance criteria and call submit_review_verdict. Do not write any code. Do not modify any files.`
 
+// headlessReviewSystemPrompt is used for headless review calls that have no tool access.
+// Instructs the model to output JSON instead of invoking a tool.
+const headlessReviewSystemPrompt = `You are a code review agent. Evaluate the diff against the acceptance criteria. Output ONLY a single JSON object — no other text before or after it:
+{"overall":"PASS","summary":"concise assessment","verdicts":[{"criterion_index":0,"outcome":"PASS","evidence":"direct quote from diff"}]}
+Valid outcome values: PASS, FAIL, PARTIAL, UNVERIFIABLE. Set overall to PASS only when every criterion passes.`
+
 // ReviewSystemPrompt returns the stable system prompt for review gate calls.
 // Exported so session/backlog_lifecycle.go can use it without embedding the prompt inline.
 func ReviewSystemPrompt() string { return reviewSystemPrompt }
+
+// HeadlessReviewSystemPrompt returns the system prompt for headless (no-tool) review calls.
+// Requests JSON output so the caller can parse the verdict without tool execution.
+func HeadlessReviewSystemPrompt() string { return headlessReviewSystemPrompt }
 
 // SummarizeBacklogItem calls the LLM to summarize a backlog item.
 // Returns the summary text from the JSON response.

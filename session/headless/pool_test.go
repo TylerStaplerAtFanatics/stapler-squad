@@ -107,7 +107,8 @@ func TestPool_ParsesSessionIDFromFirstCallJSON(t *testing.T) {
 	assert.Equal(t, "abc", state.sessionID)
 }
 
-// TestPool_Call_ContextCancel_ClosesChannel verifies channel closure on cancellation.
+// TestPool_Call_ContextCancel_ClosesChannel verifies that a pre-cancelled context
+// either returns an error immediately or closes the channel without hanging.
 func TestPool_Call_ContextCancel_ClosesChannel(t *testing.T) {
 	runner := NewFakeRunner(firstCallJSON("s1", "result"))
 	pool := newTestPool(PoolConfig{}, runner)
@@ -116,9 +117,12 @@ func TestPool_Call_ContextCancel_ClosesChannel(t *testing.T) {
 	cancel() // pre-cancel
 
 	ch, err := pool.Call(ctx, "f1", "sys", "prompt")
-	require.NoError(t, err)
+	if err != nil {
+		// Error on pre-cancelled context is the expected fast path.
+		return
+	}
 
-	// Channel should close eventually.
+	// If no error, channel must still close promptly.
 	timeout := time.After(3 * time.Second)
 	for {
 		select {
@@ -327,7 +331,7 @@ type trackingRunner struct {
 	onStop    func()
 }
 
-func (r *trackingRunner) Run(ctx context.Context, args []string) (io.ReadCloser, func() error, error) {
+func (r *trackingRunner) Run(ctx context.Context, args []string, _ io.Reader) (io.ReadCloser, func() error, error) {
 	r.onStart()
 
 	r.mu.Lock()
@@ -430,6 +434,141 @@ func TestFakeRunner_InspectsArgs_ReturnsJSONForFirstCall(t *testing.T) {
 	result, err := pool.CallBlocking(context.Background(), "f1", "sys", "prompt")
 	require.NoError(t, err)
 	assert.Equal(t, "ok", result)
+}
+
+// TestPool_FirstCall_IsError_ReturnsErrorChunk verifies LLM-level error handling.
+func TestPool_FirstCall_IsError_ReturnsErrorChunk(t *testing.T) {
+	errorJSON := `{"session_id":"","result":"model refused to respond","is_error":true,"cost_usd":0}`
+	runner := NewFakeRunner(errorJSON)
+	pool := newTestPool(PoolConfig{}, runner)
+
+	ch, err := pool.Call(context.Background(), "f1", "sys", "prompt")
+	require.NoError(t, err)
+
+	var gotErr bool
+	var errMsg string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			gotErr = true
+			errMsg = chunk.Err.Error()
+		}
+	}
+	assert.True(t, gotErr, "expected an error chunk from is_error=true response")
+	assert.Contains(t, errMsg, "model refused")
+}
+
+// TestPool_FirstCall_CostUSD_ForwardedOnDoneChunk verifies cost_usd propagation.
+func TestPool_FirstCall_CostUSD_ForwardedOnDoneChunk(t *testing.T) {
+	costJSON := `{"session_id":"s1","result":"ok","is_error":false,"cost_usd":0.0042}`
+	runner := NewFakeRunner(costJSON)
+	pool := newTestPool(PoolConfig{}, runner)
+
+	ch, err := pool.Call(context.Background(), "f1", "sys", "prompt")
+	require.NoError(t, err)
+
+	var doneCost float64
+	for chunk := range ch {
+		if chunk.Done {
+			doneCost = chunk.CostUSD
+		}
+	}
+	assert.InDelta(t, 0.0042, doneCost, 1e-9, "cost_usd must be forwarded on the done chunk")
+}
+
+// TestPool_CallWithOptions_WorkDir_FakeRunner_ReturnsError verifies that WorkDir
+// with a non-ProcessRunner returns an error immediately (not silent fallback).
+func TestPool_CallWithOptions_WorkDir_FakeRunner_ReturnsError(t *testing.T) {
+	runner := NewFakeRunner(firstCallJSON("s1", "ok"))
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	_, err := pool.CallWithOptions(context.Background(), "f1", "sys", "prompt", CallOptions{
+		WorkDir: "/some/dir",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ProcessRunner")
+}
+
+// TestPool_CtxCancel_DuringFirstCall_DoesNotHang verifies that a context cancelled
+// while io.ReadAll is in progress causes the call to return promptly.
+func TestPool_CtxCancel_DuringFirstCall_DoesNotHang(t *testing.T) {
+	// Use a blocking reader that never completes — the cancel should unblock it.
+	runner := &blockingRunner{}
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var ch <-chan StreamChunk
+	var err error
+	started := make(chan struct{})
+	go func() {
+		ch, err = pool.Call(ctx, "f1", "sys", "prompt")
+		close(started)
+	}()
+
+	// Cancel context immediately after Call is invoked to simulate midpoint cancel.
+	cancel()
+	<-started
+
+	if err != nil {
+		return // cancelled before subprocess started — OK
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range ch {
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("channel did not drain within 3s after context cancellation")
+	}
+}
+
+// blockingRunner is a ClaudeRunner whose stdout blocks until the context is done.
+type blockingRunner struct{}
+
+func (r *blockingRunner) Run(ctx context.Context, _ []string, _ io.Reader) (io.ReadCloser, func() error, error) {
+	pr, pw := io.Pipe()
+	go func() {
+		<-ctx.Done()
+		_ = pw.CloseWithError(ctx.Err())
+	}()
+	return pr, func() error { return pw.CloseWithError(nil) }, nil
+}
+
+// TestPool_CtxCancel_DuringSemaphoreWait_DecrementsCallCount verifies that a
+// context cancellation while blocked on the concurrency semaphore does not
+// permanently inflate callCount (decrementCallCount is called on the cancel path).
+func TestPool_CtxCancel_DuringSemaphoreWait_DecrementsCallCount(t *testing.T) {
+	runner := NewFakeRunner()
+	// MaxConcurrentSessions=1 so a single manually-occupied slot blocks the next Call.
+	pool := newTestPool(PoolConfig{MaxConcurrentSessions: 1, MaxCallsPerSession: 100}, runner)
+
+	// Occupy the one semaphore slot so the next Call must block on acquire.
+	pool.concurrencySem <- struct{}{}
+
+	// Pre-cancel the context so the select in call() fires ctx.Done() immediately.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := pool.Call(ctx, "f1", "sys", "prompt")
+
+	// Release the semaphore slot we manually occupied.
+	<-pool.concurrencySem
+
+	// The call must return an error (context cancelled), not succeed.
+	require.Error(t, err, "expected error when ctx cancelled during semaphore wait")
+	assert.ErrorIs(t, err, context.Canceled)
+
+	// callCount must be 0 — decrementCallCount was called on the cancellation path,
+	// undoing the increment from acquireSession.
+	pool.mu.Lock()
+	state := pool.sessions["f1"]
+	pool.mu.Unlock()
+	require.NotNil(t, state, "session state must exist after Call")
+	assert.Equal(t, 0, state.callCount, "callCount must be 0 after ctx cancel during semaphore wait")
 }
 
 // TestFakeRunner_InspectsArgs_ReturnsPlainForResumedCall verifies resumed-call plain text.

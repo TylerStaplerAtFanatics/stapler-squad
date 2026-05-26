@@ -2795,6 +2795,7 @@ func (s *SessionService) RunOneShot(
 		outputStr, callErr = s.headlessPool.CallBlockingWithOptions(runCtx, headless.FeatureKeyCustom, "", req.Msg.Prompt, headless.CallOptions{WorkDir: workDir})
 		if callErr != nil {
 			errMsg = callErr.Error()
+			exitCode = 1
 		}
 	} else {
 		// Fallback: direct subprocess (requires claude in PATH).
