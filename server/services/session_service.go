@@ -982,9 +982,18 @@ func (s *SessionService) UpdateSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	instances, err := s.storage.LoadInstances()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	// Use the live poller list to avoid LoadInstances side-effects (Start() on Active
+	// sessions) that can silently drop sessions if tmux is unavailable, which would then
+	// clobber the poller's complete list via SetInstances.
+	var instances []*session.Instance
+	if s.reviewQueuePoller != nil {
+		instances = s.reviewQueuePoller.GetInstances()
+	} else {
+		var loadErr error
+		instances, loadErr = s.loadInstancesWithWiring()
+		if loadErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", loadErr))
+		}
 	}
 
 	// Find the instance to update
@@ -1096,12 +1105,6 @@ func (s *SessionService) UpdateSession(
 	instances[instanceIndex] = instance
 	if err := s.storage.SaveInstances(instances); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
-	}
-
-	// CRITICAL: Update the ReviewQueuePoller's instance references after updating session
-	if s.reviewQueuePoller != nil {
-		s.reviewQueuePoller.SetInstances(instances)
-		log.Info("[ReviewQueue] updated poller instance references after UpdateSession", "session", instance.Title)
 	}
 
 	// Publish events based on what was updated
@@ -1913,9 +1916,17 @@ func (s *SessionService) RenameSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("new title is required"))
 	}
 
-	instances, err := s.loadInstancesWithWiring()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	// Use the live poller list for the same reason as UpdateSession: avoid LoadInstances
+	// side-effects that can drop sessions and clobber the poller list via SetInstances.
+	var instances []*session.Instance
+	if s.reviewQueuePoller != nil {
+		instances = s.reviewQueuePoller.GetInstances()
+	} else {
+		var loadErr error
+		instances, loadErr = s.loadInstancesWithWiring()
+		if loadErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", loadErr))
+		}
 	}
 
 	// Find the instance to rename
@@ -1955,12 +1966,6 @@ func (s *SessionService) RenameSession(
 		// Try to rollback the rename
 		instance.Title = oldTitle
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save renamed instance: %w", err))
-	}
-
-	// Update the ReviewQueuePoller's instance references after renaming
-	if s.reviewQueuePoller != nil {
-		s.reviewQueuePoller.SetInstances(instances)
-		log.Info("[ReviewQueue] updated poller instance references after RenameSession", "from", oldTitle, "to", req.Msg.NewTitle)
 	}
 
 	// Publish SessionUpdated event
