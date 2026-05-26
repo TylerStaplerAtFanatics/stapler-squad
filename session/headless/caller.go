@@ -26,6 +26,7 @@ type CallOptions struct {
 type firstCallJSONResult struct {
 	SessionID string  `json:"session_id"`
 	Result    string  `json:"result"`
+	IsError   bool    `json:"is_error"`
 	CostUSD   float64 `json:"cost_usd"`
 }
 
@@ -68,7 +69,8 @@ func newPoolWithRunner(cfg PoolConfig, runner ClaudeRunner, claudeBin string) *P
 	}
 }
 
-// acquireSession reads current session state for key and builds the subprocess args.
+// acquireSession reads current session state for key and builds the subprocess args
+// (flags only — the user prompt is passed via stdin by the caller, not in args).
 // It increments callCount under lock before returning.
 // Returns isFirstCall=true when this call should use --output-format json.
 //
@@ -157,25 +159,52 @@ func (p *Pool) recordError(key FeatureKey) bool {
 	return false
 }
 
+// decrementCallCount reverses a premature callCount increment for key.
+// Called when the semaphore acquire is cancelled or runner.Run fails before any
+// output is produced, so the call slot is not consumed.
+func (p *Pool) decrementCallCount(key FeatureKey) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if state, ok := p.sessions[key]; ok && state.callCount > 0 {
+		state.callCount--
+	}
+}
+
 // Call starts a streaming headless LLM call for the given feature key.
 // It returns a channel that receives StreamChunk values. The channel is closed
 // when the subprocess exits (or the context is cancelled).
 //
 // The caller should drain the channel until Done=true or Err!=nil.
 func (p *Pool) Call(ctx context.Context, key FeatureKey, systemPrompt, userPrompt string) (<-chan StreamChunk, error) {
-	isFirstCall, baseArgs := p.acquireSession(key, systemPrompt, p.cfg.DefaultModel)
+	return p.call(ctx, key, systemPrompt, userPrompt, p.cfg.DefaultModel, p.runner)
+}
 
-	// Append user prompt as the final argument.
-	args := append(baseArgs, userPrompt)
+// call is the internal implementation shared by Call and CallWithOptions.
+// model is the effective model override; runner is the subprocess launcher to use.
+func (p *Pool) call(ctx context.Context, key FeatureKey, systemPrompt, userPrompt, model string, runner ClaudeRunner) (<-chan StreamChunk, error) {
+	isFirstCall, args := p.acquireSession(key, systemPrompt, model)
+
+	// Pass the user prompt via stdin so it does not appear in /proc/<pid>/cmdline.
+	// This prevents leaking diff content (which may contain sensitive paths or tokens)
+	// to any process listing tool on the host.
+	stdinReader := strings.NewReader(userPrompt)
 
 	ch := make(chan StreamChunk, 16)
 
-	// Acquire concurrency semaphore before starting the subprocess.
-	p.concurrencySem <- struct{}{}
+	// Acquire concurrency semaphore with context awareness so callers are not
+	// permanently blocked when ctx is cancelled while the semaphore is full.
+	select {
+	case p.concurrencySem <- struct{}{}:
+	case <-ctx.Done():
+		p.decrementCallCount(key)
+		close(ch)
+		return ch, ctx.Err()
+	}
 
-	stdout, stop, err := p.runner.Run(ctx, args)
+	stdout, stop, err := runner.Run(ctx, args, stdinReader)
 	if err != nil {
 		<-p.concurrencySem // release on startup failure
+		p.decrementCallCount(key)
 		if tripBreaker := p.recordError(key); tripBreaker {
 			p.rotateSession(key)
 		}
@@ -198,8 +227,26 @@ func (p *Pool) Call(ctx context.Context, key FeatureKey, systemPrompt, userPromp
 		}
 
 		if isFirstCall {
-			// First call: accumulate all output and parse JSON.
-			data, readErr := io.ReadAll(stdout)
+			// First call: accumulate all output in a helper goroutine so that ctx
+			// cancellation can terminate the subprocess and unblock the read.
+			readDone := make(chan struct{})
+			var data []byte
+			var readErr error
+			go func() {
+				defer close(readDone)
+				data, readErr = io.ReadAll(stdout)
+			}()
+
+			select {
+			case <-readDone:
+				// Normal completion — fall through to JSON parsing.
+			case <-ctx.Done():
+				// Kill subprocess to unblock the ReadAll goroutine, then wait.
+				_ = stop()
+				<-readDone
+				return
+			}
+
 			if readErr != nil && !errors.Is(readErr, io.EOF) {
 				if tripBreaker := p.recordError(key); tripBreaker {
 					p.rotateSession(key)
@@ -208,7 +255,7 @@ func (p *Pool) Call(ctx context.Context, key FeatureKey, systemPrompt, userPromp
 				return
 			}
 
-			// Check for context cancellation before parsing.
+			// Guard against a ctx cancellation race after ReadAll completes.
 			if ctx.Err() != nil {
 				return
 			}
@@ -229,6 +276,15 @@ func (p *Pool) Call(ctx context.Context, key FeatureKey, systemPrompt, userPromp
 				return
 			}
 
+			// claude -p sets is_error=true when the LLM returns an error response.
+			if result.IsError {
+				if tripBreaker := p.recordError(key); tripBreaker {
+					p.rotateSession(key)
+				}
+				send(StreamChunk{Err: fmt.Errorf("claude reported error: %s", strings.TrimSpace(result.Result)), Done: true})
+				return
+			}
+
 			// Store the session ID for future resume calls.
 			if result.SessionID != "" {
 				p.storeSessionID(key, result.SessionID)
@@ -239,7 +295,7 @@ func (p *Pool) Call(ctx context.Context, key FeatureKey, systemPrompt, userPromp
 					return
 				}
 			}
-			send(StreamChunk{Done: true})
+			send(StreamChunk{Done: true, CostUSD: result.CostUSD})
 			return
 		}
 
@@ -269,18 +325,58 @@ func (p *Pool) Call(ctx context.Context, key FeatureKey, systemPrompt, userPromp
 }
 
 // CallWithOptions is like Call but allows overriding model and working directory.
-// If opts.WorkDir is non-empty and the underlying runner is a *ProcessRunner, a
-// new runner with that workDir is used for this call only (bypasses pool session reuse
-// since workDir changes invalidate session caching).
+//
+// When opts.WorkDir is non-empty a fresh one-shot subprocess is used (bypassing
+// session caching, which is invalid across directory changes). The parent pool's
+// concurrency semaphore is still acquired so WorkDir calls count against the
+// pool-level cap.
+//
+// When opts.WorkDir is empty, opts.Model is forwarded to the pool's acquireSession
+// so the correct model is used for the first-call (session-initialisation) request.
 func (p *Pool) CallWithOptions(ctx context.Context, key FeatureKey, systemPrompt, userPrompt string, opts CallOptions) (<-chan StreamChunk, error) {
 	if opts.WorkDir != "" {
-		if pr, ok := p.runner.(*ProcessRunner); ok {
-			dirRunner := pr.WithWorkDir(opts.WorkDir)
-			oneShot := NewPoolWithRunner(PoolConfig{MaxCallsPerSession: 1, MaxConcurrentSessions: 1, DefaultModel: opts.Model}, dirRunner)
-			return oneShot.Call(ctx, key, systemPrompt, userPrompt)
+		pr, ok := p.runner.(*ProcessRunner)
+		if !ok {
+			ch := make(chan StreamChunk)
+			close(ch)
+			return ch, fmt.Errorf("CallWithOptions: WorkDir requires a ProcessRunner; got %T", p.runner)
 		}
+
+		// Acquire parent semaphore so WorkDir calls count toward the overall cap.
+		select {
+		case p.concurrencySem <- struct{}{}:
+		case <-ctx.Done():
+			ch := make(chan StreamChunk)
+			close(ch)
+			return ch, ctx.Err()
+		}
+
+		dirRunner := pr.WithWorkDir(opts.WorkDir)
+		oneShot := NewPoolWithRunner(PoolConfig{MaxCallsPerSession: 1, MaxConcurrentSessions: 1, DefaultModel: opts.Model}, dirRunner)
+		innerCh, err := oneShot.Call(ctx, key, systemPrompt, userPrompt)
+		if err != nil {
+			<-p.concurrencySem
+			return innerCh, err
+		}
+
+		// Proxy the inner channel, releasing the parent semaphore when done.
+		outCh := make(chan StreamChunk, 16)
+		go func() {
+			defer close(outCh)
+			defer func() { <-p.concurrencySem }()
+			for chunk := range innerCh {
+				select {
+				case outCh <- chunk:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		return outCh, nil
 	}
-	return p.Call(ctx, key, systemPrompt, userPrompt)
+
+	// No WorkDir override: use the pool's session reuse path, forwarding opts.Model.
+	return p.call(ctx, key, systemPrompt, userPrompt, opts.Model, p.runner)
 }
 
 // CallBlockingWithOptions is like CallBlocking but supports WorkDir and Model overrides.

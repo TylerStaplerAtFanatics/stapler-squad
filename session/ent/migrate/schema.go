@@ -440,6 +440,11 @@ var (
 				Unique:  false,
 				Columns: []*schema.Column{ItemSessionsColumns[1]},
 			},
+			{
+				Name:    "itemsession_created_at_backlog_item_item_sessions",
+				Unique:  false,
+				Columns: []*schema.Column{ItemSessionsColumns[13], ItemSessionsColumns[14]},
+			},
 		},
 	}
 	// ItemSourcesColumns holds the columns for the "item_sources" table.

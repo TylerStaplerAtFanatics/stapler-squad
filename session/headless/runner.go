@@ -7,24 +7,28 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"strings"
 
 	"github.com/tstapler/stapler-squad/executor"
 )
 
 // StreamChunk is a single unit of output from a headless LLM call.
 type StreamChunk struct {
-	Text string
-	Err  error
-	Done bool
+	Text    string
+	Err     error
+	Done    bool
+	CostUSD float64 // non-zero only on the final chunk from a first-call JSON response
 }
 
 // ClaudeRunner abstracts how claude -p subprocesses are started.
 // Implementors: ProcessRunner (real), FakeRunner (tests).
 type ClaudeRunner interface {
-	// Run starts claude -p with the given args and returns a ReadCloser for stdout,
+	// Run starts claude -p with the given args. stdin provides the user prompt so
+	// it does not appear in /proc/<pid>/cmdline. Returns a ReadCloser for stdout,
 	// a stop function to kill the process, and an error if the process fails to start.
 	// The caller must call stop() to release resources even when the ReadCloser is drained.
-	Run(ctx context.Context, args []string) (stdout io.ReadCloser, stop func() error, err error)
+	Run(ctx context.Context, args []string, stdin io.Reader) (stdout io.ReadCloser, stop func() error, err error)
 }
 
 // Error sentinels returned in StreamChunk.Err or from CallBlocking.
@@ -51,12 +55,45 @@ func (r *ProcessRunner) WithWorkDir(workDir string) *ProcessRunner {
 	return &ProcessRunner{claudeBin: r.claudeBin, workDir: workDir}
 }
 
+// claudeAllowedEnvPrefixes lists the env-var prefixes that are forwarded to the
+// claude subprocess. Everything else is stripped to avoid leaking credentials,
+// database URLs, or other secrets from the parent process.
+var claudeAllowedEnvPrefixes = []string{
+	"HOME=", "PATH=", "USER=", "LOGNAME=", "SHELL=",
+	"TMPDIR=", "TEMP=", "TMP=",
+	"XDG_", "CLAUDE_", "ANTHROPIC_",
+	"LANG=", "LANGUAGE=", "LC_",
+}
+
+// filteredEnv returns os.Environ() with only the vars that match claudeAllowedEnvPrefixes.
+func filteredEnv() []string {
+	all := os.Environ()
+	out := make([]string, 0, len(all))
+	for _, kv := range all {
+		for _, prefix := range claudeAllowedEnvPrefixes {
+			if strings.HasPrefix(kv, prefix) {
+				out = append(out, kv)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // Run starts the claude binary with args and returns a ReadCloser for stdout.
-// The stop function terminates the subprocess and must always be called.
-func (r *ProcessRunner) Run(ctx context.Context, args []string) (io.ReadCloser, func() error, error) {
-	opts := []executor.ProcessOption{executor.WithNoControllingTerminal()}
+// stdin provides the user prompt to the subprocess so it does not appear in
+// /proc/<pid>/cmdline. The stop function terminates the subprocess and must
+// always be called.
+func (r *ProcessRunner) Run(ctx context.Context, args []string, stdin io.Reader) (io.ReadCloser, func() error, error) {
+	opts := []executor.ProcessOption{
+		executor.WithNoControllingTerminal(),
+		executor.WithProcessReplaceEnv(filteredEnv()),
+	}
 	if r.workDir != "" {
 		opts = append(opts, executor.WithProcessDir(r.workDir))
+	}
+	if stdin != nil {
+		opts = append(opts, executor.WithProcessStdin(stdin))
 	}
 	proc, err := executor.StartProcess(ctx, r.claudeBin, args, opts...)
 	if err != nil {

@@ -33,8 +33,9 @@ func NewFakeRunner(responses ...string) *FakeRunner {
 }
 
 // Run returns the next scripted response (or error). It records args in Calls.
+// stdin is accepted to satisfy the ClaudeRunner interface but is not inspected.
 // The stop function is a no-op.
-func (f *FakeRunner) Run(_ context.Context, args []string) (io.ReadCloser, func() error, error) {
+func (f *FakeRunner) Run(_ context.Context, args []string, _ io.Reader) (io.ReadCloser, func() error, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
