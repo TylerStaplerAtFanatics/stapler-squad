@@ -350,6 +350,14 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		log.InfoLog.Printf("Registered BacklogService handler at %s", blAPIPath)
 	}
 
+	// Register HeadlessService handler (nil guard: pool may be absent if claude not found).
+	if deps.HeadlessPool != nil {
+		hlSvc := services.NewHeadlessService(deps.HeadlessPool)
+		hlPath, hlHandler := sessionv1connect.NewHeadlessServiceHandler(hlSvc, ConnectOptions(deps.ErrorRegistry)...)
+		hlAPIPath := "/api" + hlPath
+		srv.RegisterConnectHandler(hlAPIPath, http.StripPrefix("/api", hlHandler))
+		log.Info("Registered HeadlessService handler", "path", hlAPIPath)
+	}
 
 	// Wire external session support into the unified WebSocket handler
 	wsHandler.SetExternalSessionSupport(deps.ExternalDiscovery)

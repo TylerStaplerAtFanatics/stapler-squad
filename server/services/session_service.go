@@ -25,6 +25,7 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/detection"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/namegen"
 	"github.com/tstapler/stapler-squad/session/prompts"
 	"github.com/tstapler/stapler-squad/session/search"
@@ -130,6 +131,10 @@ type SessionService struct {
 	// memoryCacheReader provides per-session RSS and system memory percentage.
 	// Wired to the HibernationSweeper after startup. May be nil (fields default to 0).
 	memoryCacheReader session.MemoryCacheReader
+
+	// headlessPool is the shared LLM pool for non-interactive AI calls (RunOneShot, etc.).
+	// May be nil when the claude binary is not found at startup.
+	headlessPool *headless.Pool
 }
 
 // ScrollbackSequencer is the minimal interface SessionService needs from ScrollbackManager.
@@ -515,6 +520,11 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 // from it and cannot be re-persisted by the shutdown hook.
 func (s *SessionService) SetHistoryLinker(hl *session.HistoryLinker) {
 	s.historyLinker = hl
+}
+
+// SetHeadlessPool wires the headless LLM pool for use by RunOneShot and other AI features.
+func (s *SessionService) SetHeadlessPool(pool *headless.Pool) {
+	s.headlessPool = pool
 }
 
 // SetReviewQueuePoller wires the ReviewQueuePoller so new/deleted sessions are
@@ -2763,38 +2773,49 @@ func (s *SessionService) RunOneShot(
 		workDir = inst.Path
 	}
 
-	// Clamp timeout: default 120 s, max 300 s.
+	// Clamp timeout: default 900 s (raised from 120 s for longer operations), max 1800 s.
 	timeoutSecs := int(req.Msg.TimeoutSeconds)
 	if timeoutSecs <= 0 {
-		timeoutSecs = 120
+		timeoutSecs = 900
 	}
-	if timeoutSecs > 300 {
-		timeoutSecs = 300
-	}
-
-	claudeBin, err := exec.LookPath("claude")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("claude binary not found in PATH: %w", err))
+	if timeoutSecs > 1800 {
+		timeoutSecs = 1800
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
-	cmd := safeexec.CommandContext(runCtx, claudeBin, "-p", req.Msg.Prompt)
-	cmd.Dir = workDir
-
-	output, runErr := cmd.CombinedOutput()
+	var outputStr string
 	exitCode := 0
 	errMsg := ""
-	if runErr != nil {
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			errMsg = runErr.Error()
-		}
-	}
 
-	outputStr := string(output)
+	if s.headlessPool != nil {
+		// Use headless pool for improved streaming and session reuse.
+		var callErr error
+		outputStr, callErr = s.headlessPool.CallBlockingWithOptions(runCtx, headless.FeatureKeyCustom, "", req.Msg.Prompt, headless.CallOptions{WorkDir: workDir})
+		if callErr != nil {
+			errMsg = callErr.Error()
+		}
+	} else {
+		// Fallback: direct subprocess (requires claude in PATH).
+		claudeBin, err := exec.LookPath("claude")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("claude binary not found in PATH: %w", err))
+		}
+
+		cmd := safeexec.CommandContext(runCtx, claudeBin, "-p", req.Msg.Prompt)
+		cmd.Dir = workDir
+
+		output, runErr := cmd.CombinedOutput()
+		if runErr != nil {
+			if exitErr, ok := runErr.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				errMsg = runErr.Error()
+			}
+		}
+		outputStr = string(output)
+	}
 	prURL := extractPRURL(outputStr)
 	branchDiverged := checkBranchDivergence(workDir)
 
