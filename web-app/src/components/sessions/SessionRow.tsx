@@ -78,6 +78,7 @@ function getAgentEmoji(program: string): string {
   if (p.includes("copilot")) return "◈";
   if (p.includes("gpt") || p.includes("openai")) return "◉";
   if (p.includes("gemini")) return "◆";
+  if (p.includes("agy") || p.includes("antigravity")) return "◆";
   return "◇";
 }
 
