@@ -16,6 +16,7 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/cdp"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/scrollback"
 	"github.com/tstapler/stapler-squad/session/tmux"
 	"github.com/tstapler/stapler-squad/session/tokens"
@@ -65,6 +66,9 @@ type ServerDependencies struct {
 	// CDPDeps holds the result of the startup CDP (Chrome) dependency check.
 	// Available=false means CDP browser streaming is unavailable on this host.
 	CDPDeps cdp.DepsResult
+
+	// HeadlessPool manages headless LLM calls. Nil when the claude binary is not found.
+	HeadlessPool *headless.Pool
 }
 
 // ToServerDeps converts RuntimeDeps to the flat ServerDependencies struct consumed
@@ -95,6 +99,7 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		AnalyticsEntClient:      rt.AnalyticsEntClient,
 		VNCDeps:                 rt.VNCDeps,
 		CDPDeps:                 rt.CDPDeps,
+		HeadlessPool:            rt.HeadlessPool,
 	}
 }
 
@@ -362,6 +367,9 @@ type RuntimeDeps struct {
 
 	// CDPDeps holds the result of the startup CDP (Chrome) dependency check.
 	CDPDeps cdp.DepsResult
+
+	// HeadlessPool manages headless LLM calling. Nil when claude binary is not found.
+	HeadlessPool *headless.Pool
 }
 
 // BuildRuntimeDeps constructs Phase 3 dependencies using Phase 2 outputs.
@@ -689,6 +697,25 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
+	// Construct the headless LLM pool now (before wiring into services) so we can also
+	// wire it into SessionService for RunOneShot calls. Pool construction happens here so
+	// the BacklogLifecycleListener can also get the pool. Non-fatal if claude not found.
+	var headlessPoolEarly *headless.Pool
+	{
+		p, poolErr := headless.NewPool(headless.PoolConfig{
+			MaxCallsPerSession:    25,
+			MaxConcurrentSessions: 5,
+		})
+		if poolErr != nil {
+			log.Warn("headless pool disabled: claude binary not found", "err", poolErr)
+		} else {
+			headlessPoolEarly = p
+			headless.SetDefaultPool(p)
+			sessionService.SetHeadlessPool(p)
+			log.Info("headless LLM pool initialized, wired to SessionService")
+		}
+	}
+
 	// Check VNC dependencies once at startup so the server knows whether browser
 	// passthrough is available on this host. Non-fatal: Missing deps log a warning.
 	vncDeps := vnc.CheckDependencies()
@@ -723,6 +750,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 
 
 	return &RuntimeDeps{
+		HeadlessPool: headlessPoolEarly,
 		ServiceDeps:             svc,
 		Instances:               instances,
 		ReactiveQueueMgr:        reactiveQueueMgr,
