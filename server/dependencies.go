@@ -471,6 +471,13 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 			}
 		}
 
+		// Step 6c: Reconcile custom shells — rebuild in-memory state from ent for
+		// shells that were running when the server last shut down. Must run after
+		// Step 6/6b so tmux sessions are attached before shell liveness probes fire.
+		for _, inst := range instances {
+			inst.ReconcileShells(context.Background())
+		}
+
 		// Step 6.5: Persist any auto-detected worktree info (must happen after Step 6)
 		if len(instances) > 0 {
 			if err := storage.SaveInstances(instances); err != nil {

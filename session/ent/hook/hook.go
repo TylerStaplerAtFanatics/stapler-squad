@@ -189,6 +189,18 @@ func (f SessionFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, err
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.SessionMutation", m)
 }
 
+// The ShellFunc type is an adapter to allow the use of ordinary
+// function as Shell mutator.
+type ShellFunc func(context.Context, *ent.ShellMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f ShellFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.ShellMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.ShellMutation", m)
+}
+
 // The SourceSyncEventFunc type is an adapter to allow the use of ordinary
 // function as SourceSyncEvent mutator.
 type SourceSyncEventFunc func(context.Context, *ent.SourceSyncEventMutation) (ent.Value, error)

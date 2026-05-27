@@ -15,6 +15,7 @@ type HistoryFileWatcher struct {
 	watchDir string
 	callback func(filePath string)
 	watcher  *fsnotify.Watcher
+	stopped  chan struct{}
 }
 
 // NewHistoryFileWatcher creates a watcher for the given directory.
@@ -29,6 +30,7 @@ func NewHistoryFileWatcher(watchDir string, callback func(filePath string)) *His
 	return &HistoryFileWatcher{
 		watchDir: watchDir,
 		callback: callback,
+		stopped:  make(chan struct{}),
 	}
 }
 
@@ -37,17 +39,20 @@ func NewHistoryFileWatcher(watchDir string, callback func(filePath string)) *His
 func (w *HistoryFileWatcher) Start(ctx context.Context) error {
 	if _, err := os.Stat(w.watchDir); os.IsNotExist(err) {
 		log.Warn("history file watcher: watch directory does not exist", "path", w.watchDir)
+		close(w.stopped)
 		return nil
 	}
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
+		close(w.stopped)
 		return err
 	}
 	w.watcher = watcher
 
 	if err := watcher.Add(w.watchDir); err != nil {
 		watcher.Close()
+		close(w.stopped)
 		return err
 	}
 
@@ -65,7 +70,13 @@ func (w *HistoryFileWatcher) Start(ctx context.Context) error {
 	return nil
 }
 
+// Stopped returns a channel that is closed when the watcher goroutine has exited.
+func (w *HistoryFileWatcher) Stopped() <-chan struct{} {
+	return w.stopped
+}
+
 func (w *HistoryFileWatcher) run(ctx context.Context) {
+	defer close(w.stopped)
 	defer func() {
 		if w.watcher != nil {
 			w.watcher.Close()

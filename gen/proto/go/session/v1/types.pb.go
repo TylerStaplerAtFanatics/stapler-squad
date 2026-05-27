@@ -1176,6 +1176,62 @@ func (ScanStatus) EnumDescriptor() ([]byte, []int) {
 	return file_session_v1_types_proto_rawDescGZIP(), []int{17}
 }
 
+// ShellStatus represents the lifecycle state of a custom shell.
+type ShellStatus int32
+
+const (
+	ShellStatus_SHELL_STATUS_UNSPECIFIED ShellStatus = 0
+	// Shell process is running.
+	ShellStatus_SHELL_STATUS_RUNNING ShellStatus = 1
+	// Shell process exited cleanly (exit code 0) or was explicitly stopped.
+	ShellStatus_SHELL_STATUS_STOPPED ShellStatus = 2
+	// Shell process exited with non-zero exit code or failed to start.
+	ShellStatus_SHELL_STATUS_ERROR ShellStatus = 3
+)
+
+// Enum value maps for ShellStatus.
+var (
+	ShellStatus_name = map[int32]string{
+		0: "SHELL_STATUS_UNSPECIFIED",
+		1: "SHELL_STATUS_RUNNING",
+		2: "SHELL_STATUS_STOPPED",
+		3: "SHELL_STATUS_ERROR",
+	}
+	ShellStatus_value = map[string]int32{
+		"SHELL_STATUS_UNSPECIFIED": 0,
+		"SHELL_STATUS_RUNNING":     1,
+		"SHELL_STATUS_STOPPED":     2,
+		"SHELL_STATUS_ERROR":       3,
+	}
+)
+
+func (x ShellStatus) Enum() *ShellStatus {
+	p := new(ShellStatus)
+	*p = x
+	return p
+}
+
+func (x ShellStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ShellStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_session_v1_types_proto_enumTypes[18].Descriptor()
+}
+
+func (ShellStatus) Type() protoreflect.EnumType {
+	return &file_session_v1_types_proto_enumTypes[18]
+}
+
+func (x ShellStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ShellStatus.Descriptor instead.
+func (ShellStatus) EnumDescriptor() ([]byte, []int) {
+	return file_session_v1_types_proto_rawDescGZIP(), []int{18}
+}
+
 // SuggestionSource identifies what data was used to generate a rule suggestion.
 type SuggestionSource int32
 
@@ -1213,11 +1269,11 @@ func (x SuggestionSource) String() string {
 }
 
 func (SuggestionSource) Descriptor() protoreflect.EnumDescriptor {
-	return file_session_v1_types_proto_enumTypes[18].Descriptor()
+	return file_session_v1_types_proto_enumTypes[19].Descriptor()
 }
 
 func (SuggestionSource) Type() protoreflect.EnumType {
-	return &file_session_v1_types_proto_enumTypes[18]
+	return &file_session_v1_types_proto_enumTypes[19]
 }
 
 func (x SuggestionSource) Number() protoreflect.EnumNumber {
@@ -1226,7 +1282,7 @@ func (x SuggestionSource) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use SuggestionSource.Descriptor instead.
 func (SuggestionSource) EnumDescriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{18}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{19}
 }
 
 // Session represents a running AI agent instance with its associated state.
@@ -5351,6 +5407,125 @@ func (x *UnfinishedWorkConfig) GetPinnedRepos() []string {
 	return nil
 }
 
+// Shell represents a custom shell session attached to a parent session.
+// Each shell runs as an independent sibling tmux session.
+type Shell struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unique identifier (UUID).
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Human-readable name (defaults to basename of command).
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Command that was launched (e.g., "/bin/bash", "python3").
+	Command string `protobuf:"bytes,3,opt,name=command,proto3" json:"command,omitempty"`
+	// Working directory for the shell process.
+	WorkingDir string `protobuf:"bytes,4,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
+	// Current lifecycle status.
+	Status ShellStatus `protobuf:"varint,5,opt,name=status,proto3,enum=session.v1.ShellStatus" json:"status,omitempty"`
+	// Exit code of the process (only meaningful when status is STOPPED or ERROR).
+	ExitCode int32 `protobuf:"varint,6,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	// Display order index (0-based).
+	OrderIndex int32 `protobuf:"varint,7,opt,name=order_index,json=orderIndex,proto3" json:"order_index,omitempty"`
+	// When the shell was started.
+	StartedAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	// When the shell stopped (only set when status is STOPPED or ERROR).
+	StoppedAt     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=stopped_at,json=stoppedAt,proto3" json:"stopped_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Shell) Reset() {
+	*x = Shell{}
+	mi := &file_session_v1_types_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Shell) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Shell) ProtoMessage() {}
+
+func (x *Shell) ProtoReflect() protoreflect.Message {
+	mi := &file_session_v1_types_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Shell.ProtoReflect.Descriptor instead.
+func (*Shell) Descriptor() ([]byte, []int) {
+	return file_session_v1_types_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *Shell) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Shell) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Shell) GetCommand() string {
+	if x != nil {
+		return x.Command
+	}
+	return ""
+}
+
+func (x *Shell) GetWorkingDir() string {
+	if x != nil {
+		return x.WorkingDir
+	}
+	return ""
+}
+
+func (x *Shell) GetStatus() ShellStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ShellStatus_SHELL_STATUS_UNSPECIFIED
+}
+
+func (x *Shell) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *Shell) GetOrderIndex() int32 {
+	if x != nil {
+		return x.OrderIndex
+	}
+	return 0
+}
+
+func (x *Shell) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
+}
+
+func (x *Shell) GetStoppedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StoppedAt
+	}
+	return nil
+}
+
 // SuggestedRuleProto carries a pre-filled rule proposal plus AI metadata.
 // It mirrors ApprovalRuleProto fields 1–11 (same field numbers) so the UI
 // can reuse ApprovalRuleProto rendering helpers with a simple copy.
@@ -5379,7 +5554,7 @@ type SuggestedRuleProto struct {
 
 func (x *SuggestedRuleProto) Reset() {
 	*x = SuggestedRuleProto{}
-	mi := &file_session_v1_types_proto_msgTypes[36]
+	mi := &file_session_v1_types_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5391,7 +5566,7 @@ func (x *SuggestedRuleProto) String() string {
 func (*SuggestedRuleProto) ProtoMessage() {}
 
 func (x *SuggestedRuleProto) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[36]
+	mi := &file_session_v1_types_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5404,7 +5579,7 @@ func (x *SuggestedRuleProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SuggestedRuleProto.ProtoReflect.Descriptor instead.
 func (*SuggestedRuleProto) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{36}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SuggestedRuleProto) GetName() string {
@@ -5954,7 +6129,21 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\x14auto_spider_sessions\x18\x01 \x01(\bR\x12autoSpiderSessions\x12\x1d\n" +
 	"\n" +
 	"watch_dirs\x18\x02 \x03(\tR\twatchDirs\x12!\n" +
-	"\fpinned_repos\x18\x03 \x03(\tR\vpinnedRepos\"\xa5\x04\n" +
+	"\fpinned_repos\x18\x03 \x03(\tR\vpinnedRepos\"\xcb\x02\n" +
+	"\x05Shell\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
+	"\acommand\x18\x03 \x01(\tR\acommand\x12\x1f\n" +
+	"\vworking_dir\x18\x04 \x01(\tR\n" +
+	"workingDir\x12/\n" +
+	"\x06status\x18\x05 \x01(\x0e2\x17.session.v1.ShellStatusR\x06status\x12\x1b\n" +
+	"\texit_code\x18\x06 \x01(\x05R\bexitCode\x12\x1f\n" +
+	"\vorder_index\x18\a \x01(\x05R\n" +
+	"orderIndex\x129\n" +
+	"\n" +
+	"started_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x129\n" +
+	"\n" +
+	"stopped_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tstoppedAt\"\xa5\x04\n" +
 	"\x12SuggestedRuleProto\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\ttool_name\x18\x02 \x01(\tR\btoolName\x12!\n" +
@@ -6108,7 +6297,12 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\x0eSCAN_STATUS_OK\x10\x01\x12\x17\n" +
 	"\x13SCAN_STATUS_TIMEOUT\x10\x02\x12\x1a\n" +
 	"\x16SCAN_STATUS_PERMISSION\x10\x03\x12\x15\n" +
-	"\x11SCAN_STATUS_ERROR\x10\x04*\xaa\x01\n" +
+	"\x11SCAN_STATUS_ERROR\x10\x04*w\n" +
+	"\vShellStatus\x12\x1c\n" +
+	"\x18SHELL_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14SHELL_STATUS_RUNNING\x10\x01\x12\x18\n" +
+	"\x14SHELL_STATUS_STOPPED\x10\x02\x12\x16\n" +
+	"\x12SHELL_STATUS_ERROR\x10\x03*\xaa\x01\n" +
 	"\x10SuggestionSource\x12!\n" +
 	"\x1dSUGGESTION_SOURCE_UNSPECIFIED\x10\x00\x12$\n" +
 	" SUGGESTION_SOURCE_ANALYTICS_GAPS\x10\x01\x12'\n" +
@@ -6131,8 +6325,8 @@ func file_session_v1_types_proto_rawDescGZIP() []byte {
 	return file_session_v1_types_proto_rawDescData
 }
 
-var file_session_v1_types_proto_enumTypes = make([]protoimpl.EnumInfo, 19)
-var file_session_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
+var file_session_v1_types_proto_enumTypes = make([]protoimpl.EnumInfo, 20)
+var file_session_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
 var file_session_v1_types_proto_goTypes = []any{
 	(VNCStatus)(0),                    // 0: session.v1.VNCStatus
 	(CDPStatus)(0),                    // 1: session.v1.CDPStatus
@@ -6152,136 +6346,141 @@ var file_session_v1_types_proto_goTypes = []any{
 	(ChangeStrategy)(0),               // 15: session.v1.ChangeStrategy
 	(AutoDecision)(0),                 // 16: session.v1.AutoDecision
 	(ScanStatus)(0),                   // 17: session.v1.ScanStatus
-	(SuggestionSource)(0),             // 18: session.v1.SuggestionSource
-	(*Session)(nil),                   // 19: session.v1.Session
-	(*VNCState)(nil),                  // 20: session.v1.VNCState
-	(*CDPState)(nil),                  // 21: session.v1.CDPState
-	(*ExternalInstanceMetadata)(nil),  // 22: session.v1.ExternalInstanceMetadata
-	(*DiffStats)(nil),                 // 23: session.v1.DiffStats
-	(*GitWorktree)(nil),               // 24: session.v1.GitWorktree
-	(*ClaudeSession)(nil),             // 25: session.v1.ClaudeSession
-	(*ClaudeSettings)(nil),            // 26: session.v1.ClaudeSettings
-	(*ReviewItem)(nil),                // 27: session.v1.ReviewItem
-	(*PRInfo)(nil),                    // 28: session.v1.PRInfo
-	(*PRComment)(nil),                 // 29: session.v1.PRComment
-	(*ReviewQueue)(nil),               // 30: session.v1.ReviewQueue
-	(*Notification)(nil),              // 31: session.v1.Notification
-	(*FileChange)(nil),                // 32: session.v1.FileChange
-	(*VCSStatus)(nil),                 // 33: session.v1.VCSStatus
-	(*BookmarkTarget)(nil),            // 34: session.v1.BookmarkTarget
-	(*RevisionTarget)(nil),            // 35: session.v1.RevisionTarget
-	(*WorktreeTarget)(nil),            // 36: session.v1.WorktreeTarget
-	(*AvailableWorkspaceTargets)(nil), // 37: session.v1.AvailableWorkspaceTargets
-	(*VCSInfo)(nil),                   // 38: session.v1.VCSInfo
-	(*PendingApprovalProto)(nil),      // 39: session.v1.PendingApprovalProto
-	(*ApprovalRuleProto)(nil),         // 40: session.v1.ApprovalRuleProto
-	(*AnalyticsSummaryProto)(nil),     // 41: session.v1.AnalyticsSummaryProto
-	(*ToolStatProto)(nil),             // 42: session.v1.ToolStatProto
-	(*CommandStatProto)(nil),          // 43: session.v1.CommandStatProto
-	(*RuleStatProto)(nil),             // 44: session.v1.RuleStatProto
-	(*ProgramStatProto)(nil),          // 45: session.v1.ProgramStatProto
-	(*ImportStatProto)(nil),           // 46: session.v1.ImportStatProto
-	(*SubcommandStatProto)(nil),       // 47: session.v1.SubcommandStatProto
-	(*DailyBucketProto)(nil),          // 48: session.v1.DailyBucketProto
-	(*SubcommandBreakdownProto)(nil),  // 49: session.v1.SubcommandBreakdownProto
-	(*DatabaseInfo)(nil),              // 50: session.v1.DatabaseInfo
-	(*FileNode)(nil),                  // 51: session.v1.FileNode
-	(*CheckpointProto)(nil),           // 52: session.v1.CheckpointProto
-	(*UnfinishedWorktree)(nil),        // 53: session.v1.UnfinishedWorktree
-	(*UnfinishedWorkConfig)(nil),      // 54: session.v1.UnfinishedWorkConfig
-	(*SuggestedRuleProto)(nil),        // 55: session.v1.SuggestedRuleProto
-	nil,                               // 56: session.v1.ClaudeSession.MetadataEntry
-	nil,                               // 57: session.v1.ReviewItem.MetadataEntry
-	nil,                               // 58: session.v1.ReviewQueue.ByPriorityEntry
-	nil,                               // 59: session.v1.ReviewQueue.ByReasonEntry
-	nil,                               // 60: session.v1.Notification.MetadataEntry
-	nil,                               // 61: session.v1.PendingApprovalProto.ToolInputEntry
-	nil,                               // 62: session.v1.AnalyticsSummaryProto.DecisionCountsEntry
-	(*timestamppb.Timestamp)(nil),     // 63: google.protobuf.Timestamp
+	(ShellStatus)(0),                  // 18: session.v1.ShellStatus
+	(SuggestionSource)(0),             // 19: session.v1.SuggestionSource
+	(*Session)(nil),                   // 20: session.v1.Session
+	(*VNCState)(nil),                  // 21: session.v1.VNCState
+	(*CDPState)(nil),                  // 22: session.v1.CDPState
+	(*ExternalInstanceMetadata)(nil),  // 23: session.v1.ExternalInstanceMetadata
+	(*DiffStats)(nil),                 // 24: session.v1.DiffStats
+	(*GitWorktree)(nil),               // 25: session.v1.GitWorktree
+	(*ClaudeSession)(nil),             // 26: session.v1.ClaudeSession
+	(*ClaudeSettings)(nil),            // 27: session.v1.ClaudeSettings
+	(*ReviewItem)(nil),                // 28: session.v1.ReviewItem
+	(*PRInfo)(nil),                    // 29: session.v1.PRInfo
+	(*PRComment)(nil),                 // 30: session.v1.PRComment
+	(*ReviewQueue)(nil),               // 31: session.v1.ReviewQueue
+	(*Notification)(nil),              // 32: session.v1.Notification
+	(*FileChange)(nil),                // 33: session.v1.FileChange
+	(*VCSStatus)(nil),                 // 34: session.v1.VCSStatus
+	(*BookmarkTarget)(nil),            // 35: session.v1.BookmarkTarget
+	(*RevisionTarget)(nil),            // 36: session.v1.RevisionTarget
+	(*WorktreeTarget)(nil),            // 37: session.v1.WorktreeTarget
+	(*AvailableWorkspaceTargets)(nil), // 38: session.v1.AvailableWorkspaceTargets
+	(*VCSInfo)(nil),                   // 39: session.v1.VCSInfo
+	(*PendingApprovalProto)(nil),      // 40: session.v1.PendingApprovalProto
+	(*ApprovalRuleProto)(nil),         // 41: session.v1.ApprovalRuleProto
+	(*AnalyticsSummaryProto)(nil),     // 42: session.v1.AnalyticsSummaryProto
+	(*ToolStatProto)(nil),             // 43: session.v1.ToolStatProto
+	(*CommandStatProto)(nil),          // 44: session.v1.CommandStatProto
+	(*RuleStatProto)(nil),             // 45: session.v1.RuleStatProto
+	(*ProgramStatProto)(nil),          // 46: session.v1.ProgramStatProto
+	(*ImportStatProto)(nil),           // 47: session.v1.ImportStatProto
+	(*SubcommandStatProto)(nil),       // 48: session.v1.SubcommandStatProto
+	(*DailyBucketProto)(nil),          // 49: session.v1.DailyBucketProto
+	(*SubcommandBreakdownProto)(nil),  // 50: session.v1.SubcommandBreakdownProto
+	(*DatabaseInfo)(nil),              // 51: session.v1.DatabaseInfo
+	(*FileNode)(nil),                  // 52: session.v1.FileNode
+	(*CheckpointProto)(nil),           // 53: session.v1.CheckpointProto
+	(*UnfinishedWorktree)(nil),        // 54: session.v1.UnfinishedWorktree
+	(*UnfinishedWorkConfig)(nil),      // 55: session.v1.UnfinishedWorkConfig
+	(*Shell)(nil),                     // 56: session.v1.Shell
+	(*SuggestedRuleProto)(nil),        // 57: session.v1.SuggestedRuleProto
+	nil,                               // 58: session.v1.ClaudeSession.MetadataEntry
+	nil,                               // 59: session.v1.ReviewItem.MetadataEntry
+	nil,                               // 60: session.v1.ReviewQueue.ByPriorityEntry
+	nil,                               // 61: session.v1.ReviewQueue.ByReasonEntry
+	nil,                               // 62: session.v1.Notification.MetadataEntry
+	nil,                               // 63: session.v1.PendingApprovalProto.ToolInputEntry
+	nil,                               // 64: session.v1.AnalyticsSummaryProto.DecisionCountsEntry
+	(*timestamppb.Timestamp)(nil),     // 65: google.protobuf.Timestamp
 }
 var file_session_v1_types_proto_depIdxs = []int32{
 	2,  // 0: session.v1.Session.status:type_name -> session.v1.SessionStatus
-	63, // 1: session.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	63, // 2: session.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
-	63, // 3: session.v1.Session.last_terminal_update:type_name -> google.protobuf.Timestamp
-	63, // 4: session.v1.Session.last_meaningful_output:type_name -> google.protobuf.Timestamp
+	65, // 1: session.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	65, // 2: session.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	65, // 3: session.v1.Session.last_terminal_update:type_name -> google.protobuf.Timestamp
+	65, // 4: session.v1.Session.last_meaningful_output:type_name -> google.protobuf.Timestamp
 	3,  // 5: session.v1.Session.session_type:type_name -> session.v1.SessionType
-	23, // 6: session.v1.Session.diff_stats:type_name -> session.v1.DiffStats
-	24, // 7: session.v1.Session.git_worktree:type_name -> session.v1.GitWorktree
-	25, // 8: session.v1.Session.claude_session:type_name -> session.v1.ClaudeSession
+	24, // 6: session.v1.Session.diff_stats:type_name -> session.v1.DiffStats
+	25, // 7: session.v1.Session.git_worktree:type_name -> session.v1.GitWorktree
+	26, // 8: session.v1.Session.claude_session:type_name -> session.v1.ClaudeSession
 	4,  // 9: session.v1.Session.instance_type:type_name -> session.v1.InstanceType
-	22, // 10: session.v1.Session.external_metadata:type_name -> session.v1.ExternalInstanceMetadata
-	63, // 11: session.v1.Session.last_pr_status_check:type_name -> google.protobuf.Timestamp
+	23, // 10: session.v1.Session.external_metadata:type_name -> session.v1.ExternalInstanceMetadata
+	65, // 11: session.v1.Session.last_pr_status_check:type_name -> google.protobuf.Timestamp
 	7,  // 12: session.v1.Session.rate_limit_state:type_name -> session.v1.RateLimitState
-	63, // 13: session.v1.Session.rate_limit_reset_time:type_name -> google.protobuf.Timestamp
+	65, // 13: session.v1.Session.rate_limit_reset_time:type_name -> google.protobuf.Timestamp
 	5,  // 14: session.v1.Session.working_state:type_name -> session.v1.WorkingState
-	20, // 15: session.v1.Session.vnc_state:type_name -> session.v1.VNCState
-	21, // 16: session.v1.Session.cdp_state:type_name -> session.v1.CDPState
+	21, // 15: session.v1.Session.vnc_state:type_name -> session.v1.VNCState
+	22, // 16: session.v1.Session.cdp_state:type_name -> session.v1.CDPState
 	6,  // 17: session.v1.Session.sub_status:type_name -> session.v1.SubStatus
 	0,  // 18: session.v1.VNCState.status:type_name -> session.v1.VNCStatus
 	1,  // 19: session.v1.CDPState.status:type_name -> session.v1.CDPStatus
-	63, // 20: session.v1.ExternalInstanceMetadata.discovered_at:type_name -> google.protobuf.Timestamp
-	63, // 21: session.v1.ExternalInstanceMetadata.last_seen:type_name -> google.protobuf.Timestamp
-	63, // 22: session.v1.ClaudeSession.last_attached:type_name -> google.protobuf.Timestamp
-	26, // 23: session.v1.ClaudeSession.settings:type_name -> session.v1.ClaudeSettings
-	56, // 24: session.v1.ClaudeSession.metadata:type_name -> session.v1.ClaudeSession.MetadataEntry
+	65, // 20: session.v1.ExternalInstanceMetadata.discovered_at:type_name -> google.protobuf.Timestamp
+	65, // 21: session.v1.ExternalInstanceMetadata.last_seen:type_name -> google.protobuf.Timestamp
+	65, // 22: session.v1.ClaudeSession.last_attached:type_name -> google.protobuf.Timestamp
+	27, // 23: session.v1.ClaudeSession.settings:type_name -> session.v1.ClaudeSettings
+	58, // 24: session.v1.ClaudeSession.metadata:type_name -> session.v1.ClaudeSession.MetadataEntry
 	9,  // 25: session.v1.ReviewItem.reason:type_name -> session.v1.AttentionReason
 	8,  // 26: session.v1.ReviewItem.priority:type_name -> session.v1.Priority
-	63, // 27: session.v1.ReviewItem.detected_at:type_name -> google.protobuf.Timestamp
-	57, // 28: session.v1.ReviewItem.metadata:type_name -> session.v1.ReviewItem.MetadataEntry
+	65, // 27: session.v1.ReviewItem.detected_at:type_name -> google.protobuf.Timestamp
+	59, // 28: session.v1.ReviewItem.metadata:type_name -> session.v1.ReviewItem.MetadataEntry
 	2,  // 29: session.v1.ReviewItem.status:type_name -> session.v1.SessionStatus
-	23, // 30: session.v1.ReviewItem.diff_stats:type_name -> session.v1.DiffStats
-	63, // 31: session.v1.ReviewItem.last_activity:type_name -> google.protobuf.Timestamp
+	24, // 30: session.v1.ReviewItem.diff_stats:type_name -> session.v1.DiffStats
+	65, // 31: session.v1.ReviewItem.last_activity:type_name -> google.protobuf.Timestamp
 	5,  // 32: session.v1.ReviewItem.working_state:type_name -> session.v1.WorkingState
-	63, // 33: session.v1.PRInfo.created_at:type_name -> google.protobuf.Timestamp
-	63, // 34: session.v1.PRInfo.updated_at:type_name -> google.protobuf.Timestamp
-	63, // 35: session.v1.PRComment.created_at:type_name -> google.protobuf.Timestamp
-	27, // 36: session.v1.ReviewQueue.items:type_name -> session.v1.ReviewItem
-	58, // 37: session.v1.ReviewQueue.by_priority:type_name -> session.v1.ReviewQueue.ByPriorityEntry
-	59, // 38: session.v1.ReviewQueue.by_reason:type_name -> session.v1.ReviewQueue.ByReasonEntry
+	65, // 33: session.v1.PRInfo.created_at:type_name -> google.protobuf.Timestamp
+	65, // 34: session.v1.PRInfo.updated_at:type_name -> google.protobuf.Timestamp
+	65, // 35: session.v1.PRComment.created_at:type_name -> google.protobuf.Timestamp
+	28, // 36: session.v1.ReviewQueue.items:type_name -> session.v1.ReviewItem
+	60, // 37: session.v1.ReviewQueue.by_priority:type_name -> session.v1.ReviewQueue.ByPriorityEntry
+	61, // 38: session.v1.ReviewQueue.by_reason:type_name -> session.v1.ReviewQueue.ByReasonEntry
 	10, // 39: session.v1.Notification.notification_type:type_name -> session.v1.NotificationType
 	11, // 40: session.v1.Notification.priority:type_name -> session.v1.NotificationPriority
-	63, // 41: session.v1.Notification.timestamp:type_name -> google.protobuf.Timestamp
-	60, // 42: session.v1.Notification.metadata:type_name -> session.v1.Notification.MetadataEntry
+	65, // 41: session.v1.Notification.timestamp:type_name -> google.protobuf.Timestamp
+	62, // 42: session.v1.Notification.metadata:type_name -> session.v1.Notification.MetadataEntry
 	13, // 43: session.v1.FileChange.status:type_name -> session.v1.FileStatus
 	12, // 44: session.v1.VCSStatus.type:type_name -> session.v1.VCSType
-	32, // 45: session.v1.VCSStatus.staged_files:type_name -> session.v1.FileChange
-	32, // 46: session.v1.VCSStatus.unstaged_files:type_name -> session.v1.FileChange
-	32, // 47: session.v1.VCSStatus.untracked_files:type_name -> session.v1.FileChange
-	32, // 48: session.v1.VCSStatus.conflict_files:type_name -> session.v1.FileChange
-	63, // 49: session.v1.RevisionTarget.timestamp:type_name -> google.protobuf.Timestamp
+	33, // 45: session.v1.VCSStatus.staged_files:type_name -> session.v1.FileChange
+	33, // 46: session.v1.VCSStatus.unstaged_files:type_name -> session.v1.FileChange
+	33, // 47: session.v1.VCSStatus.untracked_files:type_name -> session.v1.FileChange
+	33, // 48: session.v1.VCSStatus.conflict_files:type_name -> session.v1.FileChange
+	65, // 49: session.v1.RevisionTarget.timestamp:type_name -> google.protobuf.Timestamp
 	12, // 50: session.v1.AvailableWorkspaceTargets.vcs_type:type_name -> session.v1.VCSType
-	34, // 51: session.v1.AvailableWorkspaceTargets.bookmarks:type_name -> session.v1.BookmarkTarget
-	35, // 52: session.v1.AvailableWorkspaceTargets.recent_revisions:type_name -> session.v1.RevisionTarget
-	36, // 53: session.v1.AvailableWorkspaceTargets.worktrees:type_name -> session.v1.WorktreeTarget
+	35, // 51: session.v1.AvailableWorkspaceTargets.bookmarks:type_name -> session.v1.BookmarkTarget
+	36, // 52: session.v1.AvailableWorkspaceTargets.recent_revisions:type_name -> session.v1.RevisionTarget
+	37, // 53: session.v1.AvailableWorkspaceTargets.worktrees:type_name -> session.v1.WorktreeTarget
 	12, // 54: session.v1.VCSInfo.vcs_type:type_name -> session.v1.VCSType
-	61, // 55: session.v1.PendingApprovalProto.tool_input:type_name -> session.v1.PendingApprovalProto.ToolInputEntry
-	63, // 56: session.v1.PendingApprovalProto.created_at:type_name -> google.protobuf.Timestamp
-	63, // 57: session.v1.PendingApprovalProto.expires_at:type_name -> google.protobuf.Timestamp
+	63, // 55: session.v1.PendingApprovalProto.tool_input:type_name -> session.v1.PendingApprovalProto.ToolInputEntry
+	65, // 56: session.v1.PendingApprovalProto.created_at:type_name -> google.protobuf.Timestamp
+	65, // 57: session.v1.PendingApprovalProto.expires_at:type_name -> google.protobuf.Timestamp
 	16, // 58: session.v1.ApprovalRuleProto.decision:type_name -> session.v1.AutoDecision
-	63, // 59: session.v1.ApprovalRuleProto.created_at:type_name -> google.protobuf.Timestamp
-	62, // 60: session.v1.AnalyticsSummaryProto.decision_counts:type_name -> session.v1.AnalyticsSummaryProto.DecisionCountsEntry
-	42, // 61: session.v1.AnalyticsSummaryProto.top_tools:type_name -> session.v1.ToolStatProto
-	43, // 62: session.v1.AnalyticsSummaryProto.top_denied_commands:type_name -> session.v1.CommandStatProto
-	44, // 63: session.v1.AnalyticsSummaryProto.top_triggered_rules:type_name -> session.v1.RuleStatProto
-	63, // 64: session.v1.AnalyticsSummaryProto.window_start:type_name -> google.protobuf.Timestamp
-	63, // 65: session.v1.AnalyticsSummaryProto.window_end:type_name -> google.protobuf.Timestamp
-	45, // 66: session.v1.AnalyticsSummaryProto.top_command_programs:type_name -> session.v1.ProgramStatProto
-	46, // 67: session.v1.AnalyticsSummaryProto.top_python_imports:type_name -> session.v1.ImportStatProto
-	42, // 68: session.v1.AnalyticsSummaryProto.top_uncovered_tools:type_name -> session.v1.ToolStatProto
-	45, // 69: session.v1.AnalyticsSummaryProto.top_uncovered_programs:type_name -> session.v1.ProgramStatProto
-	47, // 70: session.v1.AnalyticsSummaryProto.command_subcommand_stats:type_name -> session.v1.SubcommandStatProto
-	63, // 71: session.v1.DatabaseInfo.last_used:type_name -> google.protobuf.Timestamp
-	63, // 72: session.v1.CheckpointProto.timestamp:type_name -> google.protobuf.Timestamp
-	63, // 73: session.v1.UnfinishedWorktree.last_modified:type_name -> google.protobuf.Timestamp
-	63, // 74: session.v1.UnfinishedWorktree.scan_time:type_name -> google.protobuf.Timestamp
+	65, // 59: session.v1.ApprovalRuleProto.created_at:type_name -> google.protobuf.Timestamp
+	64, // 60: session.v1.AnalyticsSummaryProto.decision_counts:type_name -> session.v1.AnalyticsSummaryProto.DecisionCountsEntry
+	43, // 61: session.v1.AnalyticsSummaryProto.top_tools:type_name -> session.v1.ToolStatProto
+	44, // 62: session.v1.AnalyticsSummaryProto.top_denied_commands:type_name -> session.v1.CommandStatProto
+	45, // 63: session.v1.AnalyticsSummaryProto.top_triggered_rules:type_name -> session.v1.RuleStatProto
+	65, // 64: session.v1.AnalyticsSummaryProto.window_start:type_name -> google.protobuf.Timestamp
+	65, // 65: session.v1.AnalyticsSummaryProto.window_end:type_name -> google.protobuf.Timestamp
+	46, // 66: session.v1.AnalyticsSummaryProto.top_command_programs:type_name -> session.v1.ProgramStatProto
+	47, // 67: session.v1.AnalyticsSummaryProto.top_python_imports:type_name -> session.v1.ImportStatProto
+	43, // 68: session.v1.AnalyticsSummaryProto.top_uncovered_tools:type_name -> session.v1.ToolStatProto
+	46, // 69: session.v1.AnalyticsSummaryProto.top_uncovered_programs:type_name -> session.v1.ProgramStatProto
+	48, // 70: session.v1.AnalyticsSummaryProto.command_subcommand_stats:type_name -> session.v1.SubcommandStatProto
+	65, // 71: session.v1.DatabaseInfo.last_used:type_name -> google.protobuf.Timestamp
+	65, // 72: session.v1.CheckpointProto.timestamp:type_name -> google.protobuf.Timestamp
+	65, // 73: session.v1.UnfinishedWorktree.last_modified:type_name -> google.protobuf.Timestamp
+	65, // 74: session.v1.UnfinishedWorktree.scan_time:type_name -> google.protobuf.Timestamp
 	17, // 75: session.v1.UnfinishedWorktree.scan_status:type_name -> session.v1.ScanStatus
-	16, // 76: session.v1.SuggestedRuleProto.decision:type_name -> session.v1.AutoDecision
-	77, // [77:77] is the sub-list for method output_type
-	77, // [77:77] is the sub-list for method input_type
-	77, // [77:77] is the sub-list for extension type_name
-	77, // [77:77] is the sub-list for extension extendee
-	0,  // [0:77] is the sub-list for field type_name
+	18, // 76: session.v1.Shell.status:type_name -> session.v1.ShellStatus
+	65, // 77: session.v1.Shell.started_at:type_name -> google.protobuf.Timestamp
+	65, // 78: session.v1.Shell.stopped_at:type_name -> google.protobuf.Timestamp
+	16, // 79: session.v1.SuggestedRuleProto.decision:type_name -> session.v1.AutoDecision
+	80, // [80:80] is the sub-list for method output_type
+	80, // [80:80] is the sub-list for method input_type
+	80, // [80:80] is the sub-list for extension type_name
+	80, // [80:80] is the sub-list for extension extendee
+	0,  // [0:80] is the sub-list for field type_name
 }
 
 func init() { file_session_v1_types_proto_init() }
@@ -6295,8 +6494,8 @@ func file_session_v1_types_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_v1_types_proto_rawDesc), len(file_session_v1_types_proto_rawDesc)),
-			NumEnums:      19,
-			NumMessages:   44,
+			NumEnums:      20,
+			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

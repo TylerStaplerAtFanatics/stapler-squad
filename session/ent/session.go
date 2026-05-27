@@ -104,9 +104,11 @@ type SessionEdges struct {
 	Project *Project `json:"project,omitempty"`
 	// BacklogItems holds the value of the backlog_items edge.
 	BacklogItems []*BacklogItem `json:"backlog_items,omitempty"`
+	// Shells holds the value of the shells edge.
+	Shells []*Shell `json:"shells,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [6]bool
+	loadedTypes [7]bool
 }
 
 // WorktreeOrErr returns the Worktree value or an error if the edge
@@ -169,6 +171,15 @@ func (e SessionEdges) BacklogItemsOrErr() ([]*BacklogItem, error) {
 		return e.BacklogItems, nil
 	}
 	return nil, &NotLoadedError{edge: "backlog_items"}
+}
+
+// ShellsOrErr returns the Shells value or an error if the edge
+// was not loaded in eager-loading.
+func (e SessionEdges) ShellsOrErr() ([]*Shell, error) {
+	if e.loadedTypes[6] {
+		return e.Shells, nil
+	}
+	return nil, &NotLoadedError{edge: "shells"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -449,6 +460,11 @@ func (_m *Session) QueryProject() *ProjectQuery {
 // QueryBacklogItems queries the "backlog_items" edge of the Session entity.
 func (_m *Session) QueryBacklogItems() *BacklogItemQuery {
 	return NewSessionClient(_m.config).QueryBacklogItems(_m)
+}
+
+// QueryShells queries the "shells" edge of the Session entity.
+func (_m *Session) QueryShells() *ShellQuery {
+	return NewSessionClient(_m.config).QueryShells(_m)
 }
 
 // Update returns a builder for updating this Session.

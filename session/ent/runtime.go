@@ -22,6 +22,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
 	"github.com/tstapler/stapler-squad/session/ent/schema"
 	"github.com/tstapler/stapler-squad/session/ent/session"
+	"github.com/tstapler/stapler-squad/session/ent/shell"
 	"github.com/tstapler/stapler-squad/session/ent/sourcesyncevent"
 	"github.com/tstapler/stapler-squad/session/ent/tag"
 	"github.com/tstapler/stapler-squad/session/ent/worktree"
@@ -359,6 +360,24 @@ func init() {
 	sessionDescOneShot := sessionFields[26].Descriptor()
 	// session.DefaultOneShot holds the default value on creation for the one_shot field.
 	session.DefaultOneShot = sessionDescOneShot.Default.(bool)
+	shellFields := schema.Shell{}.Fields()
+	_ = shellFields
+	// shellDescCommand is the schema descriptor for command field.
+	shellDescCommand := shellFields[2].Descriptor()
+	// shell.DefaultCommand holds the default value on creation for the command field.
+	shell.DefaultCommand = shellDescCommand.Default.(string)
+	// shellDescStatus is the schema descriptor for status field.
+	shellDescStatus := shellFields[5].Descriptor()
+	// shell.DefaultStatus holds the default value on creation for the status field.
+	shell.DefaultStatus = shellDescStatus.Default.(string)
+	// shellDescOrderIndex is the schema descriptor for order_index field.
+	shellDescOrderIndex := shellFields[7].Descriptor()
+	// shell.DefaultOrderIndex holds the default value on creation for the order_index field.
+	shell.DefaultOrderIndex = shellDescOrderIndex.Default.(int)
+	// shellDescStartedAt is the schema descriptor for started_at field.
+	shellDescStartedAt := shellFields[8].Descriptor()
+	// shell.DefaultStartedAt holds the default value on creation for the started_at field.
+	shell.DefaultStartedAt = shellDescStartedAt.Default.(func() time.Time)
 	sourcesynceventFields := schema.SourceSyncEvent{}.Fields()
 	_ = sourcesynceventFields
 	// sourcesynceventDescStartedAt is the schema descriptor for started_at field.
