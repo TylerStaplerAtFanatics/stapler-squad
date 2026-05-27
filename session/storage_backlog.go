@@ -310,6 +310,55 @@ func (r *EntRepository) SaveReviewVerdict(ctx context.Context, itemSessionID str
 	return rv, nil
 }
 
+// CreateItemSessionWithVerdict atomically creates an ItemSession and its initial
+// ReviewVerdict in a single transaction. If the verdict write fails the ItemSession
+// is rolled back, preventing dangling sessions with no verdict.
+func (r *EntRepository) CreateItemSessionWithVerdict(ctx context.Context, isData ItemSessionData, verdict ReviewVerdictData) (*ent.ItemSession, *ent.ReviewVerdict, error) {
+	parsedItemID, err := uuid.Parse(isData.ItemID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid item id %q: %w", isData.ItemID, err)
+	}
+
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	is, err := tx.ItemSession.Create().
+		SetSessionUUID(isData.SessionUUID).
+		SetSessionRole(isData.SessionRole).
+		SetBacklogItemID(parsedItemID).
+		SetNillableAcSnapshot(nilIfEmpty(isData.AcSnapshot)).
+		SetNillableTriageResult(nilIfEmpty(isData.TriageResult)).
+		Save(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create item session: %w", err)
+	}
+
+	rv, err := tx.ReviewVerdict.Create().
+		SetOverallOutcome(verdict.OverallOutcome).
+		SetNillablePerCriterion(nilIfEmpty(verdict.PerCriterion)).
+		SetNillableSummary(nilIfEmpty(verdict.Summary)).
+		SetNillableDiffHash(nilIfEmpty(verdict.DiffHash)).
+		SetNillablePromptHash(nilIfEmpty(verdict.PromptHash)).
+		SetDiffTokenCount(verdict.DiffTokenCount).
+		SetDiffTruncated(verdict.DiffTruncated).
+		SetNillableOverrideBy(nilIfEmpty(verdict.OverrideBy)).
+		SetNillableOverrideReason(nilIfEmpty(verdict.OverrideReason)).
+		SetNillableOverrideAt(verdict.OverrideAt).
+		SetItemSessionID(is.ID).
+		Save(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create review verdict: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("commit: %w", err)
+	}
+	return is, rv, nil
+}
+
 // --- Reconciler ---
 
 // ReconcileStuckItems finds in_progress items whose all linked ItemSessions have ended,

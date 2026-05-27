@@ -15,7 +15,8 @@ import { VNCStatus } from "@/gen/session/v1/types_pb";
 import { ActionBar } from "@/components/ui/ActionBar";
 import { useSessionActions } from "@/lib/hooks/useSessionActions";
 import { getApiBaseUrl } from "@/lib/config";
-import { getProgramDisplay, isKnownProgram, PROGRAMS } from "@/lib/constants/programs";
+import { getProgramDisplay, isKnownProgram } from "@/lib/constants/programs";
+import { useAvailablePrograms } from "@/lib/hooks/useAvailablePrograms";
 import { Modal, ModalContent, ModalTitle, ModalFooter } from "@/components/ui/Modal";
 import { ResumeSessionModal } from "./ResumeSessionModal";
 import { TagEditor } from "./TagEditor";
@@ -115,6 +116,7 @@ export function SessionDetailView({
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [filesSelectedPath, setFilesSelectedPath] = useState<string | null>(null);
   const [showWorkspaceSwitchModal, setShowWorkspaceSwitchModal] = useState(false);
+  const availablePrograms = useAvailablePrograms();
   const [isEditingProgram, setIsEditingProgram] = useState(false);
   const [programValue, setProgramValue] = useState(session.program || "");
   const [isEditingWorkingDir, setIsEditingWorkingDir] = useState(false);
@@ -729,7 +731,7 @@ export function SessionDetailView({
                       autoFocus
                       className={styles.editInput}
                     >
-                      {PROGRAMS.map((p) => (
+                      {availablePrograms.map((p) => (
                         <option key={p.value} value={p.value}>{p.label}</option>
                       ))}
                       {!isKnownProgram(programValue) && (

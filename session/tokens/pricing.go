@@ -183,7 +183,7 @@ func (pt *PricingTable) EstimateCost(r *ParseResult) float64 {
 // IsStale returns true when any entry in the table has an EffectiveDate older
 // than 30 days, indicating the pricing data may be outdated.
 func (pt *PricingTable) IsStale() bool {
-	threshold := time.Now().AddDate(0, 0, -30)
+	threshold := time.Now().UTC().AddDate(0, 0, -30)
 	for _, p := range pt.Prices {
 		if p.EffectiveDate == "" {
 			continue

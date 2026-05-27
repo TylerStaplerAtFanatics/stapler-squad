@@ -387,6 +387,15 @@ func getDefaultPatterns() StatusPatterns {
 				Description: "Claude Code command prompt",
 				Priority:    1,
 			},
+			// NOTE: agy (Antigravity CLI) — agy uses the same TUI codebase as Gemini CLI
+			// (requirements confirmed: "same TUI codebase, rewritten core in Go"). The four
+			// gemini_* patterns below (gemini_ready, gemini_working, gemini_permission,
+			// gemini_allow_execution) cover agy sessions without additional patterns.
+			//
+			// If agy introduces divergent UI strings (e.g. rebranded permission dialog text)
+			// in a future version, add agy_* pattern variants alongside the gemini_* entries
+			// at the same priority levels.
+			//
 			// Gemini CLI status indicators
 			{
 				Name:        "gemini_ready",

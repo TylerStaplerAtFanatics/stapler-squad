@@ -7,7 +7,7 @@ import { createClient } from "@connectrpc/connect";
 import { SessionService } from "@/gen/session/v1/session_pb";
 import type { WorktreeEntry } from "@/gen/session/v1/session_pb";
 import type { OmnibarFormState } from "./Omnibar";
-import { PROGRAMS } from "@/lib/constants/programs";
+import { useAvailablePrograms } from "@/lib/hooks/useAvailablePrograms";
 import { getConnectTransport } from "@/lib/api/transport";
 import {
   body, field, label as labelClass, fieldInput, hint, select as selectClass,
@@ -167,6 +167,8 @@ export function OmnibarCreationPanel({
     void load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionType]);
+
+  const availablePrograms = useAvailablePrograms();
 
   // ─── File attachment state ────────────────────────────────────────────────
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
@@ -668,7 +670,7 @@ export function OmnibarCreationPanel({
                   value={program}
                   onChange={(e) => setFormField("program", e.target.value)}
                 >
-                  {PROGRAMS.map((p) => (
+                  {availablePrograms.map((p) => (
                     <option key={p.value} value={p.value}>{p.label}</option>
                   ))}
                 </select>
