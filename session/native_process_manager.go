@@ -175,6 +175,9 @@ func (n *NativeProcessManager) supervise(dir string) {
 		}
 		if err := n.launchPTY(dir); err != nil {
 			log.Error("NativeProcessManager: relaunch failed", "session", n.opts.SessionName, "err", err)
+			// Clear stale cmd so the next loop iteration hits cmd==nil and exits cleanly
+			// rather than calling Wait() on an already-exited process repeatedly.
+			n.cmd = nil
 		}
 		n.mu.Unlock()
 	}
