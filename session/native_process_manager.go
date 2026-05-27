@@ -1,3 +1,5 @@
+//go:build !windows
+
 package session
 
 import (
@@ -11,6 +13,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/log"
 )
 
 // NativeProcessManager implements ProcessManager using a raw PTY and process supervision.
@@ -156,7 +159,9 @@ func (n *NativeProcessManager) supervise(dir string) {
 			return
 		default:
 		}
-		_ = n.launchPTY(dir)
+		if err := n.launchPTY(dir); err != nil {
+			log.Error("NativeProcessManager: relaunch failed", "session", n.opts.SessionName, "err", err)
+		}
 		n.mu.Unlock()
 	}
 }
