@@ -137,6 +137,7 @@ func (i *Instance) SpawnShell(ctx context.Context, req SpawnShellRequest) (*Shel
 		OrderIndex:      orderIndex,
 		StartedAt:       time.Now(),
 		exitCh:          make(chan struct{}),
+		watcherDone:     make(chan struct{}),
 	}
 
 	// Register in memory.
@@ -162,7 +163,7 @@ func (i *Instance) SpawnShell(ctx context.Context, req SpawnShellRequest) (*Shel
 
 	// Watch for exit in background.
 	i.shellWg.Add(1)
-	go i.watchShellExit(ctx, shellID, handle, shell.exitCh)
+	go i.watchShellExit(ctx, shellID, handle, shell.exitCh, shell.watcherDone)
 
 	log.Info("shell spawned", "session", i.Title, "shell", shellID, "name", name, "command", command)
 	return shell, nil
@@ -170,7 +171,9 @@ func (i *Instance) SpawnShell(ctx context.Context, req SpawnShellRequest) (*Shel
 
 // watchShellExit blocks reading from the shell's PTY until EOF or context cancellation.
 // On exit it updates shell status, persists to ent, and closes exitCh to notify subscribers.
-func (i *Instance) watchShellExit(ctx context.Context, shellID string, handle *tmux.ShellTmuxHandle, exitCh chan struct{}) {
+// watcherDone is closed after shellWg.Done() so DeleteShell can wait on this specific goroutine.
+func (i *Instance) watchShellExit(ctx context.Context, shellID string, handle *tmux.ShellTmuxHandle, exitCh chan struct{}, watcherDone chan struct{}) {
+	defer close(watcherDone) // registered first → runs last (after Done)
 	defer i.shellWg.Done()
 	defer func() {
 		// Safely close exitCh exactly once; using recover in case another path already closed it.
@@ -305,6 +308,7 @@ func (i *Instance) RestartShell(ctx context.Context, shellID string) error {
 	name := sh.Name
 	orderIndex := sh.OrderIndex
 	exitCh := make(chan struct{})
+	watcherDone := make(chan struct{})
 	i.shellsMu.RUnlock()
 
 	// Stop if currently running.
@@ -327,6 +331,7 @@ func (i *Instance) RestartShell(ctx context.Context, shellID string) error {
 		existing.ExitCode = 0
 		existing.TmuxSessionName = newSessionName
 		existing.exitCh = exitCh
+		existing.watcherDone = watcherDone
 	} else {
 		i.shells[shellID] = &Shell{
 			ID:              shellID,
@@ -338,6 +343,7 @@ func (i *Instance) RestartShell(ctx context.Context, shellID string) error {
 			OrderIndex:      orderIndex,
 			StartedAt:       time.Now(),
 			exitCh:          exitCh,
+			watcherDone:     watcherDone,
 		}
 	}
 	i.shellHandles[shellID] = handle
@@ -352,7 +358,7 @@ func (i *Instance) RestartShell(ctx context.Context, shellID string) error {
 
 	// Launch new exit watcher.
 	i.shellWg.Add(1)
-	go i.watchShellExit(ctx, shellID, handle, exitCh)
+	go i.watchShellExit(ctx, shellID, handle, exitCh, watcherDone)
 
 	return nil
 }
@@ -412,22 +418,23 @@ func (i *Instance) ListShellsInMemory() []*Shell {
 // DeleteShell stops a shell (if running), waits for active handlers to drain, then
 // removes it from memory and the database.
 func (i *Instance) DeleteShell(ctx context.Context, shellID string) error {
+	// Snapshot watcherDone before stopping so we can wait on this shell's goroutine only.
+	i.shellsMu.RLock()
+	sh := i.shells[shellID]
+	i.shellsMu.RUnlock()
+
 	// Stop first to trigger PTY EOF and allow watchShellExit to return.
 	_ = i.StopShell(ctx, shellID)
 
-	// Wait for all active StreamTerminal handlers and watchShellExit to release their references
-	// before removing from the map. This prevents nil-map panics (adversarial Challenge 3).
-	// We use the global shellWg; handlers should call Done before this returns.
-	// In practice the watcher has a 5s grace window.
-	waitDone := make(chan struct{})
-	go func() {
-		i.shellWg.Wait()
-		close(waitDone)
-	}()
-	select {
-	case <-waitDone:
-	case <-time.After(6 * time.Second):
-		log.Warn("DeleteShell: timeout waiting for shell handlers to drain", "shell", shellID)
+	// Wait for this shell's watcher goroutine to finish before removing from the map.
+	// Using sh.watcherDone (per-shell) instead of the global shellWg so concurrent deletes
+	// of independent shells do not block each other.
+	if sh != nil && sh.watcherDone != nil {
+		select {
+		case <-sh.watcherDone:
+		case <-time.After(6 * time.Second):
+			log.Warn("DeleteShell: timeout waiting for shell watcher to drain", "shell", shellID)
+		}
 	}
 
 	i.shellsMu.Lock()
@@ -465,6 +472,7 @@ func (i *Instance) ReconcileShells(ctx context.Context) {
 	for _, dbShell := range dbShells {
 		handle := tmux.NewShellTmuxHandle(dbShell.TmuxSessionName, i.TmuxServerSocket, tmux.MakePtyFactory(), cmdExec)
 		exitCh := make(chan struct{})
+		watcherDone := make(chan struct{})
 
 		if dbShell.Status == string(ShellStatusRunning) {
 			if handle.DoesSessionExist() {
@@ -479,11 +487,12 @@ func (i *Instance) ReconcileShells(ctx context.Context) {
 					OrderIndex:      dbShell.OrderIndex,
 					StartedAt:       dbShell.StartedAt,
 					exitCh:          exitCh,
+					watcherDone:     watcherDone,
 				}
 				i.shells[dbShell.ID] = sh
 				i.shellHandles[dbShell.ID] = handle
 				i.shellWg.Add(1)
-				go i.watchShellExit(ctx, dbShell.ID, handle, exitCh)
+				go i.watchShellExit(ctx, dbShell.ID, handle, exitCh, watcherDone)
 				log.Info("ReconcileShells: restored running shell", "session", i.Title, "shell", dbShell.ID)
 			} else {
 				// Session gone; mark as stopped.

@@ -52,6 +52,9 @@ type ProcessManager interface {
 	// Streaming (control mode)
 	StartControlMode() error
 	StopControlMode() error
+	// SubscribeToControlModeUpdates returns a subscription ID and a bidirectional channel.
+	// The channel must be bidirectional (chan []byte, not <-chan []byte) because some callers
+	// write synthetic frames for testing. Implementations must not write to the channel themselves.
 	SubscribeToControlModeUpdates() (string, chan []byte)
 	UnsubscribeFromControlModeUpdates(id string)
 

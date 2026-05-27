@@ -118,8 +118,9 @@ func (n *NativeProcessManager) launchPTY(dir string) error {
 // supervise waits for the process to exit and restarts it unless stopCh is closed.
 // Implements NM-1 (cmd.Wait() is the sole owner), NM-5 (exits on stopCh close).
 func (n *NativeProcessManager) supervise(dir string) {
-	backoff := 500 * time.Millisecond
+	const initialBackoff = 500 * time.Millisecond
 	const maxBackoff = 30 * time.Second
+	backoff := initialBackoff
 
 	for {
 		// Snapshot cmd under lock to avoid a race with concurrent Start() calls.
