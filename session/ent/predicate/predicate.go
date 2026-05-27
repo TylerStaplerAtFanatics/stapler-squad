@@ -51,6 +51,9 @@ type ReviewVerdict func(*sql.Selector)
 // Session is the predicate function for session builders.
 type Session func(*sql.Selector)
 
+// Shell is the predicate function for shell builders.
+type Shell func(*sql.Selector)
+
 // SourceSyncEvent is the predicate function for sourcesyncevent builders.
 type SourceSyncEvent func(*sql.Selector)
 

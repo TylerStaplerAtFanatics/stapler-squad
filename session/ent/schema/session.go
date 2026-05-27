@@ -125,6 +125,9 @@ func (Session) Edges() []ent.Edge {
 		// Back-reference from BacklogItem many-to-many
 		edge.From("backlog_items", BacklogItem.Type).
 			Ref("sessions"),
+
+		// One-to-many relationship with Shell (custom shell tabs)
+		edge.To("shells", Shell.Type),
 	}
 }
 

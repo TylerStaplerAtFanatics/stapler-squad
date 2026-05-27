@@ -123,7 +123,7 @@ func (x UserInteractionEvent_InteractionType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use UserInteractionEvent_InteractionType.Descriptor instead.
 func (UserInteractionEvent_InteractionType) EnumDescriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{34, 0}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{35, 0}
 }
 
 // SessionEvent represents a real-time event about session state changes.
@@ -598,7 +598,11 @@ type TerminalData struct {
 	//	*TerminalData_InputEcho
 	//	*TerminalData_SspNegotiation
 	//	*TerminalData_ResizeQuiescence
-	Data          isTerminalData_Data `protobuf_oneof:"data"`
+	//	*TerminalData_ShellStatusUpdate
+	Data isTerminalData_Data `protobuf_oneof:"data"`
+	// Optional shell identifier. When non-empty, this TerminalData message is
+	// scoped to a custom shell (sibling tmux session) rather than the main session.
+	ShellId       string `protobuf:"bytes,17,opt,name=shell_id,json=shellId,proto3" json:"shell_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -782,6 +786,22 @@ func (x *TerminalData) GetResizeQuiescence() *ResizeQuiescence {
 	return nil
 }
 
+func (x *TerminalData) GetShellStatusUpdate() *ShellStatusUpdate {
+	if x != nil {
+		if x, ok := x.Data.(*TerminalData_ShellStatusUpdate); ok {
+			return x.ShellStatusUpdate
+		}
+	}
+	return nil
+}
+
+func (x *TerminalData) GetShellId() string {
+	if x != nil {
+		return x.ShellId
+	}
+	return ""
+}
+
 type isTerminalData_Data interface {
 	isTerminalData_Data()
 }
@@ -848,6 +868,11 @@ type TerminalData_ResizeQuiescence struct {
 	ResizeQuiescence *ResizeQuiescence `protobuf:"bytes,16,opt,name=resize_quiescence,json=resizeQuiescence,proto3,oneof"`
 }
 
+type TerminalData_ShellStatusUpdate struct {
+	// Shell status update event (server → client); shell_id identifies the shell.
+	ShellStatusUpdate *ShellStatusUpdate `protobuf:"bytes,18,opt,name=shell_status_update,json=shellStatusUpdate,proto3,oneof"`
+}
+
 func (*TerminalData_Output) isTerminalData_Data() {}
 
 func (*TerminalData_Input) isTerminalData_Data() {}
@@ -878,6 +903,73 @@ func (*TerminalData_SspNegotiation) isTerminalData_Data() {}
 
 func (*TerminalData_ResizeQuiescence) isTerminalData_Data() {}
 
+func (*TerminalData_ShellStatusUpdate) isTerminalData_Data() {}
+
+// ShellStatusUpdate notifies the client that a custom shell's status has changed.
+// Delivered via the StreamTerminal stream with shell_id set.
+type ShellStatusUpdate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The shell whose status changed.
+	ShellId string `protobuf:"bytes,1,opt,name=shell_id,json=shellId,proto3" json:"shell_id,omitempty"`
+	// New lifecycle status.
+	NewStatus ShellStatus `protobuf:"varint,2,opt,name=new_status,json=newStatus,proto3,enum=session.v1.ShellStatus" json:"new_status,omitempty"`
+	// Exit code (only meaningful when new_status is STOPPED or ERROR).
+	ExitCode      int32 `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShellStatusUpdate) Reset() {
+	*x = ShellStatusUpdate{}
+	mi := &file_session_v1_events_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShellStatusUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShellStatusUpdate) ProtoMessage() {}
+
+func (x *ShellStatusUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_session_v1_events_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShellStatusUpdate.ProtoReflect.Descriptor instead.
+func (*ShellStatusUpdate) Descriptor() ([]byte, []int) {
+	return file_session_v1_events_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ShellStatusUpdate) GetShellId() string {
+	if x != nil {
+		return x.ShellId
+	}
+	return ""
+}
+
+func (x *ShellStatusUpdate) GetNewStatus() ShellStatus {
+	if x != nil {
+		return x.NewStatus
+	}
+	return ShellStatus_SHELL_STATUS_UNSPECIFIED
+}
+
+func (x *ShellStatusUpdate) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
 // ResizeQuiescence signals the client that the server is waiting for tmux to
 // finish reflowing after a resize (resizing=true) or that the stable post-resize
 // snapshot has been sent (resizing=false). Enables the frontend to show/hide a
@@ -893,7 +985,7 @@ type ResizeQuiescence struct {
 
 func (x *ResizeQuiescence) Reset() {
 	*x = ResizeQuiescence{}
-	mi := &file_session_v1_events_proto_msgTypes[6]
+	mi := &file_session_v1_events_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -905,7 +997,7 @@ func (x *ResizeQuiescence) String() string {
 func (*ResizeQuiescence) ProtoMessage() {}
 
 func (x *ResizeQuiescence) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[6]
+	mi := &file_session_v1_events_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -918,7 +1010,7 @@ func (x *ResizeQuiescence) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResizeQuiescence.ProtoReflect.Descriptor instead.
 func (*ResizeQuiescence) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{6}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ResizeQuiescence) GetResizing() bool {
@@ -952,7 +1044,7 @@ type TerminalOutput struct {
 
 func (x *TerminalOutput) Reset() {
 	*x = TerminalOutput{}
-	mi := &file_session_v1_events_proto_msgTypes[7]
+	mi := &file_session_v1_events_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -964,7 +1056,7 @@ func (x *TerminalOutput) String() string {
 func (*TerminalOutput) ProtoMessage() {}
 
 func (x *TerminalOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[7]
+	mi := &file_session_v1_events_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -977,7 +1069,7 @@ func (x *TerminalOutput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalOutput.ProtoReflect.Descriptor instead.
 func (*TerminalOutput) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{7}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *TerminalOutput) GetData() []byte {
@@ -997,7 +1089,7 @@ type TerminalInput struct {
 
 func (x *TerminalInput) Reset() {
 	*x = TerminalInput{}
-	mi := &file_session_v1_events_proto_msgTypes[8]
+	mi := &file_session_v1_events_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1009,7 +1101,7 @@ func (x *TerminalInput) String() string {
 func (*TerminalInput) ProtoMessage() {}
 
 func (x *TerminalInput) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[8]
+	mi := &file_session_v1_events_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1022,7 +1114,7 @@ func (x *TerminalInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalInput.ProtoReflect.Descriptor instead.
 func (*TerminalInput) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{8}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TerminalInput) GetData() []byte {
@@ -1043,7 +1135,7 @@ type TerminalResize struct {
 
 func (x *TerminalResize) Reset() {
 	*x = TerminalResize{}
-	mi := &file_session_v1_events_proto_msgTypes[9]
+	mi := &file_session_v1_events_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1055,7 +1147,7 @@ func (x *TerminalResize) String() string {
 func (*TerminalResize) ProtoMessage() {}
 
 func (x *TerminalResize) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[9]
+	mi := &file_session_v1_events_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1068,7 +1160,7 @@ func (x *TerminalResize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalResize.ProtoReflect.Descriptor instead.
 func (*TerminalResize) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{9}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *TerminalResize) GetRows() int32 {
@@ -1096,7 +1188,7 @@ type TerminalError struct {
 
 func (x *TerminalError) Reset() {
 	*x = TerminalError{}
-	mi := &file_session_v1_events_proto_msgTypes[10]
+	mi := &file_session_v1_events_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1108,7 +1200,7 @@ func (x *TerminalError) String() string {
 func (*TerminalError) ProtoMessage() {}
 
 func (x *TerminalError) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[10]
+	mi := &file_session_v1_events_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1121,7 +1213,7 @@ func (x *TerminalError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalError.ProtoReflect.Descriptor instead.
 func (*TerminalError) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{10}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TerminalError) GetMessage() string {
@@ -1168,7 +1260,7 @@ type FlowControl struct {
 
 func (x *FlowControl) Reset() {
 	*x = FlowControl{}
-	mi := &file_session_v1_events_proto_msgTypes[11]
+	mi := &file_session_v1_events_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1180,7 +1272,7 @@ func (x *FlowControl) String() string {
 func (*FlowControl) ProtoMessage() {}
 
 func (x *FlowControl) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[11]
+	mi := &file_session_v1_events_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1193,7 +1285,7 @@ func (x *FlowControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlowControl.ProtoReflect.Descriptor instead.
 func (*FlowControl) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{11}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *FlowControl) GetPaused() bool {
@@ -1221,7 +1313,7 @@ type ScrollbackRequest struct {
 
 func (x *ScrollbackRequest) Reset() {
 	*x = ScrollbackRequest{}
-	mi := &file_session_v1_events_proto_msgTypes[12]
+	mi := &file_session_v1_events_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1233,7 +1325,7 @@ func (x *ScrollbackRequest) String() string {
 func (*ScrollbackRequest) ProtoMessage() {}
 
 func (x *ScrollbackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[12]
+	mi := &file_session_v1_events_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1246,7 +1338,7 @@ func (x *ScrollbackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScrollbackRequest.ProtoReflect.Descriptor instead.
 func (*ScrollbackRequest) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{12}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ScrollbackRequest) GetFromSequence() uint64 {
@@ -1277,7 +1369,7 @@ type ScrollbackResponse struct {
 
 func (x *ScrollbackResponse) Reset() {
 	*x = ScrollbackResponse{}
-	mi := &file_session_v1_events_proto_msgTypes[13]
+	mi := &file_session_v1_events_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1289,7 +1381,7 @@ func (x *ScrollbackResponse) String() string {
 func (*ScrollbackResponse) ProtoMessage() {}
 
 func (x *ScrollbackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[13]
+	mi := &file_session_v1_events_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1302,7 +1394,7 @@ func (x *ScrollbackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScrollbackResponse.ProtoReflect.Descriptor instead.
 func (*ScrollbackResponse) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{13}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ScrollbackResponse) GetChunks() []*ScrollbackChunk {
@@ -1352,7 +1444,7 @@ type ScrollbackChunk struct {
 
 func (x *ScrollbackChunk) Reset() {
 	*x = ScrollbackChunk{}
-	mi := &file_session_v1_events_proto_msgTypes[14]
+	mi := &file_session_v1_events_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1364,7 +1456,7 @@ func (x *ScrollbackChunk) String() string {
 func (*ScrollbackChunk) ProtoMessage() {}
 
 func (x *ScrollbackChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[14]
+	mi := &file_session_v1_events_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1377,7 +1469,7 @@ func (x *ScrollbackChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScrollbackChunk.ProtoReflect.Descriptor instead.
 func (*ScrollbackChunk) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{14}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ScrollbackChunk) GetData() []byte {
@@ -1428,7 +1520,7 @@ type CurrentPaneRequest struct {
 
 func (x *CurrentPaneRequest) Reset() {
 	*x = CurrentPaneRequest{}
-	mi := &file_session_v1_events_proto_msgTypes[15]
+	mi := &file_session_v1_events_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1440,7 +1532,7 @@ func (x *CurrentPaneRequest) String() string {
 func (*CurrentPaneRequest) ProtoMessage() {}
 
 func (x *CurrentPaneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[15]
+	mi := &file_session_v1_events_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1453,7 +1545,7 @@ func (x *CurrentPaneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentPaneRequest.ProtoReflect.Descriptor instead.
 func (*CurrentPaneRequest) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{15}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CurrentPaneRequest) GetLines() int32 {
@@ -1508,7 +1600,7 @@ type CurrentPaneResponse struct {
 
 func (x *CurrentPaneResponse) Reset() {
 	*x = CurrentPaneResponse{}
-	mi := &file_session_v1_events_proto_msgTypes[16]
+	mi := &file_session_v1_events_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1520,7 +1612,7 @@ func (x *CurrentPaneResponse) String() string {
 func (*CurrentPaneResponse) ProtoMessage() {}
 
 func (x *CurrentPaneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[16]
+	mi := &file_session_v1_events_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1533,7 +1625,7 @@ func (x *CurrentPaneResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentPaneResponse.ProtoReflect.Descriptor instead.
 func (*CurrentPaneResponse) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{16}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CurrentPaneResponse) GetContent() []byte {
@@ -1594,7 +1686,7 @@ type TerminalDelta struct {
 
 func (x *TerminalDelta) Reset() {
 	*x = TerminalDelta{}
-	mi := &file_session_v1_events_proto_msgTypes[17]
+	mi := &file_session_v1_events_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1606,7 +1698,7 @@ func (x *TerminalDelta) String() string {
 func (*TerminalDelta) ProtoMessage() {}
 
 func (x *TerminalDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[17]
+	mi := &file_session_v1_events_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1619,7 +1711,7 @@ func (x *TerminalDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalDelta.ProtoReflect.Descriptor instead.
 func (*TerminalDelta) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{17}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *TerminalDelta) GetFromState() uint64 {
@@ -1685,7 +1777,7 @@ type LineDelta struct {
 
 func (x *LineDelta) Reset() {
 	*x = LineDelta{}
-	mi := &file_session_v1_events_proto_msgTypes[18]
+	mi := &file_session_v1_events_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1697,7 +1789,7 @@ func (x *LineDelta) String() string {
 func (*LineDelta) ProtoMessage() {}
 
 func (x *LineDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[18]
+	mi := &file_session_v1_events_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1710,7 +1802,7 @@ func (x *LineDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LineDelta.ProtoReflect.Descriptor instead.
 func (*LineDelta) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{18}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *LineDelta) GetLineNumber() uint32 {
@@ -1818,7 +1910,7 @@ type LineEdit struct {
 
 func (x *LineEdit) Reset() {
 	*x = LineEdit{}
-	mi := &file_session_v1_events_proto_msgTypes[19]
+	mi := &file_session_v1_events_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1830,7 +1922,7 @@ func (x *LineEdit) String() string {
 func (*LineEdit) ProtoMessage() {}
 
 func (x *LineEdit) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[19]
+	mi := &file_session_v1_events_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1843,7 +1935,7 @@ func (x *LineEdit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LineEdit.ProtoReflect.Descriptor instead.
 func (*LineEdit) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{19}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *LineEdit) GetStartCol() uint32 {
@@ -1878,7 +1970,7 @@ type InsertLine struct {
 
 func (x *InsertLine) Reset() {
 	*x = InsertLine{}
-	mi := &file_session_v1_events_proto_msgTypes[20]
+	mi := &file_session_v1_events_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1890,7 +1982,7 @@ func (x *InsertLine) String() string {
 func (*InsertLine) ProtoMessage() {}
 
 func (x *InsertLine) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[20]
+	mi := &file_session_v1_events_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1903,7 +1995,7 @@ func (x *InsertLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InsertLine.ProtoReflect.Descriptor instead.
 func (*InsertLine) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{20}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *InsertLine) GetText() []byte {
@@ -1932,7 +2024,7 @@ type CursorPosition struct {
 
 func (x *CursorPosition) Reset() {
 	*x = CursorPosition{}
-	mi := &file_session_v1_events_proto_msgTypes[21]
+	mi := &file_session_v1_events_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1944,7 +2036,7 @@ func (x *CursorPosition) String() string {
 func (*CursorPosition) ProtoMessage() {}
 
 func (x *CursorPosition) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[21]
+	mi := &file_session_v1_events_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1957,7 +2049,7 @@ func (x *CursorPosition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CursorPosition.ProtoReflect.Descriptor instead.
 func (*CursorPosition) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{21}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CursorPosition) GetRow() uint32 {
@@ -1992,7 +2084,7 @@ type TerminalDimensions struct {
 
 func (x *TerminalDimensions) Reset() {
 	*x = TerminalDimensions{}
-	mi := &file_session_v1_events_proto_msgTypes[22]
+	mi := &file_session_v1_events_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2004,7 +2096,7 @@ func (x *TerminalDimensions) String() string {
 func (*TerminalDimensions) ProtoMessage() {}
 
 func (x *TerminalDimensions) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[22]
+	mi := &file_session_v1_events_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2017,7 +2109,7 @@ func (x *TerminalDimensions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalDimensions.ProtoReflect.Descriptor instead.
 func (*TerminalDimensions) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{22}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *TerminalDimensions) GetRows() uint32 {
@@ -2072,7 +2164,7 @@ type TerminalDiff struct {
 
 func (x *TerminalDiff) Reset() {
 	*x = TerminalDiff{}
-	mi := &file_session_v1_events_proto_msgTypes[23]
+	mi := &file_session_v1_events_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2084,7 +2176,7 @@ func (x *TerminalDiff) String() string {
 func (*TerminalDiff) ProtoMessage() {}
 
 func (x *TerminalDiff) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[23]
+	mi := &file_session_v1_events_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2097,7 +2189,7 @@ func (x *TerminalDiff) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalDiff.ProtoReflect.Descriptor instead.
 func (*TerminalDiff) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{23}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *TerminalDiff) GetFromSequence() uint64 {
@@ -2174,7 +2266,7 @@ type EchoAck struct {
 
 func (x *EchoAck) Reset() {
 	*x = EchoAck{}
-	mi := &file_session_v1_events_proto_msgTypes[24]
+	mi := &file_session_v1_events_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2186,7 +2278,7 @@ func (x *EchoAck) String() string {
 func (*EchoAck) ProtoMessage() {}
 
 func (x *EchoAck) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[24]
+	mi := &file_session_v1_events_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2199,7 +2291,7 @@ func (x *EchoAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EchoAck.ProtoReflect.Descriptor instead.
 func (*EchoAck) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{24}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *EchoAck) GetEchoAckNum() uint64 {
@@ -2234,7 +2326,7 @@ type InputWithEcho struct {
 
 func (x *InputWithEcho) Reset() {
 	*x = InputWithEcho{}
-	mi := &file_session_v1_events_proto_msgTypes[25]
+	mi := &file_session_v1_events_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2246,7 +2338,7 @@ func (x *InputWithEcho) String() string {
 func (*InputWithEcho) ProtoMessage() {}
 
 func (x *InputWithEcho) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[25]
+	mi := &file_session_v1_events_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2259,7 +2351,7 @@ func (x *InputWithEcho) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputWithEcho.ProtoReflect.Descriptor instead.
 func (*InputWithEcho) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{25}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *InputWithEcho) GetData() []byte {
@@ -2306,7 +2398,7 @@ type SSPCapabilities struct {
 
 func (x *SSPCapabilities) Reset() {
 	*x = SSPCapabilities{}
-	mi := &file_session_v1_events_proto_msgTypes[26]
+	mi := &file_session_v1_events_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2318,7 +2410,7 @@ func (x *SSPCapabilities) String() string {
 func (*SSPCapabilities) ProtoMessage() {}
 
 func (x *SSPCapabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[26]
+	mi := &file_session_v1_events_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2331,7 +2423,7 @@ func (x *SSPCapabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SSPCapabilities.ProtoReflect.Descriptor instead.
 func (*SSPCapabilities) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{26}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *SSPCapabilities) GetSupportsPredictiveEcho() bool {
@@ -2392,7 +2484,7 @@ type SSPNegotiation struct {
 
 func (x *SSPNegotiation) Reset() {
 	*x = SSPNegotiation{}
-	mi := &file_session_v1_events_proto_msgTypes[27]
+	mi := &file_session_v1_events_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2404,7 +2496,7 @@ func (x *SSPNegotiation) String() string {
 func (*SSPNegotiation) ProtoMessage() {}
 
 func (x *SSPNegotiation) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[27]
+	mi := &file_session_v1_events_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2417,7 +2509,7 @@ func (x *SSPNegotiation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SSPNegotiation.ProtoReflect.Descriptor instead.
 func (*SSPNegotiation) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{27}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SSPNegotiation) GetCapabilities() *SSPCapabilities {
@@ -2464,7 +2556,7 @@ type TerminalState struct {
 
 func (x *TerminalState) Reset() {
 	*x = TerminalState{}
-	mi := &file_session_v1_events_proto_msgTypes[28]
+	mi := &file_session_v1_events_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2476,7 +2568,7 @@ func (x *TerminalState) String() string {
 func (*TerminalState) ProtoMessage() {}
 
 func (x *TerminalState) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[28]
+	mi := &file_session_v1_events_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2489,7 +2581,7 @@ func (x *TerminalState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalState.ProtoReflect.Descriptor instead.
 func (*TerminalState) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{28}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *TerminalState) GetSequence() uint64 {
@@ -2547,7 +2639,7 @@ type TerminalLine struct {
 
 func (x *TerminalLine) Reset() {
 	*x = TerminalLine{}
-	mi := &file_session_v1_events_proto_msgTypes[29]
+	mi := &file_session_v1_events_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2559,7 +2651,7 @@ func (x *TerminalLine) String() string {
 func (*TerminalLine) ProtoMessage() {}
 
 func (x *TerminalLine) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[29]
+	mi := &file_session_v1_events_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2572,7 +2664,7 @@ func (x *TerminalLine) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalLine.ProtoReflect.Descriptor instead.
 func (*TerminalLine) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{29}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TerminalLine) GetContent() []byte {
@@ -2606,7 +2698,7 @@ type LineAttributes struct {
 
 func (x *LineAttributes) Reset() {
 	*x = LineAttributes{}
-	mi := &file_session_v1_events_proto_msgTypes[30]
+	mi := &file_session_v1_events_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2618,7 +2710,7 @@ func (x *LineAttributes) String() string {
 func (*LineAttributes) ProtoMessage() {}
 
 func (x *LineAttributes) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[30]
+	mi := &file_session_v1_events_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2631,7 +2723,7 @@ func (x *LineAttributes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LineAttributes.ProtoReflect.Descriptor instead.
 func (*LineAttributes) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{30}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *LineAttributes) GetIsEmpty() bool {
@@ -2677,7 +2769,7 @@ type ScrollbackInfo struct {
 
 func (x *ScrollbackInfo) Reset() {
 	*x = ScrollbackInfo{}
-	mi := &file_session_v1_events_proto_msgTypes[31]
+	mi := &file_session_v1_events_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2689,7 +2781,7 @@ func (x *ScrollbackInfo) String() string {
 func (*ScrollbackInfo) ProtoMessage() {}
 
 func (x *ScrollbackInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[31]
+	mi := &file_session_v1_events_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2702,7 +2794,7 @@ func (x *ScrollbackInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScrollbackInfo.ProtoReflect.Descriptor instead.
 func (*ScrollbackInfo) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{31}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ScrollbackInfo) GetTotalLines() uint64 {
@@ -2747,7 +2839,7 @@ type CompressionMetadata struct {
 
 func (x *CompressionMetadata) Reset() {
 	*x = CompressionMetadata{}
-	mi := &file_session_v1_events_proto_msgTypes[32]
+	mi := &file_session_v1_events_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2759,7 +2851,7 @@ func (x *CompressionMetadata) String() string {
 func (*CompressionMetadata) ProtoMessage() {}
 
 func (x *CompressionMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[32]
+	mi := &file_session_v1_events_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2772,7 +2864,7 @@ func (x *CompressionMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompressionMetadata.ProtoReflect.Descriptor instead.
 func (*CompressionMetadata) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{32}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *CompressionMetadata) GetAlgorithm() string {
@@ -2836,7 +2928,7 @@ type DictionaryMetadata struct {
 
 func (x *DictionaryMetadata) Reset() {
 	*x = DictionaryMetadata{}
-	mi := &file_session_v1_events_proto_msgTypes[33]
+	mi := &file_session_v1_events_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2848,7 +2940,7 @@ func (x *DictionaryMetadata) String() string {
 func (*DictionaryMetadata) ProtoMessage() {}
 
 func (x *DictionaryMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[33]
+	mi := &file_session_v1_events_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2861,7 +2953,7 @@ func (x *DictionaryMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DictionaryMetadata.ProtoReflect.Descriptor instead.
 func (*DictionaryMetadata) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{33}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *DictionaryMetadata) GetLevel() string {
@@ -2915,7 +3007,7 @@ type UserInteractionEvent struct {
 
 func (x *UserInteractionEvent) Reset() {
 	*x = UserInteractionEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[34]
+	mi := &file_session_v1_events_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2927,7 +3019,7 @@ func (x *UserInteractionEvent) String() string {
 func (*UserInteractionEvent) ProtoMessage() {}
 
 func (x *UserInteractionEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[34]
+	mi := &file_session_v1_events_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2940,7 +3032,7 @@ func (x *UserInteractionEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserInteractionEvent.ProtoReflect.Descriptor instead.
 func (*UserInteractionEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{34}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *UserInteractionEvent) GetSessionId() string {
@@ -2980,7 +3072,7 @@ type SessionAcknowledgedEvent struct {
 
 func (x *SessionAcknowledgedEvent) Reset() {
 	*x = SessionAcknowledgedEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[35]
+	mi := &file_session_v1_events_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2992,7 +3084,7 @@ func (x *SessionAcknowledgedEvent) String() string {
 func (*SessionAcknowledgedEvent) ProtoMessage() {}
 
 func (x *SessionAcknowledgedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[35]
+	mi := &file_session_v1_events_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3005,7 +3097,7 @@ func (x *SessionAcknowledgedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionAcknowledgedEvent.ProtoReflect.Descriptor instead.
 func (*SessionAcknowledgedEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{35}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *SessionAcknowledgedEvent) GetSessionId() string {
@@ -3047,7 +3139,7 @@ type ApprovalResponseEvent struct {
 
 func (x *ApprovalResponseEvent) Reset() {
 	*x = ApprovalResponseEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[36]
+	mi := &file_session_v1_events_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3059,7 +3151,7 @@ func (x *ApprovalResponseEvent) String() string {
 func (*ApprovalResponseEvent) ProtoMessage() {}
 
 func (x *ApprovalResponseEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[36]
+	mi := &file_session_v1_events_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3072,7 +3164,7 @@ func (x *ApprovalResponseEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovalResponseEvent.ProtoReflect.Descriptor instead.
 func (*ApprovalResponseEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{36}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ApprovalResponseEvent) GetSessionId() string {
@@ -3124,7 +3216,7 @@ type ReviewQueueEvent struct {
 
 func (x *ReviewQueueEvent) Reset() {
 	*x = ReviewQueueEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[37]
+	mi := &file_session_v1_events_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3136,7 +3228,7 @@ func (x *ReviewQueueEvent) String() string {
 func (*ReviewQueueEvent) ProtoMessage() {}
 
 func (x *ReviewQueueEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[37]
+	mi := &file_session_v1_events_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3149,7 +3241,7 @@ func (x *ReviewQueueEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewQueueEvent.ProtoReflect.Descriptor instead.
 func (*ReviewQueueEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{37}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ReviewQueueEvent) GetTimestamp() *timestamppb.Timestamp {
@@ -3248,7 +3340,7 @@ type ReviewQueueItemAddedEvent struct {
 
 func (x *ReviewQueueItemAddedEvent) Reset() {
 	*x = ReviewQueueItemAddedEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[38]
+	mi := &file_session_v1_events_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3260,7 +3352,7 @@ func (x *ReviewQueueItemAddedEvent) String() string {
 func (*ReviewQueueItemAddedEvent) ProtoMessage() {}
 
 func (x *ReviewQueueItemAddedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[38]
+	mi := &file_session_v1_events_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3273,7 +3365,7 @@ func (x *ReviewQueueItemAddedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewQueueItemAddedEvent.ProtoReflect.Descriptor instead.
 func (*ReviewQueueItemAddedEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{38}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ReviewQueueItemAddedEvent) GetItem() *ReviewItem {
@@ -3310,7 +3402,7 @@ type ReviewQueueItemRemovedEvent struct {
 
 func (x *ReviewQueueItemRemovedEvent) Reset() {
 	*x = ReviewQueueItemRemovedEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[39]
+	mi := &file_session_v1_events_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3322,7 +3414,7 @@ func (x *ReviewQueueItemRemovedEvent) String() string {
 func (*ReviewQueueItemRemovedEvent) ProtoMessage() {}
 
 func (x *ReviewQueueItemRemovedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[39]
+	mi := &file_session_v1_events_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3335,7 +3427,7 @@ func (x *ReviewQueueItemRemovedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewQueueItemRemovedEvent.ProtoReflect.Descriptor instead.
 func (*ReviewQueueItemRemovedEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{39}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ReviewQueueItemRemovedEvent) GetSessionId() string {
@@ -3367,7 +3459,7 @@ type ReviewQueueItemUpdatedEvent struct {
 
 func (x *ReviewQueueItemUpdatedEvent) Reset() {
 	*x = ReviewQueueItemUpdatedEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[40]
+	mi := &file_session_v1_events_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3379,7 +3471,7 @@ func (x *ReviewQueueItemUpdatedEvent) String() string {
 func (*ReviewQueueItemUpdatedEvent) ProtoMessage() {}
 
 func (x *ReviewQueueItemUpdatedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[40]
+	mi := &file_session_v1_events_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3392,7 +3484,7 @@ func (x *ReviewQueueItemUpdatedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewQueueItemUpdatedEvent.ProtoReflect.Descriptor instead.
 func (*ReviewQueueItemUpdatedEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{40}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ReviewQueueItemUpdatedEvent) GetSessionId() string {
@@ -3435,7 +3527,7 @@ type ReviewQueueStatisticsEvent struct {
 
 func (x *ReviewQueueStatisticsEvent) Reset() {
 	*x = ReviewQueueStatisticsEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[41]
+	mi := &file_session_v1_events_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3447,7 +3539,7 @@ func (x *ReviewQueueStatisticsEvent) String() string {
 func (*ReviewQueueStatisticsEvent) ProtoMessage() {}
 
 func (x *ReviewQueueStatisticsEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[41]
+	mi := &file_session_v1_events_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3460,7 +3552,7 @@ func (x *ReviewQueueStatisticsEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReviewQueueStatisticsEvent.ProtoReflect.Descriptor instead.
 func (*ReviewQueueStatisticsEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{41}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ReviewQueueStatisticsEvent) GetTotalItems() int32 {
@@ -3526,7 +3618,7 @@ type NotificationEvent struct {
 
 func (x *NotificationEvent) Reset() {
 	*x = NotificationEvent{}
-	mi := &file_session_v1_events_proto_msgTypes[42]
+	mi := &file_session_v1_events_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3538,7 +3630,7 @@ func (x *NotificationEvent) String() string {
 func (*NotificationEvent) ProtoMessage() {}
 
 func (x *NotificationEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_events_proto_msgTypes[42]
+	mi := &file_session_v1_events_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3551,7 +3643,7 @@ func (x *NotificationEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotificationEvent.ProtoReflect.Descriptor instead.
 func (*NotificationEvent) Descriptor() ([]byte, []int) {
-	return file_session_v1_events_proto_rawDescGZIP(), []int{42}
+	return file_session_v1_events_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *NotificationEvent) GetSessionId() string {
@@ -3656,7 +3748,7 @@ const file_session_v1_events_proto_rawDesc = "" +
 	"\x10detected_context\x18\x05 \x01(\tH\x01R\x0fdetectedContext\x88\x01\x01\x12=\n" +
 	"\rworking_state\x18\x06 \x01(\x0e2\x18.session.v1.WorkingStateR\fworkingStateB\x12\n" +
 	"\x10_detected_statusB\x13\n" +
-	"\x11_detected_context\"\xf9\a\n" +
+	"\x11_detected_context\"\xe5\b\n" +
 	"\fTerminalData\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x124\n" +
@@ -3676,8 +3768,15 @@ const file_session_v1_events_proto_rawDesc = "" +
 	"\n" +
 	"input_echo\x18\x0e \x01(\v2\x19.session.v1.InputWithEchoH\x00R\tinputEcho\x12E\n" +
 	"\x0fssp_negotiation\x18\x0f \x01(\v2\x1a.session.v1.SSPNegotiationH\x00R\x0esspNegotiation\x12K\n" +
-	"\x11resize_quiescence\x18\x10 \x01(\v2\x1c.session.v1.ResizeQuiescenceH\x00R\x10resizeQuiescenceB\x06\n" +
-	"\x04data\"V\n" +
+	"\x11resize_quiescence\x18\x10 \x01(\v2\x1c.session.v1.ResizeQuiescenceH\x00R\x10resizeQuiescence\x12O\n" +
+	"\x13shell_status_update\x18\x12 \x01(\v2\x1d.session.v1.ShellStatusUpdateH\x00R\x11shellStatusUpdate\x12\x19\n" +
+	"\bshell_id\x18\x11 \x01(\tR\ashellIdB\x06\n" +
+	"\x04data\"\x83\x01\n" +
+	"\x11ShellStatusUpdate\x12\x19\n" +
+	"\bshell_id\x18\x01 \x01(\tR\ashellId\x126\n" +
+	"\n" +
+	"new_status\x18\x02 \x01(\x0e2\x17.session.v1.ShellStatusR\tnewStatus\x12\x1b\n" +
+	"\texit_code\x18\x03 \x01(\x05R\bexitCode\"V\n" +
 	"\x10ResizeQuiescence\x12\x1a\n" +
 	"\bresizing\x18\x01 \x01(\bR\bresizing\x12\x12\n" +
 	"\x04cols\x18\x02 \x01(\x05R\x04cols\x12\x12\n" +
@@ -3960,7 +4059,7 @@ func file_session_v1_events_proto_rawDescGZIP() []byte {
 }
 
 var file_session_v1_events_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_session_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_session_v1_events_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_session_v1_events_proto_goTypes = []any{
 	(UserInteractionEvent_InteractionType)(0), // 0: session.v1.UserInteractionEvent.InteractionType
 	(*SessionEvent)(nil),                      // 1: session.v1.SessionEvent
@@ -3969,122 +4068,126 @@ var file_session_v1_events_proto_goTypes = []any{
 	(*SessionDeletedEvent)(nil),               // 4: session.v1.SessionDeletedEvent
 	(*SessionStatusChangedEvent)(nil),         // 5: session.v1.SessionStatusChangedEvent
 	(*TerminalData)(nil),                      // 6: session.v1.TerminalData
-	(*ResizeQuiescence)(nil),                  // 7: session.v1.ResizeQuiescence
-	(*TerminalOutput)(nil),                    // 8: session.v1.TerminalOutput
-	(*TerminalInput)(nil),                     // 9: session.v1.TerminalInput
-	(*TerminalResize)(nil),                    // 10: session.v1.TerminalResize
-	(*TerminalError)(nil),                     // 11: session.v1.TerminalError
-	(*FlowControl)(nil),                       // 12: session.v1.FlowControl
-	(*ScrollbackRequest)(nil),                 // 13: session.v1.ScrollbackRequest
-	(*ScrollbackResponse)(nil),                // 14: session.v1.ScrollbackResponse
-	(*ScrollbackChunk)(nil),                   // 15: session.v1.ScrollbackChunk
-	(*CurrentPaneRequest)(nil),                // 16: session.v1.CurrentPaneRequest
-	(*CurrentPaneResponse)(nil),               // 17: session.v1.CurrentPaneResponse
-	(*TerminalDelta)(nil),                     // 18: session.v1.TerminalDelta
-	(*LineDelta)(nil),                         // 19: session.v1.LineDelta
-	(*LineEdit)(nil),                          // 20: session.v1.LineEdit
-	(*InsertLine)(nil),                        // 21: session.v1.InsertLine
-	(*CursorPosition)(nil),                    // 22: session.v1.CursorPosition
-	(*TerminalDimensions)(nil),                // 23: session.v1.TerminalDimensions
-	(*TerminalDiff)(nil),                      // 24: session.v1.TerminalDiff
-	(*EchoAck)(nil),                           // 25: session.v1.EchoAck
-	(*InputWithEcho)(nil),                     // 26: session.v1.InputWithEcho
-	(*SSPCapabilities)(nil),                   // 27: session.v1.SSPCapabilities
-	(*SSPNegotiation)(nil),                    // 28: session.v1.SSPNegotiation
-	(*TerminalState)(nil),                     // 29: session.v1.TerminalState
-	(*TerminalLine)(nil),                      // 30: session.v1.TerminalLine
-	(*LineAttributes)(nil),                    // 31: session.v1.LineAttributes
-	(*ScrollbackInfo)(nil),                    // 32: session.v1.ScrollbackInfo
-	(*CompressionMetadata)(nil),               // 33: session.v1.CompressionMetadata
-	(*DictionaryMetadata)(nil),                // 34: session.v1.DictionaryMetadata
-	(*UserInteractionEvent)(nil),              // 35: session.v1.UserInteractionEvent
-	(*SessionAcknowledgedEvent)(nil),          // 36: session.v1.SessionAcknowledgedEvent
-	(*ApprovalResponseEvent)(nil),             // 37: session.v1.ApprovalResponseEvent
-	(*ReviewQueueEvent)(nil),                  // 38: session.v1.ReviewQueueEvent
-	(*ReviewQueueItemAddedEvent)(nil),         // 39: session.v1.ReviewQueueItemAddedEvent
-	(*ReviewQueueItemRemovedEvent)(nil),       // 40: session.v1.ReviewQueueItemRemovedEvent
-	(*ReviewQueueItemUpdatedEvent)(nil),       // 41: session.v1.ReviewQueueItemUpdatedEvent
-	(*ReviewQueueStatisticsEvent)(nil),        // 42: session.v1.ReviewQueueStatisticsEvent
-	(*NotificationEvent)(nil),                 // 43: session.v1.NotificationEvent
-	nil,                                       // 44: session.v1.ReviewQueueStatisticsEvent.ByPriorityEntry
-	nil,                                       // 45: session.v1.ReviewQueueStatisticsEvent.ByReasonEntry
-	nil,                                       // 46: session.v1.NotificationEvent.MetadataEntry
-	(*timestamppb.Timestamp)(nil),             // 47: google.protobuf.Timestamp
-	(*Session)(nil),                           // 48: session.v1.Session
-	(SessionStatus)(0),                        // 49: session.v1.SessionStatus
-	(WorkingState)(0),                         // 50: session.v1.WorkingState
-	(*ReviewItem)(nil),                        // 51: session.v1.ReviewItem
-	(NotificationType)(0),                     // 52: session.v1.NotificationType
-	(NotificationPriority)(0),                 // 53: session.v1.NotificationPriority
+	(*ShellStatusUpdate)(nil),                 // 7: session.v1.ShellStatusUpdate
+	(*ResizeQuiescence)(nil),                  // 8: session.v1.ResizeQuiescence
+	(*TerminalOutput)(nil),                    // 9: session.v1.TerminalOutput
+	(*TerminalInput)(nil),                     // 10: session.v1.TerminalInput
+	(*TerminalResize)(nil),                    // 11: session.v1.TerminalResize
+	(*TerminalError)(nil),                     // 12: session.v1.TerminalError
+	(*FlowControl)(nil),                       // 13: session.v1.FlowControl
+	(*ScrollbackRequest)(nil),                 // 14: session.v1.ScrollbackRequest
+	(*ScrollbackResponse)(nil),                // 15: session.v1.ScrollbackResponse
+	(*ScrollbackChunk)(nil),                   // 16: session.v1.ScrollbackChunk
+	(*CurrentPaneRequest)(nil),                // 17: session.v1.CurrentPaneRequest
+	(*CurrentPaneResponse)(nil),               // 18: session.v1.CurrentPaneResponse
+	(*TerminalDelta)(nil),                     // 19: session.v1.TerminalDelta
+	(*LineDelta)(nil),                         // 20: session.v1.LineDelta
+	(*LineEdit)(nil),                          // 21: session.v1.LineEdit
+	(*InsertLine)(nil),                        // 22: session.v1.InsertLine
+	(*CursorPosition)(nil),                    // 23: session.v1.CursorPosition
+	(*TerminalDimensions)(nil),                // 24: session.v1.TerminalDimensions
+	(*TerminalDiff)(nil),                      // 25: session.v1.TerminalDiff
+	(*EchoAck)(nil),                           // 26: session.v1.EchoAck
+	(*InputWithEcho)(nil),                     // 27: session.v1.InputWithEcho
+	(*SSPCapabilities)(nil),                   // 28: session.v1.SSPCapabilities
+	(*SSPNegotiation)(nil),                    // 29: session.v1.SSPNegotiation
+	(*TerminalState)(nil),                     // 30: session.v1.TerminalState
+	(*TerminalLine)(nil),                      // 31: session.v1.TerminalLine
+	(*LineAttributes)(nil),                    // 32: session.v1.LineAttributes
+	(*ScrollbackInfo)(nil),                    // 33: session.v1.ScrollbackInfo
+	(*CompressionMetadata)(nil),               // 34: session.v1.CompressionMetadata
+	(*DictionaryMetadata)(nil),                // 35: session.v1.DictionaryMetadata
+	(*UserInteractionEvent)(nil),              // 36: session.v1.UserInteractionEvent
+	(*SessionAcknowledgedEvent)(nil),          // 37: session.v1.SessionAcknowledgedEvent
+	(*ApprovalResponseEvent)(nil),             // 38: session.v1.ApprovalResponseEvent
+	(*ReviewQueueEvent)(nil),                  // 39: session.v1.ReviewQueueEvent
+	(*ReviewQueueItemAddedEvent)(nil),         // 40: session.v1.ReviewQueueItemAddedEvent
+	(*ReviewQueueItemRemovedEvent)(nil),       // 41: session.v1.ReviewQueueItemRemovedEvent
+	(*ReviewQueueItemUpdatedEvent)(nil),       // 42: session.v1.ReviewQueueItemUpdatedEvent
+	(*ReviewQueueStatisticsEvent)(nil),        // 43: session.v1.ReviewQueueStatisticsEvent
+	(*NotificationEvent)(nil),                 // 44: session.v1.NotificationEvent
+	nil,                                       // 45: session.v1.ReviewQueueStatisticsEvent.ByPriorityEntry
+	nil,                                       // 46: session.v1.ReviewQueueStatisticsEvent.ByReasonEntry
+	nil,                                       // 47: session.v1.NotificationEvent.MetadataEntry
+	(*timestamppb.Timestamp)(nil),             // 48: google.protobuf.Timestamp
+	(*Session)(nil),                           // 49: session.v1.Session
+	(SessionStatus)(0),                        // 50: session.v1.SessionStatus
+	(WorkingState)(0),                         // 51: session.v1.WorkingState
+	(ShellStatus)(0),                          // 52: session.v1.ShellStatus
+	(*ReviewItem)(nil),                        // 53: session.v1.ReviewItem
+	(NotificationType)(0),                     // 54: session.v1.NotificationType
+	(NotificationPriority)(0),                 // 55: session.v1.NotificationPriority
 }
 var file_session_v1_events_proto_depIdxs = []int32{
-	47, // 0: session.v1.SessionEvent.timestamp:type_name -> google.protobuf.Timestamp
+	48, // 0: session.v1.SessionEvent.timestamp:type_name -> google.protobuf.Timestamp
 	2,  // 1: session.v1.SessionEvent.session_created:type_name -> session.v1.SessionCreatedEvent
 	3,  // 2: session.v1.SessionEvent.session_updated:type_name -> session.v1.SessionUpdatedEvent
 	4,  // 3: session.v1.SessionEvent.session_deleted:type_name -> session.v1.SessionDeletedEvent
 	5,  // 4: session.v1.SessionEvent.status_changed:type_name -> session.v1.SessionStatusChangedEvent
-	35, // 5: session.v1.SessionEvent.user_interaction:type_name -> session.v1.UserInteractionEvent
-	36, // 6: session.v1.SessionEvent.session_acknowledged:type_name -> session.v1.SessionAcknowledgedEvent
-	37, // 7: session.v1.SessionEvent.approval_response:type_name -> session.v1.ApprovalResponseEvent
-	43, // 8: session.v1.SessionEvent.notification:type_name -> session.v1.NotificationEvent
-	48, // 9: session.v1.SessionCreatedEvent.session:type_name -> session.v1.Session
-	48, // 10: session.v1.SessionUpdatedEvent.session:type_name -> session.v1.Session
-	49, // 11: session.v1.SessionStatusChangedEvent.old_status:type_name -> session.v1.SessionStatus
-	49, // 12: session.v1.SessionStatusChangedEvent.new_status:type_name -> session.v1.SessionStatus
-	50, // 13: session.v1.SessionStatusChangedEvent.working_state:type_name -> session.v1.WorkingState
-	8,  // 14: session.v1.TerminalData.output:type_name -> session.v1.TerminalOutput
-	9,  // 15: session.v1.TerminalData.input:type_name -> session.v1.TerminalInput
-	10, // 16: session.v1.TerminalData.resize:type_name -> session.v1.TerminalResize
-	11, // 17: session.v1.TerminalData.error:type_name -> session.v1.TerminalError
-	13, // 18: session.v1.TerminalData.scrollback_request:type_name -> session.v1.ScrollbackRequest
-	14, // 19: session.v1.TerminalData.scrollback_response:type_name -> session.v1.ScrollbackResponse
-	18, // 20: session.v1.TerminalData.delta:type_name -> session.v1.TerminalDelta
-	16, // 21: session.v1.TerminalData.current_pane_request:type_name -> session.v1.CurrentPaneRequest
-	17, // 22: session.v1.TerminalData.current_pane_response:type_name -> session.v1.CurrentPaneResponse
-	12, // 23: session.v1.TerminalData.flow_control:type_name -> session.v1.FlowControl
-	29, // 24: session.v1.TerminalData.state:type_name -> session.v1.TerminalState
-	24, // 25: session.v1.TerminalData.diff:type_name -> session.v1.TerminalDiff
-	26, // 26: session.v1.TerminalData.input_echo:type_name -> session.v1.InputWithEcho
-	28, // 27: session.v1.TerminalData.ssp_negotiation:type_name -> session.v1.SSPNegotiation
-	7,  // 28: session.v1.TerminalData.resize_quiescence:type_name -> session.v1.ResizeQuiescence
-	15, // 29: session.v1.ScrollbackResponse.chunks:type_name -> session.v1.ScrollbackChunk
-	19, // 30: session.v1.TerminalDelta.lines:type_name -> session.v1.LineDelta
-	22, // 31: session.v1.TerminalDelta.cursor:type_name -> session.v1.CursorPosition
-	23, // 32: session.v1.TerminalDelta.dimensions:type_name -> session.v1.TerminalDimensions
-	20, // 33: session.v1.LineDelta.edit:type_name -> session.v1.LineEdit
-	21, // 34: session.v1.LineDelta.insert:type_name -> session.v1.InsertLine
-	25, // 35: session.v1.TerminalDiff.echo_ack:type_name -> session.v1.EchoAck
-	33, // 36: session.v1.TerminalDiff.compression:type_name -> session.v1.CompressionMetadata
-	27, // 37: session.v1.SSPNegotiation.capabilities:type_name -> session.v1.SSPCapabilities
-	27, // 38: session.v1.SSPNegotiation.negotiated:type_name -> session.v1.SSPCapabilities
-	23, // 39: session.v1.TerminalState.dimensions:type_name -> session.v1.TerminalDimensions
-	30, // 40: session.v1.TerminalState.lines:type_name -> session.v1.TerminalLine
-	22, // 41: session.v1.TerminalState.cursor:type_name -> session.v1.CursorPosition
-	32, // 42: session.v1.TerminalState.scrollback:type_name -> session.v1.ScrollbackInfo
-	33, // 43: session.v1.TerminalState.compression:type_name -> session.v1.CompressionMetadata
-	31, // 44: session.v1.TerminalLine.attributes:type_name -> session.v1.LineAttributes
-	34, // 45: session.v1.CompressionMetadata.dictionary:type_name -> session.v1.DictionaryMetadata
-	0,  // 46: session.v1.UserInteractionEvent.type:type_name -> session.v1.UserInteractionEvent.InteractionType
-	47, // 47: session.v1.SessionAcknowledgedEvent.acknowledged_at:type_name -> google.protobuf.Timestamp
-	47, // 48: session.v1.ApprovalResponseEvent.responded_at:type_name -> google.protobuf.Timestamp
-	47, // 49: session.v1.ReviewQueueEvent.timestamp:type_name -> google.protobuf.Timestamp
-	39, // 50: session.v1.ReviewQueueEvent.item_added:type_name -> session.v1.ReviewQueueItemAddedEvent
-	40, // 51: session.v1.ReviewQueueEvent.item_removed:type_name -> session.v1.ReviewQueueItemRemovedEvent
-	41, // 52: session.v1.ReviewQueueEvent.item_updated:type_name -> session.v1.ReviewQueueItemUpdatedEvent
-	42, // 53: session.v1.ReviewQueueEvent.statistics:type_name -> session.v1.ReviewQueueStatisticsEvent
-	51, // 54: session.v1.ReviewQueueItemAddedEvent.item:type_name -> session.v1.ReviewItem
-	51, // 55: session.v1.ReviewQueueItemUpdatedEvent.item:type_name -> session.v1.ReviewItem
-	44, // 56: session.v1.ReviewQueueStatisticsEvent.by_priority:type_name -> session.v1.ReviewQueueStatisticsEvent.ByPriorityEntry
-	45, // 57: session.v1.ReviewQueueStatisticsEvent.by_reason:type_name -> session.v1.ReviewQueueStatisticsEvent.ByReasonEntry
-	52, // 58: session.v1.NotificationEvent.notification_type:type_name -> session.v1.NotificationType
-	53, // 59: session.v1.NotificationEvent.priority:type_name -> session.v1.NotificationPriority
-	46, // 60: session.v1.NotificationEvent.metadata:type_name -> session.v1.NotificationEvent.MetadataEntry
-	47, // 61: session.v1.NotificationEvent.timestamp:type_name -> google.protobuf.Timestamp
-	62, // [62:62] is the sub-list for method output_type
-	62, // [62:62] is the sub-list for method input_type
-	62, // [62:62] is the sub-list for extension type_name
-	62, // [62:62] is the sub-list for extension extendee
-	0,  // [0:62] is the sub-list for field type_name
+	36, // 5: session.v1.SessionEvent.user_interaction:type_name -> session.v1.UserInteractionEvent
+	37, // 6: session.v1.SessionEvent.session_acknowledged:type_name -> session.v1.SessionAcknowledgedEvent
+	38, // 7: session.v1.SessionEvent.approval_response:type_name -> session.v1.ApprovalResponseEvent
+	44, // 8: session.v1.SessionEvent.notification:type_name -> session.v1.NotificationEvent
+	49, // 9: session.v1.SessionCreatedEvent.session:type_name -> session.v1.Session
+	49, // 10: session.v1.SessionUpdatedEvent.session:type_name -> session.v1.Session
+	50, // 11: session.v1.SessionStatusChangedEvent.old_status:type_name -> session.v1.SessionStatus
+	50, // 12: session.v1.SessionStatusChangedEvent.new_status:type_name -> session.v1.SessionStatus
+	51, // 13: session.v1.SessionStatusChangedEvent.working_state:type_name -> session.v1.WorkingState
+	9,  // 14: session.v1.TerminalData.output:type_name -> session.v1.TerminalOutput
+	10, // 15: session.v1.TerminalData.input:type_name -> session.v1.TerminalInput
+	11, // 16: session.v1.TerminalData.resize:type_name -> session.v1.TerminalResize
+	12, // 17: session.v1.TerminalData.error:type_name -> session.v1.TerminalError
+	14, // 18: session.v1.TerminalData.scrollback_request:type_name -> session.v1.ScrollbackRequest
+	15, // 19: session.v1.TerminalData.scrollback_response:type_name -> session.v1.ScrollbackResponse
+	19, // 20: session.v1.TerminalData.delta:type_name -> session.v1.TerminalDelta
+	17, // 21: session.v1.TerminalData.current_pane_request:type_name -> session.v1.CurrentPaneRequest
+	18, // 22: session.v1.TerminalData.current_pane_response:type_name -> session.v1.CurrentPaneResponse
+	13, // 23: session.v1.TerminalData.flow_control:type_name -> session.v1.FlowControl
+	30, // 24: session.v1.TerminalData.state:type_name -> session.v1.TerminalState
+	25, // 25: session.v1.TerminalData.diff:type_name -> session.v1.TerminalDiff
+	27, // 26: session.v1.TerminalData.input_echo:type_name -> session.v1.InputWithEcho
+	29, // 27: session.v1.TerminalData.ssp_negotiation:type_name -> session.v1.SSPNegotiation
+	8,  // 28: session.v1.TerminalData.resize_quiescence:type_name -> session.v1.ResizeQuiescence
+	7,  // 29: session.v1.TerminalData.shell_status_update:type_name -> session.v1.ShellStatusUpdate
+	52, // 30: session.v1.ShellStatusUpdate.new_status:type_name -> session.v1.ShellStatus
+	16, // 31: session.v1.ScrollbackResponse.chunks:type_name -> session.v1.ScrollbackChunk
+	20, // 32: session.v1.TerminalDelta.lines:type_name -> session.v1.LineDelta
+	23, // 33: session.v1.TerminalDelta.cursor:type_name -> session.v1.CursorPosition
+	24, // 34: session.v1.TerminalDelta.dimensions:type_name -> session.v1.TerminalDimensions
+	21, // 35: session.v1.LineDelta.edit:type_name -> session.v1.LineEdit
+	22, // 36: session.v1.LineDelta.insert:type_name -> session.v1.InsertLine
+	26, // 37: session.v1.TerminalDiff.echo_ack:type_name -> session.v1.EchoAck
+	34, // 38: session.v1.TerminalDiff.compression:type_name -> session.v1.CompressionMetadata
+	28, // 39: session.v1.SSPNegotiation.capabilities:type_name -> session.v1.SSPCapabilities
+	28, // 40: session.v1.SSPNegotiation.negotiated:type_name -> session.v1.SSPCapabilities
+	24, // 41: session.v1.TerminalState.dimensions:type_name -> session.v1.TerminalDimensions
+	31, // 42: session.v1.TerminalState.lines:type_name -> session.v1.TerminalLine
+	23, // 43: session.v1.TerminalState.cursor:type_name -> session.v1.CursorPosition
+	33, // 44: session.v1.TerminalState.scrollback:type_name -> session.v1.ScrollbackInfo
+	34, // 45: session.v1.TerminalState.compression:type_name -> session.v1.CompressionMetadata
+	32, // 46: session.v1.TerminalLine.attributes:type_name -> session.v1.LineAttributes
+	35, // 47: session.v1.CompressionMetadata.dictionary:type_name -> session.v1.DictionaryMetadata
+	0,  // 48: session.v1.UserInteractionEvent.type:type_name -> session.v1.UserInteractionEvent.InteractionType
+	48, // 49: session.v1.SessionAcknowledgedEvent.acknowledged_at:type_name -> google.protobuf.Timestamp
+	48, // 50: session.v1.ApprovalResponseEvent.responded_at:type_name -> google.protobuf.Timestamp
+	48, // 51: session.v1.ReviewQueueEvent.timestamp:type_name -> google.protobuf.Timestamp
+	40, // 52: session.v1.ReviewQueueEvent.item_added:type_name -> session.v1.ReviewQueueItemAddedEvent
+	41, // 53: session.v1.ReviewQueueEvent.item_removed:type_name -> session.v1.ReviewQueueItemRemovedEvent
+	42, // 54: session.v1.ReviewQueueEvent.item_updated:type_name -> session.v1.ReviewQueueItemUpdatedEvent
+	43, // 55: session.v1.ReviewQueueEvent.statistics:type_name -> session.v1.ReviewQueueStatisticsEvent
+	53, // 56: session.v1.ReviewQueueItemAddedEvent.item:type_name -> session.v1.ReviewItem
+	53, // 57: session.v1.ReviewQueueItemUpdatedEvent.item:type_name -> session.v1.ReviewItem
+	45, // 58: session.v1.ReviewQueueStatisticsEvent.by_priority:type_name -> session.v1.ReviewQueueStatisticsEvent.ByPriorityEntry
+	46, // 59: session.v1.ReviewQueueStatisticsEvent.by_reason:type_name -> session.v1.ReviewQueueStatisticsEvent.ByReasonEntry
+	54, // 60: session.v1.NotificationEvent.notification_type:type_name -> session.v1.NotificationType
+	55, // 61: session.v1.NotificationEvent.priority:type_name -> session.v1.NotificationPriority
+	47, // 62: session.v1.NotificationEvent.metadata:type_name -> session.v1.NotificationEvent.MetadataEntry
+	48, // 63: session.v1.NotificationEvent.timestamp:type_name -> google.protobuf.Timestamp
+	64, // [64:64] is the sub-list for method output_type
+	64, // [64:64] is the sub-list for method input_type
+	64, // [64:64] is the sub-list for extension type_name
+	64, // [64:64] is the sub-list for extension extendee
+	0,  // [0:64] is the sub-list for field type_name
 }
 
 func init() { file_session_v1_events_proto_init() }
@@ -4120,25 +4223,26 @@ func file_session_v1_events_proto_init() {
 		(*TerminalData_InputEcho)(nil),
 		(*TerminalData_SspNegotiation)(nil),
 		(*TerminalData_ResizeQuiescence)(nil),
+		(*TerminalData_ShellStatusUpdate)(nil),
 	}
-	file_session_v1_events_proto_msgTypes[11].OneofWrappers = []any{}
-	file_session_v1_events_proto_msgTypes[15].OneofWrappers = []any{}
-	file_session_v1_events_proto_msgTypes[17].OneofWrappers = []any{}
-	file_session_v1_events_proto_msgTypes[18].OneofWrappers = []any{
+	file_session_v1_events_proto_msgTypes[12].OneofWrappers = []any{}
+	file_session_v1_events_proto_msgTypes[16].OneofWrappers = []any{}
+	file_session_v1_events_proto_msgTypes[18].OneofWrappers = []any{}
+	file_session_v1_events_proto_msgTypes[19].OneofWrappers = []any{
 		(*LineDelta_ReplaceLine)(nil),
 		(*LineDelta_Edit)(nil),
 		(*LineDelta_DeleteLine)(nil),
 		(*LineDelta_Insert)(nil),
 		(*LineDelta_ClearLine)(nil),
 	}
-	file_session_v1_events_proto_msgTypes[23].OneofWrappers = []any{}
-	file_session_v1_events_proto_msgTypes[26].OneofWrappers = []any{}
+	file_session_v1_events_proto_msgTypes[24].OneofWrappers = []any{}
 	file_session_v1_events_proto_msgTypes[27].OneofWrappers = []any{}
 	file_session_v1_events_proto_msgTypes[28].OneofWrappers = []any{}
 	file_session_v1_events_proto_msgTypes[29].OneofWrappers = []any{}
 	file_session_v1_events_proto_msgTypes[30].OneofWrappers = []any{}
-	file_session_v1_events_proto_msgTypes[32].OneofWrappers = []any{}
-	file_session_v1_events_proto_msgTypes[37].OneofWrappers = []any{
+	file_session_v1_events_proto_msgTypes[31].OneofWrappers = []any{}
+	file_session_v1_events_proto_msgTypes[33].OneofWrappers = []any{}
+	file_session_v1_events_proto_msgTypes[38].OneofWrappers = []any{
 		(*ReviewQueueEvent_ItemAdded)(nil),
 		(*ReviewQueueEvent_ItemRemoved)(nil),
 		(*ReviewQueueEvent_ItemUpdated)(nil),
@@ -4150,7 +4254,7 @@ func file_session_v1_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_v1_events_proto_rawDesc), len(file_session_v1_events_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   46,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -8,7 +8,7 @@ interface AnalyticsContextValue {
   track: AnalyticsProvider["track"];
 }
 
-const AnalyticsContext = createContext<AnalyticsContextValue | null>(null);
+export const AnalyticsContext = createContext<AnalyticsContextValue | null>(null);
 
 export function useAnalytics(): AnalyticsContextValue {
   const context = useContext(AnalyticsContext);

@@ -18,6 +18,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/predicate"
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/session"
+	"github.com/tstapler/stapler-squad/session/ent/shell"
 	"github.com/tstapler/stapler-squad/session/ent/tag"
 	"github.com/tstapler/stapler-squad/session/ent/worktree"
 )
@@ -706,6 +707,21 @@ func (_u *SessionUpdate) AddBacklogItems(v ...*BacklogItem) *SessionUpdate {
 	return _u.AddBacklogItemIDs(ids...)
 }
 
+// AddShellIDs adds the "shells" edge to the Shell entity by IDs.
+func (_u *SessionUpdate) AddShellIDs(ids ...string) *SessionUpdate {
+	_u.mutation.AddShellIDs(ids...)
+	return _u
+}
+
+// AddShells adds the "shells" edges to the Shell entity.
+func (_u *SessionUpdate) AddShells(v ...*Shell) *SessionUpdate {
+	ids := make([]string, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddShellIDs(ids...)
+}
+
 // Mutation returns the SessionMutation object of the builder.
 func (_u *SessionUpdate) Mutation() *SessionMutation {
 	return _u.mutation
@@ -775,6 +791,27 @@ func (_u *SessionUpdate) RemoveBacklogItems(v ...*BacklogItem) *SessionUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveBacklogItemIDs(ids...)
+}
+
+// ClearShells clears all "shells" edges to the Shell entity.
+func (_u *SessionUpdate) ClearShells() *SessionUpdate {
+	_u.mutation.ClearShells()
+	return _u
+}
+
+// RemoveShellIDs removes the "shells" edge to Shell entities by IDs.
+func (_u *SessionUpdate) RemoveShellIDs(ids ...string) *SessionUpdate {
+	_u.mutation.RemoveShellIDs(ids...)
+	return _u
+}
+
+// RemoveShells removes "shells" edges to Shell entities.
+func (_u *SessionUpdate) RemoveShells(v ...*Shell) *SessionUpdate {
+	ids := make([]string, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveShellIDs(ids...)
 }
 
 // Save executes the query and returns the number of nodes affected by the update operation.
@@ -1209,6 +1246,51 @@ func (_u *SessionUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(backlogitem.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.ShellsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   session.ShellsTable,
+			Columns: []string{session.ShellsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(shell.FieldID, field.TypeString),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedShellsIDs(); len(nodes) > 0 && !_u.mutation.ShellsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   session.ShellsTable,
+			Columns: []string{session.ShellsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(shell.FieldID, field.TypeString),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.ShellsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   session.ShellsTable,
+			Columns: []string{session.ShellsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(shell.FieldID, field.TypeString),
 			},
 		}
 		for _, k := range nodes {
@@ -1907,6 +1989,21 @@ func (_u *SessionUpdateOne) AddBacklogItems(v ...*BacklogItem) *SessionUpdateOne
 	return _u.AddBacklogItemIDs(ids...)
 }
 
+// AddShellIDs adds the "shells" edge to the Shell entity by IDs.
+func (_u *SessionUpdateOne) AddShellIDs(ids ...string) *SessionUpdateOne {
+	_u.mutation.AddShellIDs(ids...)
+	return _u
+}
+
+// AddShells adds the "shells" edges to the Shell entity.
+func (_u *SessionUpdateOne) AddShells(v ...*Shell) *SessionUpdateOne {
+	ids := make([]string, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddShellIDs(ids...)
+}
+
 // Mutation returns the SessionMutation object of the builder.
 func (_u *SessionUpdateOne) Mutation() *SessionMutation {
 	return _u.mutation
@@ -1976,6 +2073,27 @@ func (_u *SessionUpdateOne) RemoveBacklogItems(v ...*BacklogItem) *SessionUpdate
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveBacklogItemIDs(ids...)
+}
+
+// ClearShells clears all "shells" edges to the Shell entity.
+func (_u *SessionUpdateOne) ClearShells() *SessionUpdateOne {
+	_u.mutation.ClearShells()
+	return _u
+}
+
+// RemoveShellIDs removes the "shells" edge to Shell entities by IDs.
+func (_u *SessionUpdateOne) RemoveShellIDs(ids ...string) *SessionUpdateOne {
+	_u.mutation.RemoveShellIDs(ids...)
+	return _u
+}
+
+// RemoveShells removes "shells" edges to Shell entities.
+func (_u *SessionUpdateOne) RemoveShells(v ...*Shell) *SessionUpdateOne {
+	ids := make([]string, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveShellIDs(ids...)
 }
 
 // Where appends a list predicates to the SessionUpdate builder.
@@ -2440,6 +2558,51 @@ func (_u *SessionUpdateOne) sqlSave(ctx context.Context) (_node *Session, err er
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(backlogitem.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.ShellsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   session.ShellsTable,
+			Columns: []string{session.ShellsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(shell.FieldID, field.TypeString),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedShellsIDs(); len(nodes) > 0 && !_u.mutation.ShellsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   session.ShellsTable,
+			Columns: []string{session.ShellsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(shell.FieldID, field.TypeString),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.ShellsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   session.ShellsTable,
+			Columns: []string{session.ShellsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(shell.FieldID, field.TypeString),
 			},
 		}
 		for _, k := range nodes {
