@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
 // NativeProcessManager implements ProcessManager using a raw PTY and process supervision.
@@ -78,7 +79,7 @@ func (n *NativeProcessManager) launchPTY(dir string) error {
 		program = "bash"
 	}
 
-	cmd := exec.Command(program, n.opts.Args...) //nolint:norawexec // long-running PTY process; WaitDelay and ManagedProcess are pipe-based only, not PTY-compatible
+	cmd := safeexec.CommandContext(context.Background(), program, n.opts.Args...)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 

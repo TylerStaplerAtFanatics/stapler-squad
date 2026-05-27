@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"os/exec"
 	"runtime"
 	"syscall"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
 // checkPTYAvailable skips the test when the OS does not permit PTY allocation with
@@ -18,7 +18,7 @@ import (
 // This is an environmental restriction, not a code defect.
 func checkPTYAvailable(t *testing.T) {
 	t.Helper()
-	cmd := exec.Command("bash", "-c", "exit 0") //nolint:norawexec // probe-only; not long-running
+	cmd := safeexec.CommandContext(context.Background(), "bash", "-c", "exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if _, err := pty.Start(cmd); err != nil {
 		_ = cmd.Wait()
