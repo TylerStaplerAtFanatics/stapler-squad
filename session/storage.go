@@ -627,6 +627,17 @@ func (s *Storage) CreateItemSession(ctx context.Context, data ItemSessionData) (
 	return er.CreateItemSession(ctx, data)
 }
 
+// CreateItemSessionWithVerdict atomically creates an ItemSession and its initial
+// ReviewVerdict in a single transaction. Falls back gracefully if the backend is
+// not ent-based.
+func (s *Storage) CreateItemSessionWithVerdict(ctx context.Context, isData ItemSessionData, verdict ReviewVerdictData) (*ent.ItemSession, *ent.ReviewVerdict, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, nil, fmt.Errorf("item sessions not supported by this storage backend")
+	}
+	return er.CreateItemSessionWithVerdict(ctx, isData, verdict)
+}
+
 // ListItemSessions returns all ItemSessions for a given BacklogItem UUID string.
 func (s *Storage) ListItemSessions(ctx context.Context, itemID string) ([]*ent.ItemSession, error) {
 	er, ok := s.repo.(*EntRepository)

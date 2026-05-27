@@ -3,6 +3,7 @@ package detection
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -560,5 +561,83 @@ func Benchmark_StatusDetector_DetectWithContext(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		sd.DetectWithContext(output)
+	}
+}
+
+// ── agy (Antigravity CLI) coverage tests (REQ-4) ────────────────────────────
+
+// GeminiPatterns_should_matchAgyCandidateStrings_When_agySampleOutputProvided
+// agy uses the same TUI codebase as Gemini CLI. Verifies that at least 4 gemini_*
+// patterns exist in getDefaultPatterns() and that distinctive agy TUI strings are
+// classified correctly by the standard detector.
+func TestGeminiPatterns_AgyCoverage(t *testing.T) {
+	patterns := getDefaultPatterns()
+
+	// Count gemini_* patterns across all categories.
+	geminiCount := 0
+	allGroups := [][]StatusPattern{patterns.Ready, patterns.Processing, patterns.NeedsApproval, patterns.Error}
+	for _, group := range allGroups {
+		for _, p := range group {
+			if strings.Contains(p.Name, "gemini") {
+				geminiCount++
+			}
+		}
+	}
+	if geminiCount < 4 {
+		t.Errorf("expected ≥4 gemini_* patterns (gemini_ready, gemini_working, gemini_permission, gemini_allow_execution), got %d", geminiCount)
+	}
+
+	// Verify that distinctive agy/Gemini TUI lines produce the expected status.
+	// These lines are unambiguous for their category (not caught by the catch-all).
+	sd := NewStatusDetector()
+	distinctiveCases := []struct {
+		line   string
+		status DetectedStatus
+	}{
+		{"╰─ Yes, allow once", StatusNeedsApproval},
+		{"Allow execution of: ls /tmp", StatusNeedsApproval},
+		{"✦ Working...", StatusProcessing},
+	}
+	for _, tc := range distinctiveCases {
+		t.Run(tc.line, func(t *testing.T) {
+			got := sd.Detect([]byte(tc.line))
+			if got != tc.status {
+				t.Errorf("Detect(%q) = %v, want %v", tc.line, got, tc.status)
+			}
+		})
+	}
+}
+
+// GeminiPatterns_should_returnNeedsApproval_When_permissionPromptPresent
+// Ensures the gemini_permission pattern fires for the agy "Yes, allow once" permission prompt.
+func TestGeminiPatterns_NeedsApprovalState(t *testing.T) {
+	sd := NewStatusDetector()
+	// These strings appear in both Gemini CLI and agy (shared TUI codebase).
+	permissionLines := []string{
+		"╰─ Yes, allow once",
+		"Yes, allow once",
+		"Allow execution of: rm -rf /tmp/test",
+	}
+	for _, line := range permissionLines {
+		t.Run(line, func(t *testing.T) {
+			status := sd.Detect([]byte(line))
+			if status != StatusNeedsApproval {
+				t.Errorf("Detect(%q) = %v, want StatusNeedsApproval", line, status)
+			}
+		})
+	}
+}
+
+// AgyCoverage_should_haveCommentInDetectorGo_When_noAgySpecificPatternsExist
+// Canary test: if the agy coverage comment is removed from detector.go or the patterns
+// diverge, this test fails to alert future maintainers.
+func TestDetector_AgyCoverageCommentPresent(t *testing.T) {
+	src, err := os.ReadFile("detector.go")
+	if err != nil {
+		t.Fatalf("failed to read detector.go: %v", err)
+	}
+	if !strings.Contains(string(src), "agy (Antigravity CLI)") {
+		t.Error("detector.go is missing the 'agy (Antigravity CLI)' coverage comment; " +
+			"if agy patterns were intentionally removed or renamed, update this test and the comment")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -52,26 +53,34 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  check   - Classify a single request from JSON on stdin")
 	fmt.Fprintln(os.Stderr, "  serve   - Start an HTTP server for remote classification")
 	fmt.Fprintln(os.Stderr, "  proxy   - Check permissions before executing a command")
-	fmt.Fprintln(os.Stderr, "  install - Install binary and register hooks (targets: claude, gemini, open-code, service)")
+	fmt.Fprintln(os.Stderr, "  install - Install binary and register hooks (targets: claude, gemini, agy, open-code, service)")
 	fmt.Fprintln(os.Stderr, "  version - Print version information")
 }
 
 func handleCheck() {
 	checkCmd := flag.NewFlagSet("check", flag.ExitOnError)
 	dbPath := checkCmd.String("db", getDefaultDBPath(), "Path to SQLite database")
-	checkCmd.Parse(os.Args[2:])
+	geminiMode := checkCmd.Bool("gemini", false, "Translate Gemini/agy TOOL_INPUT payload (exit-code output)")
+	checkCmd.Parse(os.Args[2:]) //nolint:errcheck
 
 	var payload classifier.PermissionRequestPayload
-	if err := json.NewDecoder(os.Stdin).Decode(&payload); err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing JSON: %v\n", err)
-		os.Exit(1)
-	}
-
-	// AskUserQuestion is not a permission gate — Claude is asking the user a question.
-	// Return no output (empty stdout) so the hook defers to Claude Code's native terminal dialog.
-	// This mirrors the writeDeferDecision path in the HTTP approval handler.
-	if strings.EqualFold(payload.ToolName, "AskUserQuestion") {
-		os.Exit(0)
+	if *geminiMode {
+		payload = parseGeminiPayload()
+		// Gemini payload typically lacks cwd; fall back to process working directory.
+		if payload.Cwd == "" {
+			payload.Cwd, _ = os.Getwd()
+		}
+	} else {
+		if err := json.NewDecoder(os.Stdin).Decode(&payload); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing JSON: %v\n", err)
+			os.Exit(1)
+		}
+		// AskUserQuestion is not a permission gate — Claude is asking the user a question.
+		// Return no output (empty stdout) so the hook defers to Claude Code's native terminal dialog.
+		// This mirrors the writeDeferDecision path in the HTTP approval handler.
+		if strings.EqualFold(payload.ToolName, "AskUserQuestion") {
+			os.Exit(0)
+		}
 	}
 
 	storage := loadStorage(*dbPath)
@@ -84,7 +93,11 @@ func handleCheck() {
 	// Record analytics
 	recordResult(storage, payload, result, 0)
 
-	writeHookDecision(result)
+	if *geminiMode {
+		writeGeminiHookDecision(result)
+	} else {
+		writeHookDecision(result)
+	}
 }
 
 // hookOutput is the Claude Code PreToolUse hook response format.
@@ -128,6 +141,106 @@ func writeHookDecision(result classifier.ClassificationResult) {
 		})
 	default:
 		// Escalate: write nothing; Claude Code shows its own permission prompt.
+	}
+}
+
+// writeGeminiHookDecision communicates the classification result to Gemini/agy via exit codes.
+//
+// Gemini/agy BeforeTool hook contract (confirmed from install-gemini-hook.sh + architecture.md):
+//
+//	exit 0  — allow the tool call (also used for Escalate: agy shows its own permission dialog)
+//	exit 1  — deny the tool call; agy blocks execution
+//
+// Denial reason is written to stderr (not stdout) to avoid being misinterpreted as
+// a blocking output signal if Gemini ever inspects stdout.
+func writeGeminiHookDecision(result classifier.ClassificationResult) {
+	switch result.Decision {
+	case classifier.AutoDeny:
+		reason := result.Reason
+		if result.Alternative != "" {
+			reason += " " + result.Alternative
+		}
+		ruleInfo := ""
+		if result.RuleID != "" {
+			ruleInfo = fmt.Sprintf(" [rule: %s]", result.RuleID)
+		}
+		fmt.Fprintf(os.Stderr, "SSQ-Hooks: blocked%s — %s\n", ruleInfo, reason)
+		os.Exit(1)
+	default:
+		// AutoAllow or Escalate: exit 0.
+		// Escalate: empty stdout/stderr — agy shows its own permission dialog.
+	}
+}
+
+// parseGeminiPayload reads the Gemini/agy $TOOL_INPUT JSON from stdin
+// and translates it to a PermissionRequestPayload.
+//
+// Supported schemas:
+//
+//	Variant A (Gemini CLI open-source): {"name": "run_shell_command", "args": {"command": "..."}}
+//	Variant B (Claude-compatible):      {"tool_name": "Bash", "tool_input": {"command": "..."}}
+//
+// Falls back gracefully to PermissionRequestPayload{ToolName: "Unknown"} on any
+// parse error or unrecognized schema — results in Escalate (not crash, not false-allow).
+func parseGeminiPayload() classifier.PermissionRequestPayload {
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SSQ-Hooks: error reading stdin: %v\n", err)
+		return classifier.PermissionRequestPayload{ToolName: "Unknown"}
+	}
+	// Debug: dump raw payload when STAPLER_DEBUG=1 (P-1: field capture on first real run)
+	if os.Getenv("STAPLER_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "SSQ-Hooks [debug] raw $TOOL_INPUT: %s\n", string(raw))
+	}
+	// GeminiToolPayload covers both known schema variants.
+	// Zero values for absent fields allow detecting which variant is present.
+	type GeminiToolPayload struct {
+		// Variant A: {"name": "run_shell_command", "args": {"command": "..."}}
+		Name string                 `json:"name"`
+		Args map[string]interface{} `json:"args"`
+		// Variant B: {"tool_name": "...", "tool_input": {...}}
+		ToolName  string                 `json:"tool_name"`
+		ToolInput map[string]interface{} `json:"tool_input"`
+	}
+	var p GeminiToolPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		fmt.Fprintf(os.Stderr, "SSQ-Hooks: failed to parse Gemini payload: %v\n", err)
+		return classifier.PermissionRequestPayload{ToolName: "Unknown"}
+	}
+	// Prefer Variant B (Claude-compatible) if present.
+	if p.ToolName != "" {
+		payload := classifier.PermissionRequestPayload{
+			ToolName:  p.ToolName,
+			ToolInput: p.ToolInput,
+		}
+		// P-7: pass-through user-input tool (equivalent of AskUserQuestion guard)
+		if strings.EqualFold(payload.ToolName, "ask_for_user_input") {
+			os.Exit(0)
+		}
+		return payload
+	}
+	// Fall back to Variant A: name + args.
+	if p.Name == "" {
+		// Neither variant matched: unknown schema.
+		fmt.Fprintf(os.Stderr, "SSQ-Hooks: unrecognized Gemini payload schema (no 'name' or 'tool_name' field)\n")
+		return classifier.PermissionRequestPayload{ToolName: "Unknown"}
+	}
+	toolName := p.Name
+	// Normalize Gemini tool names to classifier-expected names.
+	switch strings.ToLower(toolName) {
+	case "run_shell_command", "execute_bash", "run_bash_command":
+		toolName = "Bash"
+	case "read_file", "read_many_files":
+		toolName = "Read"
+	case "write_file":
+		toolName = "Write"
+	case "ask_for_user_input":
+		// P-7: pass-through user-input tool (equivalent of AskUserQuestion guard)
+		os.Exit(0)
+	}
+	return classifier.PermissionRequestPayload{
+		ToolName:  toolName,
+		ToolInput: p.Args,
 	}
 }
 
@@ -386,7 +499,7 @@ func shellEscape(arg string) string {
 func handleInstall() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "Usage: ssq-hooks install <target>")
-		fmt.Fprintln(os.Stderr, "Targets: claude, gemini, open-code, service")
+		fmt.Fprintln(os.Stderr, "Targets: claude, gemini, agy, open-code, service")
 		os.Exit(1)
 	}
 
@@ -396,6 +509,10 @@ func handleInstall() {
 		installClaude()
 	case "gemini":
 		installGemini()
+	case "agy":
+		installAgy()
+	case "antigravity": // hidden alias for agy
+		installAgy()
 	case "open-code":
 		installOpenCode()
 	case "service":
@@ -553,34 +670,141 @@ func patchClaudeSettings(settingsPath, binPath string) error {
 	return os.WriteFile(settingsPath, append(out, '\n'), 0644)
 }
 
-func installGemini() {
-	hookCmd := `printf '%s' "$TOOL_INPUT" | ssq-hooks check`
-	fmt.Fprintf(os.Stderr, "To enable Stapler Squad permissions check in Gemini CLI, add the following\n")
-	fmt.Fprintf(os.Stderr, "to your Gemini configuration (e.g., ~/.gemini/config.json):\n\n")
-	fmt.Fprintf(os.Stderr, "{\n")
-	fmt.Fprintf(os.Stderr, "  \"hooks\": {\n")
-	fmt.Fprintf(os.Stderr, "    \"BeforeTool\": \"%s\"\n", hookCmd)
-	fmt.Fprintf(os.Stderr, "  }\n")
-	fmt.Fprintf(os.Stderr, "}\n\n")
-
-	home, _ := os.UserHomeDir()
-	configFiles := []string{
-		filepath.Join(home, ".gemini", "config.json"),
-		filepath.Join(home, ".gemini", "settings.json"),
-		".gemini.json",
+// patchBeforeToolHook patches any Gemini-family settings file (flat JSON) to set
+// hooks.BeforeTool to hookCmd. It is idempotent: if the exact string is already
+// present, it prints a message and returns nil. If BeforeTool is a non-string type
+// (e.g. an array), it returns a descriptive error rather than silently overwriting.
+// The write is atomic: data is written to settingsPath+".tmp" then renamed.
+func patchBeforeToolHook(settingsPath, hookCmd string) error {
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		raw = []byte("{}")
 	}
-
-	found := false
-	for _, f := range configFiles {
-		if _, err := os.Stat(f); err == nil {
-			fmt.Fprintf(os.Stderr, "Found Gemini configuration at: %s\n", f)
-			found = true
+	var settings map[string]interface{}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return fmt.Errorf("parsing %s: %w", settingsPath, err)
+	}
+	hooks, _ := settings["hooks"].(map[string]interface{})
+	if hooks == nil {
+		hooks = map[string]interface{}{}
+		settings["hooks"] = hooks
+	}
+	// Guard: existing BeforeTool must be a string, not an array/object.
+	if existing, ok := hooks["BeforeTool"]; ok {
+		if _, ok := existing.(string); !ok {
+			return fmt.Errorf("parsing %s: hooks.\"BeforeTool\" is not a string (found %T); cannot patch", settingsPath, existing)
+		}
+		if existing.(string) == hookCmd {
+			fmt.Println("Hook already present, nothing to do.")
+			return nil
 		}
 	}
-
-	if !found {
-		fmt.Fprintf(os.Stderr, "No Gemini configuration file found. Please create one if needed.\n")
+	hooks["BeforeTool"] = hookCmd
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
 	}
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0700); err != nil {
+		return err
+	}
+	// Atomic write (P-4: avoid partial-read race with running agy/Gemini process).
+	tmpPath := settingsPath + ".tmp"
+	if err := os.WriteFile(tmpPath, append(out, '\n'), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, settingsPath)
+}
+
+func installGemini() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving home directory: %v\n", err)
+		os.Exit(1)
+	}
+	// 1. Copy binary to ~/.local/bin/ssq-hooks.
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", binDir, err)
+		os.Exit(1)
+	}
+	destBin := filepath.Join(binDir, "ssq-hooks")
+	srcBin, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving current binary: %v\n", err)
+		os.Exit(1)
+	}
+	if resolved, err := filepath.EvalSymlinks(srcBin); err == nil {
+		srcBin = resolved
+	}
+	if err := copyBinary(srcBin, destBin); err != nil {
+		fmt.Fprintf(os.Stderr, "Error copying binary to %s: %v\n", destBin, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Installed binary: %s\n", destBin)
+	// 2. Discover Gemini settings file (P-5: patch only the first found).
+	candidates := []string{
+		filepath.Join(home, ".gemini", "settings.json"), // authoritative (observed live)
+		filepath.Join(home, ".gemini", "config.json"),   // legacy fallback
+	}
+	settingsPath := ""
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			settingsPath = c
+			break
+		}
+	}
+	if settingsPath == "" {
+		// Neither found: create ~/.gemini/settings.json.
+		settingsPath = candidates[0]
+	}
+	// 3. Patch the selected file.
+	hookCmd := destBin + " check --gemini"
+	if err := patchBeforeToolHook(settingsPath, hookCmd); err != nil {
+		fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", settingsPath, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Updated hook:     %s\n", settingsPath)
+	fmt.Println("Done. Restart Gemini CLI for the hook to take effect.")
+}
+
+func installAgy() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving home directory: %v\n", err)
+		os.Exit(1)
+	}
+	// 1. Copy binary to ~/.local/bin/ssq-hooks.
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating %s: %v\n", binDir, err)
+		os.Exit(1)
+	}
+	destBin := filepath.Join(binDir, "ssq-hooks")
+	srcBin, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving current binary: %v\n", err)
+		os.Exit(1)
+	}
+	if resolved, err := filepath.EvalSymlinks(srcBin); err == nil {
+		srcBin = resolved
+	}
+	if err := copyBinary(srcBin, destBin); err != nil {
+		fmt.Fprintf(os.Stderr, "Error copying binary to %s: %v\n", destBin, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Installed binary: %s\n", destBin)
+	// 2. Patch ~/.gemini/antigravity-cli/settings.json.
+	settingsPath := filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")
+	hookCmd := destBin + " check --gemini"
+	if err := patchBeforeToolHook(settingsPath, hookCmd); err != nil {
+		fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", settingsPath, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Updated hook:     %s\n", settingsPath)
+	fmt.Println("Done. Restart agy for the hook to take effect.")
 }
 
 func installOpenCode() {
