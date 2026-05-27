@@ -17,6 +17,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/diffstats"
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/session"
+	"github.com/tstapler/stapler-squad/session/ent/shell"
 	"github.com/tstapler/stapler-squad/session/ent/tag"
 	"github.com/tstapler/stapler-squad/session/ent/worktree"
 )
@@ -537,6 +538,21 @@ func (_c *SessionCreate) AddBacklogItems(v ...*BacklogItem) *SessionCreate {
 	return _c.AddBacklogItemIDs(ids...)
 }
 
+// AddShellIDs adds the "shells" edge to the Shell entity by IDs.
+func (_c *SessionCreate) AddShellIDs(ids ...string) *SessionCreate {
+	_c.mutation.AddShellIDs(ids...)
+	return _c
+}
+
+// AddShells adds the "shells" edges to the Shell entity.
+func (_c *SessionCreate) AddShells(v ...*Shell) *SessionCreate {
+	ids := make([]string, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddShellIDs(ids...)
+}
+
 // Mutation returns the SessionMutation object of the builder.
 func (_c *SessionCreate) Mutation() *SessionMutation {
 	return _c.mutation
@@ -883,6 +899,22 @@ func (_c *SessionCreate) createSpec() (*Session, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(backlogitem.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.ShellsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   session.ShellsTable,
+			Columns: []string{session.ShellsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(shell.FieldID, field.TypeString),
 			},
 		}
 		for _, k := range nodes {

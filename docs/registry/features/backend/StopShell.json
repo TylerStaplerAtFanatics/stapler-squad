@@ -1,11 +1,11 @@
 {
-  "id": "error:list",
+  "id": "StopShell",
   "type": "backend",
   "service": "SessionService",
-  "method": "ListErrors",
+  "method": "StopShell",
   "protoFile": "proto/session/v1/session.proto",
   "markerFound": false,
   "tested": false,
   "testIds": [],
-  "lastModified": "2026-05-18T19:18:16.428607422-07:00"
+  "lastModified": "2026-05-21T11:44:36.813875294-07:00"
 }

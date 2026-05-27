@@ -42,6 +42,8 @@ type Tx struct {
 	ReviewVerdict *ReviewVerdictClient
 	// Session is the client for interacting with the Session builders.
 	Session *SessionClient
+	// Shell is the client for interacting with the Shell builders.
+	Shell *ShellClient
 	// SourceSyncEvent is the client for interacting with the SourceSyncEvent builders.
 	SourceSyncEvent *SourceSyncEventClient
 	// Tag is the client for interacting with the Tag builders.
@@ -194,6 +196,7 @@ func (tx *Tx) init() {
 	tx.Project = NewProjectClient(tx.config)
 	tx.ReviewVerdict = NewReviewVerdictClient(tx.config)
 	tx.Session = NewSessionClient(tx.config)
+	tx.Shell = NewShellClient(tx.config)
 	tx.SourceSyncEvent = NewSourceSyncEventClient(tx.config)
 	tx.Tag = NewTagClient(tx.config)
 	tx.Worktree = NewWorktreeClient(tx.config)
