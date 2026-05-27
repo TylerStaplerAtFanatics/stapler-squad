@@ -441,7 +441,9 @@ func (n *NativeProcessManager) UnsubscribeFromControlModeUpdates(id string) {
 }
 
 // fanOut reads raw bytes from ptm and broadcasts them to all active subscribers.
-// One fanOut goroutine is started per launchPTY call; it exits when the PTY fd closes.
+// One fanOut goroutine is started per launchPTY call. When the supervised process exits,
+// the kernel closes the slave PTY fd and subsequent reads on the master return EIO,
+// causing fanOut to return naturally — no goroutine leak across restarts.
 // Subscribers that exceed their buffer capacity are closed and removed rather than
 // having frames dropped — dropping any byte corrupts ANSI/cursor state for terminal consumers.
 func (n *NativeProcessManager) fanOut(ptm *os.File) {

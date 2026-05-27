@@ -257,11 +257,11 @@ func (i *Instance) setShellStatus(ctx context.Context, shellID string, status Sh
 	i.shellsMu.Unlock()
 
 	if i.shellRepo != nil {
-		var ecStr *int
+		var exitCodePtr *int
 		if exitCode != nil {
-			ecStr = exitCode
+			exitCodePtr = exitCode
 		}
-		if err := i.shellRepo.UpdateShellStatus(ctx, shellID, string(status), ecStr); err != nil {
+		if err := i.shellRepo.UpdateShellStatus(ctx, shellID, string(status), exitCodePtr); err != nil {
 			log.Warn("setShellStatus: failed to persist", "shell", shellID, "err", err)
 		}
 	}
