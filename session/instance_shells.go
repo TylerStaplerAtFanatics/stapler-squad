@@ -482,6 +482,8 @@ func (i *Instance) ReconcileShells(ctx context.Context) {
 				}
 				i.shells[dbShell.ID] = sh
 				i.shellHandles[dbShell.ID] = handle
+				i.shellWg.Add(1)
+				go i.watchShellExit(ctx, dbShell.ID, handle, exitCh)
 				log.Info("ReconcileShells: restored running shell", "session", i.Title, "shell", dbShell.ID)
 			} else {
 				// Session gone; mark as stopped.
