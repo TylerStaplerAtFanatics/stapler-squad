@@ -551,8 +551,8 @@ func getDefaultPatterns() StatusPatterns {
 			},
 			{
 				Name:        "claude_thinking_verb",
-				Pattern:     `(?m)^\*\s+\w+[…\.]{1,3}`,
-				Description: "Claude thinking state with random verb (Moonwalking…, Ebbing..., etc.)",
+				Pattern:     `(?m)^[*✻]\s+\w+[…\.]{1,3}`,
+				Description: "Claude thinking state with random verb -  or ✻ prefix (Moonwalking..., Perambulating..., etc.)",
 				Priority:    26,
 			},
 			{
