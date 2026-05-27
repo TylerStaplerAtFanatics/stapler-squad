@@ -6,6 +6,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -575,6 +576,70 @@ func TestTmuxBackend_DelegatesGetCurrentWorkingDirectory_MockReturnsEmpty(t *tes
 	cwd, err := b.GetCurrentWorkingDirectory()
 	require.NoError(t, err)
 	assert.Equal(t, "", cwd, "mock does not implement real TmuxProcessManager so cwd is empty")
+}
+
+// --- Error-path delegation tests ---
+
+func TestTmuxBackend_Start_PropagatesError(t *testing.T) {
+	want := errors.New("tmux: session launch failed")
+	mock := &mockTmuxManager{startReturn: want}
+	b := NewTmuxBackend(mock)
+	err := b.Start("/tmp")
+	assert.ErrorIs(t, err, want)
+	assert.Equal(t, 1, mock.startCalls)
+}
+
+func TestTmuxBackend_Close_PropagatesError(t *testing.T) {
+	want := errors.New("tmux: kill-session failed")
+	mock := &mockTmuxManager{closeReturn: want}
+	b := NewTmuxBackend(mock)
+	err := b.Close()
+	assert.ErrorIs(t, err, want)
+	assert.Equal(t, 1, mock.closeCalls)
+}
+
+func TestTmuxBackend_GetPTY_PropagatesError(t *testing.T) {
+	want := errors.New("tmux: no PTY available")
+	mock := &mockTmuxManager{getPTYReturn: want}
+	b := NewTmuxBackend(mock)
+	f, err := b.GetPTY()
+	assert.ErrorIs(t, err, want)
+	assert.Nil(t, f)
+}
+
+func TestTmuxBackend_CapturePaneContent_PropagatesError(t *testing.T) {
+	want := errors.New("tmux: capture-pane failed")
+	mock := &mockTmuxManager{capturePaneErr: want}
+	b := NewTmuxBackend(mock)
+	content, err := b.CapturePaneContent()
+	assert.ErrorIs(t, err, want)
+	assert.Empty(t, content)
+}
+
+func TestTmuxBackend_Attach_PropagatesError(t *testing.T) {
+	want := errors.New("tmux: attach-session failed")
+	mock := &mockTmuxManager{attachErr: want}
+	b := NewTmuxBackend(mock)
+	ch, err := b.Attach()
+	assert.ErrorIs(t, err, want)
+	assert.Nil(t, ch)
+}
+
+func TestTmuxBackend_SetWindowSize_PropagatesError(t *testing.T) {
+	want := errors.New("tmux: resize-window failed")
+	mock := &mockTmuxManager{setWindowErr: want}
+	b := NewTmuxBackend(mock)
+	err := b.SetWindowSize(80, 24)
+	assert.ErrorIs(t, err, want)
+}
+
+func TestTmuxBackend_SendKeys_PropagatesError(t *testing.T) {
+	want := errors.New("tmux: send-keys failed")
+	mock := &mockTmuxManager{sendKeysReturn: want}
+	b := NewTmuxBackend(mock)
+	n, err := b.SendKeys("hello")
+	assert.ErrorIs(t, err, want)
+	assert.Zero(t, n)
 }
 
 // compile-time check: mockTmuxManager satisfies TmuxManager (catches missed method stubs).
