@@ -1,7 +1,7 @@
 package session
 
 // instance_tmux.go contains tmux session creation, terminal I/O, PTY access, and
-// control-mode delegation methods. All methods delegate to i.tmuxManager.
+// control-mode delegation methods. All methods delegate to i.processManager.
 
 import (
 	"context"
@@ -15,10 +15,21 @@ import (
 	"github.com/tstapler/stapler-squad/session/tmux"
 )
 
+// pm returns the process manager, lazy-initializing with the default TmuxBackend if nil.
+// This mirrors the old embedded-struct behaviour where a zero-value TmuxProcessManager
+// was always valid for method calls (session == nil → IsAlive()/HasSession() return false).
+// Tests that create bare &Instance{} structs rely on this guarantee.
+func (i *Instance) pm() ProcessManager {
+	if i.processManager == nil {
+		i.processManager = NewProcessManager(context.Background(), BackendTmux, ProcessManagerOptions{})
+	}
+	return i.processManager
+}
+
 // GetTmuxSessionName returns the sanitized tmux session name for reconciliation.
 // Returns empty string for external or uninitialized sessions.
 func (i *Instance) GetTmuxSessionName() string {
-	return i.tmuxManager.GetTmuxSessionName()
+	return i.pm().GetSessionIdentifier()
 }
 
 // buildLaunchCommand constructs the final command string used to launch the program
@@ -46,7 +57,7 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 
 // initTmuxSession creates (or reuses) the tmux.TmuxSession object without starting it.
 func (i *Instance) initTmuxSession() {
-	if i.tmuxManager.HasSession() {
+	if i.pm().HasSession() {
 		log.Info("reusing existing tmux session", "session", i.Title)
 		return
 	}
@@ -72,13 +83,15 @@ func (i *Instance) initTmuxSession() {
 	if i.UUID != "" {
 		session.SetExtraEnv([]string{"STAPLER_SESSION_UUID=" + i.UUID})
 	}
-	i.tmuxManager.SetSession(session)
+	if tb, ok := i.processManager.(*TmuxBackend); ok {
+		tb.TmuxManager().SetSession(session)
+	}
 }
 
 // KillSession terminates the tmux session only (leaves worktree intact).
 func (i *Instance) KillSession() error {
-	if i.tmuxManager.HasSession() {
-		if err := i.tmuxManager.Close(); err != nil {
+	if i.pm().HasSession() {
+		if err := i.pm().Close(); err != nil {
 			return fmt.Errorf("failed to close tmux session: %w", err)
 		}
 	}
@@ -128,7 +141,7 @@ func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 	}
 
 	var content string
-	updated, hasPrompt, content = i.tmuxManager.HasUpdated()
+	updated, hasPrompt, content = i.pm().HasUpdated()
 
 	// Update timestamps when content has actually changed.
 	// HasUpdated returns the already-captured content, so no second CapturePaneContent call needed.
@@ -144,7 +157,7 @@ func (i *Instance) TapEnter() {
 	if !i.started || !i.AutoYes {
 		return
 	}
-	if err := i.tmuxManager.TapEnter(); err != nil {
+	if err := i.pm().TapEnter(); err != nil {
 		log.Error("error tapping enter", "err", err)
 	}
 }
@@ -154,7 +167,7 @@ func (i *Instance) Attach() (chan struct{}, error) {
 	if !i.started {
 		return nil, fmt.Errorf("cannot attach instance that has not been started")
 	}
-	return i.tmuxManager.Attach()
+	return i.pm().Attach()
 }
 
 // SetPreviewSize sets the detached terminal dimensions for preview rendering.
@@ -163,7 +176,7 @@ func (i *Instance) SetPreviewSize(width, height int) error {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
 			"is paused")
 	}
-	return i.tmuxManager.SetDetachedSize(width, height, i.Title)
+	return i.pm().SetDetachedSize(width, height, i.Title)
 }
 
 // trackRestartRate records a restart timestamp and logs a warning when the
@@ -196,15 +209,15 @@ func (i *Instance) trackRestartRate() {
 // TmuxSessionExists reports whether the underlying tmux session is currently alive.
 // Used at startup to reconcile stale Stopped status against live tmux sessions.
 func (i *Instance) TmuxSessionExists() bool {
-	return i.tmuxManager.DoesSessionExist()
+	return i.pm().IsAlive()
 }
 
 // TmuxAlive returns true if the tmux session is alive. This is a sanity check before attaching.
 func (i *Instance) TmuxAlive() bool {
-	if i.Status == Paused || i.Status == Stopped || !i.started || !i.tmuxManager.HasSession() {
+	if i.Status == Paused || i.Status == Stopped || !i.started || !i.pm().HasSession() {
 		return false
 	}
-	return i.tmuxManager.IsAlive()
+	return i.pm().IsAlive()
 }
 
 // GetPTYReader returns the PTY file handle for the tmux session.
@@ -215,7 +228,7 @@ func (i *Instance) GetPTYReader() (*os.File, error) {
 	if !i.started {
 		return nil, fmt.Errorf("session not started")
 	}
-	return i.tmuxManager.GetPTY()
+	return i.pm().GetPTY()
 }
 
 // WriteToPTY writes data to the PTY, sending input to the terminal session.
@@ -227,7 +240,7 @@ func (i *Instance) WriteToPTY(data []byte) (int, error) {
 	if !i.started {
 		return 0, fmt.Errorf("session not started")
 	}
-	return i.tmuxManager.SendKeys(string(data))
+	return i.pm().SendKeys(string(data))
 }
 
 // ResizePTY resizes the terminal dimensions.
@@ -239,7 +252,7 @@ func (i *Instance) ResizePTY(cols, rows int) error {
 	if !i.started {
 		return fmt.Errorf("session not started")
 	}
-	if err := i.tmuxManager.SetWindowSize(cols, rows); err != nil {
+	if err := i.pm().SetWindowSize(cols, rows); err != nil {
 		return fmt.Errorf("failed to resize terminal: %w", err)
 	}
 	return nil
@@ -255,7 +268,7 @@ func (i *Instance) CapturePaneContent() (string, error) {
 	if !i.started || i.Status == Paused {
 		return "", fmt.Errorf("session not started or paused")
 	}
-	return i.tmuxManager.CapturePaneContent()
+	return i.pm().CapturePaneContent()
 }
 
 // CapturePaneContentRaw captures pane content with ANSI codes preserved (no line joining).
@@ -268,15 +281,15 @@ func (i *Instance) CapturePaneContentRaw() (string, error) {
 		return "", fmt.Errorf("session not started or paused")
 	}
 
-	return i.tmuxManager.CapturePaneContentRaw()
+	return i.pm().CapturePaneContentRaw()
 }
 
 // GetCurrentPaneContent captures the current visible tmux pane content.
-// Delegates to tmuxManager.CaptureViewport.
+// Delegates to processManager.CaptureViewport.
 func (i *Instance) GetCurrentPaneContent(lines int) (string, error) {
 	i.stateMutex.RLock()
 	defer i.stateMutex.RUnlock()
-	content, err := i.tmuxManager.CaptureViewport(lines)
+	content, err := i.pm().CaptureViewport(lines)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture current pane content: %w", err)
 	}
@@ -288,7 +301,7 @@ func (i *Instance) GetCurrentPaneContent(lines int) (string, error) {
 func (i *Instance) GetPaneCursorPosition() (x, y int, err error) {
 	i.stateMutex.RLock()
 	defer i.stateMutex.RUnlock()
-	return i.tmuxManager.GetCursorPosition()
+	return i.pm().GetCursorPosition()
 }
 
 // GetPaneDimensions gets the current dimensions of the tmux pane.
@@ -296,7 +309,7 @@ func (i *Instance) GetPaneCursorPosition() (x, y int, err error) {
 func (i *Instance) GetPaneDimensions() (width, height int, err error) {
 	i.stateMutex.RLock()
 	defer i.stateMutex.RUnlock()
-	return i.tmuxManager.GetPaneDimensions()
+	return i.pm().GetPaneDimensions()
 }
 
 // GetScrollbackHistory captures scrollback history from tmux using line ranges.
@@ -306,23 +319,27 @@ func (i *Instance) GetPaneDimensions() (width, height int, err error) {
 func (i *Instance) GetScrollbackHistory(startLine, endLine string) (string, error) {
 	i.stateMutex.RLock()
 	defer i.stateMutex.RUnlock()
-	return i.tmuxManager.CapturePaneContentWithOptions(startLine, endLine)
+	return i.pm().CapturePaneContentWithOptions(startLine, endLine)
 }
 
-// SendPrompt sends a prompt to the tmux session. Delegates to tmuxManager.SendPromptWithEnter.
+// SendPrompt sends a prompt to the tmux session. Delegates to processManager.SendPromptWithEnter.
 func (i *Instance) SendPrompt(prompt string) error {
 	if !i.started {
 		return fmt.Errorf("instance not started")
 	}
-	return i.tmuxManager.SendPromptWithEnter(prompt)
+	return i.pm().SendPromptWithEnter(prompt)
 }
 
 // GetTmuxSession returns the underlying tmux session for direct access.
-// Returns nil if the session hasn't been started yet.
+// Returns nil if the session hasn't been started yet or if the backend is not tmux.
 func (i *Instance) GetTmuxSession() *tmux.TmuxSession {
 	i.stateMutex.RLock()
 	defer i.stateMutex.RUnlock()
-	return i.tmuxManager.Session()
+	tb, ok := i.processManager.(*TmuxBackend)
+	if !ok {
+		return nil
+	}
+	return tb.TmuxManager().Session()
 }
 
 // ---- SessionStreamer delegation methods ----
@@ -331,36 +348,38 @@ func (i *Instance) GetTmuxSession() *tmux.TmuxSession {
 
 // StartControlMode starts the control mode stream on the underlying tmux session.
 func (i *Instance) StartControlMode() error {
-	return i.tmuxManager.StartControlMode()
+	return i.pm().StartControlMode()
 }
 
 // StopControlMode stops the control mode stream.
 func (i *Instance) StopControlMode() error {
-	return i.tmuxManager.StopControlMode()
+	return i.pm().StopControlMode()
 }
 
 // SubscribeControlModeUpdates returns a subscriber ID and a read-only output channel.
 // Returns a pre-closed channel if the tmux session is not available.
 func (i *Instance) SubscribeControlModeUpdates() (string, <-chan []byte) {
-	return i.tmuxManager.SubscribeToControlModeUpdates()
+	return i.pm().SubscribeToControlModeUpdates()
 }
 
 // UnsubscribeControlModeUpdates removes a subscriber by ID.
 func (i *Instance) UnsubscribeControlModeUpdates(id string) {
-	i.tmuxManager.UnsubscribeFromControlModeUpdates(id)
+	i.pm().UnsubscribeFromControlModeUpdates(id)
 }
 
 // SetTmuxSession sets the tmux session for testing purposes.
 func (i *Instance) SetTmuxSession(session *tmux.TmuxSession) {
-	i.tmuxManager.SetSession(session)
+	if tb, ok := i.processManager.(*TmuxBackend); ok {
+		tb.TmuxManager().SetSession(session)
+	}
 	i.started = session != nil
 }
 
 // SetWindowSize propagates window size changes to the tmux session.
 // This enables proper terminal resizing in environments like IntelliJ where SIGWINCH doesn't work.
 func (i *Instance) SetWindowSize(cols, rows int) error {
-	if i.tmuxManager.HasSession() {
-		return i.tmuxManager.SetWindowSize(cols, rows)
+	if i.pm().HasSession() {
+		return i.pm().SetWindowSize(cols, rows)
 	}
 	return nil
 }
@@ -369,7 +388,7 @@ func (i *Instance) SetWindowSize(cols, rows int) error {
 // of the process running inside. This is critical after resizing to ensure
 // cursor positions and line wrapping are recalculated for the new dimensions.
 func (i *Instance) RefreshTmuxClient() error {
-	return i.tmuxManager.RefreshClient()
+	return i.pm().RefreshClient()
 }
 
 // SendKeys sends keys to the tmux session.
@@ -377,7 +396,7 @@ func (i *Instance) SendKeys(keys string) error {
 	if !i.started || i.Status == Paused {
 		return fmt.Errorf("cannot send keys to instance that has not been started or is paused")
 	}
-	_, err := i.tmuxManager.SendKeys(keys)
+	_, err := i.pm().SendKeys(keys)
 	return err
 }
 
@@ -387,13 +406,13 @@ func (i *Instance) SendInputViaControlMode(ctx context.Context, data []byte) err
 	if !i.started || i.Status == Paused {
 		return fmt.Errorf("cannot send input to instance that has not been started or is paused")
 	}
-	return i.tmuxManager.SendInputViaControlMode(ctx, data)
+	return i.pm().SendInputViaControlMode(ctx, data)
 }
 
 // GetPanePID returns the PID of the foreground process in the tmux pane.
 func (i *Instance) GetPanePID() (int32, error) {
-	if !i.tmuxManager.DoesSessionExist() {
+	if !i.pm().IsAlive() {
 		return 0, fmt.Errorf("tmux session not alive for '%s'", i.Title)
 	}
-	return i.tmuxManager.GetPanePID()
+	return i.pm().GetPanePID()
 }
