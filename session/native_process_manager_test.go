@@ -5,6 +5,7 @@ package session
 import (
 	"context"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -163,6 +164,86 @@ func TestNativeProcessManager_IsAliveAfterStart(t *testing.T) {
 	ptm := mgr.ptm
 	mgr.mu.Unlock()
 	assert.NotNil(t, ptm, "PTY master must be allocated")
+}
+
+// T-UNIT-12: Start() after Close() resets the stop signal and produces a live process.
+func TestNativeProcessManager_StartAfterClose_Restarts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires PTY allocation")
+	}
+	checkPTYAvailable(t)
+	mgr := NewNativeProcessManager(ProcessManagerOptions{
+		SessionName: "test-restart-after-close",
+		Program:     "bash",
+		Args:        []string{"-c", "sleep 60"},
+	})
+	dir := t.TempDir()
+	require.NoError(t, mgr.Start(dir))
+	require.NoError(t, mgr.Close())
+
+	time.Sleep(100 * time.Millisecond)
+
+	require.NoError(t, mgr.Start(dir))
+	defer func() { _ = mgr.Close() }()
+
+	assert.True(t, mgr.IsAlive(), "process must be alive after Start() following Close()")
+}
+
+// T-UNIT-13: GetCurrentWorkingDirectory returns the directory passed to Start().
+func TestNativeProcessManager_GetCurrentWorkingDirectory_ReturnsStartDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires PTY allocation")
+	}
+	checkPTYAvailable(t)
+	mgr := NewNativeProcessManager(ProcessManagerOptions{
+		SessionName: "test-cwd",
+		Program:     "bash",
+		Args:        []string{"-c", "sleep 60"},
+	})
+	dir := t.TempDir()
+	require.NoError(t, mgr.Start(dir))
+	defer func() { _ = mgr.Close() }()
+
+	cwd, err := mgr.GetCurrentWorkingDirectory()
+	require.NoError(t, err)
+	assert.Equal(t, dir, cwd)
+}
+
+// T-UNIT-14: SubscribeToControlModeUpdates receives PTY output via fanOut.
+func TestNativeProcessManager_FanOut_DeliversPTYOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires PTY allocation")
+	}
+	checkPTYAvailable(t)
+	mgr := NewNativeProcessManager(ProcessManagerOptions{
+		SessionName: "test-fanout",
+		Program:     "bash",
+		Args:        []string{"-i"},
+	})
+	require.NoError(t, mgr.Start(t.TempDir()))
+	defer func() { _ = mgr.Close() }()
+
+	_, ch := mgr.SubscribeToControlModeUpdates()
+
+	_, err := mgr.SendKeys("echo hello-from-fanout\n")
+	require.NoError(t, err)
+
+	deadline := time.After(3 * time.Second)
+	var received []byte
+	for {
+		select {
+		case data, ok := <-ch:
+			if !ok {
+				t.Fatal("fanOut channel closed before receiving output")
+			}
+			received = append(received, data...)
+			if strings.Contains(string(received), "hello-from-fanout") {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("fanOut did not deliver PTY output within 3s; got: %q", string(received))
+		}
+	}
 }
 
 // T-UNIT-11: Factory routes "native" → *NativeProcessManager.

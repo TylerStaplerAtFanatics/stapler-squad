@@ -22,16 +22,18 @@ import (
 //
 // Phase 2 implementation: Start(), Close(), IsAlive(), GetPTY(), GetPanePID(),
 // GetSessionIdentifier(), SetWindowSize(), GetPaneDimensions(), SendKeys(),
-// TapEnter(), SetOnExitCallback() are fully functional.
-// All other ProcessManager methods return zero values or "not implemented" errors
-// until Phase 2 follow-on stories flesh them out.
+// TapEnter(), SetOnExitCallback(), SubscribeToControlModeUpdates(), and
+// GetCurrentWorkingDirectory() are fully functional.
+// Content capture (CapturePaneContent variants) and precise CWD via lsof/proc
+// are deferred to Phase 3.
 type NativeProcessManager struct {
 	opts ProcessManagerOptions
 
 	mu       sync.Mutex
-	ptm      *os.File   // PTY master fd; nil when not started
-	cmd      *exec.Cmd  // supervised process; nil when not started
+	ptm      *os.File     // PTY master fd; nil when not started
+	cmd      *exec.Cmd    // supervised process; nil when not started
 	stopCh   chan struct{} // closed by Close(); signals supervise() to stop
+	startDir string       // directory passed to the most recent Start() call
 
 	lastSize *pty.Winsize // tracks last window size for reapplication on restart
 
@@ -39,7 +41,7 @@ type NativeProcessManager struct {
 
 	// subscriber fan-out for streaming
 	subsMu sync.Mutex
-	subs   map[string]chan []byte
+	subs   map[string]PTYSubscriber
 }
 
 // NewNativeProcessManager creates a NativeProcessManager with the given options.
@@ -48,7 +50,7 @@ func NewNativeProcessManager(opts ProcessManagerOptions) *NativeProcessManager {
 	return &NativeProcessManager{
 		opts:   opts,
 		stopCh: make(chan struct{}),
-		subs:   make(map[string]chan []byte),
+		subs:   make(map[string]PTYSubscriber),
 	}
 }
 
@@ -59,6 +61,7 @@ var _ ProcessManager = (*NativeProcessManager)(nil)
 
 // Start launches the configured program under a PTY in the given directory.
 // If the process is already running, Start is a no-op.
+// Start resets the stop signal so it is safe to call after Close().
 func (n *NativeProcessManager) Start(dir string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -66,6 +69,13 @@ func (n *NativeProcessManager) Start(dir string) error {
 	// Double-checked locking: skip if already alive.
 	if n.cmd != nil && n.cmd.ProcessState == nil {
 		return nil
+	}
+
+	// Reset stop signal if Close() was previously called, to allow restart.
+	select {
+	case <-n.stopCh:
+		n.stopCh = make(chan struct{})
+	default:
 	}
 
 	if err := n.launchPTY(dir); err != nil {
@@ -98,6 +108,9 @@ func (n *NativeProcessManager) launchPTY(dir string) error {
 
 	n.cmd = cmd
 	n.ptm = ptm
+	n.startDir = dir
+
+	go n.fanOut(ptm)
 
 	return nil
 }
@@ -379,10 +392,13 @@ func (n *NativeProcessManager) HasMeaningfulContent(_ string) bool {
 	return false
 }
 
-// GetCurrentWorkingDirectory returns an empty string until CWD tracking is implemented.
-// Future: read /proc/<pid>/cwd on Linux or lsof on macOS.
+// GetCurrentWorkingDirectory returns the directory passed to the most recent Start() call.
+// Phase 3 follow-on: replace with /proc/<pid>/cwd on Linux or lsof on macOS for the
+// true current working directory of the running process.
 func (n *NativeProcessManager) GetCurrentWorkingDirectory() (string, error) {
-	return "", nil
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.startDir, nil
 }
 
 // --- Control mode (streaming) ---
@@ -404,9 +420,9 @@ func (n *NativeProcessManager) SubscribeToControlModeUpdates() (string, chan []b
 	defer n.subsMu.Unlock()
 
 	id := fmt.Sprintf("native-%d", time.Now().UnixNano())
-	ch := make(chan []byte, 64)
-	n.subs[id] = ch
-	return id, ch
+	sub := newMemPTYSubscriber()
+	n.subs[id] = sub
+	return id, sub.ch
 }
 
 // UnsubscribeFromControlModeUpdates removes a subscriber by ID and closes its channel.
@@ -414,9 +430,35 @@ func (n *NativeProcessManager) UnsubscribeFromControlModeUpdates(id string) {
 	n.subsMu.Lock()
 	defer n.subsMu.Unlock()
 
-	if ch, ok := n.subs[id]; ok {
-		close(ch)
+	if sub, ok := n.subs[id]; ok {
+		sub.Close()
 		delete(n.subs, id)
+	}
+}
+
+// fanOut reads raw bytes from ptm and broadcasts them to all active subscribers.
+// One fanOut goroutine is started per launchPTY call; it exits when the PTY fd closes.
+// Subscribers that exceed their buffer capacity are closed and removed rather than
+// having frames dropped — dropping any byte corrupts ANSI/cursor state for terminal consumers.
+func (n *NativeProcessManager) fanOut(ptm *os.File) {
+	buf := make([]byte, 4096)
+	for {
+		nr, err := ptm.Read(buf)
+		if err != nil {
+			return
+		}
+		data := buf[:nr]
+
+		n.subsMu.Lock()
+		for id, sub := range n.subs {
+			if err := sub.Push(data); err != nil {
+				sub.Close()
+				delete(n.subs, id)
+				log.Warn("NativeProcessManager: subscriber removed due to full buffer",
+					"session", n.opts.SessionName, "subscriber", id)
+			}
+		}
+		n.subsMu.Unlock()
 	}
 }
 
