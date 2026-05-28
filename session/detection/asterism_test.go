@@ -4,17 +4,38 @@ import (
 	"testing"
 )
 
-// TestClaude_AsterismActive_SingleLine verifies that ✻ Verb... lines are
-// classified as StatusActive (AC-1).
+// TestClaude_AsterismActive_SingleLine verifies that spinner-frame + Verb... lines are
+// classified as StatusActive across all known frame characters.
 func TestClaude_AsterismActive_SingleLine(t *testing.T) {
 	sd := NewStatusDetector()
 	cases := []struct {
 		name  string
 		input string
 	}{
-		{"basic spinner", "✻ Perambulating..."},
-		{"with timing", "✻ Perambulating... (1h 5m 37s · ↑ 5.4k tokens)"},
-		{"other verb", "✻ Cogitating..."},
+		// Modern ✻ (U+273B ASTERISM) — primary current frame
+		{"asterism basic", "✻ Perambulating..."},
+		{"asterism with timing", "✻ Perambulating... (1h 5m 37s · ↑ 5.4k tokens)"},
+		{"asterism unicode ellipsis", "✻ Cogitating…"},
+		// Other macOS bounce-cycle frames: · ✢ ✳ ✶ ✻ ✽
+		{"middle dot frame", "· Herding…"},
+		{"four teardrop frame ✢", "✢ Spelunking…"},
+		{"eight spoked asterisk ✳", "✳ Ruminating…"},
+		{"six pointed star ✶", "✶ Wandering…"},
+		{"eight pointed pinwheel ✽", "✽ Tinkering…"},
+		// Reduced-motion static frame ● (U+25CF BLACK CIRCLE)
+		{"reduced motion frame", "● Working…"},
+		// Legacy * (U+002A ASTERISK)
+		{"asterisk legacy", "* Moonwalking..."},
+		// Verbs with accented chars (Go RE2 \w misses é, è, etc.)
+		{"accented flambe", "✻ Flambéing…"},
+		{"accented saute", "✻ Sautéing…"},
+		// Hyphenated verbs
+		{"hyphenated dilly", "✻ Dilly-dallying…"},
+		{"hyphenated razzle", "✻ Razzle-dazzling…"},
+		// Apostrophe-truncated
+		{"apostrophe beboppin", "✻ Beboppin'…"},
+		// Extended thinking suffix — ellipsis is on the verb, suffix is parenthetical
+		{"thinking some more suffix", "✻ Moonwalking… (43s · thinking some more)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -26,7 +47,7 @@ func TestClaude_AsterismActive_SingleLine(t *testing.T) {
 	}
 }
 
-// TestClaude_AsteriskActive_NoRegression verifies the existing * prefix still works (AC-1 non-regression).
+// TestClaude_AsteriskActive_NoRegression verifies the existing * prefix still works.
 func TestClaude_AsteriskActive_NoRegression(t *testing.T) {
 	sd := NewStatusDetector()
 	cases := []string{
@@ -38,6 +59,31 @@ func TestClaude_AsteriskActive_NoRegression(t *testing.T) {
 		if got != StatusActive && got != StatusProcessing {
 			t.Errorf("Detect(%q) = %s, want StatusActive (regression)", input, got)
 		}
+	}
+}
+
+// TestClaude_SpinnerFrame_NoFalsePositive verifies that spinner-like chars in
+// non-active contexts don't trigger the pattern.
+func TestClaude_SpinnerFrame_NoFalsePositive(t *testing.T) {
+	sd := NewStatusDetector()
+	cases := []struct {
+		name  string
+		input string
+	}{
+		// · as separator mid-line in timing string — must NOT match
+		{"middle dot separator in timing", "(8m 39s · ↓ 834 tokens)"},
+		// lowercase after frame — real spinner verbs are always capitalized
+		{"lowercase after frame", "✻ perambulating..."},
+		// ◉ (FISHEYE) is completion-only — must NOT match Active
+		{"fisheye active line", "◉ Working…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sd.Detect([]byte(tc.input))
+			if got == StatusActive {
+				t.Errorf("Detect(%q) = StatusActive, expected no match (false positive)", tc.input)
+			}
+		})
 	}
 }
 

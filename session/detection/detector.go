@@ -550,9 +550,12 @@ func getDefaultPatterns() StatusPatterns {
 				Priority:    25,
 			},
 			{
-				Name:        "claude_thinking_verb",
-				Pattern:     `(?m)^[*✻]\s+\w+[…\.]{1,3}`,
-				Description: "Claude thinking state with random verb -  or ✻ prefix (Moonwalking..., Perambulating..., etc.)",
+				Name: "claude_thinking_verb",
+				// Full macOS spinner frame set: · ✢ ✳ ✶ ✻ ✽ (bounce cycle), * (legacy), ● (reduced-motion).
+				// Verb char class extends \w with hyphens (Dilly-dallying), apostrophes (Beboppin'),
+				// and Latin-1 accented chars (Flambéing, Sautéing) — Go RE2 \w = [0-9A-Za-z_] only.
+				Pattern:     `(?m)^[·✢✳✶✻✽●*]\s+[A-Z][a-zA-Z'\-éèêàâùûôîïëüöäÿæœ]*(?:…|\.{1,3})`,
+				Description: "Claude thinking state with random verb — any spinner frame + capitalized verb + ellipsis",
 				Priority:    26,
 			},
 			{
