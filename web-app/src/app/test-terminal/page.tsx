@@ -3,6 +3,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
+import * as s from './page.css';
 import { StateApplicator } from '@/lib/terminal/StateApplicator';
 import { TerminalState, TerminalStateSchema, TerminalLine, TerminalLineSchema, TerminalDimensions, TerminalDimensionsSchema } from '@/gen/session/v1/events_pb';
 import { create } from "@bufbuild/protobuf";
@@ -266,7 +267,7 @@ export default function TestTerminalPage() {
         }}
       >
         <h3 style={{ marginTop: 0 }}>Performance Metrics</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+        <div className={s.metricsGrid}>
           <div>
             <strong>Frames Rendered:</strong> <span data-testid="frames-rendered">{metrics.framesRendered}</span>
           </div>
