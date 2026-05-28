@@ -29,14 +29,19 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 		program = fmt.Sprintf("%s --resume %s", program, claudeSessionID)
 	}
 	if i.MCPServerURL != "" && strings.Contains(program, "claude") {
-		mcpFlag := fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}'`, i.MCPServerURL)
+		var mcpFlag string
+		if i.UUID != "" {
+			mcpFlag = fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}'`, i.MCPServerURL, i.UUID)
+		} else {
+			mcpFlag = fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}'`, i.MCPServerURL)
+		}
 		program = program + " " + mcpFlag
 	}
 	if i.AppendSystemPrompt != "" && strings.Contains(program, "claude") {
 		program = fmt.Sprintf("%s --append-system-prompt %q", program, i.AppendSystemPrompt)
 	}
 	if i.AutoYes && strings.Contains(program, "claude") {
-		program = program + " -y"
+		program = program + " --dangerously-skip-permissions"
 	}
 	if i.OneShot && strings.Contains(program, "claude") {
 		program = program + " -p"

@@ -621,9 +621,10 @@ func (p *pollerContentProvider) GetContent(inst *Instance, statusInfo InstanceSt
 
 // shouldSkipSession returns true for sessions the poller should not evaluate.
 // Don't check sessions that are not running or are explicitly paused.
+// Hidden (system/background) sessions are never shown in the review queue.
 // All other states proceed to status detection regardless of controller state.
 func (rqp *ReviewQueuePoller) shouldSkipSession(inst *Instance) bool {
-	return inst.Status == Stopped || inst.Paused() || !inst.Started()
+	return inst.Hidden || inst.Status == Stopped || inst.Paused() || !inst.Started()
 }
 
 // checkSession checks a single session and adds/removes from queue as needed.

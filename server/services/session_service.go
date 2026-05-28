@@ -519,14 +519,14 @@ func (s *SessionService) SetBacklogLifecycleListener(l *session.BacklogLifecycle
 // BacklogLifecycleListener can spawn one-shot review sessions automatically when
 // a work session exits. The session is tagged "backlog:review" and runs one-shot.
 func (s *SessionService) SpawnReviewSession(ctx context.Context, item *ent.BacklogItem, itemSessionID string, prompt string) (*session.Instance, error) {
-	return s.CreateDirectorySession(ctx, "review:"+item.ID.String()[:8], item.RepoPath, prompt, []string{"backlog:review"}, true)
+	return s.CreateDirectorySession(ctx, "review:"+item.ID.String()[:8], item.RepoPath, prompt, []string{"backlog:review"}, true, true)
 }
 
 // CreateDirectorySession satisfies the services.SessionCreator interface so that
 // BacklogService can spawn sessions without importing SessionService directly.
 // It creates a directory-type session with the given title, path, initial prompt,
 // tags, and oneShot flag, wires it into the live poller, and returns the Instance.
-func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool) (*session.Instance, error) {
+func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error) {
 	cfg := config.LoadConfig()
 	resolved := config.ResolveDefaults(cfg, path, "")
 	opts := session.InstanceOptions{
@@ -538,6 +538,7 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 		Prompt:          prompt,
 		Tags:            tags,
 		OneShot:         oneShot,
+		Hidden:          hidden,
 		MCPServerURL:    s.mcpServerURL,
 		CreateIfMissing: true,
 	}
@@ -656,6 +657,11 @@ func (s *SessionService) ListSessions(
 			continue
 		}
 
+		// Exclude hidden (system/background) sessions unless explicitly requested
+		if inst.Hidden && !req.Msg.IncludeHidden {
+			continue
+		}
+
 		sessions = append(sessions, adapters.InstanceToProto(inst))
 	}
 
@@ -672,6 +678,11 @@ func (s *SessionService) ListSessions(
 
 			// Apply optional category filter
 			if req.Msg.Category != nil && *req.Msg.Category != "" && extInst.Category != *req.Msg.Category {
+				continue
+			}
+
+			// Exclude hidden external sessions unless requested
+			if extInst.Hidden && !req.Msg.IncludeHidden {
 				continue
 			}
 
