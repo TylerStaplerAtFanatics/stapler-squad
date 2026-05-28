@@ -106,14 +106,15 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 		return
 	}
 
-	// Recursion guard: only drive transitions for work sessions.
-	if is.SessionRole != SessionRoleWork {
-		return
-	}
-
+	// Record end time for all session roles (triage, review, work).
 	now := time.Now()
 	if err := l.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now); err != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] UpdateItemSessionEnded(%s) error: %v", is.ID, err)
+	}
+
+	// Only drive in_progress→review/done transitions for work sessions.
+	if is.SessionRole != SessionRoleWork {
+		return
 	}
 
 	// BacklogItem edge is eager-loaded by GetItemSessionBySessionUUID.

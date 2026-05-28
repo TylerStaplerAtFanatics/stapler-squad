@@ -38,6 +38,9 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 	if i.AutoYes && strings.Contains(program, "claude") {
 		program = program + " -y"
 	}
+	if i.OneShot && strings.Contains(program, "claude") {
+		program = program + " -p"
+	}
 	if i.Prompt != "" && claudeSessionID == "" && strings.Contains(program, "claude") {
 		program = fmt.Sprintf("%s %q", program, i.Prompt)
 	}

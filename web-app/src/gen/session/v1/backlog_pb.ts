@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file session/v1/backlog.proto.
  */
 export const file_session_v1_backlog: GenFile = /*@__PURE__*/
-  fileDesc("ChhzZXNzaW9uL3YxL2JhY2tsb2cucHJvdG8SCnNlc3Npb24udjEiOgoLQWNDcml0ZXJpb24SDQoFaW5kZXgYASABKAUSDAoEdGV4dBgCIAEoCRIOCgZzdGF0dXMYAyABKAkiTgoQQ3JpdGVyaW9uVmVyZGljdBIXCg9jcml0ZXJpb25faW5kZXgYASABKAUSDwoHb3V0Y29tZRgCIAEoCRIQCghldmlkZW5jZRgDIAEoCSLOAgoNUmV2aWV3VmVyZGljdBIKCgJpZBgBIAEoCRIXCg9vdmVyYWxsX291dGNvbWUYAiABKAkSMwoNcGVyX2NyaXRlcmlvbhgDIAMoCzIcLnNlc3Npb24udjEuQ3JpdGVyaW9uVmVyZGljdBIPCgdzdW1tYXJ5GAQgASgJEhEKCWRpZmZfaGFzaBgFIAEoCRIYChBkaWZmX3Rva2VuX2NvdW50GAYgASgFEhYKDmRpZmZfdHJ1bmNhdGVkGAcgASgIEhMKC292ZXJyaWRlX2J5GAggASgJEhcKD292ZXJyaWRlX3JlYXNvbhgJIAEoCRIvCgtvdmVycmlkZV9hdBgKIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKY3JlYXRlZF9hdBgLIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiMwoQVHJpYWdlU3VnZ2VzdGlvbhIMCgR0ZXh0GAEgASgJEhEKCXJhdGlvbmFsZRgCIAEoCSI+CgpUcmlhZ2VUYXNrEgwKBHRleHQYASABKAkSEAoIZXN0aW1hdGUYAiABKAkSEAoIY2F0ZWdvcnkYAyABKAkilwEKDFRyaWFnZVJlc3VsdBIPCgdzdW1tYXJ5GAEgASgJEjEKC3N1Z2dlc3Rpb25zGAIgAygLMhwuc2Vzc2lvbi52MS5UcmlhZ2VTdWdnZXN0aW9uEhwKFGNsYXJpZnlpbmdfcXVlc3Rpb25zGAMgAygJEiUKBXRhc2tzGAQgAygLMhYuc2Vzc2lvbi52MS5UcmlhZ2VUYXNrIuIDCgtJdGVtU2Vzc2lvbhIKCgJpZBgBIAEoCRIUCgxzZXNzaW9uX3V1aWQYAiABKAkSFAoMc2Vzc2lvbl9yb2xlGAMgASgJEi4KCnN0YXJ0ZWRfYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiwKCGVuZGVkX2F0GAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIbChNsYXN0X2NvbW1pdF9tZXNzYWdlGAYgASgJEjIKDmxhc3RfY29tbWl0X2F0GAcgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIgChhjb21taXRfY291bnRfc2luY2Vfc3Bhd24YCCABKAUSNgoSbGFzdF9maWxlX3RvdWNoX2F0GAkgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgpjcmVhdGVkX2F0GAogASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIxCg5yZXZpZXdfdmVyZGljdBgLIAEoCzIZLnNlc3Npb24udjEuUmV2aWV3VmVyZGljdBIvCg10cmlhZ2VfcmVzdWx0GAwgASgLMhguc2Vzc2lvbi52MS5UcmlhZ2VSZXN1bHQiuwQKC0JhY2tsb2dJdGVtEgoKAmlkGAEgASgJEg0KBXRpdGxlGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJEjQKE2FjY2VwdGFuY2VfY3JpdGVyaWEYBCADKAsyFy5zZXNzaW9uLnYxLkFjQ3JpdGVyaW9uEhAKCHByaW9yaXR5GAUgASgFEg4KBnN0YXR1cxgGIAEoCRIRCglyZXBvX3BhdGgYByABKAkSGAoQc2tpcF9yZXZpZXdfZ2F0ZRgIIAEoCBIVCg1za2lwX3BsYW5uaW5nGAkgASgIEhUKDXBsYW5fYXBwcm92ZWQYCiABKAgSNAoQcGxhbl9hcHByb3ZlZF9hdBgLIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASGwoTcGxhbl9hcnRpZmFjdHNfcGF0aBgMIAEoCRINCgVub3RlcxgNIAEoCRITCgtleHRlcm5hbF9pZBgOIAEoCRIvCgthcmNoaXZlZF9hdBgPIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKY3JlYXRlZF9hdBgQIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKdXBkYXRlZF9hdBgRIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoNaXRlbV9zZXNzaW9ucxgSIAMoCzIXLnNlc3Npb24udjEuSXRlbVNlc3Npb24SEQoJc291cmNlX2lkGBMgASgJIoACCgpJdGVtU291cmNlEgoKAmlkGAEgASgJEhEKCXBsdWdpbl9pZBgCIAEoCRIUCgxkaXNwbGF5X25hbWUYAyABKAkSDwoHZW5hYmxlZBgEIAEoCBIyCg5sYXN0X3N5bmNlZF9hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASGAoQdG9rZW5fY29uZmlndXJlZBgGIAEoCBIuCgpjcmVhdGVkX2F0GAcgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgp1cGRhdGVkX2F0GAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCLxAQoPU291cmNlU3luY0V2ZW50EgoKAmlkGAEgASgJEi4KCnN0YXJ0ZWRfYXQYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KC2ZpbmlzaGVkX2F0GAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIVCg1pdGVtc19jcmVhdGVkGAQgASgFEhUKDWl0ZW1zX3VwZGF0ZWQYBSABKAUSFQoNaXRlbXNfc2tpcHBlZBgGIAEoBRIVCg1pdGVtc19lcnJvcmVkGAcgASgFEhUKDWVycm9yX21lc3NhZ2UYCCABKAki7gEKGENyZWF0ZUJhY2tsb2dJdGVtUmVxdWVzdBINCgV0aXRsZRgBIAEoCRITCgtkZXNjcmlwdGlvbhgCIAEoCRI0ChNhY2NlcHRhbmNlX2NyaXRlcmlhGAMgAygLMhcuc2Vzc2lvbi52MS5BY0NyaXRlcmlvbhIQCghwcmlvcml0eRgEIAEoBRIYChBza2lwX3Jldmlld19nYXRlGAUgASgIEhUKDXNraXBfcGxhbm5pbmcYBiABKAgSEQoJcmVwb19wYXRoGAcgASgJEg0KBW5vdGVzGAggASgJEhMKC3NraXBfdHJpYWdlGAkgASgIIlwKGUNyZWF0ZUJhY2tsb2dJdGVtUmVzcG9uc2USJQoEaXRlbRgBIAEoCzIXLnNlc3Npb24udjEuQmFja2xvZ0l0ZW0SGAoQdHJpYWdlX3RyaWdnZXJlZBgCIAEoCCIoChVHZXRCYWNrbG9nSXRlbVJlcXVlc3QSDwoHaXRlbV9pZBgBIAEoCSI/ChZHZXRCYWNrbG9nSXRlbVJlc3BvbnNlEiUKBGl0ZW0YASABKAsyFy5zZXNzaW9uLnYxLkJhY2tsb2dJdGVtImYKF0xpc3RCYWNrbG9nSXRlbXNSZXF1ZXN0Eg4KBnN0YXR1cxgBIAMoCRIQCghwcmlvcml0eRgCIAMoBRIPCgdzb3J0X2J5GAMgASgJEhgKEGluY2x1ZGVfdGVybWluYWwYBCABKAgiQgoYTGlzdEJhY2tsb2dJdGVtc1Jlc3BvbnNlEiYKBWl0ZW1zGAEgAygLMhcuc2Vzc2lvbi52MS5CYWNrbG9nSXRlbSK8AgoYVXBkYXRlQmFja2xvZ0l0ZW1SZXF1ZXN0Eg8KB2l0ZW1faWQYASABKAkSDQoFdGl0bGUYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSNAoTYWNjZXB0YW5jZV9jcml0ZXJpYRgEIAMoCzIXLnNlc3Npb24udjEuQWNDcml0ZXJpb24SEAoIcHJpb3JpdHkYBSABKAUSGAoQc2tpcF9yZXZpZXdfZ2F0ZRgGIAEoCBIVCg1za2lwX3BsYW5uaW5nGAcgASgIEhEKCXJlcG9fcGF0aBgIIAEoCRINCgVub3RlcxgJIAEoCRIXCg9leHBlY3RlZF9zdGF0dXMYCiABKAkSNwoTZXhwZWN0ZWRfdXBkYXRlZF9hdBgLIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiQgoZVXBkYXRlQmFja2xvZ0l0ZW1SZXNwb25zZRIlCgRpdGVtGAEgASgLMhcuc2Vzc2lvbi52MS5CYWNrbG9nSXRlbSIsChlBcmNoaXZlQmFja2xvZ0l0ZW1SZXF1ZXN0Eg8KB2l0ZW1faWQYASABKAkiQwoaQXJjaGl2ZUJhY2tsb2dJdGVtUmVzcG9uc2USJQoEaXRlbRgBIAEoCzIXLnNlc3Npb24udjEuQmFja2xvZ0l0ZW0itwEKIlRyYW5zaXRpb25CYWNrbG9nSXRlbVN0YXR1c1JlcXVlc3QSDwoHaXRlbV9pZBgBIAEoCRIVCg10YXJnZXRfc3RhdHVzGAIgASgJEhcKD2V4cGVjdGVkX3N0YXR1cxgDIAEoCRI3ChNleHBlY3RlZF91cGRhdGVkX2F0GAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIXCg9vdmVycmlkZV9yZWFzb24YBSABKAkiTAojVHJhbnNpdGlvbkJhY2tsb2dJdGVtU3RhdHVzUmVzcG9uc2USJQoEaXRlbRgBIAEoCzIXLnNlc3Npb24udjEuQmFja2xvZ0l0ZW0iLgobU3Bhd25TZXNzaW9uRnJvbUl0ZW1SZXF1ZXN0Eg8KB2l0ZW1faWQYASABKAkiYwocU3Bhd25TZXNzaW9uRnJvbUl0ZW1SZXNwb25zZRIUCgxzZXNzaW9uX3V1aWQYASABKAkSLQoMaXRlbV9zZXNzaW9uGAIgASgLMhcuc2Vzc2lvbi52MS5JdGVtU2Vzc2lvbiJDChpBdHRhY2hTZXNzaW9uVG9JdGVtUmVxdWVzdBIPCgdpdGVtX2lkGAEgASgJEhQKDHNlc3Npb25fdXVpZBgCIAEoCSJMChtBdHRhY2hTZXNzaW9uVG9JdGVtUmVzcG9uc2USLQoMaXRlbV9zZXNzaW9uGAEgASgLMhcuc2Vzc2lvbi52MS5JdGVtU2Vzc2lvbiInChRUcmlnZ2VyVHJpYWdlUmVxdWVzdBIPCgdpdGVtX2lkGAEgASgJIkYKFVRyaWdnZXJUcmlhZ2VSZXNwb25zZRItCgxpdGVtX3Nlc3Npb24YASABKAsyFy5zZXNzaW9uLnYxLkl0ZW1TZXNzaW9uIiUKEkFwcHJvdmVQbGFuUmVxdWVzdBIPCgdpdGVtX2lkGAEgASgJIjwKE0FwcHJvdmVQbGFuUmVzcG9uc2USJQoEaXRlbRgBIAEoCzIXLnNlc3Npb24udjEuQmFja2xvZ0l0ZW0iGAoWU3VnZ2VzdE5leHRJdGVtUmVxdWVzdCJvChdTdWdnZXN0TmV4dEl0ZW1SZXNwb25zZRItCgxpdGVtX3Nlc3Npb24YASABKAsyFy5zZXNzaW9uLnYxLkl0ZW1TZXNzaW9uEiUKBGl0ZW0YAiABKAsyFy5zZXNzaW9uLnYxLkJhY2tsb2dJdGVtIl0KFk92ZXJyaWRlVmVyZGljdFJlcXVlc3QSFwoPaXRlbV9zZXNzaW9uX2lkGAEgASgJEhEKCXRvX3N0YXR1cxgCIAEoCRIXCg9vdmVycmlkZV9yZWFzb24YAyABKAkiQAoXT3ZlcnJpZGVWZXJkaWN0UmVzcG9uc2USJQoEaXRlbRgBIAEoCzIXLnNlc3Npb24udjEuQmFja2xvZ0l0ZW0iKQoWVHJpZ2dlclJlUmV2aWV3UmVxdWVzdBIPCgdpdGVtX2lkGAEgASgJIkgKF1RyaWdnZXJSZVJldmlld1Jlc3BvbnNlEi0KDGl0ZW1fc2Vzc2lvbhgBIAEoCzIXLnNlc3Npb24udjEuSXRlbVNlc3Npb24iJwoSVHJpZ2dlclN5bmNSZXF1ZXN0EhEKCXNvdXJjZV9pZBgBIAEoCSIVChNUcmlnZ2VyU3luY1Jlc3BvbnNlImYKF0NyZWF0ZUl0ZW1Tb3VyY2VSZXF1ZXN0EhEKCXBsdWdpbl9pZBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSEwoLY29uZmlnX2pzb24YAyABKAkSDQoFdG9rZW4YBCABKAkiQgoYQ3JlYXRlSXRlbVNvdXJjZVJlc3BvbnNlEiYKBnNvdXJjZRgBIAEoCzIWLnNlc3Npb24udjEuSXRlbVNvdXJjZSIYChZMaXN0SXRlbVNvdXJjZXNSZXF1ZXN0IkIKF0xpc3RJdGVtU291cmNlc1Jlc3BvbnNlEicKB3NvdXJjZXMYASADKAsyFi5zZXNzaW9uLnYxLkl0ZW1Tb3VyY2UiYgoXVXBkYXRlSXRlbVNvdXJjZVJlcXVlc3QSEQoJc291cmNlX2lkGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCRIPCgdlbmFibGVkGAMgASgIEg0KBXRva2VuGAQgASgJIkIKGFVwZGF0ZUl0ZW1Tb3VyY2VSZXNwb25zZRImCgZzb3VyY2UYASABKAsyFi5zZXNzaW9uLnYxLkl0ZW1Tb3VyY2UiLAoXRGVsZXRlSXRlbVNvdXJjZVJlcXVlc3QSEQoJc291cmNlX2lkGAEgASgJIhoKGERlbGV0ZUl0ZW1Tb3VyY2VSZXNwb25zZSIqChVHZXRTeW5jSGlzdG9yeVJlcXVlc3QSEQoJc291cmNlX2lkGAEgASgJIkUKFkdldFN5bmNIaXN0b3J5UmVzcG9uc2USKwoGZXZlbnRzGAEgAygLMhsuc2Vzc2lvbi52MS5Tb3VyY2VTeW5jRXZlbnQyxw4KDkJhY2tsb2dTZXJ2aWNlEmIKEUNyZWF0ZUJhY2tsb2dJdGVtEiQuc2Vzc2lvbi52MS5DcmVhdGVCYWNrbG9nSXRlbVJlcXVlc3QaJS5zZXNzaW9uLnYxLkNyZWF0ZUJhY2tsb2dJdGVtUmVzcG9uc2UiABJZCg5HZXRCYWNrbG9nSXRlbRIhLnNlc3Npb24udjEuR2V0QmFja2xvZ0l0ZW1SZXF1ZXN0GiIuc2Vzc2lvbi52MS5HZXRCYWNrbG9nSXRlbVJlc3BvbnNlIgASXwoQTGlzdEJhY2tsb2dJdGVtcxIjLnNlc3Npb24udjEuTGlzdEJhY2tsb2dJdGVtc1JlcXVlc3QaJC5zZXNzaW9uLnYxLkxpc3RCYWNrbG9nSXRlbXNSZXNwb25zZSIAEmIKEVVwZGF0ZUJhY2tsb2dJdGVtEiQuc2Vzc2lvbi52MS5VcGRhdGVCYWNrbG9nSXRlbVJlcXVlc3QaJS5zZXNzaW9uLnYxLlVwZGF0ZUJhY2tsb2dJdGVtUmVzcG9uc2UiABJlChJBcmNoaXZlQmFja2xvZ0l0ZW0SJS5zZXNzaW9uLnYxLkFyY2hpdmVCYWNrbG9nSXRlbVJlcXVlc3QaJi5zZXNzaW9uLnYxLkFyY2hpdmVCYWNrbG9nSXRlbVJlc3BvbnNlIgASgAEKG1RyYW5zaXRpb25CYWNrbG9nSXRlbVN0YXR1cxIuLnNlc3Npb24udjEuVHJhbnNpdGlvbkJhY2tsb2dJdGVtU3RhdHVzUmVxdWVzdBovLnNlc3Npb24udjEuVHJhbnNpdGlvbkJhY2tsb2dJdGVtU3RhdHVzUmVzcG9uc2UiABJrChRTcGF3blNlc3Npb25Gcm9tSXRlbRInLnNlc3Npb24udjEuU3Bhd25TZXNzaW9uRnJvbUl0ZW1SZXF1ZXN0Giguc2Vzc2lvbi52MS5TcGF3blNlc3Npb25Gcm9tSXRlbVJlc3BvbnNlIgASaAoTQXR0YWNoU2Vzc2lvblRvSXRlbRImLnNlc3Npb24udjEuQXR0YWNoU2Vzc2lvblRvSXRlbVJlcXVlc3QaJy5zZXNzaW9uLnYxLkF0dGFjaFNlc3Npb25Ub0l0ZW1SZXNwb25zZSIAElYKDVRyaWdnZXJUcmlhZ2USIC5zZXNzaW9uLnYxLlRyaWdnZXJUcmlhZ2VSZXF1ZXN0GiEuc2Vzc2lvbi52MS5UcmlnZ2VyVHJpYWdlUmVzcG9uc2UiABJQCgtBcHByb3ZlUGxhbhIeLnNlc3Npb24udjEuQXBwcm92ZVBsYW5SZXF1ZXN0Gh8uc2Vzc2lvbi52MS5BcHByb3ZlUGxhblJlc3BvbnNlIgASXAoPU3VnZ2VzdE5leHRJdGVtEiIuc2Vzc2lvbi52MS5TdWdnZXN0TmV4dEl0ZW1SZXF1ZXN0GiMuc2Vzc2lvbi52MS5TdWdnZXN0TmV4dEl0ZW1SZXNwb25zZSIAElwKD092ZXJyaWRlVmVyZGljdBIiLnNlc3Npb24udjEuT3ZlcnJpZGVWZXJkaWN0UmVxdWVzdBojLnNlc3Npb24udjEuT3ZlcnJpZGVWZXJkaWN0UmVzcG9uc2UiABJcCg9UcmlnZ2VyUmVSZXZpZXcSIi5zZXNzaW9uLnYxLlRyaWdnZXJSZVJldmlld1JlcXVlc3QaIy5zZXNzaW9uLnYxLlRyaWdnZXJSZVJldmlld1Jlc3BvbnNlIgASUAoLVHJpZ2dlclN5bmMSHi5zZXNzaW9uLnYxLlRyaWdnZXJTeW5jUmVxdWVzdBofLnNlc3Npb24udjEuVHJpZ2dlclN5bmNSZXNwb25zZSIAEl8KEENyZWF0ZUl0ZW1Tb3VyY2USIy5zZXNzaW9uLnYxLkNyZWF0ZUl0ZW1Tb3VyY2VSZXF1ZXN0GiQuc2Vzc2lvbi52MS5DcmVhdGVJdGVtU291cmNlUmVzcG9uc2UiABJcCg9MaXN0SXRlbVNvdXJjZXMSIi5zZXNzaW9uLnYxLkxpc3RJdGVtU291cmNlc1JlcXVlc3QaIy5zZXNzaW9uLnYxLkxpc3RJdGVtU291cmNlc1Jlc3BvbnNlIgASXwoQVXBkYXRlSXRlbVNvdXJjZRIjLnNlc3Npb24udjEuVXBkYXRlSXRlbVNvdXJjZVJlcXVlc3QaJC5zZXNzaW9uLnYxLlVwZGF0ZUl0ZW1Tb3VyY2VSZXNwb25zZSIAEl8KEERlbGV0ZUl0ZW1Tb3VyY2USIy5zZXNzaW9uLnYxLkRlbGV0ZUl0ZW1Tb3VyY2VSZXF1ZXN0GiQuc2Vzc2lvbi52MS5EZWxldGVJdGVtU291cmNlUmVzcG9uc2UiABJZCg5HZXRTeW5jSGlzdG9yeRIhLnNlc3Npb24udjEuR2V0U3luY0hpc3RvcnlSZXF1ZXN0GiIuc2Vzc2lvbi52MS5HZXRTeW5jSGlzdG9yeVJlc3BvbnNlIgBCrAEKDmNvbS5zZXNzaW9uLnYxQgxCYWNrbG9nUHJvdG9QAVpDZ2l0aHViLmNvbS90c3RhcGxlci9zdGFwbGVyLXNxdWFkL2dlbi9wcm90by9nby9zZXNzaW9uL3YxO3Nlc3Npb252MaICA1NYWKoCClNlc3Npb24uVjHKAgpTZXNzaW9uXFYx4gIWU2Vzc2lvblxWMVxHUEJNZXRhZGF0YeoCC1Nlc3Npb246OlYxYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("ChhzZXNzaW9uL3YxL2JhY2tsb2cucHJvdG8SCnNlc3Npb24udjEiOgoLQWNDcml0ZXJpb24SDQoFaW5kZXgYASABKAUSDAoEdGV4dBgCIAEoCRIOCgZzdGF0dXMYAyABKAkiTgoQQ3JpdGVyaW9uVmVyZGljdBIXCg9jcml0ZXJpb25faW5kZXgYASABKAUSDwoHb3V0Y29tZRgCIAEoCRIQCghldmlkZW5jZRgDIAEoCSLOAgoNUmV2aWV3VmVyZGljdBIKCgJpZBgBIAEoCRIXCg9vdmVyYWxsX291dGNvbWUYAiABKAkSMwoNcGVyX2NyaXRlcmlvbhgDIAMoCzIcLnNlc3Npb24udjEuQ3JpdGVyaW9uVmVyZGljdBIPCgdzdW1tYXJ5GAQgASgJEhEKCWRpZmZfaGFzaBgFIAEoCRIYChBkaWZmX3Rva2VuX2NvdW50GAYgASgFEhYKDmRpZmZfdHJ1bmNhdGVkGAcgASgIEhMKC292ZXJyaWRlX2J5GAggASgJEhcKD292ZXJyaWRlX3JlYXNvbhgJIAEoCRIvCgtvdmVycmlkZV9hdBgKIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKY3JlYXRlZF9hdBgLIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiMwoQVHJpYWdlU3VnZ2VzdGlvbhIMCgR0ZXh0GAEgASgJEhEKCXJhdGlvbmFsZRgCIAEoCSI+CgpUcmlhZ2VUYXNrEgwKBHRleHQYASABKAkSEAoIZXN0aW1hdGUYAiABKAkSEAoIY2F0ZWdvcnkYAyABKAkilwEKDFRyaWFnZVJlc3VsdBIPCgdzdW1tYXJ5GAEgASgJEjEKC3N1Z2dlc3Rpb25zGAIgAygLMhwuc2Vzc2lvbi52MS5UcmlhZ2VTdWdnZXN0aW9uEhwKFGNsYXJpZnlpbmdfcXVlc3Rpb25zGAMgAygJEiUKBXRhc2tzGAQgAygLMhYuc2Vzc2lvbi52MS5UcmlhZ2VUYXNrIuIDCgtJdGVtU2Vzc2lvbhIKCgJpZBgBIAEoCRIUCgxzZXNzaW9uX3V1aWQYAiABKAkSFAoMc2Vzc2lvbl9yb2xlGAMgASgJEi4KCnN0YXJ0ZWRfYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEiwKCGVuZGVkX2F0GAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIbChNsYXN0X2NvbW1pdF9tZXNzYWdlGAYgASgJEjIKDmxhc3RfY29tbWl0X2F0GAcgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIgChhjb21taXRfY291bnRfc2luY2Vfc3Bhd24YCCABKAUSNgoSbGFzdF9maWxlX3RvdWNoX2F0GAkgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIuCgpjcmVhdGVkX2F0GAogASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIxCg5yZXZpZXdfdmVyZGljdBgLIAEoCzIZLnNlc3Npb24udjEuUmV2aWV3VmVyZGljdBIvCg10cmlhZ2VfcmVzdWx0GAwgASgLMhguc2Vzc2lvbi52MS5UcmlhZ2VSZXN1bHQijgEKEkJhY2tsb2dTdGF0dXNFdmVudBIKCgJpZBgBIAEoCRITCgtmcm9tX3N0YXR1cxgCIAEoCRIRCgl0b19zdGF0dXMYAyABKAkSFAoMdHJpZ2dlcmVkX2J5GAQgASgJEi4KCmNyZWF0ZWRfYXQYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIvIECgtCYWNrbG9nSXRlbRIKCgJpZBgBIAEoCRINCgV0aXRsZRgCIAEoCRITCgtkZXNjcmlwdGlvbhgDIAEoCRI0ChNhY2NlcHRhbmNlX2NyaXRlcmlhGAQgAygLMhcuc2Vzc2lvbi52MS5BY0NyaXRlcmlvbhIQCghwcmlvcml0eRgFIAEoBRIOCgZzdGF0dXMYBiABKAkSEQoJcmVwb19wYXRoGAcgASgJEhgKEHNraXBfcmV2aWV3X2dhdGUYCCABKAgSFQoNc2tpcF9wbGFubmluZxgJIAEoCBIVCg1wbGFuX2FwcHJvdmVkGAogASgIEjQKEHBsYW5fYXBwcm92ZWRfYXQYCyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhsKE3BsYW5fYXJ0aWZhY3RzX3BhdGgYDCABKAkSDQoFbm90ZXMYDSABKAkSEwoLZXh0ZXJuYWxfaWQYDiABKAkSLwoLYXJjaGl2ZWRfYXQYDyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCmNyZWF0ZWRfYXQYECABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnVwZGF0ZWRfYXQYESABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KDWl0ZW1fc2Vzc2lvbnMYEiADKAsyFy5zZXNzaW9uLnYxLkl0ZW1TZXNzaW9uEhEKCXNvdXJjZV9pZBgTIAEoCRI1Cg1zdGF0dXNfZXZlbnRzGBQgAygLMh4uc2Vzc2lvbi52MS5CYWNrbG9nU3RhdHVzRXZlbnQigAIKCkl0ZW1Tb3VyY2USCgoCaWQYASABKAkSEQoJcGx1Z2luX2lkGAIgASgJEhQKDGRpc3BsYXlfbmFtZRgDIAEoCRIPCgdlbmFibGVkGAQgASgIEjIKDmxhc3Rfc3luY2VkX2F0GAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIYChB0b2tlbl9jb25maWd1cmVkGAYgASgIEi4KCmNyZWF0ZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi4KCnVwZGF0ZWRfYXQYCCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIvEBCg9Tb3VyY2VTeW5jRXZlbnQSCgoCaWQYASABKAkSLgoKc3RhcnRlZF9hdBgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoLZmluaXNoZWRfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhUKDWl0ZW1zX2NyZWF0ZWQYBCABKAUSFQoNaXRlbXNfdXBkYXRlZBgFIAEoBRIVCg1pdGVtc19za2lwcGVkGAYgASgFEhUKDWl0ZW1zX2Vycm9yZWQYByABKAUSFQoNZXJyb3JfbWVzc2FnZRgIIAEoCSLuAQoYQ3JlYXRlQmFja2xvZ0l0ZW1SZXF1ZXN0Eg0KBXRpdGxlGAEgASgJEhMKC2Rlc2NyaXB0aW9uGAIgASgJEjQKE2FjY2VwdGFuY2VfY3JpdGVyaWEYAyADKAsyFy5zZXNzaW9uLnYxLkFjQ3JpdGVyaW9uEhAKCHByaW9yaXR5GAQgASgFEhgKEHNraXBfcmV2aWV3X2dhdGUYBSABKAgSFQoNc2tpcF9wbGFubmluZxgGIAEoCBIRCglyZXBvX3BhdGgYByABKAkSDQoFbm90ZXMYCCABKAkSEwoLc2tpcF90cmlhZ2UYCSABKAgiXAoZQ3JlYXRlQmFja2xvZ0l0ZW1SZXNwb25zZRIlCgRpdGVtGAEgASgLMhcuc2Vzc2lvbi52MS5CYWNrbG9nSXRlbRIYChB0cmlhZ2VfdHJpZ2dlcmVkGAIgASgIIigKFUdldEJhY2tsb2dJdGVtUmVxdWVzdBIPCgdpdGVtX2lkGAEgASgJIj8KFkdldEJhY2tsb2dJdGVtUmVzcG9uc2USJQoEaXRlbRgBIAEoCzIXLnNlc3Npb24udjEuQmFja2xvZ0l0ZW0iZgoXTGlzdEJhY2tsb2dJdGVtc1JlcXVlc3QSDgoGc3RhdHVzGAEgAygJEhAKCHByaW9yaXR5GAIgAygFEg8KB3NvcnRfYnkYAyABKAkSGAoQaW5jbHVkZV90ZXJtaW5hbBgEIAEoCCJCChhMaXN0QmFja2xvZ0l0ZW1zUmVzcG9uc2USJgoFaXRlbXMYASADKAsyFy5zZXNzaW9uLnYxLkJhY2tsb2dJdGVtIrwCChhVcGRhdGVCYWNrbG9nSXRlbVJlcXVlc3QSDwoHaXRlbV9pZBgBIAEoCRINCgV0aXRsZRgCIAEoCRITCgtkZXNjcmlwdGlvbhgDIAEoCRI0ChNhY2NlcHRhbmNlX2NyaXRlcmlhGAQgAygLMhcuc2Vzc2lvbi52MS5BY0NyaXRlcmlvbhIQCghwcmlvcml0eRgFIAEoBRIYChBza2lwX3Jldmlld19nYXRlGAYgASgIEhUKDXNraXBfcGxhbm5pbmcYByABKAgSEQoJcmVwb19wYXRoGAggASgJEg0KBW5vdGVzGAkgASgJEhcKD2V4cGVjdGVkX3N0YXR1cxgKIAEoCRI3ChNleHBlY3RlZF91cGRhdGVkX2F0GAsgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJCChlVcGRhdGVCYWNrbG9nSXRlbVJlc3BvbnNlEiUKBGl0ZW0YASABKAsyFy5zZXNzaW9uLnYxLkJhY2tsb2dJdGVtIiwKGUFyY2hpdmVCYWNrbG9nSXRlbVJlcXVlc3QSDwoHaXRlbV9pZBgBIAEoCSJDChpBcmNoaXZlQmFja2xvZ0l0ZW1SZXNwb25zZRIlCgRpdGVtGAEgASgLMhcuc2Vzc2lvbi52MS5CYWNrbG9nSXRlbSK3AQoiVHJhbnNpdGlvbkJhY2tsb2dJdGVtU3RhdHVzUmVxdWVzdBIPCgdpdGVtX2lkGAEgASgJEhUKDXRhcmdldF9zdGF0dXMYAiABKAkSFwoPZXhwZWN0ZWRfc3RhdHVzGAMgASgJEjcKE2V4cGVjdGVkX3VwZGF0ZWRfYXQYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhcKD292ZXJyaWRlX3JlYXNvbhgFIAEoCSJMCiNUcmFuc2l0aW9uQmFja2xvZ0l0ZW1TdGF0dXNSZXNwb25zZRIlCgRpdGVtGAEgASgLMhcuc2Vzc2lvbi52MS5CYWNrbG9nSXRlbSIuChtTcGF3blNlc3Npb25Gcm9tSXRlbVJlcXVlc3QSDwoHaXRlbV9pZBgBIAEoCSJjChxTcGF3blNlc3Npb25Gcm9tSXRlbVJlc3BvbnNlEhQKDHNlc3Npb25fdXVpZBgBIAEoCRItCgxpdGVtX3Nlc3Npb24YAiABKAsyFy5zZXNzaW9uLnYxLkl0ZW1TZXNzaW9uIkMKGkF0dGFjaFNlc3Npb25Ub0l0ZW1SZXF1ZXN0Eg8KB2l0ZW1faWQYASABKAkSFAoMc2Vzc2lvbl91dWlkGAIgASgJIkwKG0F0dGFjaFNlc3Npb25Ub0l0ZW1SZXNwb25zZRItCgxpdGVtX3Nlc3Npb24YASABKAsyFy5zZXNzaW9uLnYxLkl0ZW1TZXNzaW9uIicKFFRyaWdnZXJUcmlhZ2VSZXF1ZXN0Eg8KB2l0ZW1faWQYASABKAkiRgoVVHJpZ2dlclRyaWFnZVJlc3BvbnNlEi0KDGl0ZW1fc2Vzc2lvbhgBIAEoCzIXLnNlc3Npb24udjEuSXRlbVNlc3Npb24iJQoSQXBwcm92ZVBsYW5SZXF1ZXN0Eg8KB2l0ZW1faWQYASABKAkiPAoTQXBwcm92ZVBsYW5SZXNwb25zZRIlCgRpdGVtGAEgASgLMhcuc2Vzc2lvbi52MS5CYWNrbG9nSXRlbSIYChZTdWdnZXN0TmV4dEl0ZW1SZXF1ZXN0Im8KF1N1Z2dlc3ROZXh0SXRlbVJlc3BvbnNlEi0KDGl0ZW1fc2Vzc2lvbhgBIAEoCzIXLnNlc3Npb24udjEuSXRlbVNlc3Npb24SJQoEaXRlbRgCIAEoCzIXLnNlc3Npb24udjEuQmFja2xvZ0l0ZW0iXQoWT3ZlcnJpZGVWZXJkaWN0UmVxdWVzdBIXCg9pdGVtX3Nlc3Npb25faWQYASABKAkSEQoJdG9fc3RhdHVzGAIgASgJEhcKD292ZXJyaWRlX3JlYXNvbhgDIAEoCSJAChdPdmVycmlkZVZlcmRpY3RSZXNwb25zZRIlCgRpdGVtGAEgASgLMhcuc2Vzc2lvbi52MS5CYWNrbG9nSXRlbSIpChZUcmlnZ2VyUmVSZXZpZXdSZXF1ZXN0Eg8KB2l0ZW1faWQYASABKAkiSAoXVHJpZ2dlclJlUmV2aWV3UmVzcG9uc2USLQoMaXRlbV9zZXNzaW9uGAEgASgLMhcuc2Vzc2lvbi52MS5JdGVtU2Vzc2lvbiInChJUcmlnZ2VyU3luY1JlcXVlc3QSEQoJc291cmNlX2lkGAEgASgJIhUKE1RyaWdnZXJTeW5jUmVzcG9uc2UiZgoXQ3JlYXRlSXRlbVNvdXJjZVJlcXVlc3QSEQoJcGx1Z2luX2lkGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCRITCgtjb25maWdfanNvbhgDIAEoCRINCgV0b2tlbhgEIAEoCSJCChhDcmVhdGVJdGVtU291cmNlUmVzcG9uc2USJgoGc291cmNlGAEgASgLMhYuc2Vzc2lvbi52MS5JdGVtU291cmNlIhgKFkxpc3RJdGVtU291cmNlc1JlcXVlc3QiQgoXTGlzdEl0ZW1Tb3VyY2VzUmVzcG9uc2USJwoHc291cmNlcxgBIAMoCzIWLnNlc3Npb24udjEuSXRlbVNvdXJjZSJiChdVcGRhdGVJdGVtU291cmNlUmVxdWVzdBIRCglzb3VyY2VfaWQYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJEg8KB2VuYWJsZWQYAyABKAgSDQoFdG9rZW4YBCABKAkiQgoYVXBkYXRlSXRlbVNvdXJjZVJlc3BvbnNlEiYKBnNvdXJjZRgBIAEoCzIWLnNlc3Npb24udjEuSXRlbVNvdXJjZSIsChdEZWxldGVJdGVtU291cmNlUmVxdWVzdBIRCglzb3VyY2VfaWQYASABKAkiGgoYRGVsZXRlSXRlbVNvdXJjZVJlc3BvbnNlIioKFUdldFN5bmNIaXN0b3J5UmVxdWVzdBIRCglzb3VyY2VfaWQYASABKAkiRQoWR2V0U3luY0hpc3RvcnlSZXNwb25zZRIrCgZldmVudHMYASADKAsyGy5zZXNzaW9uLnYxLlNvdXJjZVN5bmNFdmVudDLHDgoOQmFja2xvZ1NlcnZpY2USYgoRQ3JlYXRlQmFja2xvZ0l0ZW0SJC5zZXNzaW9uLnYxLkNyZWF0ZUJhY2tsb2dJdGVtUmVxdWVzdBolLnNlc3Npb24udjEuQ3JlYXRlQmFja2xvZ0l0ZW1SZXNwb25zZSIAElkKDkdldEJhY2tsb2dJdGVtEiEuc2Vzc2lvbi52MS5HZXRCYWNrbG9nSXRlbVJlcXVlc3QaIi5zZXNzaW9uLnYxLkdldEJhY2tsb2dJdGVtUmVzcG9uc2UiABJfChBMaXN0QmFja2xvZ0l0ZW1zEiMuc2Vzc2lvbi52MS5MaXN0QmFja2xvZ0l0ZW1zUmVxdWVzdBokLnNlc3Npb24udjEuTGlzdEJhY2tsb2dJdGVtc1Jlc3BvbnNlIgASYgoRVXBkYXRlQmFja2xvZ0l0ZW0SJC5zZXNzaW9uLnYxLlVwZGF0ZUJhY2tsb2dJdGVtUmVxdWVzdBolLnNlc3Npb24udjEuVXBkYXRlQmFja2xvZ0l0ZW1SZXNwb25zZSIAEmUKEkFyY2hpdmVCYWNrbG9nSXRlbRIlLnNlc3Npb24udjEuQXJjaGl2ZUJhY2tsb2dJdGVtUmVxdWVzdBomLnNlc3Npb24udjEuQXJjaGl2ZUJhY2tsb2dJdGVtUmVzcG9uc2UiABKAAQobVHJhbnNpdGlvbkJhY2tsb2dJdGVtU3RhdHVzEi4uc2Vzc2lvbi52MS5UcmFuc2l0aW9uQmFja2xvZ0l0ZW1TdGF0dXNSZXF1ZXN0Gi8uc2Vzc2lvbi52MS5UcmFuc2l0aW9uQmFja2xvZ0l0ZW1TdGF0dXNSZXNwb25zZSIAEmsKFFNwYXduU2Vzc2lvbkZyb21JdGVtEicuc2Vzc2lvbi52MS5TcGF3blNlc3Npb25Gcm9tSXRlbVJlcXVlc3QaKC5zZXNzaW9uLnYxLlNwYXduU2Vzc2lvbkZyb21JdGVtUmVzcG9uc2UiABJoChNBdHRhY2hTZXNzaW9uVG9JdGVtEiYuc2Vzc2lvbi52MS5BdHRhY2hTZXNzaW9uVG9JdGVtUmVxdWVzdBonLnNlc3Npb24udjEuQXR0YWNoU2Vzc2lvblRvSXRlbVJlc3BvbnNlIgASVgoNVHJpZ2dlclRyaWFnZRIgLnNlc3Npb24udjEuVHJpZ2dlclRyaWFnZVJlcXVlc3QaIS5zZXNzaW9uLnYxLlRyaWdnZXJUcmlhZ2VSZXNwb25zZSIAElAKC0FwcHJvdmVQbGFuEh4uc2Vzc2lvbi52MS5BcHByb3ZlUGxhblJlcXVlc3QaHy5zZXNzaW9uLnYxLkFwcHJvdmVQbGFuUmVzcG9uc2UiABJcCg9TdWdnZXN0TmV4dEl0ZW0SIi5zZXNzaW9uLnYxLlN1Z2dlc3ROZXh0SXRlbVJlcXVlc3QaIy5zZXNzaW9uLnYxLlN1Z2dlc3ROZXh0SXRlbVJlc3BvbnNlIgASXAoPT3ZlcnJpZGVWZXJkaWN0EiIuc2Vzc2lvbi52MS5PdmVycmlkZVZlcmRpY3RSZXF1ZXN0GiMuc2Vzc2lvbi52MS5PdmVycmlkZVZlcmRpY3RSZXNwb25zZSIAElwKD1RyaWdnZXJSZVJldmlldxIiLnNlc3Npb24udjEuVHJpZ2dlclJlUmV2aWV3UmVxdWVzdBojLnNlc3Npb24udjEuVHJpZ2dlclJlUmV2aWV3UmVzcG9uc2UiABJQCgtUcmlnZ2VyU3luYxIeLnNlc3Npb24udjEuVHJpZ2dlclN5bmNSZXF1ZXN0Gh8uc2Vzc2lvbi52MS5UcmlnZ2VyU3luY1Jlc3BvbnNlIgASXwoQQ3JlYXRlSXRlbVNvdXJjZRIjLnNlc3Npb24udjEuQ3JlYXRlSXRlbVNvdXJjZVJlcXVlc3QaJC5zZXNzaW9uLnYxLkNyZWF0ZUl0ZW1Tb3VyY2VSZXNwb25zZSIAElwKD0xpc3RJdGVtU291cmNlcxIiLnNlc3Npb24udjEuTGlzdEl0ZW1Tb3VyY2VzUmVxdWVzdBojLnNlc3Npb24udjEuTGlzdEl0ZW1Tb3VyY2VzUmVzcG9uc2UiABJfChBVcGRhdGVJdGVtU291cmNlEiMuc2Vzc2lvbi52MS5VcGRhdGVJdGVtU291cmNlUmVxdWVzdBokLnNlc3Npb24udjEuVXBkYXRlSXRlbVNvdXJjZVJlc3BvbnNlIgASXwoQRGVsZXRlSXRlbVNvdXJjZRIjLnNlc3Npb24udjEuRGVsZXRlSXRlbVNvdXJjZVJlcXVlc3QaJC5zZXNzaW9uLnYxLkRlbGV0ZUl0ZW1Tb3VyY2VSZXNwb25zZSIAElkKDkdldFN5bmNIaXN0b3J5EiEuc2Vzc2lvbi52MS5HZXRTeW5jSGlzdG9yeVJlcXVlc3QaIi5zZXNzaW9uLnYxLkdldFN5bmNIaXN0b3J5UmVzcG9uc2UiAEKsAQoOY29tLnNlc3Npb24udjFCDEJhY2tsb2dQcm90b1ABWkNnaXRodWIuY29tL3RzdGFwbGVyL3N0YXBsZXItc3F1YWQvZ2VuL3Byb3RvL2dvL3Nlc3Npb24vdjE7c2Vzc2lvbnYxogIDU1hYqgIKU2Vzc2lvbi5WMcoCClNlc3Npb25cVjHiAhZTZXNzaW9uXFYxXEdQQk1ldGFkYXRh6gILU2Vzc2lvbjo6VjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
 
 /**
  * AcCriterion represents a single acceptance criterion for a backlog item.
@@ -314,6 +314,47 @@ export const ItemSessionSchema: GenMessage<ItemSession> = /*@__PURE__*/
   messageDesc(file_session_v1_backlog, 6);
 
 /**
+ * BacklogStatusEvent records a single status transition for a backlog item.
+ *
+ * @generated from message session.v1.BacklogStatusEvent
+ */
+export type BacklogStatusEvent = Message<"session.v1.BacklogStatusEvent"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: string from_status = 2;
+   */
+  fromStatus: string;
+
+  /**
+   * @generated from field: string to_status = 3;
+   */
+  toStatus: string;
+
+  /**
+   * "user" or "system"
+   *
+   * @generated from field: string triggered_by = 4;
+   */
+  triggeredBy: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 5;
+   */
+  createdAt?: Timestamp;
+};
+
+/**
+ * Describes the message session.v1.BacklogStatusEvent.
+ * Use `create(BacklogStatusEventSchema)` to create a new message.
+ */
+export const BacklogStatusEventSchema: GenMessage<BacklogStatusEvent> = /*@__PURE__*/
+  messageDesc(file_session_v1_backlog, 7);
+
+/**
  * BacklogItem represents a unit of work in the backlog.
  *
  * @generated from message session.v1.BacklogItem
@@ -413,6 +454,11 @@ export type BacklogItem = Message<"session.v1.BacklogItem"> & {
    * @generated from field: string source_id = 19;
    */
   sourceId: string;
+
+  /**
+   * @generated from field: repeated session.v1.BacklogStatusEvent status_events = 20;
+   */
+  statusEvents: BacklogStatusEvent[];
 };
 
 /**
@@ -420,7 +466,7 @@ export type BacklogItem = Message<"session.v1.BacklogItem"> & {
  * Use `create(BacklogItemSchema)` to create a new message.
  */
 export const BacklogItemSchema: GenMessage<BacklogItem> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 7);
+  messageDesc(file_session_v1_backlog, 8);
 
 /**
  * ItemSource represents an external plugin source that syncs items into the
@@ -475,7 +521,7 @@ export type ItemSource = Message<"session.v1.ItemSource"> & {
  * Use `create(ItemSourceSchema)` to create a new message.
  */
 export const ItemSourceSchema: GenMessage<ItemSource> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 8);
+  messageDesc(file_session_v1_backlog, 9);
 
 /**
  * SourceSyncEvent records the result of a single sync run for an ItemSource.
@@ -529,7 +575,7 @@ export type SourceSyncEvent = Message<"session.v1.SourceSyncEvent"> & {
  * Use `create(SourceSyncEventSchema)` to create a new message.
  */
 export const SourceSyncEventSchema: GenMessage<SourceSyncEvent> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 9);
+  messageDesc(file_session_v1_backlog, 10);
 
 /**
  * @generated from message session.v1.CreateBacklogItemRequest
@@ -586,7 +632,7 @@ export type CreateBacklogItemRequest = Message<"session.v1.CreateBacklogItemRequ
  * Use `create(CreateBacklogItemRequestSchema)` to create a new message.
  */
 export const CreateBacklogItemRequestSchema: GenMessage<CreateBacklogItemRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 10);
+  messageDesc(file_session_v1_backlog, 11);
 
 /**
  * @generated from message session.v1.CreateBacklogItemResponse
@@ -608,7 +654,7 @@ export type CreateBacklogItemResponse = Message<"session.v1.CreateBacklogItemRes
  * Use `create(CreateBacklogItemResponseSchema)` to create a new message.
  */
 export const CreateBacklogItemResponseSchema: GenMessage<CreateBacklogItemResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 11);
+  messageDesc(file_session_v1_backlog, 12);
 
 /**
  * @generated from message session.v1.GetBacklogItemRequest
@@ -625,7 +671,7 @@ export type GetBacklogItemRequest = Message<"session.v1.GetBacklogItemRequest"> 
  * Use `create(GetBacklogItemRequestSchema)` to create a new message.
  */
 export const GetBacklogItemRequestSchema: GenMessage<GetBacklogItemRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 12);
+  messageDesc(file_session_v1_backlog, 13);
 
 /**
  * @generated from message session.v1.GetBacklogItemResponse
@@ -642,7 +688,7 @@ export type GetBacklogItemResponse = Message<"session.v1.GetBacklogItemResponse"
  * Use `create(GetBacklogItemResponseSchema)` to create a new message.
  */
 export const GetBacklogItemResponseSchema: GenMessage<GetBacklogItemResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 13);
+  messageDesc(file_session_v1_backlog, 14);
 
 /**
  * @generated from message session.v1.ListBacklogItemsRequest
@@ -674,7 +720,7 @@ export type ListBacklogItemsRequest = Message<"session.v1.ListBacklogItemsReques
  * Use `create(ListBacklogItemsRequestSchema)` to create a new message.
  */
 export const ListBacklogItemsRequestSchema: GenMessage<ListBacklogItemsRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 14);
+  messageDesc(file_session_v1_backlog, 15);
 
 /**
  * @generated from message session.v1.ListBacklogItemsResponse
@@ -691,7 +737,7 @@ export type ListBacklogItemsResponse = Message<"session.v1.ListBacklogItemsRespo
  * Use `create(ListBacklogItemsResponseSchema)` to create a new message.
  */
 export const ListBacklogItemsResponseSchema: GenMessage<ListBacklogItemsResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 15);
+  messageDesc(file_session_v1_backlog, 16);
 
 /**
  * @generated from message session.v1.UpdateBacklogItemRequest
@@ -758,7 +804,7 @@ export type UpdateBacklogItemRequest = Message<"session.v1.UpdateBacklogItemRequ
  * Use `create(UpdateBacklogItemRequestSchema)` to create a new message.
  */
 export const UpdateBacklogItemRequestSchema: GenMessage<UpdateBacklogItemRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 16);
+  messageDesc(file_session_v1_backlog, 17);
 
 /**
  * @generated from message session.v1.UpdateBacklogItemResponse
@@ -775,7 +821,7 @@ export type UpdateBacklogItemResponse = Message<"session.v1.UpdateBacklogItemRes
  * Use `create(UpdateBacklogItemResponseSchema)` to create a new message.
  */
 export const UpdateBacklogItemResponseSchema: GenMessage<UpdateBacklogItemResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 17);
+  messageDesc(file_session_v1_backlog, 18);
 
 /**
  * @generated from message session.v1.ArchiveBacklogItemRequest
@@ -792,7 +838,7 @@ export type ArchiveBacklogItemRequest = Message<"session.v1.ArchiveBacklogItemRe
  * Use `create(ArchiveBacklogItemRequestSchema)` to create a new message.
  */
 export const ArchiveBacklogItemRequestSchema: GenMessage<ArchiveBacklogItemRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 18);
+  messageDesc(file_session_v1_backlog, 19);
 
 /**
  * @generated from message session.v1.ArchiveBacklogItemResponse
@@ -809,7 +855,7 @@ export type ArchiveBacklogItemResponse = Message<"session.v1.ArchiveBacklogItemR
  * Use `create(ArchiveBacklogItemResponseSchema)` to create a new message.
  */
 export const ArchiveBacklogItemResponseSchema: GenMessage<ArchiveBacklogItemResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 19);
+  messageDesc(file_session_v1_backlog, 20);
 
 /**
  * @generated from message session.v1.TransitionBacklogItemStatusRequest
@@ -846,7 +892,7 @@ export type TransitionBacklogItemStatusRequest = Message<"session.v1.TransitionB
  * Use `create(TransitionBacklogItemStatusRequestSchema)` to create a new message.
  */
 export const TransitionBacklogItemStatusRequestSchema: GenMessage<TransitionBacklogItemStatusRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 20);
+  messageDesc(file_session_v1_backlog, 21);
 
 /**
  * @generated from message session.v1.TransitionBacklogItemStatusResponse
@@ -863,7 +909,7 @@ export type TransitionBacklogItemStatusResponse = Message<"session.v1.Transition
  * Use `create(TransitionBacklogItemStatusResponseSchema)` to create a new message.
  */
 export const TransitionBacklogItemStatusResponseSchema: GenMessage<TransitionBacklogItemStatusResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 21);
+  messageDesc(file_session_v1_backlog, 22);
 
 /**
  * @generated from message session.v1.SpawnSessionFromItemRequest
@@ -880,7 +926,7 @@ export type SpawnSessionFromItemRequest = Message<"session.v1.SpawnSessionFromIt
  * Use `create(SpawnSessionFromItemRequestSchema)` to create a new message.
  */
 export const SpawnSessionFromItemRequestSchema: GenMessage<SpawnSessionFromItemRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 22);
+  messageDesc(file_session_v1_backlog, 23);
 
 /**
  * @generated from message session.v1.SpawnSessionFromItemResponse
@@ -902,7 +948,7 @@ export type SpawnSessionFromItemResponse = Message<"session.v1.SpawnSessionFromI
  * Use `create(SpawnSessionFromItemResponseSchema)` to create a new message.
  */
 export const SpawnSessionFromItemResponseSchema: GenMessage<SpawnSessionFromItemResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 23);
+  messageDesc(file_session_v1_backlog, 24);
 
 /**
  * @generated from message session.v1.AttachSessionToItemRequest
@@ -924,7 +970,7 @@ export type AttachSessionToItemRequest = Message<"session.v1.AttachSessionToItem
  * Use `create(AttachSessionToItemRequestSchema)` to create a new message.
  */
 export const AttachSessionToItemRequestSchema: GenMessage<AttachSessionToItemRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 24);
+  messageDesc(file_session_v1_backlog, 25);
 
 /**
  * @generated from message session.v1.AttachSessionToItemResponse
@@ -941,7 +987,7 @@ export type AttachSessionToItemResponse = Message<"session.v1.AttachSessionToIte
  * Use `create(AttachSessionToItemResponseSchema)` to create a new message.
  */
 export const AttachSessionToItemResponseSchema: GenMessage<AttachSessionToItemResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 25);
+  messageDesc(file_session_v1_backlog, 26);
 
 /**
  * @generated from message session.v1.TriggerTriageRequest
@@ -958,7 +1004,7 @@ export type TriggerTriageRequest = Message<"session.v1.TriggerTriageRequest"> & 
  * Use `create(TriggerTriageRequestSchema)` to create a new message.
  */
 export const TriggerTriageRequestSchema: GenMessage<TriggerTriageRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 26);
+  messageDesc(file_session_v1_backlog, 27);
 
 /**
  * @generated from message session.v1.TriggerTriageResponse
@@ -975,7 +1021,7 @@ export type TriggerTriageResponse = Message<"session.v1.TriggerTriageResponse"> 
  * Use `create(TriggerTriageResponseSchema)` to create a new message.
  */
 export const TriggerTriageResponseSchema: GenMessage<TriggerTriageResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 27);
+  messageDesc(file_session_v1_backlog, 28);
 
 /**
  * @generated from message session.v1.ApprovePlanRequest
@@ -992,7 +1038,7 @@ export type ApprovePlanRequest = Message<"session.v1.ApprovePlanRequest"> & {
  * Use `create(ApprovePlanRequestSchema)` to create a new message.
  */
 export const ApprovePlanRequestSchema: GenMessage<ApprovePlanRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 28);
+  messageDesc(file_session_v1_backlog, 29);
 
 /**
  * @generated from message session.v1.ApprovePlanResponse
@@ -1009,7 +1055,7 @@ export type ApprovePlanResponse = Message<"session.v1.ApprovePlanResponse"> & {
  * Use `create(ApprovePlanResponseSchema)` to create a new message.
  */
 export const ApprovePlanResponseSchema: GenMessage<ApprovePlanResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 29);
+  messageDesc(file_session_v1_backlog, 30);
 
 /**
  * @generated from message session.v1.SuggestNextItemRequest
@@ -1022,7 +1068,7 @@ export type SuggestNextItemRequest = Message<"session.v1.SuggestNextItemRequest"
  * Use `create(SuggestNextItemRequestSchema)` to create a new message.
  */
 export const SuggestNextItemRequestSchema: GenMessage<SuggestNextItemRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 30);
+  messageDesc(file_session_v1_backlog, 31);
 
 /**
  * @generated from message session.v1.SuggestNextItemResponse
@@ -1046,7 +1092,7 @@ export type SuggestNextItemResponse = Message<"session.v1.SuggestNextItemRespons
  * Use `create(SuggestNextItemResponseSchema)` to create a new message.
  */
 export const SuggestNextItemResponseSchema: GenMessage<SuggestNextItemResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 31);
+  messageDesc(file_session_v1_backlog, 32);
 
 /**
  * @generated from message session.v1.OverrideVerdictRequest
@@ -1073,7 +1119,7 @@ export type OverrideVerdictRequest = Message<"session.v1.OverrideVerdictRequest"
  * Use `create(OverrideVerdictRequestSchema)` to create a new message.
  */
 export const OverrideVerdictRequestSchema: GenMessage<OverrideVerdictRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 32);
+  messageDesc(file_session_v1_backlog, 33);
 
 /**
  * @generated from message session.v1.OverrideVerdictResponse
@@ -1090,7 +1136,7 @@ export type OverrideVerdictResponse = Message<"session.v1.OverrideVerdictRespons
  * Use `create(OverrideVerdictResponseSchema)` to create a new message.
  */
 export const OverrideVerdictResponseSchema: GenMessage<OverrideVerdictResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 33);
+  messageDesc(file_session_v1_backlog, 34);
 
 /**
  * @generated from message session.v1.TriggerReReviewRequest
@@ -1107,7 +1153,7 @@ export type TriggerReReviewRequest = Message<"session.v1.TriggerReReviewRequest"
  * Use `create(TriggerReReviewRequestSchema)` to create a new message.
  */
 export const TriggerReReviewRequestSchema: GenMessage<TriggerReReviewRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 34);
+  messageDesc(file_session_v1_backlog, 35);
 
 /**
  * @generated from message session.v1.TriggerReReviewResponse
@@ -1124,7 +1170,7 @@ export type TriggerReReviewResponse = Message<"session.v1.TriggerReReviewRespons
  * Use `create(TriggerReReviewResponseSchema)` to create a new message.
  */
 export const TriggerReReviewResponseSchema: GenMessage<TriggerReReviewResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 35);
+  messageDesc(file_session_v1_backlog, 36);
 
 /**
  * @generated from message session.v1.TriggerSyncRequest
@@ -1141,7 +1187,7 @@ export type TriggerSyncRequest = Message<"session.v1.TriggerSyncRequest"> & {
  * Use `create(TriggerSyncRequestSchema)` to create a new message.
  */
 export const TriggerSyncRequestSchema: GenMessage<TriggerSyncRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 36);
+  messageDesc(file_session_v1_backlog, 37);
 
 /**
  * @generated from message session.v1.TriggerSyncResponse
@@ -1154,7 +1200,7 @@ export type TriggerSyncResponse = Message<"session.v1.TriggerSyncResponse"> & {
  * Use `create(TriggerSyncResponseSchema)` to create a new message.
  */
 export const TriggerSyncResponseSchema: GenMessage<TriggerSyncResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 37);
+  messageDesc(file_session_v1_backlog, 38);
 
 /**
  * @generated from message session.v1.CreateItemSourceRequest
@@ -1186,7 +1232,7 @@ export type CreateItemSourceRequest = Message<"session.v1.CreateItemSourceReques
  * Use `create(CreateItemSourceRequestSchema)` to create a new message.
  */
 export const CreateItemSourceRequestSchema: GenMessage<CreateItemSourceRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 38);
+  messageDesc(file_session_v1_backlog, 39);
 
 /**
  * @generated from message session.v1.CreateItemSourceResponse
@@ -1203,7 +1249,7 @@ export type CreateItemSourceResponse = Message<"session.v1.CreateItemSourceRespo
  * Use `create(CreateItemSourceResponseSchema)` to create a new message.
  */
 export const CreateItemSourceResponseSchema: GenMessage<CreateItemSourceResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 39);
+  messageDesc(file_session_v1_backlog, 40);
 
 /**
  * @generated from message session.v1.ListItemSourcesRequest
@@ -1216,7 +1262,7 @@ export type ListItemSourcesRequest = Message<"session.v1.ListItemSourcesRequest"
  * Use `create(ListItemSourcesRequestSchema)` to create a new message.
  */
 export const ListItemSourcesRequestSchema: GenMessage<ListItemSourcesRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 40);
+  messageDesc(file_session_v1_backlog, 41);
 
 /**
  * @generated from message session.v1.ListItemSourcesResponse
@@ -1233,7 +1279,7 @@ export type ListItemSourcesResponse = Message<"session.v1.ListItemSourcesRespons
  * Use `create(ListItemSourcesResponseSchema)` to create a new message.
  */
 export const ListItemSourcesResponseSchema: GenMessage<ListItemSourcesResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 41);
+  messageDesc(file_session_v1_backlog, 42);
 
 /**
  * @generated from message session.v1.UpdateItemSourceRequest
@@ -1265,7 +1311,7 @@ export type UpdateItemSourceRequest = Message<"session.v1.UpdateItemSourceReques
  * Use `create(UpdateItemSourceRequestSchema)` to create a new message.
  */
 export const UpdateItemSourceRequestSchema: GenMessage<UpdateItemSourceRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 42);
+  messageDesc(file_session_v1_backlog, 43);
 
 /**
  * @generated from message session.v1.UpdateItemSourceResponse
@@ -1282,7 +1328,7 @@ export type UpdateItemSourceResponse = Message<"session.v1.UpdateItemSourceRespo
  * Use `create(UpdateItemSourceResponseSchema)` to create a new message.
  */
 export const UpdateItemSourceResponseSchema: GenMessage<UpdateItemSourceResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 43);
+  messageDesc(file_session_v1_backlog, 44);
 
 /**
  * @generated from message session.v1.DeleteItemSourceRequest
@@ -1299,7 +1345,7 @@ export type DeleteItemSourceRequest = Message<"session.v1.DeleteItemSourceReques
  * Use `create(DeleteItemSourceRequestSchema)` to create a new message.
  */
 export const DeleteItemSourceRequestSchema: GenMessage<DeleteItemSourceRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 44);
+  messageDesc(file_session_v1_backlog, 45);
 
 /**
  * @generated from message session.v1.DeleteItemSourceResponse
@@ -1312,7 +1358,7 @@ export type DeleteItemSourceResponse = Message<"session.v1.DeleteItemSourceRespo
  * Use `create(DeleteItemSourceResponseSchema)` to create a new message.
  */
 export const DeleteItemSourceResponseSchema: GenMessage<DeleteItemSourceResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 45);
+  messageDesc(file_session_v1_backlog, 46);
 
 /**
  * @generated from message session.v1.GetSyncHistoryRequest
@@ -1329,7 +1375,7 @@ export type GetSyncHistoryRequest = Message<"session.v1.GetSyncHistoryRequest"> 
  * Use `create(GetSyncHistoryRequestSchema)` to create a new message.
  */
 export const GetSyncHistoryRequestSchema: GenMessage<GetSyncHistoryRequest> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 46);
+  messageDesc(file_session_v1_backlog, 47);
 
 /**
  * @generated from message session.v1.GetSyncHistoryResponse
@@ -1346,7 +1392,7 @@ export type GetSyncHistoryResponse = Message<"session.v1.GetSyncHistoryResponse"
  * Use `create(GetSyncHistoryResponseSchema)` to create a new message.
  */
 export const GetSyncHistoryResponseSchema: GenMessage<GetSyncHistoryResponse> = /*@__PURE__*/
-  messageDesc(file_session_v1_backlog, 47);
+  messageDesc(file_session_v1_backlog, 48);
 
 /**
  * BacklogService manages backlog items and their lifecycle through AI-assisted

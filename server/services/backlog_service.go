@@ -23,7 +23,22 @@ import (
 
 // SessionCreator allows BacklogService to spawn sessions without importing handler internals.
 type SessionCreator interface {
-	CreateDirectorySession(ctx context.Context, title, path, appendSystemPrompt string, tags []string, oneShot bool) (*session.Instance, error)
+	CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool) (*session.Instance, error)
+}
+
+// SessionStopper allows BacklogService to kill live sessions.
+// It is nil-safe: BacklogService degrades gracefully when not wired.
+type SessionStopper interface {
+	StopSessionByUUID(ctx context.Context, sessionUUID string) error
+	// KillTmuxSessionByTitle kills a tmux session by its title, regardless of
+	// whether the Instance is still tracked in memory. Used to clear stale tmux
+	// sessions before re-triggering so the fresh session gets its --append-system-prompt.
+	KillTmuxSessionByTitle(ctx context.Context, title string) error
+	// IsSessionLive returns true if the session UUID is currently tracked in the
+	// live in-memory poller. Used to distinguish genuinely-running sessions from
+	// sessions that exited but whose DB records were not closed (e.g. after a
+	// server restart that killed the underlying process).
+	IsSessionLive(sessionUUID string) bool
 }
 
 // itemSourceBackend is a narrow interface for item source persistence; satisfied by *session.Storage.
@@ -37,6 +52,7 @@ type BacklogService struct {
 	storage        *session.Storage
 	sourceBackend  itemSourceBackend
 	sessionCreator SessionCreator
+	sessionStopper SessionStopper
 	cfg            *config.Config
 	engine         session.WorkflowEngine
 	// worktreeMu serializes context-file writes to the same worktree path so that
@@ -63,6 +79,11 @@ func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *co
 		cfg:            cfg,
 		engine:         engine,
 	}
+}
+
+// SetSessionStopper wires the optional session stopper used to kill orphaned sessions on re-triage.
+func (s *BacklogService) SetSessionStopper(stopper SessionStopper) {
+	s.sessionStopper = stopper
 }
 
 // encryptAndMergeToken produces a token config JSON string suitable for storage.
@@ -275,6 +296,21 @@ func backlogItemToProto(item *session.BacklogItemData) *sessionv1.BacklogItem {
 			protoSessions[i] = itemSessionToProto(is)
 		}
 		p.ItemSessions = protoSessions
+	}
+
+	// Populate status events when they were eagerly loaded.
+	if len(item.StatusEvents) > 0 {
+		protoEvents := make([]*sessionv1.BacklogStatusEvent, len(item.StatusEvents))
+		for i, ev := range item.StatusEvents {
+			protoEvents[i] = &sessionv1.BacklogStatusEvent{
+				Id:          ev.ID.String(),
+				FromStatus:  ev.FromStatus,
+				ToStatus:    ev.ToStatus,
+				TriggeredBy: ev.TriggeredBy,
+				CreatedAt:   timestamppb.New(ev.CreatedAt),
+			}
+		}
+		p.StatusEvents = protoEvents
 	}
 
 	return p
@@ -1049,12 +1085,41 @@ func (s *BacklogService) TriggerTriage(
 			fmt.Errorf("set repo_path before triggering triage"))
 	}
 
-	// 3a. Double-trigger guard: check for an existing running triage session.
+	// 3a. Orphan-aware guard: if an open triage session exists, check whether it is
+	// genuinely still running. A session is orphaned (and safe to replace) when:
+	//   (a) the item has already advanced past "idea" (triage cycle completed), OR
+	//   (b) the session UUID is not live in memory (e.g. process died after a restart).
+	// Orphaned sessions are tombstoned so the re-trigger can proceed; only genuinely
+	// live sessions block with CodeAlreadyExists.
 	existingSessions, _ := s.storage.ListItemSessions(ctx, req.Msg.ItemId)
 	for _, is := range existingSessions {
-		if is.SessionRole == string(session.SessionRoleTriage) && is.EndedAt == nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists,
-				fmt.Errorf("triage session already running for item %s", req.Msg.ItemId))
+		if is.SessionRole != string(session.SessionRoleTriage) || is.EndedAt != nil {
+			continue
+		}
+		// Open triage session found. Check if it's orphaned.
+		// started_at=NULL means the session was created but never confirmed running — always treat as orphaned.
+		neverStarted := is.StartedAt == nil
+		notLive := neverStarted || s.sessionStopper == nil || !s.sessionStopper.IsSessionLive(is.SessionUUID)
+		statusAdvanced := item.Status != string(session.BacklogStatusIdea)
+		if notLive || statusAdvanced {
+			now := time.Now()
+			_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
+			if s.sessionStopper != nil {
+				_ = s.sessionStopper.StopSessionByUUID(ctx, is.SessionUUID)
+			}
+			continue
+		}
+		return nil, connect.NewError(connect.CodeAlreadyExists,
+			fmt.Errorf("triage session already running for item %s", req.Msg.ItemId))
+	}
+
+	// 3b. If re-triggering on a "ready" item, move it back to "idea" so the UI
+	// correctly reflects that the item is under evaluation again.
+	if item.Status == string(session.BacklogStatusReady) {
+		if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, req.Msg.ItemId,
+			session.BacklogStatusIdea, nil); transErr != nil {
+			log.ErrorLog.Printf("[TriggerTriage] failed to reset status to idea: %v", transErr)
+			// Non-fatal — continue with triage spawn.
 		}
 	}
 
@@ -1062,6 +1127,19 @@ func (s *BacklogService) TriggerTriage(
 	slug := slugify(item.Title)
 	artifactRelPath := filepath.Join("docs", "tasks", slug)
 	artifactAbsPath := filepath.Join(item.RepoPath, artifactRelPath)
+
+	// 4.5 Kill any stale tmux session with the same deterministic name. The tmux
+	// session name is derived from the title ("triage:<slug>") and is reused across
+	// triggers. If the old session is still alive in tmux (e.g. the in-memory Instance
+	// was already removed after a server restart), TmuxSession.Start() will reattach
+	// to it instead of creating a fresh session — silently skipping the new
+	// --append-system-prompt injection. Killing by title before spawning ensures a
+	// clean slate.
+	if s.sessionStopper != nil {
+		if killErr := s.sessionStopper.KillTmuxSessionByTitle(ctx, "triage:"+slug); killErr != nil {
+			log.ErrorLog.Printf("[TriggerTriage] failed to kill stale tmux session: %v", killErr)
+		}
+	}
 
 	// 5. Create artifact dir.
 	if mkErr := os.MkdirAll(artifactAbsPath, 0o755); mkErr != nil {
