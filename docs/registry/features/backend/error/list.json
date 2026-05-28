@@ -1,11 +1,11 @@
 {
-  "id": "program:analytics",
+  "id": "error:list",
   "type": "backend",
   "service": "SessionService",
-  "method": "GetProgramAnalytics",
+  "method": "ListErrors",
   "protoFile": "proto/session/v1/session.proto",
   "markerFound": false,
   "tested": false,
   "testIds": [],
-  "lastModified": "2026-05-20T00:00:00Z"
+  "lastModified": "2026-05-27T08:41:35.273501935-07:00"
 }

@@ -1,8 +1,8 @@
 {
-  "id": "pr:post-comment",
+  "id": "client-event:log",
   "type": "backend",
   "service": "SessionService",
-  "method": "PostPRComment",
+  "method": "LogClientEvents",
   "protoFile": "proto/session/v1/session.proto",
   "markerFound": false,
   "tested": false,
