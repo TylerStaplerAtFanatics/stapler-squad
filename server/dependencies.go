@@ -693,6 +693,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}
 
 	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine)
+	backlogSvc.SetSessionStopper(sessionService)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 

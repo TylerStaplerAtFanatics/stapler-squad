@@ -19,6 +19,11 @@ interface RepoPathInputProps {
 
 const MAX_HISTORY = 5;
 
+function tildeAbbreviate(p: string): string {
+  const m = p.match(/^(\/(?:Users|home)\/[^/]+)(\/.*)?$/);
+  return m ? `~${m[2] ?? ""}` : p;
+}
+
 export function RepoPathInput({
   id: idProp,
   value,
@@ -51,7 +56,7 @@ export function RepoPathInput({
     const historySet = new Set(history);
 
     const historyEntries: CompletionEntry[] = history.map((p) => ({
-      name: p,
+      name: tildeAbbreviate(p),
       path: p,
       isDirectory: true,
       isHistory: true,
@@ -141,6 +146,7 @@ export function RepoPathInput({
         onFocus={() => setOpen(true)}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
+        title={value || undefined}
         required={required}
         aria-required={required || undefined}
         aria-invalid={error ? true : undefined}

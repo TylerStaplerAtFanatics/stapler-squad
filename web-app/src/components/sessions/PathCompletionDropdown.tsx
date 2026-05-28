@@ -49,6 +49,7 @@ function EntryItem({
         .join(" ")}
       role="option"
       aria-selected={index === selectedIndex}
+      title={entry.path}
       onMouseDown={(e) => {
         e.preventDefault();
         onSelect(entry);

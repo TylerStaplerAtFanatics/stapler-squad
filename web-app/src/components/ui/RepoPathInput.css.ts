@@ -19,6 +19,7 @@ export const input = style({
   outline: "none",
   transition: "border-color 0.15s ease",
   boxSizing: "border-box",
+  textOverflow: "ellipsis",
   ":focus": {
     borderColor: vars.color.inputFocusBorder,
     boxShadow: `0 0 0 2px ${vars.color.accentBg}`,
