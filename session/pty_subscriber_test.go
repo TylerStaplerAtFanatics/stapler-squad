@@ -54,9 +54,14 @@ func TestMemPTYSubscriber_Drain_CoalescesChunks(t *testing.T) {
 
 // T-UNIT-SUB-3: Push returns ErrSubscriberFull when pushCh is at capacity.
 func TestMemPTYSubscriber_Push_ReturnsErrSubscriberFull_WhenAtCapacity(t *testing.T) {
-	s := newMemPTYSubscriber()
-	// Do NOT call defer s.Close() — we intentionally leave drain blocked so
-	// pushCh fills up. Close at end to unblock drain.
+	// Construct directly without starting drain so pushCh fills deterministically.
+	// The drain goroutine coalesces items from pushCh faster than we can fill it,
+	// making the test racy when using newMemPTYSubscriber().
+	s := &memPTYSubscriber{
+		pushCh: make(chan []byte, maxPushBufEntries),
+		ch:     make(chan []byte, 64),
+		stopCh: make(chan struct{}),
+	}
 	defer s.Close()
 
 	// Fill pushCh to capacity without consuming from Chan.
