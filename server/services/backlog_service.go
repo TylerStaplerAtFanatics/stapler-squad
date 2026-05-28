@@ -23,7 +23,7 @@ import (
 
 // SessionCreator allows BacklogService to spawn sessions without importing handler internals.
 type SessionCreator interface {
-	CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool) (*session.Instance, error)
+	CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error)
 }
 
 // SessionStopper allows BacklogService to kill live sessions.
@@ -919,7 +919,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 
 	// 10. Spawn session first so we have the real UUID before creating the ItemSession record.
 	inst, err := s.sessionCreator.CreateDirectorySession(ctx, title, item.RepoPath, prompt,
-		[]string{"backlog:work"}, false)
+		[]string{"backlog:work"}, false, false)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn session: %w", err))
 	}
@@ -1160,7 +1160,7 @@ func (s *BacklogService) TriggerTriage(
 	// 8. Spawn one-shot triage session.
 	title := "triage:" + slug
 	inst, err := s.sessionCreator.CreateDirectorySession(ctx, title, item.RepoPath, triagePrompt,
-		[]string{"backlog:triage"}, true)
+		[]string{"backlog:triage"}, true, true)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn triage session: %w", err))
 	}
@@ -1514,7 +1514,7 @@ Do not modify the code. Only write the review verdict.
 	slug := slugify(item.Title)
 	title := "re-review:" + slug
 	inst, spawnErr := s.sessionCreator.CreateDirectorySession(ctx, title, item.RepoPath, reReviewPrompt,
-		[]string{"backlog:review"}, true)
+		[]string{"backlog:review"}, true, true)
 	if spawnErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn re-review session: %w", spawnErr))
 	}

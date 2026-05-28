@@ -7,9 +7,9 @@ import {
   container, emptyState, emptyIcon,
   loading as loadingClass, error as errorClass, spinner,
   breadcrumb, breadcrumbSegment, breadcrumbCurrent, breadcrumbSep,
-  truncationWarning, viewer, shikiOutput, plainPre, codeMirrorEditor,
+  truncationWarning, viewer, shikiOutput, shikiOutputWrap, plainPre, plainPreWrapped, codeMirrorEditor,
   binaryPlaceholder, binaryIcon, binaryTitle, binaryMeta,
-  downloadButton, imageViewer, imagePreview,
+  downloadButton, wrapToggleButton, wrapToggleButtonActive, imageViewer, imagePreview,
   pdfViewer, pdfEmbed,
   videoViewer, videoPlayer, videoMeta,
 } from "./FileContentViewer.css";
@@ -109,9 +109,11 @@ interface BreadcrumbProps {
   path: string;
   onSegmentClick?: (path: string) => void;
   downloadUrl?: string;
+  wrapLines?: boolean;
+  onToggleWrap?: () => void;
 }
 
-function Breadcrumb({ path, onSegmentClick, downloadUrl }: BreadcrumbProps) {
+function Breadcrumb({ path, onSegmentClick, downloadUrl, wrapLines, onToggleWrap }: BreadcrumbProps) {
   const segments = path.split("/").filter(Boolean);
   return (
     <div className={breadcrumb}>
@@ -131,6 +133,15 @@ function Breadcrumb({ path, onSegmentClick, downloadUrl }: BreadcrumbProps) {
           </span>
         );
       })}
+      {onToggleWrap && (
+        <button
+          className={[wrapToggleButton, wrapLines ? wrapToggleButtonActive : ""].filter(Boolean).join(" ")}
+          onClick={onToggleWrap}
+          title={wrapLines ? "Disable line wrap" : "Enable line wrap"}
+        >
+          ↵ Wrap
+        </button>
+      )}
       {downloadUrl && (
         <a
           href={downloadUrl}
@@ -172,9 +183,10 @@ function useAppTheme(): "light" | "dark" {
 interface CodeMirrorViewerProps {
   content: string;
   language: string;
+  wrapLines?: boolean;
 }
 
-function CodeMirrorViewer({ content, language }: CodeMirrorViewerProps) {
+function CodeMirrorViewer({ content, language, wrapLines }: CodeMirrorViewerProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<import("@codemirror/view").EditorView | null>(null);
   const appTheme = useAppTheme();
@@ -199,11 +211,13 @@ function CodeMirrorViewer({ content, language }: CodeMirrorViewerProps) {
         // Fall back to plain text if language not supported.
       }
 
+      // readOnly prevents edits; omitting editable.of(false) keeps contenteditable=true
+      // so the browser allows text selection and copy.
       const extensions = [
         basicSetup,
         EditorState.readOnly.of(true),
-        EditorView.editable.of(false),
         ...(isDark ? [oneDark] : []),
+        ...(wrapLines ? [EditorView.lineWrapping] : []),
       ];
       if (langExtension) extensions.push(langExtension);
 
@@ -220,7 +234,7 @@ function CodeMirrorViewer({ content, language }: CodeMirrorViewerProps) {
       view?.destroy();
       viewRef.current = null;
     };
-  }, [content, language, isDark]);
+  }, [content, language, isDark, wrapLines]);
 
   return <div ref={editorRef} className={codeMirrorEditor} />;
 }
@@ -279,9 +293,10 @@ async function loadCodemirrorLang(lang: string) {
 interface ShikiViewerProps {
   content: string;
   language: string;
+  wrapLines?: boolean;
 }
 
-function ShikiViewer({ content, language }: ShikiViewerProps) {
+function ShikiViewer({ content, language, wrapLines }: ShikiViewerProps) {
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState(false);
 
@@ -316,7 +331,7 @@ function ShikiViewer({ content, language }: ShikiViewerProps) {
   if (error || html === null) {
     // Plain text fallback.
     return (
-      <pre className={plainPre}>
+      <pre className={wrapLines ? plainPreWrapped : plainPre}>
         <code>{content}</code>
       </pre>
     );
@@ -324,7 +339,7 @@ function ShikiViewer({ content, language }: ShikiViewerProps) {
 
   return (
     <div
-      className={shikiOutput}
+      className={[shikiOutput, wrapLines ? shikiOutputWrap : ""].filter(Boolean).join(" ")}
       // Shiki generates safe HTML (no user content, only syntax highlights).
       dangerouslySetInnerHTML={{ __html: html }}
     />
@@ -369,6 +384,7 @@ interface FileContentViewerProps {
 
 export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentViewerProps) {
   const { data, loading, error } = useGetFileContent(sessionId, filePath, baseUrl);
+  const [wrapLines, setWrapLines] = useState(false);
 
   if (!filePath) {
     return (
@@ -495,7 +511,12 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
 
   return (
     <div className={container}>
-      <Breadcrumb path={filePath} downloadUrl={downloadUrl} />
+      <Breadcrumb
+        path={filePath}
+        downloadUrl={downloadUrl}
+        wrapLines={wrapLines}
+        onToggleWrap={() => setWrapLines((w) => !w)}
+      />
       {data.isTruncated && (
         <div className={truncationWarning}>
           ⚠ File truncated to 1 MB — only the first portion is shown
@@ -503,9 +524,9 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
       )}
       <div className={viewer}>
         {useLargeMode ? (
-          <CodeMirrorViewer content={data.content} language={lang} />
+          <CodeMirrorViewer content={data.content} language={lang} wrapLines={wrapLines} />
         ) : (
-          <ShikiViewer content={data.content} language={lang} />
+          <ShikiViewer content={data.content} language={lang} wrapLines={wrapLines} />
         )}
       </div>
     </div>

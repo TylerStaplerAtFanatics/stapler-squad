@@ -91,6 +91,13 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     void load();
   }, [load]);
 
+  // Poll for updated item data while triage is running so triage-review-panel appears automatically.
+  useEffect(() => {
+    if (item?.triageStatus !== "running") return;
+    const interval = setInterval(() => { void load(); }, 5_000);
+    return () => clearInterval(interval);
+  }, [item?.triageStatus, load]);
+
   // Track triage progress: increment elapsed time while triageStatus === "running"
   useEffect(() => {
     if (item?.triageStatus !== "running") {

@@ -42,7 +42,7 @@ type mockCreateCall struct {
 	oneShot bool
 }
 
-func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, path, prompt string, tags []string, oneShot bool) (*session.Instance, error) {
+func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, path, prompt string, tags []string, oneShot bool, _ bool) (*session.Instance, error) {
 	m.calls = append(m.calls, mockCreateCall{title: title, path: path, prompt: prompt, tags: tags, oneShot: oneShot})
 	if m.err != nil {
 		return nil, m.err
@@ -480,7 +480,7 @@ func TestItemSessionToProto_HandlesInvalidTriageResultJSON(t *testing.T) {
 // errSessionCreator always returns an error from CreateDirectorySession.
 type errSessionCreator struct{ err error }
 
-func (e *errSessionCreator) CreateDirectorySession(_ context.Context, _, _, _ string, _ []string, _ bool) (*session.Instance, error) {
+func (e *errSessionCreator) CreateDirectorySession(_ context.Context, _, _, _ string, _ []string, _ bool, _ bool) (*session.Instance, error) {
 	return nil, e.err
 }
 

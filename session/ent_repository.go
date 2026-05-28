@@ -190,6 +190,9 @@ func (r *EntRepository) Create(ctx context.Context, data InstanceData) error {
 	if data.OneShot {
 		sessionCreate.SetOneShot(data.OneShot)
 	}
+	if data.Hidden {
+		sessionCreate.SetHidden(data.Hidden)
+	}
 
 	// Link project if specified (look up by name)
 	if data.ProjectID != "" {
@@ -394,6 +397,7 @@ func (r *EntRepository) Update(ctx context.Context, data InstanceData) error {
 		sessionUpdate.SetMcpServerURL(data.MCPServerURL)
 	}
 	sessionUpdate.SetOneShot(data.OneShot)
+	sessionUpdate.SetHidden(data.Hidden)
 
 	// Update project link (look up by name or clear if empty)
 	if data.ProjectID != "" {
@@ -880,6 +884,7 @@ func (r *EntRepository) sessionToInstanceData(sess *ent.Session) *InstanceData {
 		LastOutputSignature: sess.LastOutputSignature,
 		MCPServerURL:        sess.McpServerURL,
 		OneShot:             sess.OneShot,
+		Hidden:              sess.Hidden,
 	}
 
 	// Set optional time fields
