@@ -6,7 +6,7 @@
 
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { PathCompletionDropdown, type CompletionEntry } from "../PathCompletionDropdown";
+import { PathCompletionDropdown, type CompletionEntry } from "@/components/ui/PathCompletionDropdown";
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -217,9 +217,20 @@ EOF
     log_success "LaunchAgent plist written to: $plist_file"
     echo ""
 
-    # Unload any existing instance, then load the updated plist.
-    log_info "Reloading LaunchAgent..."
-    launchctl unload "$plist_file" 2>/dev/null || true
+    # Stop the existing service before loading the updated plist.
+    # Use 'launchctl bootout' (blocking — waits for the process to exit) so the
+    # old process is fully gone before the new one starts.  This prevents the two
+    # processes from racing over tmux sessions.  Fall back to 'launchctl unload'
+    # on older macOS that lacks bootout support.
+    log_info "Stopping existing service (if running)..."
+    if ! launchctl bootout "gui/$(id -u)/com.stapler-squad" 2>/dev/null; then
+        launchctl unload "$plist_file" 2>/dev/null || true
+    fi
+
+    # Brief grace period for the process to finish writing its final state.
+    sleep 0.5
+
+    log_info "Starting updated service..."
     if launchctl bootstrap "gui/$(id -u)" "$plist_file" 2>/dev/null; then
         log_success "Service started via launchctl bootstrap."
     else

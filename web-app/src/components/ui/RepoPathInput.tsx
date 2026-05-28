@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo, useId } from "react";
 import { usePathCompletions } from "@/lib/hooks/usePathCompletions";
 import { useSessionRepoPaths } from "@/lib/hooks/useSessionRepoPaths";
-import { PathCompletionDropdown, type CompletionEntry } from "@/components/sessions/PathCompletionDropdown";
+import { PathCompletionDropdown, type CompletionEntry } from "@/components/ui/PathCompletionDropdown";
 import * as styles from "./RepoPathInput.css";
 
 interface RepoPathInputProps {

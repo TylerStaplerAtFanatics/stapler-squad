@@ -7,6 +7,7 @@ import { ViewportProvider } from "@/components/providers/ViewportProvider";
 import { CockpitShell } from "@/components/layout/CockpitShell";
 import { matrixTheme, cyberpunk77Theme, wh40kTheme, cleanTheme, lightTheme, darkTheme } from "@/styles/theme.css";
 import { jetbrainsMono, rajdhani, cinzel, inter } from "./fonts";
+import { mainContent } from "./layout.css";
 import "./globals.css";
 import "@/styles/globalEffects.css";
 
@@ -61,7 +62,7 @@ export default function RootLayout({
               <Providers>
                 <CockpitShell>
                   <a href="#main-content" className="skip-link">Skip to main content</a>
-                  <main id="main-content" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+                  <main id="main-content" className={mainContent}>
                     {children}
                   </main>
                   <NotificationPanel />

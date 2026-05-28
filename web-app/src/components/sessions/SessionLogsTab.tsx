@@ -1,6 +1,6 @@
 "use client";
 
-import { LogViewer } from "@/components/logs/LogViewer";
+import { LogViewer } from "@/components/shared/LogViewer";
 import * as styles from "./SessionLogsTab.css";
 
 interface SessionLogsTabProps {
