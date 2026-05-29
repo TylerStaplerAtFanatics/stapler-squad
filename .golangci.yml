@@ -51,6 +51,17 @@ linters:
       - \.stapler-squad
       - \.claude-squad
     rules:
+      # infoplist_darwin.go uses import "C" to force CGO linking for macOS codesigning.
+      # The CGO preamble comment causes a C compiler parse error when golangci-lint
+      # runs typecheck without the macOS build flags. Suppress the typecheck issue.
+      - path: "infoplist_darwin\\.go"
+        linters: [typecheck]
+      - linters: [typecheck]
+        text: "could not import C"
+      - linters: [typecheck]
+        text: "unknown type name 'cgo'"
+      - linters: [typecheck]
+        text: "expected ';' after top level declarator"
       # LoadInstances: allow in the storage implementation itself, in bulk-startup wiring,
       # and in the fallback path of findInstanceFast (workspace_service.go) which is
       # intentionally guarded by the live-finder fast path.

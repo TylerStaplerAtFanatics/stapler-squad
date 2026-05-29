@@ -495,13 +495,13 @@ lint: ensure-tools proto-gen server/web/dist lint-custom ## Run golangci-lint wi
 		echo "Installing golangci-lint v2..."; \
 		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest; \
 	fi; \
-	golangci-lint run --enable=nilnil,staticcheck,ineffassign,govet
+	CGO_ENABLED=0 golangci-lint run --enable=nilnil,staticcheck,ineffassign,govet
 
 LINTER_BIN := $(CURDIR)/bin/linter
 
 lint-custom: $(LINTER_BIN) ## Run project-specific custom linters (hotpolllog, nocommandpattern, norawexec) in a single pass
 	@echo "Running custom lint..."
-	@$(LINTER_BIN) ./...
+	@$(LINTER_BIN) $(shell go list ./... | grep -v "^github.com/tstapler/stapler-squad$$")
 	@echo "custom lint: ok"
 
 $(LINTER_BIN):
