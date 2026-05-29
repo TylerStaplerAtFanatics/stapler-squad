@@ -96,6 +96,9 @@ func (Session) Fields() []ent.Field {
 			Nillable(),
 		field.String("last_prompt_signature").
 			Optional(),
+		field.Bool("hidden").
+			Default(false).
+			Comment("When true, session is excluded from the default session list and review queue."),
 	}
 }
 

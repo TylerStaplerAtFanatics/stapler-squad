@@ -91,6 +91,13 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     void load();
   }, [load]);
 
+  // Poll for updated item data while triage is running so triage-review-panel appears automatically.
+  useEffect(() => {
+    if (item?.triageStatus !== "running") return;
+    const interval = setInterval(() => { void load(); }, 5_000);
+    return () => clearInterval(interval);
+  }, [item?.triageStatus, load]);
+
   // Track triage progress: increment elapsed time while triageStatus === "running"
   useEffect(() => {
     if (item?.triageStatus !== "running") {
@@ -468,7 +475,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           </div>
         )}
 
-        {/* Triage Review Panel */}
+        {/* Triage Review Panel — only shown while still in idea status */}
         {item.triageStatus === "completed" &&
           item.status === "idea" &&
           item.triageResult && (
@@ -482,6 +489,27 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               />
             </div>
           )}
+
+        {/* Planning record — read-only triage result for items past idea status */}
+        {item.triageResult && item.status !== "idea" && (
+          <div className={styles.section}>
+            <h3 className={styles.sectionTitle}>Planning</h3>
+            <p className={styles.planSummary}>{item.triageResult.summary}</p>
+            {item.triageResult.tasks && item.triageResult.tasks.length > 0 && (
+              <div className={styles.planTaskList}>
+                {item.triageResult.tasks.map((t, i) => (
+                  <div key={i} className={styles.planTask}>
+                    <span className={styles.planTaskText}>{t.text}</span>
+                    <span className={styles.planTaskMeta}>
+                      {t.estimate && <span className={styles.planTaskBadge}>{t.estimate}</span>}
+                      {t.category && <span className={styles.planTaskBadge}>{t.category}</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Triage failed banner */}
         {item.triageStatus === "failed" && item.status === "idea" && (
@@ -543,16 +571,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 >
                   Mark Ready
                 </button>
-                {item.triageStatus !== "running" && (
-                  <button
-                    className={styles.actionButton}
-                    onClick={() => handleAction("trigger_triage")}
-                    disabled={actionLoading}
-                    data-testid="backlog-action-trigger-triage"
-                  >
-                    Trigger Triage
-                  </button>
-                )}
+                <button
+                  className={styles.actionButton}
+                  onClick={() => handleAction("trigger_triage")}
+                  disabled={actionLoading}
+                  data-testid="backlog-action-trigger-triage"
+                >
+                  Trigger Triage
+                </button>
               </>
             )}
 
@@ -660,38 +686,82 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           <div className={styles.section}>
             <h3 className={styles.sectionTitle}>Sessions ({item.linkedSessions.length})</h3>
             <div className={styles.sessionList} role="list" aria-label="Linked sessions">
-              {item.linkedSessions.map((s) => (
-                <a
-                  key={s.sessionId}
-                  className={styles.sessionRow}
-                  href={`/?session=${s.sessionId}`}
-                  role="listitem"
-                  title="Open in terminal"
-                  style={{ textDecoration: "none" }}
-                >
-                  <span className={styles.sessionId} title={s.sessionId}>
-                    {s.sessionId}
-                  </span>
-                  <span className={styles.sessionRole}>{s.role}</span>
-                  {s.startedAt && (
-                    <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
-                  )}
-                </a>
-              ))}
+              {item.linkedSessions.map((s) => {
+                // A session without endedAt that isn't in the active phase for this
+                // item's current status is a stale/orphaned record — label it ended.
+                const statusToRole: Record<string, string> = {
+                  idea: "triage",
+                  in_progress: "work",
+                  review: "review",
+                };
+                const isOrphan = !s.endedAt && s.role !== statusToRole[item.status];
+                return (
+                  <a
+                    key={s.sessionId}
+                    className={styles.sessionRow}
+                    href={`/?session=${s.sessionId}`}
+                    role="listitem"
+                    title="Open in terminal"
+                    style={{ textDecoration: "none" }}
+                  >
+                    <span className={styles.sessionId} title={s.sessionId}>
+                      {s.sessionId}
+                    </span>
+                    <span className={styles.sessionRole}>{s.role}</span>
+                    {s.startedAt && (
+                      <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
+                    )}
+                    {isOrphan && (
+                      <span className={styles.sessionEndedBadge}>ended</span>
+                    )}
+                  </a>
+                );
+              })}
             </div>
 
-            {/* Session monitor for the most recent active session */}
+            {/* Session monitor for the most recent active session.
+                A session is only considered active if the item is in the
+                matching lifecycle phase — prevents ghost "RUNNING" tiles for
+                sessions that died without setting endedAt. */}
             {(() => {
-              const active = [...item.linkedSessions].reverse().find((s) => !s.endedAt);
+              const statusToRole: Record<string, string> = {
+                idea: "triage",
+                in_progress: "work",
+                review: "review",
+              };
+              const expectedRole = statusToRole[item.status];
+              const active = [...item.linkedSessions]
+                .reverse()
+                .find((s) => !s.endedAt && s.role === expectedRole);
               if (!active) return null;
               return (
                 <SessionMonitor
                   sessionId={active.sessionId}
                   sessionRole={active.role}
-                  isRunning={!active.endedAt}
+                  isRunning={true}
                 />
               );
             })()}
+          </div>
+        )}
+
+        {/* Workflow / Status History */}
+        {item.statusEvents.length > 0 && (
+          <div className={styles.section}>
+            <h3 className={styles.sectionTitle}>Workflow</h3>
+            <div className={styles.workflowTimeline} role="list" aria-label="Status history">
+              {item.statusEvents.map((ev) => (
+                <div key={ev.id} className={styles.workflowEvent} role="listitem">
+                  <span className={styles.workflowEventFrom}>{ev.fromStatus.replace("_", " ")}</span>
+                  <span className={styles.workflowEventArrow}>→</span>
+                  <span className={styles.workflowEventTo}>{ev.toStatus.replace("_", " ")}</span>
+                  <span className={styles.workflowEventMeta}>
+                    {ev.createdAt ? formatDate(ev.createdAt) : ""}
+                    {ev.triggeredBy === "user" ? " · user" : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

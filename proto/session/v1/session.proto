@@ -355,6 +355,10 @@ message ListSessionsRequest {
 
   // Filter by project ID (only return sessions in this project).
   optional string project_id = 5;
+
+  // When true, include hidden (system/background) sessions in results.
+  // Defaults to false — hidden sessions are excluded unless explicitly requested.
+  bool include_hidden = 6;
 }
 
 message ListSessionsResponse {

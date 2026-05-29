@@ -150,6 +150,46 @@ export const plainPre = style({
   overflow: "auto",
 });
 
+export const plainPreWrapped = style({
+  margin: 0,
+  padding: 16,
+  fontSize: 13,
+  lineHeight: 1.6,
+  fontFamily: vars.font.mono,
+  color: vars.color.terminalForeground,
+  whiteSpace: "pre-wrap",
+  overflowWrap: "anywhere",
+  overflow: "auto",
+});
+
+export const shikiOutputWrap = style({});
+
+globalStyle(`${shikiOutputWrap} pre`, {
+  whiteSpace: "pre-wrap",
+  overflowWrap: "anywhere",
+});
+
+export const wrapToggleButton = style({
+  display: "inline-flex",
+  alignItems: "center",
+  padding: `2px ${vars.space[2]}`,
+  fontSize: vars.fontSize.sm,
+  borderRadius: vars.radii.sm,
+  color: vars.color.textSecondary,
+  border: `1px solid ${vars.color.borderColor}`,
+  background: "transparent",
+  cursor: "pointer",
+  ":hover": {
+    color: vars.color.textPrimary,
+    backgroundColor: vars.color.hoverBackground,
+  },
+});
+
+export const wrapToggleButtonActive = style({
+  color: vars.color.primary,
+  borderColor: vars.color.primary,
+});
+
 export const codeMirrorEditor = style({
   height: "100%",
 });

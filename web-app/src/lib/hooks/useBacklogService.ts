@@ -10,6 +10,7 @@ import {
   AcCriterion as AcCriterionProto,
   ItemSession as ItemSessionProto,
   TriageTask as TriageTaskProto,
+  BacklogStatusEvent as BacklogStatusEventProto,
 } from "@/gen/session/v1/backlog_pb";
 
 // ---------------------------------------------------------------------------
@@ -88,6 +89,16 @@ export interface BacklogItem {
   triageStatus?: "running" | "completed" | "failed";
   /** Triage result from the most recent triage session (populated when triageStatus === "completed") */
   triageResult?: TriageResult;
+  /** Status transition history for this item (audit log) */
+  statusEvents: StatusEvent[];
+}
+
+export interface StatusEvent {
+  id: string;
+  fromStatus: string;
+  toStatus: string;
+  triggeredBy: string;
+  createdAt?: string;
 }
 
 export interface BacklogItemInput {
@@ -170,6 +181,16 @@ function mapItemSession(s: ItemSessionProto): LinkedSession {
   return session;
 }
 
+function mapStatusEvent(e: BacklogStatusEventProto): StatusEvent {
+  return {
+    id: e.id,
+    fromStatus: e.fromStatus,
+    toStatus: e.toStatus,
+    triggeredBy: e.triggeredBy,
+    createdAt: e.createdAt ? new Date(Number(e.createdAt.seconds) * 1000).toISOString() : undefined,
+  };
+}
+
 function mapBacklogItem(p: BacklogItemProto): BacklogItem {
   const linkedSessions = (p.itemSessions ?? []).map(mapItemSession);
 
@@ -194,16 +215,22 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
     }
   }
 
-  // Derive triageStatus from linked sessions: running if a triage session has no endedAt.
+  // Derive triageStatus from linked sessions.
   // P12 fix: only mark "completed" if the session ended AND has a non-empty summary.
-  // A session that ended without storing a result (e.g. crashed) shows as "failed".
+  // Orphan detection: a triage session without endedAt is only "running" while the item
+  // is in "idea" status. If the item has advanced (ready, in_progress, etc.) the session
+  // died without cleanly recording its end — treat it as "failed" so the UI doesn't show
+  // a loading indicator for a session that no longer exists.
+  const itemStatus = (p.status || "idea") as BacklogItemStatus;
   let triageStatus: BacklogItem["triageStatus"];
   const triageSession = linkedSessions.filter((s) => s.role === "triage").at(-1);
   if (triageSession) {
     if (triageSession.endedAt) {
       triageStatus = triageSession.triageResult?.summary ? "completed" : "failed";
-    } else {
+    } else if (itemStatus === "idea") {
       triageStatus = "running";
+    } else {
+      triageStatus = "failed";
     }
   }
 
@@ -230,6 +257,7 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
     gateCriteria,
     triageStatus,
     triageResult,
+    statusEvents: (p.statusEvents ?? []).map(mapStatusEvent),
   };
 }
 

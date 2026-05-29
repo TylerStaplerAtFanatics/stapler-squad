@@ -189,6 +189,11 @@ type Instance struct {
 	// OneShot runs claude in -p mode; the session exits after the task completes.
 	OneShot bool
 
+	// Hidden excludes this session from the default session list and review queue.
+	// Set true for system/background sessions (triage, validation) that should not
+	// appear in the user-facing session viewer.
+	Hidden bool
+
 	// ProjectID is the optional project this session belongs to.
 	ProjectID string
 
@@ -390,6 +395,9 @@ type InstanceOptions struct {
 	// OneShot runs claude in -p mode; the session exits after the task completes.
 	OneShot bool
 
+	// Hidden excludes the session from the default session list and review queue.
+	Hidden bool
+
 	// ProjectID associates the session with a project.
 	ProjectID string
 
@@ -480,8 +488,9 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		GitHubRepo:      opts.GitHubRepo,
 		GitHubSourceRef: opts.GitHubSourceRef,
 		ClonedRepoPath:  opts.ClonedRepoPath,
-		// One-shot mode and project
+		// One-shot mode, hidden flag, and project
 		OneShot:            opts.OneShot,
+		Hidden:             opts.Hidden,
 		ProjectID:          opts.ProjectID,
 		MCPServerURL:       opts.MCPServerURL,
 		AppendSystemPrompt: opts.AppendSystemPrompt,

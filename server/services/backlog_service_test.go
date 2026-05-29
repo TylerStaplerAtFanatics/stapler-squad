@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,21 @@ type mockSessionCreator struct {
 	err   error
 }
 
+// mockSessionStopper implements SessionStopper for tests.
+type mockSessionStopper struct {
+	liveUUIDs map[string]bool
+}
+
+func (m *mockSessionStopper) IsSessionLive(uuid string) bool {
+	return m.liveUUIDs[uuid]
+}
+
+func (m *mockSessionStopper) StopSessionByUUID(_ context.Context, _ string) error { return nil }
+
+func (m *mockSessionStopper) KillTmuxSessionByTitle(_ context.Context, _ string) error {
+	return nil
+}
+
 type mockCreateCall struct {
 	title  string
 	path   string
@@ -26,8 +42,8 @@ type mockCreateCall struct {
 	oneShot bool
 }
 
-func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, path, appendSystemPrompt string, tags []string, oneShot bool) (*session.Instance, error) {
-	m.calls = append(m.calls, mockCreateCall{title: title, path: path, prompt: appendSystemPrompt, tags: tags, oneShot: oneShot})
+func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, path, prompt string, tags []string, oneShot bool, _ bool) (*session.Instance, error) {
+	m.calls = append(m.calls, mockCreateCall{title: title, path: path, prompt: prompt, tags: tags, oneShot: oneShot})
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -351,24 +367,29 @@ func TestCreateBacklogItem_SkipsTriageWhenRepoPathEmpty(t *testing.T) {
 // TriggerTriage returns CodeAlreadyExists.
 func TestTriggerTriage_DoubleTriggerGuard(t *testing.T) {
 	storage := createTestStorage(t)
+	const liveUUID = "00000000-0000-0000-0000-000000000001"
+	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{liveUUID: true}}
 	svc := NewBacklogService(storage, nil, nil, nil)
+	svc.SetSessionStopper(stopper)
 
 	// Create an item with a repo path so TriggerTriage can reach the guard.
 	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
-		Title:     "item for double-trigger test",
-		RepoPath:  t.TempDir(),
+		Title:      "item for double-trigger test",
+		RepoPath:   t.TempDir(),
 		SkipTriage: true,
 	}))
 	require.NoError(t, err)
 	itemID := createResp.Msg.Item.Id
 
 	// Manually insert a triage ItemSession with no ended_at (simulates a running triage).
-	_, isErr := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+	is, isErr := storage.CreateItemSession(t.Context(), session.ItemSessionData{
 		ItemID:      itemID,
-		SessionUUID: "00000000-0000-0000-0000-000000000001",
+		SessionUUID: liveUUID,
 		SessionRole: string(session.SessionRoleTriage),
 	})
 	require.NoError(t, isErr)
+	// Mark it as started so the orphan guard treats it as genuinely live.
+	require.NoError(t, storage.UpdateItemSessionStarted(t.Context(), is.ID.String(), time.Now()))
 
 	// TriggerTriage should refuse because a triage session is already running.
 	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
@@ -459,7 +480,7 @@ func TestItemSessionToProto_HandlesInvalidTriageResultJSON(t *testing.T) {
 // errSessionCreator always returns an error from CreateDirectorySession.
 type errSessionCreator struct{ err error }
 
-func (e *errSessionCreator) CreateDirectorySession(_ context.Context, _, _, _ string, _ []string, _ bool) (*session.Instance, error) {
+func (e *errSessionCreator) CreateDirectorySession(_ context.Context, _, _, _ string, _ []string, _ bool, _ bool) (*session.Instance, error) {
 	return nil, e.err
 }
 

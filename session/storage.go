@@ -105,6 +105,9 @@ type InstanceData struct {
 	// OneShot runs claude in -p mode; session exits after task completes.
 	OneShot bool `json:"one_shot,omitempty"`
 
+	// Hidden excludes this session from the default session list and review queue.
+	Hidden bool `json:"hidden,omitempty"`
+
 	// ProjectID is the optional project this session belongs to.
 	ProjectID string `json:"project_id,omitempty"`
 

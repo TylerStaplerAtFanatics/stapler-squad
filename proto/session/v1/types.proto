@@ -176,6 +176,11 @@ message Session {
   // layer at read time; never stored in the database.
   // Only meaningful when lifecycle_status == SESSION_STATUS_ACTIVE.
   SubStatus sub_status = 54;
+
+  // When true, this session is excluded from the default session list and review queue.
+  // Used for system/background sessions (e.g. triage, validation) that should not
+  // pollute the user-facing session viewer.
+  bool hidden = 55;
 }
 
 // VNCStatus represents the operational state of the VNC subsystem for a session.

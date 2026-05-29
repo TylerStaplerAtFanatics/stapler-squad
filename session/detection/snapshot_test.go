@@ -122,6 +122,18 @@ var snapshotTests = []snapshotTest{
 		program:     "any",
 		description: "Markdown blockquote with numbered list (> 1. item) — must NOT trigger InputRequired",
 	},
+	{
+		fixture:     "claude_asterism_active.txt",
+		expected:    StatusActive,
+		program:     "claude",
+		description: "Claude Code active with ✻ asterism spinner (✻ Perambulating... format)",
+	},
+	{
+		fixture:     "claude_asterism_success.txt",
+		expected:    StatusSuccess,
+		program:     "claude",
+		description: "Claude Code after ✻ completion line followed by ? for shortcuts (success state in full-text scan)",
+	},
 }
 
 // TestSnapshotDetection runs the detector against each fixture file and

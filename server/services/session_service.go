@@ -342,6 +342,64 @@ func (s *SessionService) FindLiveInstance(id string) *session.Instance {
 	return s.reviewQueuePoller.FindInstance(id)
 }
 
+// StopSessionByUUID satisfies the BacklogService.SessionStopper interface.
+// It kills the live tmux session identified by UUID (best-effort; errors are non-fatal).
+func (s *SessionService) StopSessionByUUID(ctx context.Context, sessionUUID string) error {
+	inst := s.FindLiveInstance(sessionUUID)
+	if inst == nil {
+		return nil // already gone
+	}
+	if err := inst.Kill(); err != nil {
+		log.Warn("StopSessionByUUID: kill failed", "uuid", sessionUUID, "err", err)
+		return err
+	}
+	return nil
+}
+
+// IsSessionLive satisfies the BacklogService.SessionStopper interface.
+// It returns true if the session UUID is currently tracked in the live in-memory poller.
+func (s *SessionService) IsSessionLive(sessionUUID string) bool {
+	return s.FindLiveInstance(sessionUUID) != nil
+}
+
+// KillTmuxSessionByTitle satisfies the BacklogService.SessionStopper interface.
+// It kills the tmux session whose name is derived from title using the same sanitization
+// as initTmuxSession (whitespace stripped, "." and ":" replaced with "_", "staplersquad_"
+// prefix). This handles the case where the Instance is no longer tracked in memory
+// but the underlying tmux session is still alive.
+func (s *SessionService) KillTmuxSessionByTitle(ctx context.Context, title string) error {
+	name := stapleSquadTmuxName(title)
+	killCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := safeexec.CommandContext(killCtx, "tmux", "kill-session", "-t", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		combined := strings.ToLower(string(out))
+		if strings.Contains(combined, "can't find session") ||
+			strings.Contains(combined, "no server running") ||
+			strings.Contains(combined, "error connecting to") {
+			return nil // session already gone — not an error
+		}
+		return fmt.Errorf("tmux kill-session %q: %w (output: %s)", name, err, out)
+	}
+	return nil
+}
+
+// stapleSquadTmuxName computes the sanitized tmux session name for a given title,
+// matching the logic in session/tmux.toStaplerSquadTmuxNameWithPrefix.
+func stapleSquadTmuxName(title string) string {
+	var sb strings.Builder
+	for _, r := range title {
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
+			sb.WriteRune(r)
+		}
+	}
+	sanitized := sb.String()
+	sanitized = strings.ReplaceAll(sanitized, ".", "_")
+	sanitized = strings.ReplaceAll(sanitized, ":", "_")
+	return "staplersquad_" + sanitized
+}
+
 // GetApprovalStore returns the approval store for wiring up the HTTP hook handler.
 func (s *SessionService) GetApprovalStore() *ApprovalStore {
 	return s.approvalStore
@@ -461,27 +519,28 @@ func (s *SessionService) SetBacklogLifecycleListener(l *session.BacklogLifecycle
 // BacklogLifecycleListener can spawn one-shot review sessions automatically when
 // a work session exits. The session is tagged "backlog:review" and runs one-shot.
 func (s *SessionService) SpawnReviewSession(ctx context.Context, item *ent.BacklogItem, itemSessionID string, prompt string) (*session.Instance, error) {
-	return s.CreateDirectorySession(ctx, "review:"+item.ID.String()[:8], item.RepoPath, prompt, []string{"backlog:review"}, true)
+	return s.CreateDirectorySession(ctx, "review:"+item.ID.String()[:8], item.RepoPath, prompt, []string{"backlog:review"}, true, true)
 }
 
 // CreateDirectorySession satisfies the services.SessionCreator interface so that
 // BacklogService can spawn sessions without importing SessionService directly.
-// It creates a directory-type session with the given title, path, system prompt,
+// It creates a directory-type session with the given title, path, initial prompt,
 // tags, and oneShot flag, wires it into the live poller, and returns the Instance.
-func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, appendSystemPrompt string, tags []string, oneShot bool) (*session.Instance, error) {
+func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error) {
 	cfg := config.LoadConfig()
 	resolved := config.ResolveDefaults(cfg, path, "")
 	opts := session.InstanceOptions{
-		Title:              title,
-		Path:               path,
-		Program:            resolved.Program,
-		AutoYes:            true, // automated sessions must not block on permission prompts
-		SessionType:        session.SessionTypeDirectory,
-		AppendSystemPrompt: appendSystemPrompt,
-		Tags:               tags,
-		OneShot:            oneShot,
-		MCPServerURL:       s.mcpServerURL,
-		CreateIfMissing:    true,
+		Title:           title,
+		Path:            path,
+		Program:         resolved.Program,
+		AutoYes:         true, // automated sessions must not block on permission prompts
+		SessionType:     session.SessionTypeDirectory,
+		Prompt:          prompt,
+		Tags:            tags,
+		OneShot:         oneShot,
+		Hidden:          hidden,
+		MCPServerURL:    s.mcpServerURL,
+		CreateIfMissing: true,
 	}
 	instance, err := session.NewInstance(opts)
 	if err != nil {
@@ -598,6 +657,11 @@ func (s *SessionService) ListSessions(
 			continue
 		}
 
+		// Exclude hidden (system/background) sessions unless explicitly requested
+		if inst.Hidden && !req.Msg.IncludeHidden {
+			continue
+		}
+
 		sessions = append(sessions, adapters.InstanceToProto(inst))
 	}
 
@@ -614,6 +678,11 @@ func (s *SessionService) ListSessions(
 
 			// Apply optional category filter
 			if req.Msg.Category != nil && *req.Msg.Category != "" && extInst.Category != *req.Msg.Category {
+				continue
+			}
+
+			// Exclude hidden external sessions unless requested
+			if extInst.Hidden && !req.Msg.IncludeHidden {
 				continue
 			}
 
@@ -924,9 +993,18 @@ func (s *SessionService) UpdateSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	instances, err := s.storage.LoadInstances()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	// Use the live poller list to avoid LoadInstances side-effects (Start() on Active
+	// sessions) that can silently drop sessions if tmux is unavailable, which would then
+	// clobber the poller's complete list via SetInstances.
+	var instances []*session.Instance
+	if s.reviewQueuePoller != nil {
+		instances = s.reviewQueuePoller.GetInstances()
+	} else {
+		var loadErr error
+		instances, loadErr = s.loadInstancesWithWiring()
+		if loadErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", loadErr))
+		}
 	}
 
 	// Find the instance to update
@@ -1038,12 +1116,6 @@ func (s *SessionService) UpdateSession(
 	instances[instanceIndex] = instance
 	if err := s.storage.SaveInstances(instances); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
-	}
-
-	// CRITICAL: Update the ReviewQueuePoller's instance references after updating session
-	if s.reviewQueuePoller != nil {
-		s.reviewQueuePoller.SetInstances(instances)
-		log.Info("[ReviewQueue] updated poller instance references after UpdateSession", "session", instance.Title)
 	}
 
 	// Publish events based on what was updated
@@ -1855,9 +1927,17 @@ func (s *SessionService) RenameSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("new title is required"))
 	}
 
-	instances, err := s.loadInstancesWithWiring()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	// Use the live poller list for the same reason as UpdateSession: avoid LoadInstances
+	// side-effects that can drop sessions and clobber the poller list via SetInstances.
+	var instances []*session.Instance
+	if s.reviewQueuePoller != nil {
+		instances = s.reviewQueuePoller.GetInstances()
+	} else {
+		var loadErr error
+		instances, loadErr = s.loadInstancesWithWiring()
+		if loadErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", loadErr))
+		}
 	}
 
 	// Find the instance to rename
@@ -1897,12 +1977,6 @@ func (s *SessionService) RenameSession(
 		// Try to rollback the rename
 		instance.Title = oldTitle
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save renamed instance: %w", err))
-	}
-
-	// Update the ReviewQueuePoller's instance references after renaming
-	if s.reviewQueuePoller != nil {
-		s.reviewQueuePoller.SetInstances(instances)
-		log.Info("[ReviewQueue] updated poller instance references after RenameSession", "from", oldTitle, "to", req.Msg.NewTitle)
 	}
 
 	// Publish SessionUpdated event

@@ -78,6 +78,8 @@ func (i *Instance) ToInstanceData() InstanceData {
 		HistoryFilePath: i.HistoryFilePath,
 		// One-shot mode
 		OneShot: i.OneShot,
+		// Hidden (system/background) flag
+		Hidden: i.Hidden,
 		// Project association
 		ProjectID: i.ProjectID,
 		// Full launch command for diagnostics
@@ -220,6 +222,8 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		HistoryFilePath: data.HistoryFilePath,
 		// One-shot mode
 		OneShot: data.OneShot,
+		// Hidden (system/background) flag
+		Hidden: data.Hidden,
 		// Project association
 		ProjectID: data.ProjectID,
 		// Launch command for diagnostics
