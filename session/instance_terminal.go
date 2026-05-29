@@ -116,7 +116,7 @@ func (i *Instance) Preview() (string, error) {
 	// Fallback for external/attached sessions: use capture-pane subprocess.
 	// Skip the TmuxAlive() pre-check (which spawns a subprocess); let CapturePaneContent
 	// handle the "session doesn't exist" case via its own error path.
-	content, err := i.tmuxManager.CapturePaneContent()
+	content, err := i.pm().CapturePaneContent()
 	if err != nil {
 		return "", nil
 	}
@@ -135,7 +135,7 @@ func (i *Instance) PreviewFullHistory() (string, error) {
 		return "", nil
 	}
 
-	content, err := i.tmuxManager.CapturePaneContentWithOptions("-", "-")
+	content, err := i.pm().CapturePaneContentWithOptions("-", "-")
 	if err != nil {
 		return "", err
 	}
@@ -150,14 +150,20 @@ func (i *Instance) CaptureCurrentState() error {
 	if !i.started || i.Paused() {
 		return nil
 	}
-	if !i.tmuxManager.DoesSessionExist() {
+	if !i.pm().IsAlive() {
 		return nil
 	}
-	tmuxSession := i.tmuxManager.Session()
-	if tmuxSession == nil {
-		return nil
-	}
-	path, err := tmuxSession.GetPaneCurrentPath()
+	path, err := func() (string, error) {
+		tb, ok := i.processManager.(*TmuxBackend)
+		if !ok {
+			return "", nil
+		}
+		sess := tb.TmuxManager().Session()
+		if sess == nil {
+			return "", nil
+		}
+		return sess.GetPaneCurrentPath()
+	}()
 	if err != nil {
 		return fmt.Errorf("CaptureCurrentState '%s': %w", i.Title, err)
 	}

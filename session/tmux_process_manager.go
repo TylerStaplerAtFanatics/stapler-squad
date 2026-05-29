@@ -387,6 +387,7 @@ type TmuxManager interface {
 	StopControlMode() error
 	SubscribeToControlModeUpdates() (string, chan []byte)
 	UnsubscribeFromControlModeUpdates(id string)
+	SendInputViaControlMode(ctx context.Context, data []byte) error
 }
 
 // compile-time check that *TmuxProcessManager satisfies TmuxManager.

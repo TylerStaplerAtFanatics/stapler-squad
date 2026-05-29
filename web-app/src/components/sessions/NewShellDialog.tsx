@@ -46,6 +46,7 @@ export function NewShellDialog({ onSubmit, onCancel, defaultWorkingDir = "" }: N
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to spawn shell");
+    } finally {
       setIsSubmitting(false);
     }
   }, [onSubmit, name, command, workingDir]);

@@ -244,6 +244,11 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	// Initialize TagManager backed by the Instance.Tags slice
 	instance.tagManager = NewTagManager(&instance.Tags)
 
+	// Initialize the process manager via the factory so selectedBackend is honored.
+	// The underlying session is wired below (for Paused/Stopped/Hibernated) or
+	// by initTmuxSession() when Start() is called (for Active sessions).
+	instance.processManager = NewProcessManager(context.Background(), BackendTmux, ProcessManagerOptions{})
+
 	// Restore git worktree and diff stats via manager (cannot use struct literal for sub-manager fields).
 	instance.gitManager.SetWorktree(git.NewGitWorktreeFromStorage(
 		data.Worktree.RepoPath,
@@ -304,25 +309,29 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		// WithRegistry(nil) prevents a background reconnect loop on isolated sockets —
 		// the loop tries attach-session on a keepalive that doesn't exist there, causing
 		// intermittent exit status 1 from concurrent new-session calls.
-		if instance.TmuxServerSocket != "" {
-			instance.tmuxManager.SetSession(tmux.NewTmuxSessionWithServerSocket(instance.Title, instance.Program, tmuxPrefix, instance.TmuxServerSocket, tmux.WithRegistry(nil)))
-		} else {
-			instance.tmuxManager.SetSession(tmux.NewTmuxSessionWithPrefix(instance.Title, instance.Program, tmuxPrefix))
+		if tb, ok := instance.processManager.(*TmuxBackend); ok {
+			if instance.TmuxServerSocket != "" {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithServerSocket(instance.Title, instance.Program, tmuxPrefix, instance.TmuxServerSocket, tmux.WithRegistry(nil)))
+			} else {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithPrefix(instance.Title, instance.Program, tmuxPrefix))
+			}
 		}
 	} else if instance.Status == Stopped {
-		// Wire the tmux session object so DoesSessionExist() can be called.
+		// Wire the tmux session object so IsAlive() can be called.
 		tmuxPrefix := instance.TmuxPrefix
 		if tmuxPrefix == "" {
 			tmuxPrefix = "staplersquad_"
 		}
-		if instance.TmuxServerSocket != "" {
-			instance.tmuxManager.SetSession(tmux.NewTmuxSessionWithServerSocket(instance.Title, instance.Program, tmuxPrefix, instance.TmuxServerSocket, tmux.WithRegistry(nil)))
-		} else {
-			instance.tmuxManager.SetSession(tmux.NewTmuxSessionWithPrefix(instance.Title, instance.Program, tmuxPrefix))
+		if tb, ok := instance.processManager.(*TmuxBackend); ok {
+			if instance.TmuxServerSocket != "" {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithServerSocket(instance.Title, instance.Program, tmuxPrefix, instance.TmuxServerSocket, tmux.WithRegistry(nil)))
+			} else {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithPrefix(instance.Title, instance.Program, tmuxPrefix))
+			}
 		}
 		// If the underlying tmux session is still alive (e.g. server crashed mid-write
 		// or exit callback fired falsely), recover it rather than leave it stuck as Stopped.
-		if instance.tmuxManager.DoesSessionExist() {
+		if instance.processManager.IsAlive() {
 			log.Warn("session stored as stopped but tmux is alive, recovering to active", "session", instance.Title)
 			instance.loadStatus(Active)
 			if err := instance.Start(false); err != nil {
@@ -334,19 +343,21 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			instance.started = true
 		}
 	} else if instance.Status == Hibernated {
-		// Wire the tmux session object (for DoesSessionExist checks at resume time)
+		// Wire the tmux session object (for IsAlive checks at resume time)
 		// but do NOT call Start — hibernated sessions resume only on explicit request.
 		tmuxPrefix := instance.TmuxPrefix
 		if tmuxPrefix == "" {
 			tmuxPrefix = "staplersquad_"
 		}
-		if instance.TmuxServerSocket != "" {
-			instance.tmuxManager.SetSession(tmux.NewTmuxSessionWithServerSocket(
-				instance.Title, instance.Program, tmuxPrefix,
-				instance.TmuxServerSocket, tmux.WithRegistry(nil)))
-		} else {
-			instance.tmuxManager.SetSession(tmux.NewTmuxSessionWithPrefix(
-				instance.Title, instance.Program, tmuxPrefix))
+		if tb, ok := instance.processManager.(*TmuxBackend); ok {
+			if instance.TmuxServerSocket != "" {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithServerSocket(
+					instance.Title, instance.Program, tmuxPrefix,
+					instance.TmuxServerSocket, tmux.WithRegistry(nil)))
+			} else {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithPrefix(
+					instance.Title, instance.Program, tmuxPrefix))
+			}
 		}
 		instance.started = true
 	} else {

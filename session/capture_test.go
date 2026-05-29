@@ -33,10 +33,10 @@ func TestCaptureCurrentState_Paused_IsNoOp(t *testing.T) {
 
 // TestCaptureCurrentState_TmuxSessionDead_IsNoOp verifies that CaptureCurrentState
 // returns nil when the underlying tmux session does not exist (nil TmuxSession).
-// TmuxProcessManager.DoesSessionExist() returns false when its session field is nil.
+// processManager nil (uninitialized Instance) → IsAlive() returns false via nil guard.
 func TestCaptureCurrentState_TmuxSessionDead_IsNoOp(t *testing.T) {
 	inst := &Instance{Title: "test-session", started: true}
-	// tmuxManager is zero-value: session == nil → DoesSessionExist() returns false
+	// processManager is nil (zero-value interface) → CaptureCurrentState nil guard returns nil.
 
 	err := inst.CaptureCurrentState()
 
