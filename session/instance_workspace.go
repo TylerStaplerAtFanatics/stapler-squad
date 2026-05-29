@@ -338,7 +338,7 @@ func (i *Instance) changeDirectory(newDir string) error {
 
 	// Send cd command to tmux
 	cdCmd := fmt.Sprintf("cd %q\n", absPath)
-	if _, err := i.tmuxManager.session.SendKeys(cdCmd); err != nil {
+	if _, err := i.pm().SendKeys(cdCmd); err != nil {
 		return fmt.Errorf("failed to change directory: %w", err)
 	}
 

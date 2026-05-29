@@ -55,6 +55,7 @@ jobs:
           name: generated-files
           path: |
             gen/
+            session/ent/
             server/web/dist/
           retention-days: 1
 

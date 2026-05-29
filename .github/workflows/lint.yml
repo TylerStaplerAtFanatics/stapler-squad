@@ -59,6 +59,9 @@ jobs:
       - name: Generate protobuf code
         run: buf generate proto
 
+      - name: Generate ent ORM code
+        run: go run -mod=mod entgo.io/ent/cmd/ent generate --feature sql/upsert ./session/ent/schema
+
       - name: Create web dist stub
         run: |
           mkdir -p server/web/dist

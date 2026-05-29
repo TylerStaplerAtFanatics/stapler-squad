@@ -88,6 +88,16 @@ var (
 			// Load config first so we can configure logging properly
 			cfg := config.LoadConfig()
 
+			// Register the process manager backend before any session is created.
+			// Empty string defaults to "tmux" for backwards-compatibility.
+			{
+				backend := session.ProcessManagerBackend(cfg.ProcessManagerBackend)
+				if backend == "" {
+					backend = session.BackendTmux
+				}
+				session.RegisterBackendProvider(backend)
+			}
+
 			// Load discovery config
 			discoveryCfg := config.LoadDiscoveryConfig()
 

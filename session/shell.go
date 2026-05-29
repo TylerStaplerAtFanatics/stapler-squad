@@ -60,6 +60,11 @@ type Shell struct {
 	// Multiple subscribers can range-select without coordination.
 	// Created in SpawnShell; closed exactly once by watchShellExit.
 	exitCh chan struct{}
+
+	// watcherDone is closed after shellWg.Done() returns inside watchShellExit.
+	// DeleteShell waits on this channel so it tracks only this shell's goroutine,
+	// not the global WaitGroup which covers all shells.
+	watcherDone chan struct{}
 }
 
 // ShellData carries the input fields for creating a new shell.

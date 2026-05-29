@@ -73,6 +73,7 @@ func (s *SessionService) resolveSessionTitle(sessionID string) (string, error) {
 }
 
 // SpawnShell creates and starts a new custom shell attached to a session.
+// +api: SpawnShell
 func (s *SessionService) SpawnShell(
 	ctx context.Context,
 	req *connect.Request[sessionv1.SpawnShellRequest],
