@@ -83,7 +83,8 @@ jobs:
         run: |
           # Only lint files changed in this PR to avoid surfacing pre-existing issues
           # in unmodified files. Falls back to full scan on push-to-main (no PR context).
-          # The no-100vh rule is "error" severity so it always fails without --max-warnings.
+          # --max-warnings 0 is not used for full scan: pre-existing warnings in untouched
+          # files should not block push/workflow_dispatch. Errors (no-100vh etc.) still fail.
           if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
             CHANGED=$(git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD \
               -- 'web-app/**.ts' 'web-app/**.tsx' 2>/dev/null \
@@ -100,7 +101,7 @@ jobs:
             # shellcheck disable=SC2086
             npx next lint $FILE_FLAGS
           else
-            npx next lint --max-warnings 0
+            npx next lint
           fi
 
       - name: CSS lint (stylelint + undefined variable check)
