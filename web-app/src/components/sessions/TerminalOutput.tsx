@@ -1332,6 +1332,8 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
             <span className={styles.resizingSpinner} />
           </div>
         )}
+{/* fallback={null}: the loadingOverlay above covers the terminal area while
+    isLoadingInitialContent=true, which spans the entire xterm.js lazy-load period. */}
 <Suspense fallback={null}>
   <XtermTerminal
     ref={xtermRef}
