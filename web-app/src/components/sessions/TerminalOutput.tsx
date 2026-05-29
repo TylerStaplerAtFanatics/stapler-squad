@@ -1,7 +1,7 @@
 "use client";
 // +feature: terminal-pre-sizing terminal-dimension-cache terminal-image-upload
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useState, lazy, Suspense } from "react";
 
 // xterm modifier key sequences (CSI parameter convention: modifier 5=Ctrl, 3=Alt).
 // Defined at module level to avoid per-render allocation inside sendKey.
@@ -30,7 +30,9 @@ const ALT_KEY_MAP: Record<string, string> = {
 };
 import { useTerminalStream } from "@/lib/hooks/useTerminalStream";
 import { useBrowserLogStream } from "@/lib/hooks/useBrowserLogStream";
-import { XtermTerminal, type XtermTerminalHandle } from "./XtermTerminal";
+import type { XtermTerminalHandle, XtermTerminalProps } from "./XtermTerminal";
+import type { ForwardRefExoticComponent, RefAttributes } from "react";
+const XtermTerminal = lazy(() => import("./XtermTerminal").then((m) => ({ default: m.XtermTerminal }))) as ForwardRefExoticComponent<XtermTerminalProps & RefAttributes<XtermTerminalHandle>>;
 import { TerminalStreamManager } from "@/lib/terminal/TerminalStreamManager";
 import { getCachedDimensions, saveDimensions, validateCellDimensions } from "@/lib/terminal/TerminalDimensionCache";
 import { DEFAULT_TERMINAL_CONFIG } from "@/lib/config/terminalConfig";
@@ -1330,14 +1332,16 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
             <span className={styles.resizingSpinner} />
           </div>
         )}
-<XtermTerminal
-  ref={xtermRef}
-  onData={handleTerminalData}
-  onResize={handleTerminalResize}
-  theme={theme}
-  fontSize={14}
-  scrollback={5000}
-/>
+<Suspense fallback={null}>
+  <XtermTerminal
+    ref={xtermRef}
+    onData={handleTerminalData}
+    onResize={handleTerminalResize}
+    theme={theme}
+    fontSize={14}
+    scrollback={5000}
+  />
+</Suspense>
       </div>
       {/* Mobile keyboard toolbar — Termux-compatible extra-keys layout.
           Row 1: ESC / - HOME ↑ END PGUP

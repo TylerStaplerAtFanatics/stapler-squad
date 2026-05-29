@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, memo } from "react";
 import { Session, SessionStatus, SubStatus, ReviewItem, InstanceType, RateLimitState, CheckpointProto } from "@/gen/session/v1/types_pb";
 import { ReviewQueueBadge } from "./ReviewQueueBadge";
 import { StatusBadge } from "./StatusBadge";
@@ -89,7 +89,7 @@ interface SessionCardProps {
   detectedContext?: string; // Context string for the detected status
 }
 
-export function SessionCard({
+function SessionCardInner({
   session,
   onClick,
   onOpenInNewPane,
@@ -667,3 +667,5 @@ export function SessionCard({
     </>
   );
 }
+
+export const SessionCard = memo(SessionCardInner);
