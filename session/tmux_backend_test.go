@@ -34,14 +34,14 @@ type mockTmuxManager struct {
 	getSessionNameCalls int
 
 	// Start / Close / RestoreWithWorkDir / DetachSafely
-	startReturn     error
-	closeReturn     error
-	restoreReturn   error
-	detachReturn    error
-	startCalls      int
-	closeCalls      int
-	restoreCalls    int
-	detachCalls     int
+	startReturn   error
+	closeReturn   error
+	restoreReturn error
+	detachReturn  error
+	startCalls    int
+	closeCalls    int
+	restoreCalls  int
+	detachCalls   int
 
 	// GetPTY
 	getPTYFile   *os.File
@@ -65,8 +65,8 @@ type mockTmuxManager struct {
 	sendInputReturn error
 
 	// CapturePaneContent
-	capturePaneReturn    string
-	capturePaneErr       error
+	capturePaneReturn string
+	capturePaneErr    error
 
 	// CapturePaneContentRaw
 	capturePaneRawReturn string
@@ -118,9 +118,9 @@ type mockTmuxManager struct {
 	hasUpdatedContent   string
 
 	// FilterBanners
-	filterBannersInput   string
-	filterBannersResult  string
-	filterBannersCount   int
+	filterBannersInput  string
+	filterBannersResult string
+	filterBannersCount  int
 
 	// HasMeaningfulContent
 	hasMeaningfulInput  string
@@ -131,8 +131,8 @@ type mockTmuxManager struct {
 	stopCtrlReturn  error
 
 	// SubscribeToControlModeUpdates
-	subscribeID  string
-	subscribeCh  chan []byte
+	subscribeID string
+	subscribeCh chan []byte
 
 	// UnsubscribeFromControlModeUpdates
 	unsubscribeID string
@@ -267,8 +267,8 @@ func (m *mockTmuxManager) HasMeaningfulContent(content string) bool {
 	return m.hasMeaningfulReturn
 }
 
-func (m *mockTmuxManager) StartControlMode() error  { return m.startCtrlReturn }
-func (m *mockTmuxManager) StopControlMode() error   { return m.stopCtrlReturn }
+func (m *mockTmuxManager) StartControlMode() error { return m.startCtrlReturn }
+func (m *mockTmuxManager) StopControlMode() error  { return m.stopCtrlReturn }
 
 func (m *mockTmuxManager) SubscribeToControlModeUpdates() (string, chan []byte) {
 	return m.subscribeID, m.subscribeCh
@@ -292,7 +292,7 @@ func (m *mockTmuxManager) ResetExitOnce() {
 
 // Provide a no-op Session/SetSession so tests embedding mockTmuxManager
 // that go through code paths accessing tb.Session() don't panic.
-func (m *mockTmuxManager) Session() *tmux.TmuxSession    { return nil }
+func (m *mockTmuxManager) Session() *tmux.TmuxSession     { return nil }
 func (m *mockTmuxManager) SetSession(_ *tmux.TmuxSession) {}
 func (m *mockTmuxManager) DoesSessionExist() bool         { return m.isAliveReturn }
 

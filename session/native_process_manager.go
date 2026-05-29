@@ -30,10 +30,10 @@ type NativeProcessManager struct {
 	opts ProcessManagerOptions
 
 	mu       sync.Mutex
-	ptm      *os.File     // PTY master fd; nil when not started
-	cmd      *exec.Cmd    // supervised process; nil when not started
+	ptm      *os.File      // PTY master fd; nil when not started
+	cmd      *exec.Cmd     // supervised process; nil when not started
 	stopCh   chan struct{} // closed by Close(); signals supervise() to stop
-	startDir string       // directory passed to the most recent Start() call
+	startDir string        // directory passed to the most recent Start() call
 
 	lastSize *pty.Winsize // tracks last window size for reapplication on restart
 

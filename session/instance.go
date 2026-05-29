@@ -518,7 +518,6 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	// Initialize shell registry maps.
 	instance.initShellRegistry()
 
-
 	// Auto-detect worktree info if GitHub owner/repo not explicitly set
 	// This extracts repository information from the git remote URL
 	if instance.GitHubOwner == "" || instance.GitHubRepo == "" {
