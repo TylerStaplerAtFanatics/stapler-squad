@@ -166,12 +166,15 @@ func testVCSReaderContract(t *testing.T, r unfinished.VCSReader) {
 		addCommit(t, repo, "a.txt", "commit a")
 		addCommit(t, repo, "b.txt", "commit b")
 
-		ahead, _, err := r.AheadBehind(repo, "base")
+		ahead, behind, err := r.AheadBehind(repo, "base")
 		if err != nil {
 			t.Fatalf("AheadBehind: %v", err)
 		}
 		if ahead != 2 {
 			t.Errorf("expected 2 ahead, got %d", ahead)
+		}
+		if behind != 0 {
+			t.Errorf("expected 0 behind, got %d", behind)
 		}
 	})
 
@@ -261,6 +264,146 @@ func testVCSReaderContract(t *testing.T, r unfinished.VCSReader) {
 	})
 }
 
+
+// TestGoGitVCSReader_AheadBehind_BehindCount verifies the "behind" direction of
+// AheadBehind when the base branch has commits that the current branch lacks.
+func TestGoGitVCSReader_AheadBehind_BehindCount(t *testing.T) {
+	repo := initRepo(t)
+	r := &unfinished.GoGitVCSReader{}
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := safeexec.CommandContext(context.Background(), "git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	// Create base branch at initial commit, then add a commit to base only.
+	run("branch", "base")
+	run("checkout", "base")
+	addCommit(t, repo, "base-only.txt", "commit on base")
+	run("checkout", "main")
+
+	// main is 0 ahead, 1 behind base.
+	ahead, behind, err := r.AheadBehind(repo, "base")
+	if err != nil {
+		t.Fatalf("AheadBehind: %v", err)
+	}
+	if ahead != 0 {
+		t.Errorf("expected 0 ahead, got %d", ahead)
+	}
+	if behind != 1 {
+		t.Errorf("expected 1 behind, got %d", behind)
+	}
+}
+
+// TestGoGitVCSReader_HasUncommitted_StagedChange verifies that a file added to
+// the index (git add) but not yet committed is detected as uncommitted.
+func TestGoGitVCSReader_HasUncommitted_StagedChange(t *testing.T) {
+	repo := initRepo(t)
+	r := &unfinished.GoGitVCSReader{}
+
+	// Write a new file and stage it.
+	if err := os.WriteFile(filepath.Join(repo, "staged.txt"), []byte("staged content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := safeexec.CommandContext(context.Background(), "git", "add", "staged.txt")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+
+	dirty, err := r.HasUncommitted(repo)
+	if err != nil {
+		t.Fatalf("HasUncommitted: %v", err)
+	}
+	if !dirty {
+		t.Error("expected HasUncommitted=true for repo with staged (index) change")
+	}
+}
+
+// TestGoGitVCSReader_HasUncommitted_StagedDeletion verifies that a tracked file
+// removed from the index (git rm) is reported as uncommitted.
+func TestGoGitVCSReader_HasUncommitted_StagedDeletion(t *testing.T) {
+	repo := initRepo(t)
+	r := &unfinished.GoGitVCSReader{}
+
+	// Stage a deletion of the initial README.md.
+	cmd := safeexec.CommandContext(context.Background(), "git", "rm", "README.md")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git rm: %v\n%s", err, out)
+	}
+
+	dirty, err := r.HasUncommitted(repo)
+	if err != nil {
+		t.Fatalf("HasUncommitted: %v", err)
+	}
+	if !dirty {
+		t.Error("expected HasUncommitted=true for repo with staged deletion")
+	}
+}
+
+// TestGoGitVCSReader_HasUncommitted_MergeConflict verifies that a repo in a
+// conflicted merge state (stage entries with non-zero stage number) is reported
+// as having uncommitted changes.
+func TestGoGitVCSReader_HasUncommitted_MergeConflict(t *testing.T) {
+	repo := initRepo(t)
+	r := &unfinished.GoGitVCSReader{}
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := safeexec.CommandContext(context.Background(), "git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("git %v: %v\n%s", args, err, out) // merge step may "fail" due to conflict
+		}
+		return string(out)
+	}
+
+	// Create diverging branches that conflict on README.md.
+	run("checkout", "-b", "branch-a")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("branch-a content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "README.md")
+	run("commit", "-m", "branch-a commit")
+
+	run("checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("main content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "README.md")
+	run("commit", "-m", "main commit")
+
+	// Merge branch-a into main; this will conflict on README.md.
+	run("merge", "--no-ff", "branch-a")
+
+	// Confirm the repo is in a conflicted state before asserting HasUncommitted.
+	statusOut := run("status", "--porcelain")
+	if !strings.Contains(statusOut, "UU") && !strings.Contains(statusOut, "AA") {
+		t.Skipf("merge did not produce a conflict (git output: %s); skipping conflict test", statusOut)
+	}
+
+	dirty, err := r.HasUncommitted(repo)
+	if err != nil {
+		t.Fatalf("HasUncommitted: %v", err)
+	}
+	if !dirty {
+		t.Error("expected HasUncommitted=true for repo with merge conflict")
+	}
+}
 
 // TestFakeVCSReader verifies the scanner works correctly with an injected fake.
 func TestFakeVCSReader(t *testing.T) {

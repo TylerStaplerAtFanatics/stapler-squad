@@ -179,3 +179,18 @@ export const dangerButton = style({
     "&:disabled": { opacity: 0.5, cursor: "not-allowed" },
   },
 });
+
+export const cockpitContainer = style({
+  flex: 1,
+  minHeight: 0,
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+});
+
+export const deleteConfirmActions = style({
+  display: "flex",
+  gap: "0.5rem",
+  justifyContent: "flex-end",
+  marginTop: "1.5rem",
+});

@@ -254,7 +254,7 @@ export const errorMessage = style({
 
 export const twoColumn = style({
   display: "grid",
-  gridTemplateColumns: "1fr 1fr",
+  gridTemplateColumns: "2fr 1fr",
   gap: vars.space["3"],
   "@media": {
     "(max-width: 480px)": {

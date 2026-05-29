@@ -1,0 +1,9 @@
+{
+  "id": "shell-tabs",
+  "type": "frontend",
+  "component": "ShellTabLabel",
+  "path": "web-app/src/components/sessions/ShellTab.tsx",
+  "tested": false,
+  "testIds": [],
+  "lastModified": "2026-05-21T00:00:00.000000000-07:00"
+}

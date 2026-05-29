@@ -189,6 +189,11 @@ type Instance struct {
 	// OneShot runs claude in -p mode; the session exits after the task completes.
 	OneShot bool
 
+	// Hidden excludes this session from the default session list and review queue.
+	// Set true for system/background sessions (triage, validation) that should not
+	// appear in the user-facing session viewer.
+	Hidden bool
+
 	// ProjectID is the optional project this session belongs to.
 	ProjectID string
 
@@ -225,9 +230,18 @@ type Instance struct {
 	// production inspector is used. Set in tests to inject a fake home dir.
 	historyDetector *HistoryFileDetector
 
+	// shellRepo is the persistence backend for shell operations. Injected by Storage
+	// after instance creation/loading; nil disables persistence (tests, external instances).
+	shellRepo ShellRepository
+
+	// shellRegistry holds in-memory shell state (shells, handles, mutexes).
+	// Initialized by initShellRegistry(); shell operations go through instance_shells.go.
+	shellRegistry
+
 	// hibernateReason records why this session was hibernated.
 	// Values: "manual", "idle", "resource_pressure". Read by hibernateProcess.
 	hibernateReason string
+
 
 	// Claude Code session information for persistence and re-attachment
 	claudeSession *ClaudeSessionData
@@ -380,6 +394,9 @@ type InstanceOptions struct {
 	// OneShot runs claude in -p mode; the session exits after the task completes.
 	OneShot bool
 
+	// Hidden excludes the session from the default session list and review queue.
+	Hidden bool
+
 	// ProjectID associates the session with a project.
 	ProjectID string
 
@@ -470,8 +487,9 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		GitHubRepo:      opts.GitHubRepo,
 		GitHubSourceRef: opts.GitHubSourceRef,
 		ClonedRepoPath:  opts.ClonedRepoPath,
-		// One-shot mode and project
+		// One-shot mode, hidden flag, and project
 		OneShot:            opts.OneShot,
+		Hidden:             opts.Hidden,
 		ProjectID:          opts.ProjectID,
 		MCPServerURL:       opts.MCPServerURL,
 		AppendSystemPrompt: opts.AppendSystemPrompt,
@@ -481,6 +499,9 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 
 	// Initialize TagManager backed by the Instance.Tags slice
 	instance.tagManager = NewTagManager(&instance.Tags)
+
+	// Initialize shell registry maps.
+	instance.initShellRegistry()
 
 	// Auto-detect worktree info if GitHub owner/repo not explicitly set
 	// This extracts repository information from the git remote URL
@@ -512,6 +533,12 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	instance.initCDPManager(cfg)
 
 	return instance, nil
+}
+
+// SetShellRepository injects the shell persistence backend. Called by Storage after
+// loading or creating an instance. Pass nil to disable persistence (e.g., in tests).
+func (i *Instance) SetShellRepository(repo ShellRepository) {
+	i.shellRepo = repo
 }
 
 // NewInstanceWithCleanup creates a new Instance and returns it along with a cleanup function.

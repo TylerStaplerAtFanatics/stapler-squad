@@ -93,7 +93,27 @@ message TerminalData {
 
     // Resize quiescence signal — sent before/after server-side tmux reflow wait
     ResizeQuiescence resize_quiescence = 16;
+
+    // Shell status update event (server → client); shell_id identifies the shell.
+    ShellStatusUpdate shell_status_update = 18;
   }
+
+  // Optional shell identifier. When non-empty, this TerminalData message is
+  // scoped to a custom shell (sibling tmux session) rather than the main session.
+  string shell_id = 17;
+}
+
+// ShellStatusUpdate notifies the client that a custom shell's status has changed.
+// Delivered via the StreamTerminal stream with shell_id set.
+message ShellStatusUpdate {
+  // The shell whose status changed.
+  string shell_id = 1;
+
+  // New lifecycle status.
+  ShellStatus new_status = 2;
+
+  // Exit code (only meaningful when new_status is STOPPED or ERROR).
+  int32 exit_code = 3;
 }
 
 // ResizeQuiescence signals the client that the server is waiting for tmux to
