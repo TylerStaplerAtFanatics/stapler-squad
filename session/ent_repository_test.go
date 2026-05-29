@@ -307,6 +307,18 @@ func TestEntRepository_UpdateTimestamps(t *testing.T) {
 	assert.Equal(t, signature, retrieved.LastOutputSignature)
 }
 
+// TestEntRepository_UpdateTimestamps_NotFound verifies that UpdateTimestamps returns an
+// error when the session title does not exist (n==0 from the direct UPDATE).
+func TestEntRepository_UpdateTimestamps_NotFound(t *testing.T) {
+	repo, cleanup := createTestEntRepository(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	err := repo.UpdateTimestamps(ctx, "nonexistent-session", time.Now(), time.Now(), "sig")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nonexistent-session")
+}
+
 // TestEntRepository_UUID_PersistAndLoad verifies that the UUID field is stored and
 // retrieved correctly. This is the regression test for the "session not found after
 // restart" bug: the Ent schema previously had no uuid column, so every restart

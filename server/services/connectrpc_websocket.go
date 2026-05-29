@@ -532,17 +532,10 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 		}
 	}()
 
-	// Subscribe for quiescence detection (separate subscription from the streaming one below)
-	quiescenceSubID, quiescenceUpdateChan := streamer.SubscribeControlModeUpdates()
+	// quiescenceCh is signaled inline by the output forwarding goroutine (below) on every
+	// received frame, eliminating the separate subscription and fan-out goroutine that was
+	// waking up 212K+ times per stream for every terminal byte.
 	quiescenceCh := make(chan struct{}, 16)
-	go func() {
-		for range quiescenceUpdateChan {
-			select {
-			case quiescenceCh <- struct{}{}:
-			default:
-			}
-		}
-	}()
 
 	if currentPaneReq.TargetCols != nil && currentPaneReq.TargetRows != nil {
 		targetCols := int(*currentPaneReq.TargetCols)
@@ -561,20 +554,16 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 			log.Error("[streamViaControlMode] failed to resize", "err", err)
 		} else {
 			// Wait for TUI to complete its full redraw using quiescence detection
+			quiescenceStart := time.Now()
 			waitForQuiescence(quiescenceCh, 500*time.Millisecond, 50*time.Millisecond)
+			if elapsed := time.Since(quiescenceStart); elapsed >= 500*time.Millisecond-5*time.Millisecond {
+				log.Warn("[streamViaControlMode] initial quiescence timed out; session may be stalled", "elapsed", elapsed.Round(time.Millisecond), "session", sessionID)
+			}
 			log.Info("[streamViaControlMode] tmux resized, redraw complete", "cols", targetCols, "rows", targetRows)
 		}
 	} else {
 		log.Warn("[streamViaControlMode] handshake missing dimensions, layout may be incorrect")
 	}
-
-	// Do NOT unsubscribe quiescenceCh here — keep the subscription alive for the
-	// stream's lifetime so the resize goroutine can call waitForQuiescence after
-	// each SetWindowSize (R1.1: tmux reflow takes 100–400 ms; without quiescence
-	// the next capture-pane sees partially-reflowed content).
-	// The subscription is implicitly stopped when the underlying channel is closed
-	// (i.e. when StopControlMode is called via the defer above).
-	_ = quiescenceSubID // prevent unused-variable lint error
 
 	// Now capture content at correct dimensions.
 	// If capture fails (session died), proceed with empty content rather than trying
@@ -762,6 +751,12 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 					log.Error("[streamViaControlMode] failed to send output", "err", err)
 					errChan <- fmt.Errorf("failed to send output: %w", err)
 					return
+				}
+				// Signal quiescence detector: output is still flowing (resets the quiescence timer).
+				// Inline here eliminates the separate subscription + fan-out goroutine.
+				select {
+				case quiescenceCh <- struct{}{}:
+				default:
 				}
 			}
 		}

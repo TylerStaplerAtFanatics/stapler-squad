@@ -771,14 +771,11 @@ func (r *EntRepository) UpdateReviewQueueState(ctx context.Context, title string
 
 // UpdateTimestamps efficiently updates only timestamp fields for a session
 func (r *EntRepository) UpdateTimestamps(ctx context.Context, title string, lastTerminalUpdate, lastMeaningfulOutput time.Time, lastOutputSignature string) error {
-	// Find session by title
-	sess, err := r.client.Session.Query().Where(session.Title(title)).Only(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to find session: %w", err)
-	}
-
-	// Update only timestamp fields
-	update := r.client.Session.UpdateOne(sess).
+	// Direct UPDATE without prior SELECT — mirrors the pattern used by UpdateLastAddedToQueue.
+	// This method is called on every terminal output event; avoiding the SELECT halves the
+	// SQL round-trips on this hot path.
+	update := r.client.Session.Update().
+		Where(session.Title(title)).
 		SetUpdatedAt(time.Now())
 
 	if !lastTerminalUpdate.IsZero() {
@@ -791,10 +788,13 @@ func (r *EntRepository) UpdateTimestamps(ctx context.Context, title string, last
 		update.SetLastOutputSignature(lastOutputSignature)
 	}
 
-	if err := update.Exec(ctx); err != nil {
+	n, err := update.Save(ctx)
+	if err != nil {
 		return fmt.Errorf("failed to update timestamps: %w", err)
 	}
-
+	if n == 0 {
+		return fmt.Errorf("session not found: %s", title)
+	}
 	return nil
 }
 

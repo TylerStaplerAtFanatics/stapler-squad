@@ -420,9 +420,10 @@ func (i *Instance) SendInputViaControlMode(ctx context.Context, data []byte) err
 }
 
 // GetPanePID returns the PID of the foreground process in the tmux pane.
+// The DoesSessionExist guard is omitted here: TmuxSession.GetPanePID already uses
+// the CM fast path (no subprocess) and falls back to display-message which returns
+// an error if the session is gone. Avoiding a separate list-sessions call per instance
+// prevents N concurrent tmux list-sessions subprocesses during HistoryLinker.ScanAll.
 func (i *Instance) GetPanePID() (int32, error) {
-	if !i.pm().IsAlive() {
-		return 0, fmt.Errorf("tmux session not alive for '%s'", i.Title)
-	}
 	return i.pm().GetPanePID()
 }
