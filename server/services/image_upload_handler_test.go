@@ -135,7 +135,7 @@ func TestSanitizeExtension(t *testing.T) {
 	}{
 		{"report.pdf", ".pdf"},
 		{"archive.tar.gz", ".gz"},
-		{"../../etc/passwd", ""},   // base="passwd" has no extension → safe empty return
+		{"../../etc/passwd", ""}, // base="passwd" has no extension → safe empty return
 		{"file", ""},
 		{"file.", ""},
 		{"file.UPPERCASE", ".uppercase"},

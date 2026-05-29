@@ -6,6 +6,7 @@ import { AppLink } from "@/components/ui/AppLink";
 import { usePathname } from "next/navigation";
 import { ReviewQueueNavBadge } from "@/components/sessions/ReviewQueueNavBadge";
 import { ApprovalNavBadge } from "@/components/sessions/ApprovalNavBadge";
+import { MemoryNavBadge } from "@/components/sessions/MemoryNavBadge";
 import { UnfinishedNavBadge } from "@/components/unfinished/UnfinishedNavBadge";
 import { DebugMenu } from "@/components/ui/DebugMenu";
 import { NotificationsNavBadge } from "@/components/ui/NotificationsNavBadge";
@@ -108,6 +109,7 @@ export function Header() {
           </nav>
 
           <div className={styles.actions}>
+            <MemoryNavBadge />
             <ConnectionIndicator />
             <WorkspaceSwitcher />
             <button

@@ -1,0 +1,125 @@
+package headless
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestSummarizeBacklogItem_ReturnsText_WhenFakeRunnerResponds verifies summary parsing.
+func TestSummarizeBacklogItem_ReturnsText_WhenFakeRunnerResponds(t *testing.T) {
+	resp := firstCallJSON("s1", `{"summary":"A summary","tags":["feature"]}`)
+	runner := NewFakeRunner(resp)
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	summary, err := SummarizeBacklogItem(context.Background(), pool, "Title", "Description")
+	require.NoError(t, err)
+	assert.Equal(t, "A summary", summary)
+}
+
+// TestSummarizeBacklogItem_Error_WhenPoolFails verifies error propagation.
+func TestSummarizeBacklogItem_Error_WhenPoolFails(t *testing.T) {
+	runner := &FakeRunner{
+		errors: []error{assert.AnError},
+	}
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	_, err := SummarizeBacklogItem(context.Background(), pool, "T", "D")
+	assert.Error(t, err)
+}
+
+// TestGenerateAcceptanceCriteria_ParsesJSONArray verifies AC parsing.
+func TestGenerateAcceptanceCriteria_ParsesJSONArray(t *testing.T) {
+	resp := firstCallJSON("s1", `["AC1","AC2","AC3"]`)
+	runner := NewFakeRunner(resp)
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	criteria, err := GenerateAcceptanceCriteria(context.Background(), pool, "Title", "Description")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"AC1", "AC2", "AC3"}, criteria)
+}
+
+// TestGenerateAcceptanceCriteria_Error_WhenJSONInvalid verifies parse error.
+func TestGenerateAcceptanceCriteria_Error_WhenJSONInvalid(t *testing.T) {
+	resp := firstCallJSON("s1", "not json")
+	runner := NewFakeRunner(resp)
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	_, err := GenerateAcceptanceCriteria(context.Background(), pool, "T", "D")
+	assert.Error(t, err)
+}
+
+// TestGenerateAcceptanceCriteria_EmptyResponse_ReturnsError verifies empty-array error.
+func TestGenerateAcceptanceCriteria_EmptyResponse_ReturnsError(t *testing.T) {
+	resp := firstCallJSON("s1", "[]")
+	runner := NewFakeRunner(resp)
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	_, err := GenerateAcceptanceCriteria(context.Background(), pool, "T", "D")
+	assert.Error(t, err)
+}
+
+// TestDraftPRDescription_ReturnsText_WhenFakeRunnerResponds verifies PR description return.
+func TestDraftPRDescription_ReturnsText_WhenFakeRunnerResponds(t *testing.T) {
+	prText := "## Summary\n- Added feature\n\n## Test plan\n- Unit tests added"
+	resp := firstCallJSON("s1", prText)
+	runner := NewFakeRunner(resp)
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	result, err := DraftPRDescription(context.Background(), pool, "diff content", "feat/my-feature")
+	require.NoError(t, err)
+	assert.Equal(t, prText, result)
+}
+
+// TestDraftPRDescription_TruncatesDiff_WhenOver40000Bytes verifies truncation.
+func TestDraftPRDescription_TruncatesDiff_WhenOver40000Bytes(t *testing.T) {
+	bigDiff := strings.Repeat("x", 50_000)
+	resp := firstCallJSON("s1", "PR description")
+	runner := NewFakeRunner(resp)
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	_, err := DraftPRDescription(context.Background(), pool, bigDiff, "branch")
+	require.NoError(t, err)
+
+	// Inspect what was passed to the runner.
+	args := runner.ArgsForCall(0)
+	require.NotNil(t, args)
+	// The user prompt is the last arg; it should contain a truncated diff.
+	userPrompt := args[len(args)-1]
+	// The prompt contains "Branch: branch\n\nDiff:\n" prefix (~20 chars) + diff.
+	// Total should be <= maxDiffSizePR + prefix length.
+	assert.LessOrEqual(t, len(userPrompt), maxDiffSizePR+100,
+		"user prompt should not be much larger than maxDiffSizePR; got %d bytes", len(userPrompt))
+}
+
+// TestSuggestCommitMessage_ReturnsText_WhenFakeRunnerResponds verifies commit message return.
+func TestSuggestCommitMessage_ReturnsText_WhenFakeRunnerResponds(t *testing.T) {
+	msg := "feat(auth): add OAuth2 login"
+	resp := firstCallJSON("s1", msg)
+	runner := NewFakeRunner(resp)
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	result, err := SuggestCommitMessage(context.Background(), pool, "diff content")
+	require.NoError(t, err)
+	assert.Equal(t, msg, result)
+}
+
+// TestSuggestCommitMessage_TruncatesDiff_WhenOver20000Bytes verifies truncation.
+func TestSuggestCommitMessage_TruncatesDiff_WhenOver20000Bytes(t *testing.T) {
+	bigDiff := strings.Repeat("y", 30_000)
+	resp := firstCallJSON("s1", "fix(core): a fix")
+	runner := NewFakeRunner(resp)
+	pool := NewPoolWithRunner(PoolConfig{}, runner)
+
+	_, err := SuggestCommitMessage(context.Background(), pool, bigDiff)
+	require.NoError(t, err)
+
+	args := runner.ArgsForCall(0)
+	require.NotNil(t, args)
+	userPrompt := args[len(args)-1]
+	assert.LessOrEqual(t, len(userPrompt), maxDiffSizeCommit+10,
+		"user prompt should be <= maxDiffSizeCommit bytes; got %d", len(userPrompt))
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/cdp"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/scrollback"
 	"github.com/tstapler/stapler-squad/session/tmux"
 	"github.com/tstapler/stapler-squad/session/tokens"
@@ -65,6 +66,9 @@ type ServerDependencies struct {
 	// CDPDeps holds the result of the startup CDP (Chrome) dependency check.
 	// Available=false means CDP browser streaming is unavailable on this host.
 	CDPDeps cdp.DepsResult
+
+	// HeadlessPool manages headless LLM calls. Nil when the claude binary is not found.
+	HeadlessPool *headless.Pool
 }
 
 // ToServerDeps converts RuntimeDeps to the flat ServerDependencies struct consumed
@@ -95,6 +99,7 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		AnalyticsEntClient:      rt.AnalyticsEntClient,
 		VNCDeps:                 rt.VNCDeps,
 		CDPDeps:                 rt.CDPDeps,
+		HeadlessPool:            rt.HeadlessPool,
 	}
 }
 
@@ -362,6 +367,9 @@ type RuntimeDeps struct {
 
 	// CDPDeps holds the result of the startup CDP (Chrome) dependency check.
 	CDPDeps cdp.DepsResult
+
+	// HeadlessPool manages headless LLM calling. Nil when claude binary is not found.
+	HeadlessPool *headless.Pool
 }
 
 // BuildRuntimeDeps constructs Phase 3 dependencies using Phase 2 outputs.
@@ -403,11 +411,32 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}
 
 	// WorkflowEngine governs backlog state transitions; constructed once and shared
-	// by both the service layer and the lifecycle listener.
+	// by the service layer.
 	workflowEngine := session.NewDefaultWorkflowEngine()
 
+	// Construct the headless LLM pool early so the lifecycle listener can receive it
+	// via constructor (eliminating the post-construction wiring race). Non-fatal if
+	// the claude binary is not found.
+	var headlessPool *headless.Pool
+	{
+		p, poolErr := headless.NewPool(headless.PoolConfig{
+			MaxCallsPerSession:    25,
+			MaxConcurrentSessions: 5,
+		})
+		if poolErr != nil {
+			log.Warn("headless pool disabled: claude binary not found", "err", poolErr)
+		} else {
+			headlessPool = p
+			headless.SetDefaultPool(p)
+			sessionService.SetHeadlessPool(p)
+			log.Info("headless LLM pool initialized")
+		}
+	}
+
 	// Backlog lifecycle listener — always created, enabled state set from config below.
-	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithSpawner(storage, sessionService, workflowEngine)
+	// The pool is passed at construction time to close the race window that existed when
+	// SetHeadlessPool was called hundreds of lines after instance wiring.
+	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithPool(storage, headlessPool)
 
 	// Step 5 (continued): wire dependencies to each instance
 	// inst.SetReviewQueue and inst.SetStatusManager are called per-instance in a loop;
@@ -729,8 +758,8 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Warn("could not determine home dir for InsightsService token store", "err", homeDirErr)
 	}
 
-
 	return &RuntimeDeps{
+		HeadlessPool:            headlessPool,
 		ServiceDeps:             svc,
 		Instances:               instances,
 		ReactiveQueueMgr:        reactiveQueueMgr,

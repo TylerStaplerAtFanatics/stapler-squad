@@ -42,18 +42,18 @@ func (b *TmuxBackend) GetCurrentWorkingDirectory() (string, error) {
 
 // --- Lifecycle ---
 
-func (b *TmuxBackend) Start(dir string) error             { return b.mgr.Start(dir) }
-func (b *TmuxBackend) RestoreWithWorkDir(w string) error  { return b.mgr.RestoreWithWorkDir(w) }
-func (b *TmuxBackend) Close() error                       { return b.mgr.Close() }
-func (b *TmuxBackend) IsAlive() bool                      { return b.mgr.IsAlive() }
-func (b *TmuxBackend) HasSession() bool                   { return b.mgr.HasSession() }
+func (b *TmuxBackend) Start(dir string) error            { return b.mgr.Start(dir) }
+func (b *TmuxBackend) RestoreWithWorkDir(w string) error { return b.mgr.RestoreWithWorkDir(w) }
+func (b *TmuxBackend) Close() error                      { return b.mgr.Close() }
+func (b *TmuxBackend) IsAlive() bool                     { return b.mgr.IsAlive() }
+func (b *TmuxBackend) HasSession() bool                  { return b.mgr.HasSession() }
 
 // --- Terminal I/O ---
 
-func (b *TmuxBackend) GetPTY() (*os.File, error)             { return b.mgr.GetPTY() }
-func (b *TmuxBackend) SendKeys(keys string) (int, error)     { return b.mgr.SendKeys(keys) }
-func (b *TmuxBackend) TapEnter() error                       { return b.mgr.TapEnter() }
-func (b *TmuxBackend) SendPromptWithEnter(p string) error    { return b.mgr.SendPromptWithEnter(p) }
+func (b *TmuxBackend) GetPTY() (*os.File, error)          { return b.mgr.GetPTY() }
+func (b *TmuxBackend) SendKeys(keys string) (int, error)  { return b.mgr.SendKeys(keys) }
+func (b *TmuxBackend) TapEnter() error                    { return b.mgr.TapEnter() }
+func (b *TmuxBackend) SendPromptWithEnter(p string) error { return b.mgr.SendPromptWithEnter(p) }
 func (b *TmuxBackend) SendInputViaControlMode(ctx context.Context, data []byte) error {
 	return b.mgr.SendInputViaControlMode(ctx, data)
 }

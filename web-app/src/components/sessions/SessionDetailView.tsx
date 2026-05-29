@@ -15,7 +15,8 @@ import { VNCStatus } from "@/gen/session/v1/types_pb";
 import { ActionBar } from "@/components/ui/ActionBar";
 import { useSessionActions } from "@/lib/hooks/useSessionActions";
 import { getApiBaseUrl } from "@/lib/config";
-import { getProgramDisplay, isKnownProgram, PROGRAMS } from "@/lib/constants/programs";
+import { getProgramDisplay, isKnownProgram } from "@/lib/constants/programs";
+import { useAvailablePrograms } from "@/lib/hooks/useAvailablePrograms";
 import { Modal, ModalContent, ModalTitle, ModalFooter } from "@/components/ui/Modal";
 import { ResumeSessionModal } from "./ResumeSessionModal";
 import { TagEditor } from "./TagEditor";
@@ -24,8 +25,16 @@ import { useShells } from "@/lib/hooks/useShells";
 import { ShellTabLabel } from "./ShellTab";
 import { NewShellDialog } from "./NewShellDialog";
 import * as styles from "./SessionDetail.css";
-import { diffAdded } from "./SessionDetailView.css";
+import {
+  diffAdded,
+  pausedOverlay,
+  pausedOverlayIcon,
+  pausedOverlayTitle,
+  pausedOverlayReason,
+  pausedOverlayButton,
+} from "./SessionDetailView.css";
 import { tabDisabled } from "./SessionDetail.css";
+import { formatPauseReason } from "@/lib/sessions/formatPauseReason";
 import type { SessionDetailTab } from "./SessionDetail";
 
 // Dynamically import TerminalOutput with SSR disabled (xterm.js requires browser environment)
@@ -126,6 +135,7 @@ export function SessionDetailView({
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [filesSelectedPath, setFilesSelectedPath] = useState<string | null>(null);
   const [showWorkspaceSwitchModal, setShowWorkspaceSwitchModal] = useState(false);
+  const availablePrograms = useAvailablePrograms();
   const [isEditingProgram, setIsEditingProgram] = useState(false);
   const [programValue, setProgramValue] = useState(session.program || "");
   const [isEditingWorkingDir, setIsEditingWorkingDir] = useState(false);
@@ -478,9 +488,9 @@ export function SessionDetailView({
               key={tab.id}
               id={`tab-${tab.id}`}
               role="tab"
-              aria-selected={activeTabId === tab.id}
+              aria-selected={activeTab === tab.id}
               aria-disabled={tab.disabled}
-              className={`${styles.tab} ${activeTabId === tab.id ? styles.active : ""} ${tab.disabled ? tabDisabled : ""}`}
+              className={`${styles.tab} ${activeTab === tab.id ? styles.active : ""} ${tab.disabled ? tabDisabled : ""}`}
               onClick={() => { if (!tab.disabled) handleTabChange(tab.id); }}
               title={tab.disabled && tab.id === "browser" ? "Browser passthrough requires Linux with Xvfb, x11vnc, and xdotool" : undefined}
             >
@@ -549,6 +559,7 @@ export function SessionDetailView({
                 </p>
               </div>
             ) : session.instanceType === InstanceType.EXTERNAL && session.externalMetadata?.muxSocketPath ? (
+              // External mux sessions cannot be paused; no overlay needed.
               <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
                 {pooledMuxPaths.map(poolPath => (
                   <div
@@ -587,6 +598,34 @@ export function SessionDetailView({
                     />
                   </div>
                 ))}
+                {/* Paused overlay: sits above the pool (which stays mounted for keep-alive).
+                    Only rendered for the current session when status is PAUSED. */}
+                {session.status === SessionStatus.PAUSED && (
+                  <div
+                    className={pausedOverlay}
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Session is paused"
+                  >
+                    <span className={pausedOverlayIcon} aria-hidden="true">⏸</span>
+                    <p className={pausedOverlayTitle}>This session is paused</p>
+                    {session.pauseReason && (
+                      <p className={pausedOverlayReason}>
+                        {formatPauseReason(session.pauseReason)}
+                      </p>
+                    )}
+                    <button
+                      className={pausedOverlayButton}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePauseResume();
+                      }}
+                      aria-label="Resume this session"
+                    >
+                      ▶ Resume Session
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -599,6 +638,23 @@ export function SessionDetailView({
               isSessionActive={session.status === SessionStatus.RUNNING}
             />
           )}
+        </div>
+        {/* Browser tab: always mounted (not conditionally rendered) so the noVNC RFB
+            connection persists across tab switches. Visibility controlled via CSS,
+            matching the TerminalOutput keep-alive pattern exactly. */}
+        <div
+          className={styles.tabContent}
+          role="tabpanel"
+          aria-labelledby="tab-browser"
+          aria-hidden={activeTab !== "browser"}
+          style={{ display: activeTab === "browser" ? undefined : 'none' }}
+        >
+          <BrowserTab
+            sessionId={session.id}
+            baseUrl={getApiBaseUrl()}
+            isVisible={activeTab === "browser"}
+            vncState={vncState}
+          />
         </div>
 
         {/* Shell tab panels — each shell PTY terminal kept mounted but hidden */}
@@ -641,23 +697,6 @@ export function SessionDetailView({
           />
         )}
 
-        {/* Browser tab: always mounted (not conditionally rendered) so the noVNC RFB
-            connection persists across tab switches. Visibility controlled via CSS,
-            matching the TerminalOutput keep-alive pattern exactly. */}
-        <div
-          className={styles.tabContent}
-          role="tabpanel"
-          aria-labelledby="tab-browser"
-          aria-hidden={activeTab !== "browser"}
-          style={{ display: activeTab === "browser" ? undefined : 'none' }}
-        >
-          <BrowserTab
-            sessionId={session.id}
-            baseUrl={getApiBaseUrl()}
-            isVisible={activeTab === "browser"}
-            vncState={vncState}
-          />
-        </div>
 
         {activeTab === "diff" && (
           <div className={styles.tabContent} role="tabpanel" aria-labelledby="tab-diff">
@@ -845,7 +884,7 @@ export function SessionDetailView({
                       autoFocus
                       className={styles.editInput}
                     >
-                      {PROGRAMS.map((p) => (
+                      {availablePrograms.map((p) => (
                         <option key={p.value} value={p.value}>{p.label}</option>
                       ))}
                       {!isKnownProgram(programValue) && (

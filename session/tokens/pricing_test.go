@@ -94,7 +94,7 @@ func TestPricingTable_WhenIsStale_Expect31DaysReturnTrue(t *testing.T) {
 func TestPricingTable_WhenIsStale_Expect29DaysReturnFalse(t *testing.T) {
 	pt := DefaultPricingTable()
 	// Override all effective dates to 29 days ago.
-	recentDate := time.Now().AddDate(0, 0, -29).Format("2006-01-02")
+	recentDate := time.Now().UTC().AddDate(0, 0, -29).Format("2006-01-02")
 	prices := make(map[string]ModelPricing)
 	for k, v := range pt.Prices {
 		v.EffectiveDate = recentDate

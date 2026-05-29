@@ -603,7 +603,7 @@ func (c *Config) GetClaudeCommand() (string, error) {
 	}
 
 	// Try to resolve aliases for both proxy-claude and claude
-	candidates := []string{"proxy-claude", "claude", "claude-code", "gemini"}
+	candidates := []string{"proxy-claude", "claude", "claude-code", "gemini", "agy"}
 
 	for _, candidate := range candidates {
 		// Attempt to get the alias definition from the shell
@@ -681,7 +681,7 @@ func (c *Config) GetAvailablePrograms() []string {
 		shell = "/bin/bash"
 	}
 
-	candidates := []string{"proxy-claude", "claude", "claude-code", "gemini"}
+	candidates := []string{"proxy-claude", "claude", "claude-code", "gemini", "agy"}
 
 	for _, candidate := range candidates {
 		var shellCmd string

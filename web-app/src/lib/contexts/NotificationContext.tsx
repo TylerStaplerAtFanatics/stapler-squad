@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
 import { NotificationToast } from "@/components/ui/NotificationToast";
+import { zIndex } from "@/styles/theme.css";
 import { NotificationData, NotificationHistoryItem } from "@/lib/types/notification";
 import { ReviewItem, AttentionReason } from "@/gen/session/v1/types_pb";
 import { useAuditLog } from "@/lib/hooks/useAuditLog";
@@ -333,7 +334,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           position: "fixed",
           bottom: 0,
           right: 0,
-          zIndex: 10000,
+          zIndex: zIndex.toast,
           pointerEvents: "none",
         }}
       >

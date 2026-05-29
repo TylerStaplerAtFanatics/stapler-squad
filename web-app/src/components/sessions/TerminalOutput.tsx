@@ -175,11 +175,15 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
   const [pasteError, setPasteError] = useState<string | null>(null);
   const pasteErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Image upload state for the camera/file-picker toolbar button.
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isUploading, setIsUploading] = useState(false);
+  // Multi-file upload state for the three-button toolbar picker.
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const filesInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingCount, setUploadingCount] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const uploadErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const uploadSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Mobile keyboard visibility — persisted in localStorage, scoped per session
   const keyboardStorageKey = `stapler-squad-mobile-keyboard-visible-${sessionId}`;
@@ -448,6 +452,11 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
       if (uploadErrorTimerRef.current) {
         clearTimeout(uploadErrorTimerRef.current);
         uploadErrorTimerRef.current = null;
+      }
+
+      if (uploadSuccessTimerRef.current) {
+        clearTimeout(uploadSuccessTimerRef.current);
+        uploadSuccessTimerRef.current = null;
       }
 
       if (sizeStabilityTimeoutRef.current) {
@@ -975,53 +984,92 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     }
   };
 
-  // Synchronous handler — MUST NOT have await before .click() (iOS Safari requirement).
-  const handleImageButtonClick = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
+  // Upload a batch of files sequentially, inserting each path into the terminal.
+  const handleFilesUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
 
-  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    // Extract File objects before resetting the input — iOS Safari invalidates FileList
+    // items after e.target.value = "" because it uses lazy references.
+    const fileArray = Array.from(fileList);
 
-    // Reset input so the same file can trigger onChange again.
+    // Reset input so the same file(s) can trigger onChange again.
     e.target.value = "";
 
-    setIsUploading(true);
+    const total = fileArray.length;
+    setUploadingCount(total);
     setUploadError(null);
+    setUploadSuccess(null);
 
-    try {
-      const formData = new FormData();
-      formData.append("session_id", sessionId);
-      formData.append("file", file);
+    let successCount = 0;
+    let lastUploadedPath = "";
+    for (let i = 0; i < total; i++) {
+      const file = fileArray[i];
+      // Update count as we progress through the batch.
+      setUploadingCount(total - i);
+      try {
+        const formData = new FormData();
+        formData.append("session_id", sessionId);
+        formData.append("file", file);
 
-      // Do NOT set Content-Type header — browser sets it with multipart boundary.
-      const resp = await fetch(`${baseUrl}/v1/upload-image`, {
-        method: "POST",
-        body: formData,
-      });
+        // Do NOT set Content-Type header — browser sets it with multipart boundary.
+        const resp = await fetch(`${baseUrl}/v1/upload-image`, {
+          method: "POST",
+          body: formData,
+        });
 
-      if (resp.ok) {
-        const data = await resp.json() as { path: string; filename: string };
-        // Insert path into terminal with trailing space so user can type after it.
-        handleTerminalData(data.path + " ");
-      } else {
-        let msg = "Upload failed";
-        if (resp.status === 413) msg = "File too large (max 10 MB)";
-        else if (resp.status === 400 || resp.status === 415) msg = "Invalid image type";
-        else if (resp.status === 404) msg = "Session not found";
-        setUploadError(msg);
+        if (resp.ok) {
+          const data = await resp.json() as { path: string; filename: string };
+          // Always attempt to insert — sendInput silently no-ops when disconnected.
+          handleTerminalData(data.path + " ");
+          successCount++;
+          lastUploadedPath = data.path;
+        } else {
+          let msg = "Upload failed";
+          if (resp.status === 413) msg = "File too large (max 10 MB)";
+          else if (resp.status === 404) msg = "Session not found";
+          setUploadError(msg);
+          if (uploadErrorTimerRef.current) clearTimeout(uploadErrorTimerRef.current);
+          uploadErrorTimerRef.current = setTimeout(() => setUploadError(null), 3000);
+          break;
+        }
+      } catch {
+        setUploadError("Network error");
         if (uploadErrorTimerRef.current) clearTimeout(uploadErrorTimerRef.current);
         uploadErrorTimerRef.current = setTimeout(() => setUploadError(null), 3000);
+        break;
       }
-    } catch {
-      setUploadError("Network error");
-      if (uploadErrorTimerRef.current) clearTimeout(uploadErrorTimerRef.current);
-      uploadErrorTimerRef.current = setTimeout(() => setUploadError(null), 3000);
-    } finally {
-      setIsUploading(false);
     }
-  }, [sessionId, baseUrl, handleTerminalData]);
+
+    setUploadingCount(0);
+    if (successCount > 0) {
+      // If terminal is disconnected, the path silently dropped — copy it to clipboard
+      // and show the filename so the user can see what was uploaded.
+      if (!isConnected && lastUploadedPath) {
+        navigator.clipboard?.writeText(lastUploadedPath).catch(() => {});
+      }
+      const label = successCount === 1 && lastUploadedPath
+        ? lastUploadedPath.split("/").pop() ?? "file"
+        : `${successCount} files`;
+      const msg = isConnected ? `✓ ${label} inserted` : `✓ ${label} saved — path copied`;
+      setUploadSuccess(msg);
+      if (uploadSuccessTimerRef.current) clearTimeout(uploadSuccessTimerRef.current);
+      uploadSuccessTimerRef.current = setTimeout(() => setUploadSuccess(null), 4000);
+    }
+  }, [sessionId, baseUrl, handleTerminalData, isConnected]);
+
+  // Synchronous click handlers — MUST NOT have await before .click() (iOS Safari requirement).
+  const handleCameraButtonClick = useCallback(() => {
+    cameraInputRef.current?.click();
+  }, []);
+
+  const handleGalleryButtonClick = useCallback(() => {
+    galleryInputRef.current?.click();
+  }, []);
+
+  const handleFilesButtonClick = useCallback(() => {
+    filesInputRef.current?.click();
+  }, []);
 
   const handleClear = () => {
     if (xtermRef.current && xtermRef.current.terminal) {
@@ -1246,23 +1294,66 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
               >
                 {pasteError ? `⚠️ ${pasteError}` : '📎 Paste'}
               </button>
-              {/* Hidden file input — no capture attribute so iOS shows camera+library+browse */}
+              {/* Hidden inputs for the three upload modes */}
+              {/* Camera — capture="environment" triggers native camera on Android/iOS */}
               <input
-                ref={fileInputRef}
+                ref={cameraInputRef}
                 type="file"
                 accept="image/*"
+                capture="environment"
                 style={{ display: "none" }}
-                onChange={handleFileUpload}
+                onChange={handleFilesUpload}
                 aria-hidden="true"
               />
+              {/* Gallery — multi-select photo picker */}
+              <input
+                ref={galleryInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                style={{ display: "none" }}
+                onChange={handleFilesUpload}
+                aria-hidden="true"
+              />
+              {/* Files — any file type, multi-select */}
+              <input
+                ref={filesInputRef}
+                type="file"
+                accept="*/*"
+                multiple
+                style={{ display: "none" }}
+                onChange={handleFilesUpload}
+                aria-hidden="true"
+              />
+              {/* Camera button — hidden on desktop (pointer: fine = mouse), visible on touch */}
+              <button
+                className={`${styles.toolbarButton} ${styles.mobileOnlyUpload}`}
+                onClick={handleCameraButtonClick}
+                disabled={uploadingCount > 0}
+                title="Take a photo — opens camera directly"
+                aria-label={uploadingCount > 0 ? `Uploading ${uploadingCount} file(s)...` : "Take photo with camera"}
+              >
+                {uploadingCount > 0 ? `⏳ ${uploadingCount}…` : "📷"}
+              </button>
+              {/* Gallery button — always visible */}
               <button
                 className={styles.toolbarButton}
-                onClick={handleImageButtonClick}
-                disabled={isUploading}
-                title="Upload image from camera or photo library — saves to session directory and inserts path"
-                aria-label={isUploading ? "Uploading image..." : "Attach image from camera or gallery"}
+                onClick={handleGalleryButtonClick}
+                disabled={uploadingCount > 0}
+                title="Attach image(s) from gallery — multi-select supported"
+                aria-label={uploadingCount > 0 ? `Uploading ${uploadingCount} file(s)...` : "Attach images from gallery"}
               >
-                {isUploading ? "⏳ Uploading..." : uploadError ? `⚠️ ${uploadError}` : "📷 Image"}
+                {uploadSuccess ? `✅ ${uploadSuccess}` : uploadError ? `⚠️ ${uploadError}` : uploadingCount > 0 ? `⏳ ${uploadingCount}…` : "🖼️ Gallery"}
+              </button>
+              {/* Files button — any file type, always visible */}
+              <button
+                className={styles.toolbarButton}
+                onClick={handleFilesButtonClick}
+                disabled={uploadingCount > 0}
+                title="Attach any file(s) — multi-select, all types accepted"
+                aria-label={uploadingCount > 0 ? `Uploading ${uploadingCount} file(s)...` : "Attach files"}
+              >
+                {uploadingCount > 0 ? `⏳ ${uploadingCount}…` : "📁 Files"}
               </button>
               {/* Secondary actions — inline on desktop, hidden on mobile (shown in overflow row) */}
               <div className={styles.secondaryGroup} data-testid="toolbar-secondary">

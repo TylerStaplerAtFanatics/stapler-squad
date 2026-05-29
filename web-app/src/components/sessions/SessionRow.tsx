@@ -7,6 +7,7 @@ import { SessionActionsOverflow, SessionActionsOverflowHandle } from "./SessionA
 import { SubStatusChip } from "./SubStatusChip";
 import {
   row,
+  rowPaused,
   statusDot,
   nameCell as nameCellStyle,
   name as nameStyle,
@@ -14,6 +15,8 @@ import {
   path as pathStyle,
   elapsed as elapsedStyle,
   actions as actionsStyle,
+  memoryBadge,
+  rowMemoryPressure,
 } from "./SessionRow.css";
 
 interface SessionRowProps {
@@ -42,6 +45,7 @@ function getStatusDotValue(status: SessionStatus): string {
     case SessionStatus.READY:
       return "idle";
     case SessionStatus.PAUSED:
+      return "paused-session";
     case SessionStatus.STOPPED:
       return "paused";
     case SessionStatus.LOADING:
@@ -76,6 +80,7 @@ function getAgentEmoji(program: string): string {
   if (p.includes("copilot")) return "◈";
   if (p.includes("gpt") || p.includes("openai")) return "◉";
   if (p.includes("gemini")) return "◆";
+  if (p.includes("agy") || p.includes("antigravity")) return "◆";
   return "◇";
 }
 
@@ -97,6 +102,7 @@ export function SessionRow({
   const overflowRef = useRef<SessionActionsOverflowHandle>(null);
 
   const dotStatus = getStatusDotValue(session.status);
+  const isPaused = session.status === SessionStatus.PAUSED;
   const lastActivity = getLastActivity(session);
   const elapsedText = formatElapsed(lastActivity ?? session.updatedAt);
   const displayName = session.branch || session.title;
@@ -115,13 +121,18 @@ export function SessionRow({
 
   return (
     <li
-      className={row}
+      className={[
+        row,
+        Number(session.estimatedSavingsMb ?? 0n) > 0 ? rowMemoryPressure : "",
+        isPaused ? rowPaused : "",
+      ].filter(Boolean).join(" ")}
       data-testid="session-row"
+      data-paused={isPaused ? "true" : undefined}
       onClick={onClick}
       onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
       tabIndex={0}
-      aria-label={`Session ${session.title}, status: ${dotStatus}, program: ${session.program}`}
+      aria-label={`Session ${session.title}, status: ${isPaused ? "paused" : dotStatus}, program: ${session.program}`}
     >
       {/* Status dot */}
       <Tooltip label={`Status: ${dotStatus}`}>
@@ -163,6 +174,13 @@ export function SessionRow({
       >
         {getAgentEmoji(session.program)}
       </span>
+
+      {/* Memory usage badge */}
+      {Number(session.memoryRssMb ?? 0n) > 0 && (
+        <span className={memoryBadge} aria-label={`${Number(session.memoryRssMb)} MB`}>
+          {Number(session.memoryRssMb)} MB
+        </span>
+      )}
 
       {/* Elapsed time */}
       <time

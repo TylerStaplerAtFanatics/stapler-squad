@@ -99,6 +99,9 @@ func (Session) Fields() []ent.Field {
 		field.Bool("hidden").
 			Default(false).
 			Comment("When true, session is excluded from the default session list and review queue."),
+		field.String("pause_reason").
+			Optional().
+			Comment("Reason the session was paused: manual, auto:inactivity, auto:session_limit, auto:resource. Empty when never paused."),
 	}
 }
 
