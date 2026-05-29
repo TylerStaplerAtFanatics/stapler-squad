@@ -214,8 +214,8 @@ func (p *Pool) call(ctx context.Context, key FeatureKey, systemPrompt, userPromp
 
 	go func() {
 		defer close(ch)
-		defer func() { _ = stop() }()
 		defer func() { <-p.concurrencySem }()
+		defer func() { _ = stop() }()
 
 		send := func(chunk StreamChunk) bool {
 			select {
