@@ -24,6 +24,10 @@ runs:
       shell: bash
       run: buf generate
 
+    - name: Generate ent ORM code
+      shell: bash
+      run: go generate ./session/ent/
+
     - name: Build web UI
       shell: bash
       working-directory: web-app
