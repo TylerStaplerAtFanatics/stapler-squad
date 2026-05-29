@@ -111,6 +111,10 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     resizeCount: 0,
   });
 
+  // Preload xterm.js chunk eagerly so it is browser-cached before the user opens
+  // the terminal pane, eliminating the lazy-load delay on first interaction.
+  useEffect(() => { void import("./XtermTerminal"); }, []);
+
   const logTerminalMetrics = useCallback(() => {
     const m = metricsRef.current;
     if (!m.firstOutputTime) return;

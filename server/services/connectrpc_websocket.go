@@ -554,7 +554,11 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 			log.Error("[streamViaControlMode] failed to resize", "err", err)
 		} else {
 			// Wait for TUI to complete its full redraw using quiescence detection
+			quiescenceStart := time.Now()
 			waitForQuiescence(quiescenceCh, 500*time.Millisecond, 50*time.Millisecond)
+			if elapsed := time.Since(quiescenceStart); elapsed >= 500*time.Millisecond-5*time.Millisecond {
+				log.Warn("[streamViaControlMode] initial quiescence timed out; session may be stalled", "elapsed", elapsed.Round(time.Millisecond), "session", sessionID)
+			}
 			log.Info("[streamViaControlMode] tmux resized, redraw complete", "cols", targetCols, "rows", targetRows)
 		}
 	} else {
