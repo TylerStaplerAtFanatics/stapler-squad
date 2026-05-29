@@ -29,7 +29,7 @@ type CreateSessionResult struct {
 func registerLifecycleTools(s *mcpserver.MCPServer, lh *lifecycleHandlers) {
 	s.AddTool(
 		mcpgo.NewTool("create_session",
-			mcpgo.WithDescription("Create and start a new Stapler Squad session (tmux + optional git worktree). By default, injects this MCP server into the child session's .claude/settings.local.json so the new session can use all Stapler Squad tools. Returns the new session. Rate-limited to 3 per minute."),
+			mcpgo.WithDescription("Create and start a new Stapler Squad session (tmux + optional git worktree). By default, injects this MCP server into the child session's .claude/settings.local.json so the new session can use all Stapler Squad tools. Returns the new session. Rate-limited to 3 per minute.\n\nNOTE: Do not use this tool just to run commands or execute tasks — spawn an Agent subagent instead. Reserve create_session for cases where a USER INTERACTABLE, persistent tmux session is genuinely needed (e.g. long-running background work, multi-turn Claude Code sessions the user will actively monitor or control)."),
 			mcpgo.WithString("title", mcpgo.Description("Unique name for the session"), mcpgo.Required()),
 			mcpgo.WithString("path", mcpgo.Description("Absolute path to the repository root"), mcpgo.Required()),
 			mcpgo.WithString("branch", mcpgo.Description("Git branch name (creates if missing; required for new_worktree session type)")),
