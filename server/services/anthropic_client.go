@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	anthropicAPIURL = "https://api.anthropic.com/v1/messages"
-	anthropicModel  = "claude-haiku-4-5-20251001"
+	anthropicAPIURL  = "https://api.anthropic.com/v1/messages"
+	anthropicModel   = "claude-haiku-4-5-20251001"
 	anthropicVersion = "2023-06-01"
 )
 

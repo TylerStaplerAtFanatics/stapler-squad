@@ -35,10 +35,10 @@ func (m *mockSessionStopper) KillTmuxSessionByTitle(_ context.Context, _ string)
 }
 
 type mockCreateCall struct {
-	title  string
-	path   string
-	prompt string
-	tags   []string
+	title   string
+	path    string
+	prompt  string
+	tags    []string
 	oneShot bool
 }
 
@@ -340,8 +340,8 @@ func TestCreateBacklogItem_SkipsTriageWhenSkipTriageTrue(t *testing.T) {
 	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
 
 	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
-		Title:     "item with repo",
-		RepoPath:  "/tmp/some-repo",
+		Title:      "item with repo",
+		RepoPath:   "/tmp/some-repo",
 		SkipTriage: true,
 	}))
 	require.NoError(t, err)

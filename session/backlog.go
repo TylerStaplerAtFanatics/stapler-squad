@@ -161,10 +161,10 @@ func CanTransitionBacklog(from, to BacklogStatus) bool {
 
 // Sentinel errors for transition guards.
 var (
-	ErrACRequired             = errors.New("acceptance criteria required before marking ready")
-	ErrPlanRequired           = errors.New("plan must be approved or skip_planning must be true before spawning work session")
-	ErrPlanArtifactsRequired  = errors.New("plan artifacts path is required when planning is not skipped")
-	ErrVerdictRequired        = errors.New("PASS verdict or manual override required before marking done")
+	ErrACRequired            = errors.New("acceptance criteria required before marking ready")
+	ErrPlanRequired          = errors.New("plan must be approved or skip_planning must be true before spawning work session")
+	ErrPlanArtifactsRequired = errors.New("plan artifacts path is required when planning is not skipped")
+	ErrVerdictRequired       = errors.New("PASS verdict or manual override required before marking done")
 )
 
 // BacklogItemTransitionInput carries the fields needed by TransitionGuard.

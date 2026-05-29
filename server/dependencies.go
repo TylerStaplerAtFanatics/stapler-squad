@@ -758,9 +758,8 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Warn("could not determine home dir for InsightsService token store", "err", homeDirErr)
 	}
 
-
 	return &RuntimeDeps{
-		HeadlessPool: headlessPool,
+		HeadlessPool:            headlessPool,
 		ServiceDeps:             svc,
 		Instances:               instances,
 		ReactiveQueueMgr:        reactiveQueueMgr,

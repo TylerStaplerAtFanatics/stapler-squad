@@ -16,11 +16,11 @@ const defaultSyncInterval = 15 * time.Minute
 
 // SyncLoop drives periodic sync of all enabled ItemSources.
 type SyncLoop struct {
-	storage   *Storage
-	registry  *PluginRegistry
-	interval  time.Duration
-	stopCh    chan struct{}
-	keyFunc   func() ([]byte, error) // provides encryption key for decryption
+	storage  *Storage
+	registry *PluginRegistry
+	interval time.Duration
+	stopCh   chan struct{}
+	keyFunc  func() ([]byte, error) // provides encryption key for decryption
 }
 
 // NewSyncLoop creates a SyncLoop with the default interval and no key provider.

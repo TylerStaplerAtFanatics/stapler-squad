@@ -264,7 +264,6 @@ func testVCSReaderContract(t *testing.T, r unfinished.VCSReader) {
 	})
 }
 
-
 // TestGoGitVCSReader_AheadBehind_BehindCount verifies the "behind" direction of
 // AheadBehind when the base branch has commits that the current branch lacks.
 func TestGoGitVCSReader_AheadBehind_BehindCount(t *testing.T) {
@@ -412,11 +411,11 @@ func TestFakeVCSReader(t *testing.T) {
 			{Path: "/repo/main", Branch: "feat/x"},
 			{Path: "/repo/wt2", Branch: "feat/y"},
 		},
-		defaultBranch:    "origin/main",
-		hasUncommitted:   map[string]bool{"/repo/wt2": true},
-		aheadCounts:      map[string]int{"/repo/main": 3},
-		commitMessages:   map[string][]string{"/repo/main": {"abc1234 feat: add thing"}},
-		diffStatFiles:    map[string]int{"/repo/wt2": 2},
+		defaultBranch:  "origin/main",
+		hasUncommitted: map[string]bool{"/repo/wt2": true},
+		aheadCounts:    map[string]int{"/repo/main": 3},
+		commitMessages: map[string][]string{"/repo/main": {"abc1234 feat: add thing"}},
+		diffStatFiles:  map[string]int{"/repo/wt2": 2},
 	}
 
 	scanner := unfinished.NewScannerWithReader(nil, nil, fake)
@@ -583,8 +582,8 @@ func testVCSReaderContractJJ(t *testing.T, r *unfinished.JJVCSReader) {
 
 func TestLinesDiff(t *testing.T) {
 	cases := []struct {
-		name            string
-		old, new        string
+		name             string
+		old, new         string
 		wantIns, wantDel int
 	}{
 		{

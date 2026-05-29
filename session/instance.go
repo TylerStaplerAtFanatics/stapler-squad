@@ -40,7 +40,6 @@ const (
 	Ready = Active
 	// Deprecated: use Creating.
 	Loading = Creating
-
 )
 
 // String returns a human-readable name for the status.
@@ -241,7 +240,6 @@ type Instance struct {
 	// hibernateReason records why this session was hibernated.
 	// Values: "manual", "idle", "resource_pressure". Read by hibernateProcess.
 	hibernateReason string
-
 
 	// Claude Code session information for persistence and re-attachment
 	claudeSession *ClaudeSessionData

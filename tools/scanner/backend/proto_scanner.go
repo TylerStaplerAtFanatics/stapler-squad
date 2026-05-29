@@ -117,9 +117,9 @@ var methodToID = map[string]string{
 	"UpdateUnfinishedWorkConfig": "unfinished:update-config",
 	"GetWorktreeDiff":            "unfinished:get-worktree-diff",
 	// Error tracking RPCs
-	"LogClientEvents":        "client-event:log",
-	"ListErrors":             "error:list",
-	"AcknowledgeError":       "error:acknowledge",
+	"LogClientEvents":  "client-event:log",
+	"ListErrors":       "error:list",
+	"AcknowledgeError": "error:acknowledge",
 	// Conversation state RPCs
 	"ClearConversationState": "session:clear-conversation-state",
 	// Backlog RPCs (BacklogService in backlog.proto)

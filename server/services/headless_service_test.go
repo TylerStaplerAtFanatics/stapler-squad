@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/gen/proto/go/session/v1/sessionv1connect"
 	"github.com/tstapler/stapler-squad/session/headless"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // firstCallJSONHS returns a valid first-call JSON response for headless service tests.
@@ -89,7 +89,8 @@ func TestHeadlessService_RunHeadlessCall_InvalidFeatureKey_ReturnsInvalidArgumen
 		}))
 		if err == nil {
 			// Some servers return error on first Receive.
-			for stream.Receive() {}
+			for stream.Receive() {
+			}
 			err = stream.Err()
 			stream.Close()
 		}
@@ -128,7 +129,8 @@ func TestHeadlessService_RunHeadlessCall_AllowedFeatureKeys(t *testing.T) {
 			t.Logf("allowed key %q returned error at stream creation: %v (may be expected if pool exhausted)", key, err)
 			continue
 		}
-		for stream.Receive() {}
+		for stream.Receive() {
+		}
 		if streamErr := stream.Err(); streamErr != nil {
 			// Check it's not CodeInvalidArgument.
 			var connectErr *connect.Error
@@ -153,7 +155,8 @@ func TestHeadlessService_RunHeadlessCall_PoolNil_ReturnsUnavailable(t *testing.T
 		UserPrompt: "prompt",
 	}))
 	if err == nil {
-		for stream.Receive() {}
+		for stream.Receive() {
+		}
 		err = stream.Err()
 		stream.Close()
 	}
@@ -182,7 +185,8 @@ func TestHeadlessService_RunHeadlessCall_ZeroTimeoutSeconds_UsesDefault(t *testi
 	require.NoError(t, err)
 	defer stream.Close()
 
-	for stream.Receive() {}
+	for stream.Receive() {
+	}
 	assert.NoError(t, stream.Err())
 }
 
@@ -208,7 +212,8 @@ func TestHeadlessService_RunHeadlessCall_ContextCancel_StopsSubprocess(t *testin
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for stream.Receive() {}
+		for stream.Receive() {
+		}
 	}()
 	select {
 	case <-done:
@@ -233,7 +238,8 @@ func TestHeadlessService_RunHeadlessCall_SystemPromptOverLimit_ReturnsInvalidArg
 		SystemPrompt: strings.Repeat("x", 100_001),
 	}))
 	if err == nil {
-		for stream.Receive() {}
+		for stream.Receive() {
+		}
 		err = stream.Err()
 		stream.Close()
 	}
@@ -259,7 +265,8 @@ func TestHeadlessService_RunHeadlessCall_UserPromptOverLimit_ReturnsInvalidArgum
 		UserPrompt: strings.Repeat("y", 100_001),
 	}))
 	if err == nil {
-		for stream.Receive() {}
+		for stream.Receive() {
+		}
 		err = stream.Err()
 		stream.Close()
 	}

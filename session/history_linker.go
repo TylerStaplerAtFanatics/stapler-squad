@@ -41,10 +41,10 @@ type HistoryLinker struct {
 	detector *HistoryFileDetector
 	watcher  *HistoryFileWatcher
 
-	mu              deadlock.RWMutex
-	instances       []*Instance
-	backoffs        map[string]*sessionBackoff
-	extraCallbacks  []func(string) // additional per-file callbacks (e.g. TokenStore)
+	mu             deadlock.RWMutex
+	instances      []*Instance
+	backoffs       map[string]*sessionBackoff
+	extraCallbacks []func(string) // additional per-file callbacks (e.g. TokenStore)
 }
 
 // NewHistoryLinkerFromRealInspector creates a HistoryLinker backed by the real

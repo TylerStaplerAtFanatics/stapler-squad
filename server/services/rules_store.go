@@ -18,22 +18,22 @@ import (
 // RuleSpec is the JSON-serializable form of a Rule.
 // CommandPattern and FilePattern are stored as strings (compiled on load).
 type RuleSpec struct {
-	ID                  string   `json:"id"`
-	Name                string   `json:"name"`
-	ToolName            string   `json:"tool_name,omitempty"`
-	ToolPattern         string   `json:"tool_pattern,omitempty"`
-	ToolCategory        string   `json:"tool_category,omitempty"`
-	CommandPattern      string   `json:"command_pattern,omitempty"`
-	FilePattern         string   `json:"file_pattern,omitempty"`
-	CriteriaPrograms    []string `json:"criteria_programs,omitempty"`
-	CriteriaSubcommands []string `json:"criteria_subcommands,omitempty"`
-	Decision            string   `json:"decision"`   // "auto_allow" | "auto_deny" | "escalate"
-	RiskLevel           string   `json:"risk_level"` // "low" | "medium" | "high" | "critical"
-	Reason              string   `json:"reason,omitempty"`
-	Alternative         string   `json:"alternative,omitempty"`
-	Priority            int      `json:"priority"`
-	Enabled             bool     `json:"enabled"`
-	Source              string   `json:"source"` // "user" | "seed" | "claude-settings"
+	ID                  string    `json:"id"`
+	Name                string    `json:"name"`
+	ToolName            string    `json:"tool_name,omitempty"`
+	ToolPattern         string    `json:"tool_pattern,omitempty"`
+	ToolCategory        string    `json:"tool_category,omitempty"`
+	CommandPattern      string    `json:"command_pattern,omitempty"`
+	FilePattern         string    `json:"file_pattern,omitempty"`
+	CriteriaPrograms    []string  `json:"criteria_programs,omitempty"`
+	CriteriaSubcommands []string  `json:"criteria_subcommands,omitempty"`
+	Decision            string    `json:"decision"`   // "auto_allow" | "auto_deny" | "escalate"
+	RiskLevel           string    `json:"risk_level"` // "low" | "medium" | "high" | "critical"
+	Reason              string    `json:"reason,omitempty"`
+	Alternative         string    `json:"alternative,omitempty"`
+	Priority            int       `json:"priority"`
+	Enabled             bool      `json:"enabled"`
+	Source              string    `json:"source"` // "user" | "seed" | "claude-settings"
 	CreatedAt           time.Time `json:"created_at"`
 }
 
