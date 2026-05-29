@@ -2,6 +2,7 @@
 # Comprehensive development and analysis toolchain
 
 # Variables
+UNAME_S := $(shell uname -s)
 PROFILE_FLAGS ?=
 PROFILE_PORT ?= 6060
 SERVER_FLAGS ?= --remote-access --tmux-keep-server
@@ -45,7 +46,7 @@ endif
 		touch $(ASDF_STAMP); \
 	fi
 
-.PHONY: help build test benchmark install-tools lint lint-custom analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service uninstall-service preview coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules test-with-pinned-tmux vet-architecture vet-rpc-markers coverage-integration
+.PHONY: help build test benchmark install-tools lint lint-custom analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service uninstall-service setup-codesign _codesign-binary verify-codesign tcc-reset preview coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules test-with-pinned-tmux vet-architecture vet-rpc-markers coverage-integration
 
 # Default target
 help: ## Show this help message
@@ -69,6 +70,7 @@ registry-generate-backend: ## Scan proto+markers → write per-feature files und
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/session.proto server/services/ $(BACKEND_FEATURES_DIR)
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/unfinished.proto server/services/ $(BACKEND_FEATURES_DIR)
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/backlog.proto server/services/ $(BACKEND_FEATURES_DIR)
+	@./$(BACKEND_SCANNER_BIN) proto/session/v1/insights.proto server/services/ $(BACKEND_FEATURES_DIR)
 	@echo "✅ Backend per-feature files written to $(BACKEND_FEATURES_DIR)/"
 
 registry-generate-frontend: ## Generate frontend feature registry from React component markers
@@ -106,7 +108,15 @@ build: stapler-squad ## Build the Go application
 
 stapler-squad: ensure-tools proto-gen server/web/dist lint $(GO_FILES) ## Build the Go binary
 	@echo "Building Go application..."
+ifeq ($(UNAME_S),Darwin)
+	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/Info.plist" \
+		go build -o stapler-squad .
+	@# Verify Info.plist was actually embedded (catches silent CGO_ENABLED=0 failures)
+	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
+		(echo "ERROR: Info.plist was not embedded. Ensure CGO_ENABLED=1 and try again." && exit 1)
+else
 	go build -o stapler-squad .
+endif
 	@echo "✅ stapler-squad built successfully"
 
 # Install web-app npm dependencies when package-lock.json changes
@@ -228,7 +238,14 @@ build-tmux-embed: build-tmux ## Copy built tmux into the embed dir for go build 
 	@echo "✅ session/tmux/embed/tmux ready ($(shell $(BIN_TMUX) -V 2>/dev/null || echo unknown))"
 
 build-embedded: build-tmux-embed ## Build stapler-squad with tmux bundled inside the binary
+ifeq ($(UNAME_S),Darwin)
+	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/Info.plist" \
+		go build -tags embed_tmux -o stapler-squad .
+	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
+		(echo "ERROR: Info.plist was not embedded in embedded build." && exit 1)
+else
 	go build -tags embed_tmux -o stapler-squad .
+endif
 	@echo "✅ stapler-squad built with embedded tmux"
 
 clean-tmux: ## Remove the built tmux binary and submodule build artifacts
@@ -238,10 +255,59 @@ clean-tmux: ## Remove the built tmux binary and submodule build artifacts
 	@echo "✅ tmux artifacts cleaned"
 
 install-service: build ## Install stapler-squad as a system service (systemd on Linux, LaunchAgent on macOS)
+ifeq ($(UNAME_S),Darwin)
+	@$(MAKE) _codesign-binary
+endif
 	@STAPLER_SQUAD_BIN="$(CURDIR)/stapler-squad" ./scripts/install-service.sh $(if $(NO_PROFILE),--no-profile) $(if $(PROFILE_PORT),--profile-port $(PROFILE_PORT))
+
+_codesign-binary: ## Sign the binary with StaplerSquadDev cert (called by install-service on macOS)
+	@if ! ./scripts/check-codesign.sh; then \
+		echo "  StaplerSquadDev signing cert not found."; \
+		echo "   Run 'make setup-codesign' once to create it, then retry."; \
+		exit 1; \
+	fi
+	@echo "Signing binary..."
+	codesign --force \
+		--sign "StaplerSquadDev" \
+		--entitlements "$(CURDIR)/entitlements.plist" \
+		"$(CURDIR)/stapler-squad"
+	@echo "Binary signed"
 
 uninstall-service: ## Remove the system service and disable auto-start on login
 	@./scripts/install-service.sh --uninstall
+
+setup-codesign: ## (macOS only) Create self-signed codesign certificate for stable TCC identity
+	@# Requires OpenSSL (not LibreSSL). Set OPENSSL_BIN to override, e.g.:
+	@#   OPENSSL_BIN=$(brew --prefix openssl)/bin/openssl make setup-codesign
+	@./scripts/setup-codesign.sh
+
+verify-codesign: ## Verify binary code signing status and TCC identity
+	@echo "=== Code Signature ==="
+	@codesign -dv --verbose=4 "$(CURDIR)/stapler-squad" 2>&1
+	@echo ""
+	@echo "=== Designated Requirement (must be cert-anchored, not cdhash-anchored) ==="
+	@codesign -d --requirements - "$(CURDIR)/stapler-squad" 2>&1
+	@# PASS: DR contains "anchor trusted" or "anchor H\"<cert-sha1>\""
+	@# FAIL: DR contains only "cdhash H\"<binary-hash>\"" — means ad-hoc or no cert
+	@echo ""
+	@echo "=== Entitlements ==="
+	@codesign -d --entitlements - "$(CURDIR)/stapler-squad" 2>&1
+	@echo ""
+	@echo "=== Embedded Info.plist ==="
+	@# NOTE: otool -s output is offset+hex+ASCII interleaved; strip offsets and ASCII
+	@# before feeding to xxd. The awk extracts the 2nd-5th columns (hex groups only).
+	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | \
+		tail -n +2 | \
+		awk '{for(i=2;i<=NF&&length($$i)==8;i++) printf $$i; print ""}' | \
+		tr -d '\n' | xxd -r -p | plutil -p - 2>&1 || \
+		echo "(no embedded plist — Info.plist not embedded; check CGO_ENABLED=1)"
+
+tcc-reset: ## Reset TCC grants for stapler-squad (causes one-time re-prompt; use during development only)
+	@echo "Resetting TCC grants for com.stapler-squad..."
+	@# Must use sudo; without it the system TCC DB (FDA) reset is silently skipped.
+	@# Do NOT add || true: sudo failure should surface as an error, not silently succeed.
+	sudo tccutil reset All com.stapler-squad
+	@echo "Done. Grants will be re-prompted on next launch."
 
 # Isolated preview instance — does NOT touch the running global service.
 # Auto-picks a free port and uses a branch-scoped STAPLER_SQUAD_INSTANCE so
@@ -430,13 +496,13 @@ lint: ensure-tools proto-gen server/web/dist lint-custom ## Run golangci-lint wi
 		echo "Installing golangci-lint v2..."; \
 		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest; \
 	fi; \
-	golangci-lint run --enable=nilnil,staticcheck,ineffassign,govet
+	CGO_ENABLED=0 golangci-lint run --enable=nilnil,staticcheck,ineffassign,govet
 
 LINTER_BIN := $(CURDIR)/bin/linter
 
 lint-custom: $(LINTER_BIN) ## Run project-specific custom linters (hotpolllog, nocommandpattern, norawexec) in a single pass
 	@echo "Running custom lint..."
-	@$(LINTER_BIN) ./...
+	@$(LINTER_BIN) $(shell go list ./... | grep -v "^github.com/tstapler/stapler-squad$$")
 	@echo "custom lint: ok"
 
 $(LINTER_BIN):

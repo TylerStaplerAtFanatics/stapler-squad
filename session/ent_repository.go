@@ -17,6 +17,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/predicate"
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/session"
+	entshell "github.com/tstapler/stapler-squad/session/ent/shell"
 	"github.com/tstapler/stapler-squad/session/ent/tag"
 	"github.com/tstapler/stapler-squad/session/ent/worktree"
 
@@ -188,6 +189,9 @@ func (r *EntRepository) Create(ctx context.Context, data InstanceData) error {
 	}
 	if data.OneShot {
 		sessionCreate.SetOneShot(data.OneShot)
+	}
+	if data.Hidden {
+		sessionCreate.SetHidden(data.Hidden)
 	}
 
 	// Link project if specified (look up by name)
@@ -392,7 +396,13 @@ func (r *EntRepository) Update(ctx context.Context, data InstanceData) error {
 	if data.MCPServerURL != "" {
 		sessionUpdate.SetMcpServerURL(data.MCPServerURL)
 	}
+	if data.PauseReason != "" {
+		sessionUpdate.SetPauseReason(data.PauseReason)
+	} else {
+		sessionUpdate.ClearPauseReason()
+	}
 	sessionUpdate.SetOneShot(data.OneShot)
+	sessionUpdate.SetHidden(data.Hidden)
 
 	// Update project link (look up by name or clear if empty)
 	if data.ProjectID != "" {
@@ -879,6 +889,7 @@ func (r *EntRepository) sessionToInstanceData(sess *ent.Session) *InstanceData {
 		LastOutputSignature: sess.LastOutputSignature,
 		MCPServerURL:        sess.McpServerURL,
 		OneShot:             sess.OneShot,
+		Hidden:              sess.Hidden,
 	}
 
 	// Set optional time fields
@@ -907,6 +918,7 @@ func (r *EntRepository) sessionToInstanceData(sess *ent.Session) *InstanceData {
 		data.LastPromptDetected = *sess.LastPromptDetected
 	}
 	data.LastPromptSignature = sess.LastPromptSignature
+	data.PauseReason = sess.PauseReason
 
 	// Set session type
 	if sess.SessionType != "" {
@@ -1385,6 +1397,69 @@ func (r *EntRepository) AssignSessionsToProject(ctx context.Context, projectName
 		if err := r.client.Session.UpdateOne(sess).SetProjectID(proj.ID).Exec(ctx); err != nil {
 			return fmt.Errorf("failed to assign session '%s' to project '%s': %w", title, projectName, err)
 		}
+	}
+	return nil
+}
+
+// ---- Shell repository methods ----
+
+// CreateShell persists a new Shell entity for the given session title.
+func (r *EntRepository) CreateShell(ctx context.Context, sessionTitle string, data ShellData) (*ent.Shell, error) {
+	sess, err := r.client.Session.Query().Where(session.Title(sessionTitle)).Only(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("CreateShell: session '%s' not found: %w", sessionTitle, err)
+	}
+	sh, err := r.client.Shell.Create().
+		SetID(data.ID).
+		SetName(data.Name).
+		SetCommand(data.Command).
+		SetNillableWorkingDir(nilIfEmpty(data.WorkingDir)).
+		SetTmuxSessionName(data.TmuxSessionName).
+		SetStatus(string(ShellStatusRunning)).
+		SetOrderIndex(data.OrderIndex).
+		SetSessionID(sess.ID).
+		Save(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("CreateShell: %w", err)
+	}
+	return sh, nil
+}
+
+// ListShells returns all shells for the given session title, ordered by order_index.
+func (r *EntRepository) ListShells(ctx context.Context, sessionTitle string) ([]*ent.Shell, error) {
+	sess, err := r.client.Session.Query().Where(session.Title(sessionTitle)).Only(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ListShells: session '%s' not found: %w", sessionTitle, err)
+	}
+	shells, err := r.client.Shell.Query().
+		Where(entshell.HasSessionWith(session.ID(sess.ID))).
+		Order(ent.Asc(entshell.FieldOrderIndex)).
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ListShells: %w", err)
+	}
+	return shells, nil
+}
+
+// UpdateShellStatus updates the status (and optionally exit code + stopped_at) for a shell.
+func (r *EntRepository) UpdateShellStatus(ctx context.Context, shellID, status string, exitCode *int) error {
+	upd := r.client.Shell.UpdateOneID(shellID).SetStatus(status)
+	if exitCode != nil {
+		upd = upd.SetExitCode(*exitCode)
+	}
+	if status != string(ShellStatusRunning) {
+		upd = upd.SetStoppedAt(time.Now())
+	}
+	if err := upd.Exec(ctx); err != nil {
+		return fmt.Errorf("UpdateShellStatus: %w", err)
+	}
+	return nil
+}
+
+// DeleteShell removes a Shell entity by ID.
+func (r *EntRepository) DeleteShell(ctx context.Context, shellID string) error {
+	if err := r.client.Shell.DeleteOneID(shellID).Exec(ctx); err != nil {
+		return fmt.Errorf("DeleteShell: %w", err)
 	}
 	return nil
 }

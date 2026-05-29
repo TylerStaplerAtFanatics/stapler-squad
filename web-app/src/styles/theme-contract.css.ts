@@ -166,11 +166,11 @@ export const breakpoints = {
 // Adding a new layer requires updating this map, which makes ordering conflicts visible.
 export const zIndex = {
   base: 0,
+  tableHeader: 1,   // sticky <th> within a scroll container — only competes with sibling tds
   raised: 10,
   header: 100,
   dropdown: 500,
   modal: 1000,
-  tooltip: 1100,
   // Navigation overlay stack (1040–1065).  Values chosen so the bottom nav and its
   // sub-menus sit above all other page content, and the mobile pane picker sits above the nav.
   bottomNavMoreBackdrop: 1040,
@@ -178,4 +178,10 @@ export const zIndex = {
   bottomNav: 1050,
   mobilePickerBackdrop: 1060,
   mobilePickerSheet: 1065,
+  // Full-page dialog overlays must sit above the bottom nav stack.
+  dialog: 1070,
+  // Toast sits above dialog-level overlays but below the Radix modal overlay (1100),
+  // so notifications are hidden behind modals rather than covering form actions.
+  toast: 1080,
+  tooltip: 1100,
 } as const;

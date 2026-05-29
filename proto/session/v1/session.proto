@@ -317,6 +317,26 @@ service SessionService {
   // ResumeHibernatedSession re-launches the AI process for a Hibernated session,
   // transitioning it back to Active status.
   rpc ResumeHibernatedSession(ResumeHibernatedSessionRequest) returns (ResumeHibernatedSessionResponse) {}
+
+  // ============================================================================
+  // Custom Shell RPCs
+  // ============================================================================
+
+  // SpawnShell creates and starts a new custom shell attached to a session.
+  // The shell runs as an independent sibling tmux session.
+  rpc SpawnShell(SpawnShellRequest) returns (SpawnShellResponse) {}
+
+  // StopShell stops a running custom shell.
+  rpc StopShell(StopShellRequest) returns (StopShellResponse) {}
+
+  // RestartShell stops a shell (if running) and relaunches it with the same command.
+  rpc RestartShell(RestartShellRequest) returns (RestartShellResponse) {}
+
+  // ListShells returns all custom shells for a session, sorted by order_index.
+  rpc ListShells(ListShellsRequest) returns (ListShellsResponse) {}
+
+  // DeleteShell stops a shell and removes it from storage.
+  rpc DeleteShell(DeleteShellRequest) returns (DeleteShellResponse) {}
 }
 
 // ListSessionsRequest allows filtering sessions by various criteria.
@@ -335,10 +355,17 @@ message ListSessionsRequest {
 
   // Filter by project ID (only return sessions in this project).
   optional string project_id = 5;
+
+  // When true, include hidden (system/background) sessions in results.
+  // Defaults to false — hidden sessions are excluded unless explicitly requested.
+  bool include_hidden = 6;
 }
 
 message ListSessionsResponse {
   repeated Session sessions = 1;
+  // System-wide memory usage percentage (0–100). Populated by the server on each response.
+  // Zero when measurement is unavailable (e.g., macOS without /proc).
+  float system_memory_pct = 2;
 }
 
 message GetSessionRequest {
@@ -440,6 +467,10 @@ message UpdateSessionRequest {
 
   // Update whether rate limit auto-resume is enabled for this session.
   optional bool rate_limit_enabled = 8;
+
+  // Reason for pausing (only meaningful when status is set to PAUSED).
+  // If empty when pausing, defaults to "manual" in the backend handler.
+  optional string pause_reason = 9;
 }
 
 message UpdateSessionResponse {
@@ -1967,6 +1998,78 @@ message GetEscapeAnalyticsSummaryResponse {
   double mangle_rate = 4;
 }
 
+// ============================================================================
+// Custom Shell Request / Response Messages
+// ============================================================================
+
+message SpawnShellRequest {
+  // Session to attach the shell to (uses session title as ID).
+  string session_id = 1;
+
+  // Human-readable name for the shell tab (defaults to basename of command).
+  string name = 2;
+
+  // Command to run (defaults to $SHELL or /bin/sh).
+  string command = 3;
+
+  // Working directory (defaults to session workspace root).
+  string working_dir = 4;
+}
+
+message SpawnShellResponse {
+  // The newly created shell.
+  Shell shell = 1;
+}
+
+message StopShellRequest {
+  // Session identifier.
+  string session_id = 1;
+
+  // Shell identifier.
+  string shell_id = 2;
+}
+
+message StopShellResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RestartShellRequest {
+  // Session identifier.
+  string session_id = 1;
+
+  // Shell identifier.
+  string shell_id = 2;
+}
+
+message RestartShellResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListShellsRequest {
+  // Session identifier.
+  string session_id = 1;
+}
+
+message ListShellsResponse {
+  // All shells for the session, sorted by order_index ascending.
+  repeated Shell shells = 1;
+}
+
+message DeleteShellRequest {
+  // Session identifier.
+  string session_id = 1;
+
+  // Shell identifier.
+  string shell_id = 2;
+}
+
+message DeleteShellResponse {
+  bool success = 1;
+  string message = 2;
+}
+
 message GenerateSuggestedRuleRequest {
   SuggestionSource source = 1;
   // For ANALYTICS_GAPS: number of days of history to analyze (1–90, default 7).
@@ -2007,5 +2110,3 @@ message ResumeHibernatedSessionRequest {
 message ResumeHibernatedSessionResponse {
   Session session = 1;
 }
-
-

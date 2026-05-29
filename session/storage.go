@@ -105,6 +105,9 @@ type InstanceData struct {
 	// OneShot runs claude in -p mode; session exits after task completes.
 	OneShot bool `json:"one_shot,omitempty"`
 
+	// Hidden excludes this session from the default session list and review queue.
+	Hidden bool `json:"hidden,omitempty"`
+
 	// ProjectID is the optional project this session belongs to.
 	ProjectID string `json:"project_id,omitempty"`
 
@@ -115,6 +118,11 @@ type InstanceData struct {
 	// MCPServerURL is the stapler-squad HTTP MCP endpoint passed to claude via
 	// --mcp-config on session start. Persisted so restarts re-inject the flag.
 	MCPServerURL string `json:"mcp_server_url,omitempty"`
+
+	// PauseReason records why this session was paused.
+	// Values: "manual", "auto:inactivity", "auto:session_limit", "auto:resource".
+	// Empty when session has never been paused.
+	PauseReason string `json:"pause_reason,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
@@ -242,6 +250,10 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 			log.Warn("skipping instance from repository", "session", data.Title, "err", err)
 			continue
 		}
+		// Inject shell repository so shell operations can persist to the DB.
+		if sr, ok := s.repo.(ShellRepository); ok {
+			inst.SetShellRepository(sr)
+		}
 		instances = append(instances, inst)
 	}
 	return instances, nil
@@ -292,7 +304,13 @@ func (s *Storage) AddInstance(instance *Instance) error {
 			return fmt.Errorf("failed to persist session %q: %w", data.Title, err)
 		}
 		// Unique constraint violation → session already exists, update instead.
-		return s.repo.Update(ctx, data)
+		if updateErr := s.repo.Update(ctx, data); updateErr != nil {
+			return updateErr
+		}
+	}
+	// Inject shell repository so shell operations can persist to the DB.
+	if sr, ok := s.repo.(ShellRepository); ok {
+		instance.SetShellRepository(sr)
 	}
 	return nil
 }
@@ -625,6 +643,17 @@ func (s *Storage) CreateItemSession(ctx context.Context, data ItemSessionData) (
 		return nil, fmt.Errorf("item sessions not supported by this storage backend")
 	}
 	return er.CreateItemSession(ctx, data)
+}
+
+// CreateItemSessionWithVerdict atomically creates an ItemSession and its initial
+// ReviewVerdict in a single transaction. Falls back gracefully if the backend is
+// not ent-based.
+func (s *Storage) CreateItemSessionWithVerdict(ctx context.Context, isData ItemSessionData, verdict ReviewVerdictData) (*ent.ItemSession, *ent.ReviewVerdict, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, nil, fmt.Errorf("item sessions not supported by this storage backend")
+	}
+	return er.CreateItemSessionWithVerdict(ctx, isData, verdict)
 }
 
 // ListItemSessions returns all ItemSessions for a given BacklogItem UUID string.

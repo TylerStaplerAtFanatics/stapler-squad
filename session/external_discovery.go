@@ -161,6 +161,9 @@ func (e *ExternalSessionDiscovery) handleNewSession(discovered *mux.DiscoveredSe
 		Permissions: GetMuxExternalPermissions(),
 	}
 
+	// Initialize the process manager for external instances.
+	instance.processManager = NewProcessManager(context.Background(), BackendTmux, ProcessManagerOptions{})
+
 	// UNIFIED ARCHITECTURE: Attach to the existing tmux session so external sessions
 	// use the same streaming/resize infrastructure as regular sessions.
 	// This enables GetPTYReader() to work, which is required for WebSocket streaming.

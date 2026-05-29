@@ -25,6 +25,7 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/detection"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/namegen"
 	"github.com/tstapler/stapler-squad/session/prompts"
 	"github.com/tstapler/stapler-squad/session/search"
@@ -126,6 +127,14 @@ type SessionService struct {
 	// analyticsClient is the ent client for the analytics database (escape events, etc.).
 	// May be nil when escape analytics is disabled or in tests that don't need it.
 	analyticsClient *ent.Client
+
+	// memoryCacheReader provides per-session RSS and system memory percentage.
+	// Wired to the HibernationSweeper after startup. May be nil (fields default to 0).
+	memoryCacheReader session.MemoryCacheReader
+
+	// headlessPool is the shared LLM pool for non-interactive AI calls (RunOneShot, etc.).
+	// May be nil when the claude binary is not found at startup.
+	headlessPool *headless.Pool
 }
 
 // ScrollbackSequencer is the minimal interface SessionService needs from ScrollbackManager.
@@ -342,6 +351,64 @@ func (s *SessionService) FindLiveInstance(id string) *session.Instance {
 	return s.reviewQueuePoller.FindInstance(id)
 }
 
+// StopSessionByUUID satisfies the BacklogService.SessionStopper interface.
+// It kills the live tmux session identified by UUID (best-effort; errors are non-fatal).
+func (s *SessionService) StopSessionByUUID(ctx context.Context, sessionUUID string) error {
+	inst := s.FindLiveInstance(sessionUUID)
+	if inst == nil {
+		return nil // already gone
+	}
+	if err := inst.Kill(); err != nil {
+		log.Warn("StopSessionByUUID: kill failed", "uuid", sessionUUID, "err", err)
+		return err
+	}
+	return nil
+}
+
+// IsSessionLive satisfies the BacklogService.SessionStopper interface.
+// It returns true if the session UUID is currently tracked in the live in-memory poller.
+func (s *SessionService) IsSessionLive(sessionUUID string) bool {
+	return s.FindLiveInstance(sessionUUID) != nil
+}
+
+// KillTmuxSessionByTitle satisfies the BacklogService.SessionStopper interface.
+// It kills the tmux session whose name is derived from title using the same sanitization
+// as initTmuxSession (whitespace stripped, "." and ":" replaced with "_", "staplersquad_"
+// prefix). This handles the case where the Instance is no longer tracked in memory
+// but the underlying tmux session is still alive.
+func (s *SessionService) KillTmuxSessionByTitle(ctx context.Context, title string) error {
+	name := stapleSquadTmuxName(title)
+	killCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := safeexec.CommandContext(killCtx, "tmux", "kill-session", "-t", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		combined := strings.ToLower(string(out))
+		if strings.Contains(combined, "can't find session") ||
+			strings.Contains(combined, "no server running") ||
+			strings.Contains(combined, "error connecting to") {
+			return nil // session already gone — not an error
+		}
+		return fmt.Errorf("tmux kill-session %q: %w (output: %s)", name, err, out)
+	}
+	return nil
+}
+
+// stapleSquadTmuxName computes the sanitized tmux session name for a given title,
+// matching the logic in session/tmux.toStaplerSquadTmuxNameWithPrefix.
+func stapleSquadTmuxName(title string) string {
+	var sb strings.Builder
+	for _, r := range title {
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
+			sb.WriteRune(r)
+		}
+	}
+	sanitized := sb.String()
+	sanitized = strings.ReplaceAll(sanitized, ".", "_")
+	sanitized = strings.ReplaceAll(sanitized, ":", "_")
+	return "staplersquad_" + sanitized
+}
+
 // GetApprovalStore returns the approval store for wiring up the HTTP hook handler.
 func (s *SessionService) GetApprovalStore() *ApprovalStore {
 	return s.approvalStore
@@ -461,27 +528,28 @@ func (s *SessionService) SetBacklogLifecycleListener(l *session.BacklogLifecycle
 // BacklogLifecycleListener can spawn one-shot review sessions automatically when
 // a work session exits. The session is tagged "backlog:review" and runs one-shot.
 func (s *SessionService) SpawnReviewSession(ctx context.Context, item *ent.BacklogItem, itemSessionID string, prompt string) (*session.Instance, error) {
-	return s.CreateDirectorySession(ctx, "review:"+item.ID.String()[:8], item.RepoPath, prompt, []string{"backlog:review"}, true)
+	return s.CreateDirectorySession(ctx, "review:"+item.ID.String()[:8], item.RepoPath, prompt, []string{"backlog:review"}, true, true)
 }
 
 // CreateDirectorySession satisfies the services.SessionCreator interface so that
 // BacklogService can spawn sessions without importing SessionService directly.
-// It creates a directory-type session with the given title, path, system prompt,
+// It creates a directory-type session with the given title, path, initial prompt,
 // tags, and oneShot flag, wires it into the live poller, and returns the Instance.
-func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, appendSystemPrompt string, tags []string, oneShot bool) (*session.Instance, error) {
+func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error) {
 	cfg := config.LoadConfig()
 	resolved := config.ResolveDefaults(cfg, path, "")
 	opts := session.InstanceOptions{
-		Title:              title,
-		Path:               path,
-		Program:            resolved.Program,
-		AutoYes:            true, // automated sessions must not block on permission prompts
-		SessionType:        session.SessionTypeDirectory,
-		AppendSystemPrompt: appendSystemPrompt,
-		Tags:               tags,
-		OneShot:            oneShot,
-		MCPServerURL:       s.mcpServerURL,
-		CreateIfMissing:    true,
+		Title:           title,
+		Path:            path,
+		Program:         resolved.Program,
+		AutoYes:         true, // automated sessions must not block on permission prompts
+		SessionType:     session.SessionTypeDirectory,
+		Prompt:          prompt,
+		Tags:            tags,
+		OneShot:         oneShot,
+		Hidden:          hidden,
+		MCPServerURL:    s.mcpServerURL,
+		CreateIfMissing: true,
 	}
 	instance, err := session.NewInstance(opts)
 	if err != nil {
@@ -513,6 +581,11 @@ func (s *SessionService) SetHistoryLinker(hl *session.HistoryLinker) {
 	s.historyLinker = hl
 }
 
+// SetHeadlessPool wires the headless LLM pool for use by RunOneShot and other AI features.
+func (s *SessionService) SetHeadlessPool(pool *headless.Pool) {
+	s.headlessPool = pool
+}
+
 // SetReviewQueuePoller wires the ReviewQueuePoller so new/deleted sessions are
 // added/removed from the poller and AcknowledgeSession updates poller references.
 // Must be called during server startup before any session mutation RPCs are used.
@@ -521,6 +594,12 @@ func (s *SessionService) SetReviewQueuePoller(poller *session.ReviewQueuePoller)
 	s.reviewQueueSvc.SetReviewQueuePoller(poller)
 	s.notificationSvc.SetReviewQueuePoller(poller)
 	s.utilitySvc.SetReviewQueuePoller(poller)
+}
+
+// SetMemoryCacheReader wires the HibernationSweeper so that ListSessions can
+// populate memory_rss_mb, estimated_savings_mb, and system_memory_pct fields.
+func (s *SessionService) SetMemoryCacheReader(r session.MemoryCacheReader) {
+	s.memoryCacheReader = r
 }
 
 // SetStatusManager wires the InstanceStatusManager so that instances loaded via
@@ -598,7 +677,18 @@ func (s *SessionService) ListSessions(
 			continue
 		}
 
-		sessions = append(sessions, adapters.InstanceToProto(inst))
+		// Exclude hidden (system/background) sessions unless explicitly requested
+		if inst.Hidden && !req.Msg.IncludeHidden {
+			continue
+		}
+
+		protoSess := adapters.InstanceToProto(inst)
+		if s.memoryCacheReader != nil && inst.IsActive() {
+			rss := s.memoryCacheReader.GetCachedRSSMB(inst.UUID)
+			protoSess.MemoryRssMb = rss
+			protoSess.EstimatedSavingsMb = rss
+		}
+		sessions = append(sessions, protoSess)
 	}
 
 	// Include external sessions from mux discovery if available
@@ -617,12 +707,24 @@ func (s *SessionService) ListSessions(
 				continue
 			}
 
+			// Exclude hidden external sessions unless requested
+			if extInst.Hidden && !req.Msg.IncludeHidden {
+				continue
+			}
+
 			sessions = append(sessions, adapters.InstanceToProto(extInst))
 		}
 	}
 
+	var sysPct float32
+	if s.memoryCacheReader != nil {
+		pct, _ := s.memoryCacheReader.SystemMemoryPct()
+		sysPct = float32(pct)
+	}
+
 	return connect.NewResponse(&sessionv1.ListSessionsResponse{
-		Sessions: sessions,
+		Sessions:        sessions,
+		SystemMemoryPct: sysPct,
 	}), nil
 }
 
@@ -877,7 +979,6 @@ func (s *SessionService) CreateSession(
 		log.Info("[CreateSession] async start complete", "session", instanceTitle)
 	}()
 
-
 	return connect.NewResponse(&sessionv1.CreateSessionResponse{
 		Session: creatingProto,
 	}), nil
@@ -924,9 +1025,18 @@ func (s *SessionService) UpdateSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	instances, err := s.storage.LoadInstances()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	// Use the live poller list to avoid LoadInstances side-effects (Start() on Active
+	// sessions) that can silently drop sessions if tmux is unavailable, which would then
+	// clobber the poller's complete list via SetInstances.
+	var instances []*session.Instance
+	if s.reviewQueuePoller != nil {
+		instances = s.reviewQueuePoller.GetInstances()
+	} else {
+		var loadErr error
+		instances, loadErr = s.loadInstancesWithWiring()
+		if loadErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", loadErr))
+		}
 	}
 
 	// Find the instance to update
@@ -1021,11 +1131,19 @@ func (s *SessionService) UpdateSession(
 		oldStatus = instance.Status
 
 		if targetStatus == session.Paused && instance.Status != session.Paused {
+			// Set pause reason before transitioning — mirrors HibernateSession pattern.
+			if req.Msg.PauseReason == nil || *req.Msg.PauseReason == "" {
+				instance.PauseReason = session.PauseReasonManual
+			} else {
+				instance.PauseReason = *req.Msg.PauseReason
+			}
 			if err := instance.Pause(); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to pause session: %w", err))
 			}
 			updatedFields = append(updatedFields, "status")
 		} else if targetStatus != session.Paused && instance.Status == session.Paused {
+			// Clear pause reason on resume.
+			instance.PauseReason = ""
 			// Resume from paused state
 			if err := instance.Resume(); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resume session: %w", err))
@@ -1038,12 +1156,6 @@ func (s *SessionService) UpdateSession(
 	instances[instanceIndex] = instance
 	if err := s.storage.SaveInstances(instances); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
-	}
-
-	// CRITICAL: Update the ReviewQueuePoller's instance references after updating session
-	if s.reviewQueuePoller != nil {
-		s.reviewQueuePoller.SetInstances(instances)
-		log.Info("[ReviewQueue] updated poller instance references after UpdateSession", "session", instance.Title)
 	}
 
 	// Publish events based on what was updated
@@ -1855,9 +1967,17 @@ func (s *SessionService) RenameSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("new title is required"))
 	}
 
-	instances, err := s.loadInstancesWithWiring()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	// Use the live poller list for the same reason as UpdateSession: avoid LoadInstances
+	// side-effects that can drop sessions and clobber the poller list via SetInstances.
+	var instances []*session.Instance
+	if s.reviewQueuePoller != nil {
+		instances = s.reviewQueuePoller.GetInstances()
+	} else {
+		var loadErr error
+		instances, loadErr = s.loadInstancesWithWiring()
+		if loadErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", loadErr))
+		}
 	}
 
 	// Find the instance to rename
@@ -1897,12 +2017,6 @@ func (s *SessionService) RenameSession(
 		// Try to rollback the rename
 		instance.Title = oldTitle
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save renamed instance: %w", err))
-	}
-
-	// Update the ReviewQueuePoller's instance references after renaming
-	if s.reviewQueuePoller != nil {
-		s.reviewQueuePoller.SetInstances(instances)
-		log.Info("[ReviewQueue] updated poller instance references after RenameSession", "from", oldTitle, "to", req.Msg.NewTitle)
 	}
 
 	// Publish SessionUpdated event
@@ -2739,38 +2853,50 @@ func (s *SessionService) RunOneShot(
 		workDir = inst.Path
 	}
 
-	// Clamp timeout: default 120 s, max 300 s.
+	// Clamp timeout: default 900 s (raised from 120 s for longer operations), max 1800 s.
 	timeoutSecs := int(req.Msg.TimeoutSeconds)
 	if timeoutSecs <= 0 {
-		timeoutSecs = 120
+		timeoutSecs = 900
 	}
-	if timeoutSecs > 300 {
-		timeoutSecs = 300
-	}
-
-	claudeBin, err := exec.LookPath("claude")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("claude binary not found in PATH: %w", err))
+	if timeoutSecs > 1800 {
+		timeoutSecs = 1800
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
-	cmd := safeexec.CommandContext(runCtx, claudeBin, "-p", req.Msg.Prompt)
-	cmd.Dir = workDir
-
-	output, runErr := cmd.CombinedOutput()
+	var outputStr string
 	exitCode := 0
 	errMsg := ""
-	if runErr != nil {
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			errMsg = runErr.Error()
-		}
-	}
 
-	outputStr := string(output)
+	if s.headlessPool != nil {
+		// Use headless pool for improved streaming and session reuse.
+		var callErr error
+		outputStr, callErr = s.headlessPool.CallBlockingWithOptions(runCtx, headless.FeatureKeyCustom, "", req.Msg.Prompt, headless.CallOptions{WorkDir: workDir})
+		if callErr != nil {
+			errMsg = callErr.Error()
+			exitCode = 1
+		}
+	} else {
+		// Fallback: direct subprocess (requires claude in PATH).
+		claudeBin, err := exec.LookPath("claude")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("claude binary not found in PATH: %w", err))
+		}
+
+		cmd := safeexec.CommandContext(runCtx, claudeBin, "-p", req.Msg.Prompt)
+		cmd.Dir = workDir
+
+		output, runErr := cmd.CombinedOutput()
+		if runErr != nil {
+			if exitErr, ok := runErr.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				errMsg = runErr.Error()
+			}
+		}
+		outputStr = string(output)
+	}
 	prURL := extractPRURL(outputStr)
 	branchDiverged := checkBranchDivergence(workDir)
 

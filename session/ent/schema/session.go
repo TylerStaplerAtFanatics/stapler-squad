@@ -96,6 +96,12 @@ func (Session) Fields() []ent.Field {
 			Nillable(),
 		field.String("last_prompt_signature").
 			Optional(),
+		field.Bool("hidden").
+			Default(false).
+			Comment("When true, session is excluded from the default session list and review queue."),
+		field.String("pause_reason").
+			Optional().
+			Comment("Reason the session was paused: manual, auto:inactivity, auto:session_limit, auto:resource. Empty when never paused."),
 	}
 }
 
@@ -125,6 +131,9 @@ func (Session) Edges() []ent.Edge {
 		// Back-reference from BacklogItem many-to-many
 		edge.From("backlog_items", BacklogItem.Type).
 			Ref("sessions"),
+
+		// One-to-many relationship with Shell (custom shell tabs)
+		edge.To("shells", Shell.Type),
 	}
 }
 

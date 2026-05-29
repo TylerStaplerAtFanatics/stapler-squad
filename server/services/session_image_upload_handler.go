@@ -26,7 +26,7 @@ type instanceFinder interface {
 	FindInstance(sessionID string) *session.Instance
 }
 
-// SessionImageUploadHandler saves uploaded images to a session's uploads/ directory
+// SessionImageUploadHandler saves uploaded files to a session's uploads/ directory
 // and returns the absolute path so the terminal process can reference the file.
 type SessionImageUploadHandler struct {
 	storage session.InstanceStore
@@ -35,6 +35,7 @@ type SessionImageUploadHandler struct {
 
 // NewSessionImageUploadHandler creates a new handler backed by the given InstanceStore.
 // Pass the ReviewQueuePoller as finder to avoid the LoadInstances() restart side-effect.
+// The handler accepts any file type (not limited to images) up to 10 MB.
 func NewSessionImageUploadHandler(storage session.InstanceStore, finder instanceFinder) *SessionImageUploadHandler {
 	return &SessionImageUploadHandler{storage: storage, finder: finder}
 }
@@ -43,24 +44,6 @@ func NewSessionImageUploadHandler(storage session.InstanceStore, finder instance
 type sessionImageUploadResponse struct {
 	Path     string `json:"path"`
 	Filename string `json:"filename"`
-}
-
-// isAllowedImageType strips parameters from the content-type and checks the allowlist.
-func isAllowedImageType(ct string) bool {
-	ct = strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
-	switch ct {
-	case "image/jpeg", "image/png", "image/gif", "image/webp":
-		return true
-	}
-	return false
-}
-
-// detectWebP returns true when buf contains the RIFF....WEBP container magic bytes.
-// http.DetectContentType does not recognise WebP, so this is a manual check.
-func detectWebP(buf []byte) bool {
-	return len(buf) >= 12 &&
-		buf[0] == 'R' && buf[1] == 'I' && buf[2] == 'F' && buf[3] == 'F' &&
-		buf[8] == 'W' && buf[9] == 'E' && buf[10] == 'B' && buf[11] == 'P'
 }
 
 // sanitizeFilename strips path components and limits length to 100 characters.
@@ -92,9 +75,10 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
-// +http: POST /api/v1/upload-image upload:image
+// +http: POST /api/v1/upload-image upload:file
 // HandleUpload processes a multipart/form-data POST with fields "session_id" and "file",
-// saves the image to <session_path>/uploads/ and returns the absolute path as JSON.
+// saves the file to <session_path>/uploads/ and returns the absolute path as JSON.
+// Any file type is accepted (not limited to images); the per-file size cap is 10 MB.
 func (h *SessionImageUploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -125,25 +109,14 @@ func (h *SessionImageUploadHandler) HandleUpload(w http.ResponseWriter, r *http.
 	}
 	defer file.Close()
 
-	// Read first 512 bytes for MIME sniffing.
+	// Read first 512 bytes to detect empty uploads, then seek back so the full
+	// file (including the first 512 bytes) is written to disk.
 	buf := make([]byte, 512)
 	n, _ := file.Read(buf)
 	buf = buf[:n]
 
 	if len(buf) == 0 {
 		http.Error(w, "uploaded file is empty", http.StatusBadRequest)
-		return
-	}
-
-	var detectedType string
-	if detectWebP(buf) {
-		detectedType = "image/webp"
-	} else {
-		detectedType = http.DetectContentType(buf)
-	}
-
-	if !isAllowedImageType(detectedType) {
-		http.Error(w, fmt.Sprintf("unsupported image type %q (allowed: jpeg, png, gif, webp)", detectedType), http.StatusBadRequest)
 		return
 	}
 
@@ -206,7 +179,7 @@ func (h *SessionImageUploadHandler) HandleUpload(w http.ResponseWriter, r *http.
 	f, err := os.CreateTemp(uploadsDir, pattern)
 	if err != nil {
 		log.Error("[SessionImageUpload] CreateTemp failed", "dir", uploadsDir, "err", err)
-		http.Error(w, "failed to save image", http.StatusInternalServerError)
+		http.Error(w, "failed to save file", http.StatusInternalServerError)
 		return
 	}
 	savedPath := f.Name()
@@ -222,7 +195,7 @@ func (h *SessionImageUploadHandler) HandleUpload(w http.ResponseWriter, r *http.
 	if _, writeErr = io.Copy(f, file); writeErr != nil {
 		f.Close()
 		log.Error("[SessionImageUpload] write failed", "err", writeErr)
-		http.Error(w, "failed to save image", http.StatusInternalServerError)
+		http.Error(w, "failed to save file", http.StatusInternalServerError)
 		return
 	}
 	f.Close()
@@ -231,7 +204,7 @@ func (h *SessionImageUploadHandler) HandleUpload(w http.ResponseWriter, r *http.
 		log.Error("[SessionImageUpload] chmod failed (non-fatal)", "err", err)
 	}
 
-	log.Info("[SessionImageUpload] saved image", "session", sessionID, "path", savedPath)
+	log.Info("[SessionImageUpload] saved file", "session", sessionID, "path", savedPath)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(sessionImageUploadResponse{

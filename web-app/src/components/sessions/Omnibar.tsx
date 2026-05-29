@@ -16,7 +16,7 @@ import { useSessionSearch, type SessionSearchResult } from "@/lib/hooks/useSessi
 import { useAppSelector } from "@/lib/store";
 import { selectActiveSessionsSortedByUpdatedAt } from "@/lib/store/sessionsSlice";
 import { Session } from "@/gen/session/v1/types_pb";
-import { PathCompletionDropdown, type CompletionEntry } from "./PathCompletionDropdown";
+import { PathCompletionDropdown, type CompletionEntry } from "@/components/ui/PathCompletionDropdown";
 import { OmnibarResultList, getResultListItemCount, getHighlightedItemId } from "./OmnibarResultList";
 import { OmnibarModeBadge } from "./OmnibarModeBadge";
 import { OmnibarCreationPanel, SESSION_TYPES } from "./OmnibarCreationPanel";

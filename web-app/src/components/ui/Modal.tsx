@@ -23,11 +23,11 @@ interface ModalContentProps extends React.ComponentPropsWithoutRef<typeof Dialog
   fallbackTitle?: string;
 }
 
-export function ModalContent({ children, showClose = true, fallbackTitle, ...props }: ModalContentProps) {
+export function ModalContent({ children, showClose = true, fallbackTitle, className, ...props }: ModalContentProps) {
   return (
     <Dialog.Portal>
       <Dialog.Overlay className={overlay} />
-      <Dialog.Content className={content} {...props}>
+      <Dialog.Content className={[content, className].filter(Boolean).join(" ")} {...props}>
         {/* Provide an accessible name for the dialog when no visible ModalTitle is used.
             Pass fallbackTitle when children contain no ModalTitle; omit it when
             children include a ModalTitle (which renders its own Dialog.Title). */}

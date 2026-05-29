@@ -176,6 +176,23 @@ message Session {
   // layer at read time; never stored in the database.
   // Only meaningful when lifecycle_status == SESSION_STATUS_ACTIVE.
   SubStatus sub_status = 54;
+
+  // Approximate resident set size (RSS) in MB for all processes in this session.
+  // Zero for hibernated sessions or when measurement is unavailable.
+  int64 memory_rss_mb = 55;
+
+  // Estimated RAM freed in MB if this session were hibernated now.
+  // Equal to memory_rss_mb for Active sessions; zero for Hibernated sessions.
+  int64 estimated_savings_mb = 56;
+
+  // When true, this session is excluded from the default session list and review queue.
+  // Used for system/background sessions (e.g. triage, validation) that should not
+  // pollute the user-facing session viewer.
+  bool hidden = 57;
+
+  // Reason why the session was paused. Empty when session has never been paused.
+  // Values: "manual", "auto:inactivity", "auto:session_limit", "auto:resource"
+  string pause_reason = 58;
 }
 
 // VNCStatus represents the operational state of the VNC subsystem for a session.
@@ -1209,6 +1226,52 @@ message UnfinishedWorkConfig {
   bool   auto_spider_sessions = 1; // default: true
   repeated string watch_dirs  = 2;
   repeated string pinned_repos = 3;
+}
+
+// ============================================================================
+// Custom Shell Types
+// ============================================================================
+
+// ShellStatus represents the lifecycle state of a custom shell.
+enum ShellStatus {
+  SHELL_STATUS_UNSPECIFIED = 0;
+  // Shell process is running.
+  SHELL_STATUS_RUNNING = 1;
+  // Shell process exited cleanly (exit code 0) or was explicitly stopped.
+  SHELL_STATUS_STOPPED = 2;
+  // Shell process exited with non-zero exit code or failed to start.
+  SHELL_STATUS_ERROR = 3;
+}
+
+// Shell represents a custom shell session attached to a parent session.
+// Each shell runs as an independent sibling tmux session.
+message Shell {
+  // Unique identifier (UUID).
+  string id = 1;
+
+  // Human-readable name (defaults to basename of command).
+  string name = 2;
+
+  // Command that was launched (e.g., "/bin/bash", "python3").
+  string command = 3;
+
+  // Working directory for the shell process.
+  string working_dir = 4;
+
+  // Current lifecycle status.
+  ShellStatus status = 5;
+
+  // Exit code of the process (only meaningful when status is STOPPED or ERROR).
+  int32 exit_code = 6;
+
+  // Display order index (0-based).
+  int32 order_index = 7;
+
+  // When the shell was started.
+  google.protobuf.Timestamp started_at = 8;
+
+  // When the shell stopped (only set when status is STOPPED or ERROR).
+  google.protobuf.Timestamp stopped_at = 9;
 }
 
 // SuggestionSource identifies what data was used to generate a rule suggestion.

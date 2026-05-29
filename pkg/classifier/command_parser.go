@@ -425,6 +425,10 @@ var recursiveEvalPrograms = map[string]recursiveEvalSpec{
 		flagArgs:           map[string]bool{},
 		passthroughSubcmds: map[string]bool{"proxy": true},
 	},
+	"agy": {
+		flagArgs:           map[string]bool{},
+		passthroughSubcmds: map[string]bool{"proxy": true},
+	},
 }
 
 // ExtractInnerCommand extracts the inner command string from a recursive-eval wrapper

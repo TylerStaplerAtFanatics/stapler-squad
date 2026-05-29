@@ -15,17 +15,17 @@ import { renderHook, act } from "@testing-library/react";
 
 jest.mock("@/gen/session/v1/types_pb", () => ({
   AttentionReason: {
+    UNSPECIFIED: 0,
     APPROVAL_PENDING: 1,
     INPUT_REQUIRED: 2,
-    WAITING_FOR_USER: 3,
-    ERROR_STATE: 4,
-    TESTS_FAILING: 5,
-    STALE: 6,
-    TASK_COMPLETE: 7,
-    IDLE: 8,
-    UNCOMMITTED_CHANGES: 9,
-    IDLE_TIMEOUT: 10,
-    UNSPECIFIED: 0,
+    ERROR_STATE: 3,
+    IDLE_TIMEOUT: 4,
+    TASK_COMPLETE: 5,
+    UNCOMMITTED_CHANGES: 6,
+    IDLE: 7,
+    STALE: 8,
+    WAITING_FOR_USER: 9,
+    TESTS_FAILING: 10,
   },
 }));
 
@@ -262,8 +262,8 @@ describe("useReviewQueueNotifications — dwell-time filter", () => {
 
   describe("tier routing", () => {
     it("adds Tier 3 items to history only (no toast, no sound)", () => {
-      // TASK_COMPLETE = 7 → Tier 3
-      const item = makeItem("session-t3", 7);
+      // TASK_COMPLETE = 5 → Tier 3
+      const item = makeItem("session-t3", 5);
 
       const { rerender } = renderHook(
         ({ items }) => useReviewQueueNotifications(items, { enabled: true }),
@@ -286,8 +286,8 @@ describe("useReviewQueueNotifications — dwell-time filter", () => {
       );
     });
 
-    it("shows toast + sound for Tier 2 items (ERROR_STATE = 4)", () => {
-      const item = makeItem("session-t2", 4 /* ERROR_STATE */);
+    it("shows toast + sound for Tier 2 items (ERROR_STATE = 3)", () => {
+      const item = makeItem("session-t2", 3 /* ERROR_STATE */);
 
       const { rerender } = renderHook(
         ({ items }) => useReviewQueueNotifications(items, { enabled: true }),

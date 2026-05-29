@@ -15,12 +15,12 @@ type jsonlEntry struct {
 
 // jsonlMessage is the "message" field of an assistant entry.
 type jsonlMessage struct {
-	ID         string           `json:"id"`
-	Role       string           `json:"role"`
-	Model      string           `json:"model"`
-	Content    []jsonlContent   `json:"content"`
-	Usage      *jsonlUsage      `json:"usage"`
-	StopReason string           `json:"stop_reason"`
+	ID         string         `json:"id"`
+	Role       string         `json:"role"`
+	Model      string         `json:"model"`
+	Content    []jsonlContent `json:"content"`
+	Usage      *jsonlUsage    `json:"usage"`
+	StopReason string         `json:"stop_reason"`
 }
 
 // jsonlUsage contains the token counts for a message.
@@ -49,4 +49,3 @@ type jsonlUserMessage struct {
 	Role    string         `json:"role"`
 	Content []jsonlContent `json:"content"`
 }
-

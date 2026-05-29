@@ -14,10 +14,10 @@ import (
 // WindowTracker polls the virtual display for a Chrome browser window using
 // xdotool and calls registered callbacks when a window appears or disappears.
 type WindowTracker struct {
-	displayN          int
-	onWindowDetected  func(windowID string)
-	onWindowLost      func()
-	lastWindowID      string
+	displayN         int
+	onWindowDetected func(windowID string)
+	onWindowLost     func()
+	lastWindowID     string
 }
 
 // NewWindowTracker creates a WindowTracker for the given X11 display number.

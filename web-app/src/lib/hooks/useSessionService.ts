@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useCallback, useRef, useMemo } from "react";
+import { useEffect, useCallback, useRef, useMemo, useState } from "react";
 import { createClient } from "@connectrpc/connect";
 import { createWatchTransport } from "@/lib/transport/watch-ws-transport";
 import { SessionService } from "@/gen/session/v1/session_pb";
-import { Session, SessionStatus, NotificationPriority } from "@/gen/session/v1/types_pb";
+import { Session, SessionStatus, Shell, NotificationPriority } from "@/gen/session/v1/types_pb";
 import {
   CreateSessionRequest,
   UpdateSessionRequest,
   PromptHistoryEntry,
   RunOneShotResponse,
+  SpawnShellRequest,
 } from "@/gen/session/v1/session_pb";
 import { SessionEvent, NotificationEvent } from "@/gen/session/v1/events_pb";
 import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
@@ -56,6 +57,8 @@ interface UseSessionServiceReturn {
   loading: boolean;
   error: Error | null;
   connectionState: import("@/lib/store/sessionsSlice").ConnectionState;
+  /** System-wide memory usage percentage (0–100). Zero when unavailable. */
+  systemMemoryPct: number;
 
   // Methods
   listSessions: (options?: { category?: string; status?: SessionStatus }) => Promise<void>;
@@ -76,6 +79,13 @@ interface UseSessionServiceReturn {
   createCheckpoint: (sessionId: string, label: string) => Promise<boolean>;
   listCheckpoints: (sessionId: string) => Promise<import("@/gen/session/v1/types_pb").CheckpointProto[]>;
   forkSession: (sessionId: string, checkpointId: string, newTitle: string) => Promise<Session | null>;
+
+  // Shell methods
+  spawnShell: (request: Partial<SpawnShellRequest>) => Promise<Shell | null>;
+  stopShell: (sessionId: string, shellId: string) => Promise<boolean>;
+  restartShell: (sessionId: string, shellId: string) => Promise<boolean>;
+  listShells: (sessionId: string) => Promise<Shell[]>;
+  deleteShell: (sessionId: string, shellId: string) => Promise<boolean>;
 
   // Real-time updates
   watchSessions: (options?: { categoryFilter?: string; statusFilter?: SessionStatus }) => void;
@@ -107,6 +117,7 @@ export function useSessionService(
   }, [onApprovalResponse]);
 
   const dispatch = useAppDispatch();
+  const [systemMemoryPct, setSystemMemoryPct] = useState<number>(0);
   const sessions = useAppSelector(selectAllSessions);
   const loading = useAppSelector(selectSessionsLoading);
   const errorStr = useAppSelector(selectSessionsError);
@@ -152,6 +163,9 @@ export function useSessionService(
 
         dispatch(setSessions(response.sessions));
         dispatch(setError(null)); // Clear any previous errors
+        if (response.systemMemoryPct > 0) {
+          setSystemMemoryPct(response.systemMemoryPct);
+        }
       } catch (err) {
         const error = err instanceof Error ? err : new Error("Failed to list sessions");
         dispatch(setError(error.message));
@@ -244,6 +258,7 @@ export function useSessionService(
 
         return response.session ?? null;
       } catch (err) {
+        console.error("[useSessionService] updateSession failed:", err);
         dispatch(setError(err instanceof Error ? err.message : "Failed to update session"));
         return null;
       }
@@ -307,6 +322,7 @@ export function useSessionService(
         if (response.session) dispatch(upsertSession(response.session));
         return response.session ?? null;
       } catch (err) {
+        console.error("[useSessionService] hibernateSession failed:", err);
         dispatch(setError(err instanceof Error ? err.message : "Failed to hibernate session"));
         return null;
       }
@@ -324,12 +340,14 @@ export function useSessionService(
         if (response.session) dispatch(upsertSession(response.session));
         return response.session ?? null;
       } catch (err) {
+        console.error("[useSessionService] resumeHibernatedSession failed:", err);
         dispatch(setError(err instanceof Error ? err.message : "Failed to resume hibernated session"));
         return null;
       }
     },
     [dispatch]
   );
+
 
   // Rename session
   const renameSession = useCallback(
@@ -506,6 +524,85 @@ export function useSessionService(
       }
     },
     []
+  );
+
+  // Spawn a new shell attached to a session
+  const spawnShell = useCallback(
+    async (request: Partial<SpawnShellRequest>): Promise<Shell | null> => {
+      if (!clientRef.current) return null;
+      try {
+        const response = await clientRef.current.spawnShell({
+          sessionId: request.sessionId ?? "",
+          name: request.name ?? "",
+          command: request.command ?? "",
+          workingDir: request.workingDir ?? "",
+        });
+        return response.shell ?? null;
+      } catch (err) {
+        dispatch(setError(err instanceof Error ? err.message : "Failed to spawn shell"));
+        return null;
+      }
+    },
+    [dispatch]
+  );
+
+  // Stop a running shell
+  const stopShell = useCallback(
+    async (sessionId: string, shellId: string): Promise<boolean> => {
+      if (!clientRef.current) return false;
+      try {
+        const response = await clientRef.current.stopShell({ sessionId, shellId });
+        return response.success;
+      } catch (err) {
+        dispatch(setError(err instanceof Error ? err.message : "Failed to stop shell"));
+        return false;
+      }
+    },
+    [dispatch]
+  );
+
+  // Restart a shell
+  const restartShell = useCallback(
+    async (sessionId: string, shellId: string): Promise<boolean> => {
+      if (!clientRef.current) return false;
+      try {
+        const response = await clientRef.current.restartShell({ sessionId, shellId });
+        return response.success;
+      } catch (err) {
+        dispatch(setError(err instanceof Error ? err.message : "Failed to restart shell"));
+        return false;
+      }
+    },
+    [dispatch]
+  );
+
+  // List all shells for a session
+  const listShells = useCallback(
+    async (sessionId: string): Promise<Shell[]> => {
+      if (!clientRef.current) return [];
+      try {
+        const response = await clientRef.current.listShells({ sessionId });
+        return response.shells;
+      } catch {
+        return [];
+      }
+    },
+    []
+  );
+
+  // Delete a shell (stop + remove from storage)
+  const deleteShell = useCallback(
+    async (sessionId: string, shellId: string): Promise<boolean> => {
+      if (!clientRef.current) return false;
+      try {
+        const response = await clientRef.current.deleteShell({ sessionId, shellId });
+        return response.success;
+      } catch (err) {
+        dispatch(setError(err instanceof Error ? err.message : "Failed to delete shell"));
+        return false;
+      }
+    },
+    [dispatch]
   );
 
   // Handle session events from watch stream
@@ -739,6 +836,7 @@ export function useSessionService(
     loading,
     error,
     connectionState,
+    systemMemoryPct,
     listSessions,
     getSession,
     createSession,
@@ -759,6 +857,11 @@ export function useSessionService(
     listPromptHistory,
     watchSessions,
     stopWatching,
+    spawnShell,
+    stopShell,
+    restartShell,
+    listShells,
+    deleteShell,
     getTerminalSnapshot,
     writeToSession,
     getConversationMessages,

@@ -450,9 +450,9 @@ func TestResolveSessionID_UnknownReturnsEmpty(t *testing.T) {
 func TestMatchesIDData_TmuxNameBranch(t *testing.T) {
 	t.Run("matches_tmux_name_with_prefix", func(t *testing.T) {
 		d := session.InstanceData{
-			Title:       "my.project:work",
-			TmuxPrefix:  "ss-",
-			UUID:        "aaaabbbb-1111-2222-3333-ffffffffffff",
+			Title:      "my.project:work",
+			TmuxPrefix: "ss-",
+			UUID:       "aaaabbbb-1111-2222-3333-ffffffffffff",
 		}
 		// sanitized: "my_project_work", prefixed: "ss-my_project_work"
 		if !matchesIDData(d, "ss-my_project_work") {
@@ -483,6 +483,7 @@ func TestMatchesIDData_TmuxNameBranch(t *testing.T) {
 		}
 	})
 }
+
 
 // TestHandlePermissionRequest_NotificationUsesUUID verifies end-to-end that
 // when HandlePermissionRequest fires a broadcastApprovalNotification, the

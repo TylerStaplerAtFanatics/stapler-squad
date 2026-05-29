@@ -139,6 +139,16 @@ export const toolbarButton = style({
 
 export const debugActive = style({});
 
+// Camera button — hidden on fine-pointer devices (mouse/trackpad), visible on touch screens.
+// @media (pointer: fine) targets mice; touch-only devices have pointer: coarse.
+export const mobileOnlyUpload = style({
+  "@media": {
+    "(pointer: fine)": {
+      display: "none",
+    },
+  },
+});
+
 // Toolbar toggle button — visible on all screen sizes
 export const toolbarToggle = style({
   padding: "0.5rem",

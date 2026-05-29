@@ -387,6 +387,15 @@ func getDefaultPatterns() StatusPatterns {
 				Description: "Claude Code command prompt",
 				Priority:    1,
 			},
+			// NOTE: agy (Antigravity CLI) — agy uses the same TUI codebase as Gemini CLI
+			// (requirements confirmed: "same TUI codebase, rewritten core in Go"). The four
+			// gemini_* patterns below (gemini_ready, gemini_working, gemini_permission,
+			// gemini_allow_execution) cover agy sessions without additional patterns.
+			//
+			// If agy introduces divergent UI strings (e.g. rebranded permission dialog text)
+			// in a future version, add agy_* pattern variants alongside the gemini_* entries
+			// at the same priority levels.
+			//
 			// Gemini CLI status indicators
 			{
 				Name:        "gemini_ready",
@@ -550,9 +559,12 @@ func getDefaultPatterns() StatusPatterns {
 				Priority:    25,
 			},
 			{
-				Name:        "claude_thinking_verb",
-				Pattern:     `(?m)^\*\s+\w+[…\.]{1,3}`,
-				Description: "Claude thinking state with random verb (Moonwalking…, Ebbing..., etc.)",
+				Name: "claude_thinking_verb",
+				// Full macOS spinner frame set: · ✢ ✳ ✶ ✻ ✽ (bounce cycle), * (legacy), ● (reduced-motion).
+				// Verb char class extends \w with hyphens (Dilly-dallying), apostrophes (Beboppin'),
+				// and Latin-1 accented chars (Flambéing, Sautéing) — Go RE2 \w = [0-9A-Za-z_] only.
+				Pattern:     `(?m)^[·✢✳✶✻✽●*]\s+[A-Z][a-zA-Z'\-éèêàâùûôîïëüöäÿæœ]*(?:…|\.{1,3})`,
+				Description: "Claude thinking state with random verb — any spinner frame + capitalized verb + ellipsis",
 				Priority:    26,
 			},
 			{

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Terminal, GitCompare, GitBranch, FolderOpen, ScrollText, Info, Globe } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -15,14 +15,26 @@ import { VNCStatus } from "@/gen/session/v1/types_pb";
 import { ActionBar } from "@/components/ui/ActionBar";
 import { useSessionActions } from "@/lib/hooks/useSessionActions";
 import { getApiBaseUrl } from "@/lib/config";
-import { getProgramDisplay, isKnownProgram, PROGRAMS } from "@/lib/constants/programs";
+import { getProgramDisplay, isKnownProgram } from "@/lib/constants/programs";
+import { useAvailablePrograms } from "@/lib/hooks/useAvailablePrograms";
 import { Modal, ModalContent, ModalTitle, ModalFooter } from "@/components/ui/Modal";
 import { ResumeSessionModal } from "./ResumeSessionModal";
 import { TagEditor } from "./TagEditor";
 import { BacklogItemPanel } from "@/components/backlog/BacklogItemPanel";
+import { useShells } from "@/lib/hooks/useShells";
+import { ShellTabLabel } from "./ShellTab";
+import { NewShellDialog } from "./NewShellDialog";
 import * as styles from "./SessionDetail.css";
-import { diffAdded } from "./SessionDetailView.css";
+import {
+  diffAdded,
+  pausedOverlay,
+  pausedOverlayIcon,
+  pausedOverlayTitle,
+  pausedOverlayReason,
+  pausedOverlayButton,
+} from "./SessionDetailView.css";
 import { tabDisabled } from "./SessionDetail.css";
+import { formatPauseReason } from "@/lib/sessions/formatPauseReason";
 import type { SessionDetailTab } from "./SessionDetail";
 
 // Dynamically import TerminalOutput with SSR disabled (xterm.js requires browser environment)
@@ -104,17 +116,26 @@ export function SessionDetailView({
   queueTotal,
   backlogItemId,
 }: SessionDetailViewProps) {
-  const [activeTab, setActiveTab] = useState<SessionDetailTab>(initialTab);
+  // activeTabId is either a static SessionDetailTab or a shell tab id "shell:<shellId>"
+  const [activeTabId, setActiveTabId] = useState<string>(initialTab);
 
   // Sync active tab when the pane's controlled tab changes (e.g. PaneHeader tab click)
   useEffect(() => {
-    setActiveTab(initialTab);
+    setActiveTabId(initialTab);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTab]);
+
+  // Backward-compat alias for code that still references activeTab
+  const activeTab = activeTabId as SessionDetailTab;
+
+  // Shell tabs
+  const { shells, spawnShell, stopShell, restartShell, deleteShell, updateShellStatus } = useShells(session.id);
+  const [showNewShellDialog, setShowNewShellDialog] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [filesSelectedPath, setFilesSelectedPath] = useState<string | null>(null);
   const [showWorkspaceSwitchModal, setShowWorkspaceSwitchModal] = useState(false);
+  const availablePrograms = useAvailablePrograms();
   const [isEditingProgram, setIsEditingProgram] = useState(false);
   const [programValue, setProgramValue] = useState(session.program || "");
   const [isEditingWorkingDir, setIsEditingWorkingDir] = useState(false);
@@ -153,8 +174,11 @@ export function SessionDetailView({
   }, [session.id]);
 
   // Terminal instance pool: keeps up to 8 session terminals alive (LRU, oldest first)
+  // Pool entries are either session IDs or "shell:<shellId>" strings.
   const [pooledSessionIds, setPooledSessionIds] = useState<string[]>([]);
   const [pooledMuxPaths, setPooledMuxPaths] = useState<string[]>([]);
+  // Separate pool for shell PTY terminals, keyed by "shell:<shellId>"
+  const [pooledShellKeys, setPooledShellKeys] = useState<string[]>([]);
 
   useEffect(() => {
     setPooledSessionIds(prev => {
@@ -176,6 +200,18 @@ export function SessionDetailView({
     });
   }, [session.externalMetadata?.muxSocketPath]);
 
+  // Add shell terminal to the pool when its tab becomes active
+  useEffect(() => {
+    if (!activeTabId.startsWith("shell:")) return;
+    const shellKey = activeTabId; // already "shell:<shellId>"
+    setPooledShellKeys(prev => {
+      if (prev.includes(shellKey)) return prev;
+      const updated = [...prev, shellKey];
+      if (updated.length > 8) return updated.slice(-8);
+      return updated;
+    });
+  }, [activeTabId]);
+
   // Notify parent of fullscreen state changes
   useEffect(() => {
     onFullscreenChange?.(isFullscreen);
@@ -195,10 +231,22 @@ export function SessionDetailView({
     { id: "browser", label: "Browser", icon: Globe, disabled: !isBrowserAvailable },
   ];
 
-  const handleTabChange = (tabId: SessionDetailTab) => {
-    setActiveTab(tabId);
-    onTabChange?.(tabId);
+  const handleTabChange = (tabId: string) => {
+    setActiveTabId(tabId);
+    // Only propagate static tabs to external callers
+    if (!tabId.startsWith("shell:")) {
+      onTabChange?.(tabId as SessionDetailTab);
+    }
   };
+
+  const handleSpawnShell = useCallback(async (params: { name?: string; command?: string; workingDir?: string }) => {
+    const tab = await spawnShell(params);
+    if (tab) {
+      setShowNewShellDialog(false);
+      handleTabChange(`shell:${tab.id}`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spawnShell]);
 
   const handleCopy = (field: string, value: string) => {
     navigator.clipboard.writeText(value)
@@ -419,7 +467,7 @@ export function SessionDetailView({
         className={`${styles.tabs} ${isFullscreen ? styles.fullscreenMobileTabs : ""}`}
         role="tablist"
         onKeyDown={(e) => {
-          const currentIndex = tabs.findIndex((t) => t.id === activeTab);
+          const currentIndex = tabs.findIndex((t) => t.id === activeTabId);
           if (e.key === "ArrowRight") {
             e.preventDefault();
             const nextIndex = (currentIndex + 1) % tabs.length;
@@ -451,6 +499,43 @@ export function SessionDetailView({
             </button>
           );
         })}
+        {/* Shell tabs */}
+        {shells.map((shell) => {
+          const shellTabId = `shell:${shell.id}`;
+          return (
+            <button
+              key={shellTabId}
+              id={`tab-${shellTabId}`}
+              role="tab"
+              aria-selected={activeTabId === shellTabId}
+              className={`${styles.tab} ${activeTabId === shellTabId ? styles.active : ""}`}
+              onClick={() => handleTabChange(shellTabId)}
+            >
+              <ShellTabLabel
+                shell={shell}
+                onStop={(id) => stopShell(id)}
+                onRestart={(id) => restartShell(id)}
+                onClose={async (id) => {
+                  await deleteShell(id);
+                  // If we were viewing this shell, go back to terminal tab
+                  if (activeTabId === `shell:${id}`) {
+                    handleTabChange("terminal");
+                  }
+                }}
+              />
+            </button>
+          );
+        })}
+        {/* Add new shell button */}
+        <button
+          className={styles.tab}
+          onClick={() => setShowNewShellDialog(true)}
+          aria-label="Spawn new shell"
+          title="Spawn new shell"
+          style={{ padding: "0 8px", fontSize: "16px" }}
+        >
+          +
+        </button>
       </div>}
 
       <div className={`${styles.content} ${isFullscreen ? styles.fullscreenContent : ""}`}>
@@ -474,6 +559,7 @@ export function SessionDetailView({
                 </p>
               </div>
             ) : session.instanceType === InstanceType.EXTERNAL && session.externalMetadata?.muxSocketPath ? (
+              // External mux sessions cannot be paused; no overlay needed.
               <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
                 {pooledMuxPaths.map(poolPath => (
                   <div
@@ -512,6 +598,34 @@ export function SessionDetailView({
                     />
                   </div>
                 ))}
+                {/* Paused overlay: sits above the pool (which stays mounted for keep-alive).
+                    Only rendered for the current session when status is PAUSED. */}
+                {session.status === SessionStatus.PAUSED && (
+                  <div
+                    className={pausedOverlay}
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Session is paused"
+                  >
+                    <span className={pausedOverlayIcon} aria-hidden="true">⏸</span>
+                    <p className={pausedOverlayTitle}>This session is paused</p>
+                    {session.pauseReason && (
+                      <p className={pausedOverlayReason}>
+                        {formatPauseReason(session.pauseReason)}
+                      </p>
+                    )}
+                    <button
+                      className={pausedOverlayButton}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePauseResume();
+                      }}
+                      aria-label="Resume this session"
+                    >
+                      ▶ Resume Session
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -542,6 +656,47 @@ export function SessionDetailView({
             vncState={vncState}
           />
         </div>
+
+        {/* Shell tab panels — each shell PTY terminal kept mounted but hidden */}
+        {pooledShellKeys.map(shellKey => {
+          const shellId = shellKey.replace(/^shell:/, "");
+          const shell = shells.find(s => s.id === shellId);
+          return (
+            <div
+              key={shellKey}
+              className={styles.tabContent}
+              role="tabpanel"
+              aria-labelledby={`tab-${shellKey}`}
+              aria-hidden={activeTabId !== shellKey}
+              style={{ display: activeTabId === shellKey ? "flex" : "none", flexDirection: "column" }}
+            >
+              <TerminalOutput
+                sessionId={session.id}
+                baseUrl={getApiBaseUrl()}
+                shellId={shellId}
+                isVisible={activeTabId === shellKey}
+                onShellStatusChange={(status, exitCode) => {
+                  updateShellStatus(shellId, status, exitCode);
+                }}
+              />
+              {shell && shell.status !== "running" && (
+                <div style={{ padding: "8px 16px", fontSize: "13px", color: "var(--text-secondary)" }}>
+                  Shell {shell.status === "stopped" ? "stopped" : "errored"}{shell.exitCode !== undefined ? ` (exit ${shell.exitCode})` : ""}.
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* NewShellDialog portal */}
+        {showNewShellDialog && (
+          <NewShellDialog
+            onSubmit={handleSpawnShell}
+            onCancel={() => setShowNewShellDialog(false)}
+            defaultWorkingDir={session.workingDir}
+          />
+        )}
+
 
         {activeTab === "diff" && (
           <div className={styles.tabContent} role="tabpanel" aria-labelledby="tab-diff">
@@ -729,7 +884,7 @@ export function SessionDetailView({
                       autoFocus
                       className={styles.editInput}
                     >
-                      {PROGRAMS.map((p) => (
+                      {availablePrograms.map((p) => (
                         <option key={p.value} value={p.value}>{p.label}</option>
                       ))}
                       {!isKnownProgram(programValue) && (

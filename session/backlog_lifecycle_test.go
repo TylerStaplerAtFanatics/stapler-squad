@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tstapler/stapler-squad/session/ent"
 )
@@ -251,11 +252,11 @@ func TestBacklogLifecycleListener_OnSessionExited_ReviewSession_NoTransition(t *
 	require.NoError(t, err)
 	require.Equal(t, string(BacklogStatusInProgress), fetchedItem.Status)
 
-	// Verify that the ItemSession EndedAt was NOT set (review sessions are guarded).
+	// Verify that the ItemSession EndedAt IS set (exit is recorded for all roles).
 	repo := storage.repo.(*EntRepository)
 	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
 	require.NoError(t, err)
-	require.Nil(t, fetchedIS.EndedAt, "review session should not have EndedAt set (recursion guard)")
+	require.NotNil(t, fetchedIS.EndedAt, "review session should have EndedAt recorded when it exits")
 }
 
 // TestBacklogLifecycleListener_OnSessionExited_NotFound_NoError
@@ -414,7 +415,7 @@ func TestBacklogLifecycleListener_NewBacklogLifecycleListenerWithSpawner(t *test
 	// Create a mock spawner.
 	mockSpawner := &mockReviewGateSpawner{}
 
-	listener := NewBacklogLifecycleListenerWithSpawner(storage, mockSpawner, nil)
+	listener := NewBacklogLifecycleListenerWithSpawner(storage, mockSpawner)
 	require.NotNil(t, listener)
 	require.Equal(t, storage, listener.storage)
 	require.Equal(t, mockSpawner, listener.sessionCreator)
@@ -525,4 +526,47 @@ func TestBacklogLifecycleListener_ProcessesEventsWhenEnabled(t *testing.T) {
 		return ferr == nil && fetched.Status == string(BacklogStatusDone)
 	}, 2*time.Second, 20*time.Millisecond,
 		"enabled listener should transition item from in_progress to done")
+}
+
+// TestCreateItemSessionWithVerdict_Atomic verifies that CreateItemSessionWithVerdict
+// creates both ItemSession and ReviewVerdict atomically — both records must exist,
+// and the verdict is linked to the session.
+func TestCreateItemSessionWithVerdict_Atomic(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Atomic Verdict Test",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	sessionUUID := "headless-review-" + uuid.New().String()
+	is, rv, err := storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: sessionUUID,
+		SessionRole: SessionRoleReview,
+	}, ReviewVerdictData{
+		OverallOutcome: ReviewVerdictFail,
+		Summary:        "Blocked by security check.",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, is, "ItemSession must be non-nil")
+	require.NotNil(t, rv, "ReviewVerdict must be non-nil")
+	assert.Equal(t, sessionUUID, is.SessionUUID)
+	assert.Equal(t, ReviewVerdictFail, rv.OverallOutcome)
+	assert.Equal(t, "Blocked by security check.", rv.Summary)
+
+	// Both records must be queryable from the same DB — verifies the commit succeeded.
+	sessions, listErr := storage.ListItemSessions(ctx, item.ID)
+	require.NoError(t, listErr)
+	require.Len(t, sessions, 1)
+	assert.Equal(t, sessionUUID, sessions[0].SessionUUID)
+	linkedVerdict, verdictErr := sessions[0].Edges.ReviewVerdictOrErr()
+	require.NoError(t, verdictErr, "ReviewVerdict must be linked to the ItemSession")
+	assert.Equal(t, ReviewVerdictFail, linkedVerdict.OverallOutcome)
 }
