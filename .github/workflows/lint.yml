@@ -59,6 +59,9 @@ jobs:
       - name: Generate protobuf code
         run: buf generate proto
 
+      - name: Generate ent ORM code
+        run: go generate ./session/ent/
+
       - name: Create web dist stub
         run: |
           mkdir -p server/web/dist
