@@ -189,6 +189,10 @@ message Session {
   // Used for system/background sessions (e.g. triage, validation) that should not
   // pollute the user-facing session viewer.
   bool hidden = 57;
+
+  // Reason why the session was paused. Empty when session has never been paused.
+  // Values: "manual", "auto:inactivity", "auto:session_limit", "auto:resource"
+  string pause_reason = 58;
 }
 
 // VNCStatus represents the operational state of the VNC subsystem for a session.
