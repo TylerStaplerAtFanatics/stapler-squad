@@ -250,6 +250,8 @@ func (lh *lifecycleHandlers) pauseSession(ctx context.Context, req mcpgo.CallToo
 		return errResult("SESSION_ALREADY_PAUSED", fmt.Sprintf("session %q is already paused", sessionID), ""), nil
 	}
 
+	// MCP tool pause is always user-initiated — record as manual.
+	inst.PauseReason = session.PauseReasonManual
 	if err := inst.Pause(); err != nil {
 		return errResult(ErrInternalError, fmt.Sprintf("pause session: %v", err), ""), nil
 	}
@@ -280,6 +282,7 @@ func (lh *lifecycleHandlers) resumeSession(ctx context.Context, req mcpgo.CallTo
 			"Only paused sessions can be resumed."), nil
 	}
 
+	inst.PauseReason = ""
 	if err := inst.Resume(); err != nil {
 		return errResult(ErrInternalError, fmt.Sprintf("resume session: %v", err), ""), nil
 	}
