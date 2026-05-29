@@ -184,75 +184,11 @@ message Session {
   // Estimated RAM freed in MB if this session were hibernated now.
   // Equal to memory_rss_mb for Active sessions; zero for Hibernated sessions.
   int64 estimated_savings_mb = 56;
-}
-
-// VNCStatus represents the operational state of the VNC subsystem for a session.
-enum VNCStatus {
-  VNC_STATUS_UNSPECIFIED = 0;
-  // Xvfb/x11vnc processes are starting.
-  VNC_STATUS_STARTING = 1;
-  // A browser window has been detected; x11vnc is in focused -id mode.
-  VNC_STATUS_READY = 2;
-  // VNC is running (full display mode) but no browser window detected yet.
-  VNC_STATUS_NO_BROWSER = 3;
-  // VNC is unavailable: missing binaries, unsupported platform, or startup failed.
-  VNC_STATUS_UNAVAILABLE = 4;
-  // A pre-existing X display was detected and reused; x11vnc is not running.
-  VNC_STATUS_PASSTHROUGH = 5;
-}
-
-// VNCState holds the browser-passthrough state for a session.
-message VNCState {
-  // Current operational status.
-  VNCStatus status = 1;
-  // Allocated X11 display number (e.g. 100 means :100).
-  int32 display_number = 2;
-  // vnc_password is reserved for a future RFB auth implementation.
-  // Currently empty — x11vnc runs with -nopw and auth is handled by the Go proxy.
-  string vnc_password = 3;
-  // True when a browser window has been detected on the virtual display.
-  bool browser_window_detected = 4;
-}
-
-// CDPStatus represents the operational state of the CDP subsystem for a session.
-enum CDPStatus {
-  CDP_STATUS_UNSPECIFIED = 0;
-  // Polling for Chrome on the allocated CDP port.
-  CDP_STATUS_WAITING = 1;
-  // Connected to Chrome and receiving screencast frames.
-  CDP_STATUS_STREAMING = 2;
-  // CDP port allocated but Chrome not yet detected.
-  CDP_STATUS_NO_BROWSER = 3;
-  // CDP unavailable: Chrome not found or startup failed.
-  CDP_STATUS_UNAVAILABLE = 4;
-}
-
-// CDPState holds the Chrome DevTools Protocol streaming state for a session.
-message CDPState {
-  // Current operational status.
-  CDPStatus status = 1;
-||||||| 18e4c924
-=======
-
-  // VNC/browser passthrough state. Populated when VNC is supported on the host.
-  VNCState vnc_state = 51;
-
-  // CDP browser streaming state. Populated when Chrome is available on the host.
-  CDPState cdp_state = 52;
-
-  // Human-readable progress message during Creating state (empty otherwise).
-  // Set by the async creation goroutine; cleared once session becomes Active.
-  string creation_progress = 53;
-
-  // Fine-grained activity state for Active sessions. Derived from terminal detection
-  // layer at read time; never stored in the database.
-  // Only meaningful when lifecycle_status == SESSION_STATUS_ACTIVE.
-  SubStatus sub_status = 54;
 
   // When true, this session is excluded from the default session list and review queue.
   // Used for system/background sessions (e.g. triage, validation) that should not
   // pollute the user-facing session viewer.
-  bool hidden = 55;
+  bool hidden = 57;
 }
 
 // VNCStatus represents the operational state of the VNC subsystem for a session.
@@ -300,7 +236,6 @@ enum CDPStatus {
 message CDPState {
   // Current operational status.
   CDPStatus status = 1;
->>>>>>> origin/main
 }
 
 // SessionStatus represents the current state of a session.
