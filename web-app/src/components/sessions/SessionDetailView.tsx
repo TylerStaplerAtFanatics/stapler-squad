@@ -25,8 +25,16 @@ import { useShells } from "@/lib/hooks/useShells";
 import { ShellTabLabel } from "./ShellTab";
 import { NewShellDialog } from "./NewShellDialog";
 import * as styles from "./SessionDetail.css";
-import { diffAdded } from "./SessionDetailView.css";
+import {
+  diffAdded,
+  pausedOverlay,
+  pausedOverlayIcon,
+  pausedOverlayTitle,
+  pausedOverlayReason,
+  pausedOverlayButton,
+} from "./SessionDetailView.css";
 import { tabDisabled } from "./SessionDetail.css";
+import { formatPauseReason } from "@/lib/sessions/formatPauseReason";
 import type { SessionDetailTab } from "./SessionDetail";
 
 // Dynamically import TerminalOutput with SSR disabled (xterm.js requires browser environment)
@@ -551,6 +559,7 @@ export function SessionDetailView({
                 </p>
               </div>
             ) : session.instanceType === InstanceType.EXTERNAL && session.externalMetadata?.muxSocketPath ? (
+              // External mux sessions cannot be paused; no overlay needed.
               <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
                 {pooledMuxPaths.map(poolPath => (
                   <div
@@ -589,6 +598,34 @@ export function SessionDetailView({
                     />
                   </div>
                 ))}
+                {/* Paused overlay: sits above the pool (which stays mounted for keep-alive).
+                    Only rendered for the current session when status is PAUSED. */}
+                {session.status === SessionStatus.PAUSED && (
+                  <div
+                    className={pausedOverlay}
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Session is paused"
+                  >
+                    <span className={pausedOverlayIcon} aria-hidden="true">⏸</span>
+                    <p className={pausedOverlayTitle}>This session is paused</p>
+                    {session.pauseReason && (
+                      <p className={pausedOverlayReason}>
+                        {formatPauseReason(session.pauseReason)}
+                      </p>
+                    )}
+                    <button
+                      className={pausedOverlayButton}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePauseResume();
+                      }}
+                      aria-label="Resume this session"
+                    >
+                      ▶ Resume Session
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

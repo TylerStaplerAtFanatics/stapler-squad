@@ -396,6 +396,11 @@ func (r *EntRepository) Update(ctx context.Context, data InstanceData) error {
 	if data.MCPServerURL != "" {
 		sessionUpdate.SetMcpServerURL(data.MCPServerURL)
 	}
+	if data.PauseReason != "" {
+		sessionUpdate.SetPauseReason(data.PauseReason)
+	} else {
+		sessionUpdate.ClearPauseReason()
+	}
 	sessionUpdate.SetOneShot(data.OneShot)
 	sessionUpdate.SetHidden(data.Hidden)
 
@@ -913,6 +918,7 @@ func (r *EntRepository) sessionToInstanceData(sess *ent.Session) *InstanceData {
 		data.LastPromptDetected = *sess.LastPromptDetected
 	}
 	data.LastPromptSignature = sess.LastPromptSignature
+	data.PauseReason = sess.PauseReason
 
 	// Set session type
 	if sess.SessionType != "" {
