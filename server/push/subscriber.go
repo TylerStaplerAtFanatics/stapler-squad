@@ -131,8 +131,8 @@ func buildStatusChangeNotification(event *events.Event) (DeliveryNotification, b
 			tag = "session-completed-" + stableID(sess)
 			data = buildDataMap(sess, "SESSION_COMPLETE", false)
 		}
-	// NeedsApproval is no longer a lifecycle status — approval notifications
-	// are driven by the sub-status layer (Epic 3). No case needed here.
+		// NeedsApproval is no longer a lifecycle status — approval notifications
+		// are driven by the sub-status layer (Epic 3). No case needed here.
 	}
 
 	if title == "" || body == "" {

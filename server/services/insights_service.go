@@ -63,10 +63,10 @@ func (s *InsightsService) GetInsightsSummary(
 		totalCacheHitNumer   int64 // for cache hit rate: cache_read
 		totalCacheHitDenom   int64 // for cache hit rate: input + cache_read
 
-		dailyMap  = make(map[string]*sessionv1.DailyTokenBucket) // key = "2026-05-15"
-		modelMap  = make(map[string]*sessionv1.ModelBreakdown)   // key = normalized family
-		skillMap  = make(map[string]int32)                        // skill name → activation count
-		toolMap   = make(map[string]int64)                        // tool name → call count
+		dailyMap = make(map[string]*sessionv1.DailyTokenBucket) // key = "2026-05-15"
+		modelMap = make(map[string]*sessionv1.ModelBreakdown)   // key = normalized family
+		skillMap = make(map[string]int32)                       // skill name → activation count
+		toolMap  = make(map[string]int64)                       // tool name → call count
 	)
 
 	sessions := make([]*sessionv1.SessionTokenSummary, 0, len(results))
@@ -259,18 +259,18 @@ func (s *InsightsService) GetInsightsSummary(
 	}
 
 	resp := &sessionv1.GetInsightsSummaryResponse{
-		Sessions:            sessions,
-		TotalCostUsd:        totalCostUSD,
-		TotalInputTokens:    totalInputTokens,
-		TotalOutputTokens:   totalOutputTokens,
+		Sessions:             sessions,
+		TotalCostUsd:         totalCostUSD,
+		TotalInputTokens:     totalInputTokens,
+		TotalOutputTokens:    totalOutputTokens,
 		TotalCacheReadTokens: totalCacheReadTokens,
-		OverallCacheHitRate: overallCacheHitRate,
-		Daily:               daily,
-		Models:              models,
-		TopSkills:           topSkills,
-		TopTools:            topTools,
-		IsLoading:           s.store.IsLoading(),
-		PricingAsOf:         timestamppb.New(s.pricing.LoadedAt),
+		OverallCacheHitRate:  overallCacheHitRate,
+		Daily:                daily,
+		Models:               models,
+		TopSkills:            topSkills,
+		TopTools:             topTools,
+		IsLoading:            s.store.IsLoading(),
+		PricingAsOf:          timestamppb.New(s.pricing.LoadedAt),
 	}
 
 	return connect.NewResponse(resp), nil

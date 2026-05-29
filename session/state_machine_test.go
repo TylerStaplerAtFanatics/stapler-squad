@@ -13,8 +13,8 @@ var allStatuses = []Status{Creating, Active, Paused, Stopped, Hibernated}
 // Any pair not listed here must return false from CanTransition.
 var validTransitionSet = map[[2]Status]bool{
 	// Creating
-	{Creating, Active}:   true,
-	{Creating, Stopped}:  true,
+	{Creating, Active}:  true,
+	{Creating, Stopped}: true,
 	// Active
 	{Active, Paused}:     true,
 	{Active, Stopped}:    true,
