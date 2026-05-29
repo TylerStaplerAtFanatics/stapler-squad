@@ -3,7 +3,6 @@ package detection
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 

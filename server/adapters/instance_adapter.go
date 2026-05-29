@@ -130,6 +130,10 @@ func InstanceToProto(inst *session.Instance) *sessionv1.Session {
 	// Only meaningful for Active sessions; non-Active sessions always return UNSPECIFIED.
 	protoSession.SubStatus = toProtoSubStatus(inst)
 
+	// Hidden flag — system/background sessions excluded from default list/review queue.
+	protoSession.Hidden = inst.Hidden
+
+
 	return protoSession
 }
 

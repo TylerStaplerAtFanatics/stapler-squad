@@ -4,7 +4,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 import { NotificationToast } from "@/components/ui/NotificationToast";
 import { zIndex } from "@/styles/theme.css";
 import { NotificationData, NotificationHistoryItem } from "@/lib/types/notification";
-import { ReviewItem } from "@/gen/session/v1/types_pb";
+import { ReviewItem, AttentionReason } from "@/gen/session/v1/types_pb";
 import { useAuditLog } from "@/lib/hooks/useAuditLog";
 import { useNotificationHistory } from "@/lib/hooks/useNotificationHistory";
 import { groupNotifications } from "@/lib/utils/notificationGrouping";
@@ -48,6 +48,25 @@ interface NotificationContextValue {
 }
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
+
+function reviewItemToNotificationType(reason: AttentionReason): NotificationData["notificationType"] {
+  switch (reason) {
+    case AttentionReason.APPROVAL_PENDING:
+    case AttentionReason.WAITING_FOR_USER:
+      return "approval_needed";
+    case AttentionReason.INPUT_REQUIRED:
+      return "question";
+    case AttentionReason.ERROR_STATE:
+    case AttentionReason.TESTS_FAILING:
+      return "error";
+    case AttentionReason.STALE:
+      return "warning";
+    case AttentionReason.TASK_COMPLETE:
+      return "task_complete";
+    default:
+      return "info";
+  }
+}
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<NotificationData[]>([]);
@@ -101,13 +120,18 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       }
 
       // Pass 2: add backend items not covered by any local item.
+      // Mutate existingDedupKeys as we go so duplicate-type records (e.g. multiple
+      // auto_approved entries for the same session) don't all slip through.
       const existingIds = new Set(updated.map((n) => n.id));
       const existingDedupKeys = new Set(updated.map((n) => `${n.sessionId ?? ""}:${n.notificationType ?? ""}`));
-      const newFromBackend = backendItems.filter((n) => {
-        if (existingIds.has(n.id)) return false;
+      const newFromBackend: NotificationHistoryItem[] = [];
+      for (const n of backendItems) {
+        if (existingIds.has(n.id)) continue;
         const dk = `${n.sessionId ?? ""}:${n.notificationType ?? ""}`;
-        return !existingDedupKeys.has(dk);
-      });
+        if (existingDedupKeys.has(dk)) continue;
+        newFromBackend.push(n);
+        existingDedupKeys.add(dk);
+      }
 
       return [...newFromBackend, ...updated];
     });
@@ -120,7 +144,18 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
       // Only show the latest toast per session — replace any existing toast for the
       // same sessionId so they don't stack. Older notifications remain in history.
+      // Exception: never displace an approval toast (one with onApprove/onDeny) with
+      // a notification that lacks those callbacks — approvals require explicit resolution.
       setNotifications((prev) => {
+        const existing = prev.find((n) => n.sessionId === notification.sessionId);
+        if (
+          existing &&
+          (existing.onApprove || existing.onDeny) &&
+          !notification.onApprove &&
+          !notification.onDeny
+        ) {
+          return prev;
+        }
         const without = prev.filter((n) => n.sessionId !== notification.sessionId);
         return [...without, newNotification];
       });
@@ -160,6 +195,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         sessionName: item.sessionName || "Unnamed Session",
         message: item.context || "This session is waiting for your input",
         priority: mapPriority(item.priority),
+        notificationType: reviewItemToNotificationType(item.reason),
         onView,
         onAcknowledge,
       });

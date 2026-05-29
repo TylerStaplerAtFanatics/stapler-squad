@@ -12,6 +12,7 @@ import { decompressLZMA, isLZMACompressed } from "@/lib/compression/lzma";
 import { useTerminalFlowControl } from "./useTerminalFlowControl";
 import { useTerminalMetrics } from "./useTerminalMetrics";
 import type { Terminal } from '@xterm/xterm';
+import { ShellStatus } from "@/gen/session/v1/types_pb";
 
 interface ScrollbackMetadata {
   hasMore: boolean;
@@ -35,6 +36,10 @@ export type TerminalState =
 interface UseTerminalStreamOptions {
   baseUrl: string;
   sessionId: string;
+  /** When set, routes the terminal stream to a custom shell PTY instead of the main Claude session. */
+  shellId?: string;
+  /** Callback invoked when a ShellStatusUpdate is received for this shell. */
+  onShellStatusChange?: (status: "running" | "stopped" | "error", exitCode?: number) => void;
   getTerminal?: () => Terminal | null; // Getter function for terminal instance (evaluated at connect time)
   scrollbackLines?: number; // Number of lines to request from scrollback
   onError?: (error: Error) => void;
@@ -72,6 +77,8 @@ interface TerminalStreamResult {
 export function useTerminalStream({
   baseUrl,
   sessionId,
+  shellId,
+  onShellStatusChange,
   getTerminal,
   scrollbackLines = 1000,
   onError,
@@ -186,6 +193,7 @@ export function useTerminalStream({
       messageQueueRef.current.push(
         create(TerminalDataSchema, {
           sessionId,
+          shellId: shellId ?? "",
           data: { case: "currentPaneRequest", value: currentPaneReq },
         })
       );
@@ -219,6 +227,19 @@ export function useTerminalStream({
                 setTerminalState('STABLE');
               }
               continue; // No further processing for quiescence messages
+            }
+
+            // Handle ShellStatusUpdate for custom shell PTY streams.
+            // Only fire when msg.shellId matches our shellId (guards against stray updates).
+            if (msg.data.case === "shellStatusUpdate") {
+              const update = msg.data.value;
+              if (onShellStatusChange && update.shellId === shellId) {
+                let statusStr: "running" | "stopped" | "error" = "running";
+                if (update.newStatus === ShellStatus.STOPPED) statusStr = "stopped";
+                else if (update.newStatus === ShellStatus.ERROR) statusStr = "error";
+                onShellStatusChange(statusStr, update.exitCode);
+              }
+              continue;
             }
 
             // Dispatch to sub-hooks based on message type
@@ -320,7 +341,7 @@ export function useTerminalStream({
       handleError(err);
       setIsConnected(false);
     }
-  }, [sessionId, getTerminal, onError, onScrollbackReceived, onOutput,
+  }, [sessionId, shellId, onShellStatusChange, getTerminal, onError, onScrollbackReceived, onOutput,
       streamingMode, flowControl, metrics, handleError, initialCols, initialRows]);
 
   // ---- Disconnect ----

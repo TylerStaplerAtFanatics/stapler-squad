@@ -3,6 +3,22 @@ import { renderHook, act } from "@testing-library/react";
 import { NotificationProvider, useNotifications } from "@/lib/contexts/NotificationContext";
 import { TOAST_STALE_MS, ACTIONABLE_TOAST_STALE_MS } from "@/lib/notification-policy";
 import type { NotificationData } from "@/lib/types/notification";
+import type { ReviewItem } from "@/gen/session/v1/types_pb";
+
+// AttentionReason numeric values — matches proto/session/v1/types.proto
+const AttentionReason = {
+  UNSPECIFIED: 0,
+  APPROVAL_PENDING: 1,
+  INPUT_REQUIRED: 2,
+  ERROR_STATE: 3,
+  IDLE_TIMEOUT: 4,
+  TASK_COMPLETE: 5,
+  UNCOMMITTED_CHANGES: 6,
+  IDLE: 7,
+  STALE: 8,
+  WAITING_FOR_USER: 9,
+  TESTS_FAILING: 10,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -68,6 +84,16 @@ function makeNotification(
     message: "Something needs your attention",
     ...overrides,
   };
+}
+
+function makeReviewItem(reason: number, sessionId = "session-1"): ReviewItem {
+  return {
+    sessionId,
+    sessionName: "Test Session",
+    reason,
+    context: "Some context",
+    priority: 2,
+  } as unknown as ReviewItem;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +446,150 @@ describe("NotificationContext", () => {
 
       expect(result.current.notifications).toHaveLength(1);
       expect(result.current.notifications[0].notificationType).toBe("approval_needed");
+    });
+  });
+
+  describe("showSessionNotification — reviewItemToNotificationType mapping", () => {
+    it.each([
+      [AttentionReason.APPROVAL_PENDING, "approval_needed"],
+      [AttentionReason.WAITING_FOR_USER, "approval_needed"],
+      [AttentionReason.INPUT_REQUIRED, "question"],
+      [AttentionReason.ERROR_STATE, "error"],
+      [AttentionReason.TESTS_FAILING, "error"],
+      [AttentionReason.STALE, "warning"],
+      [AttentionReason.TASK_COMPLETE, "task_complete"],
+      [AttentionReason.IDLE, "info"],
+      [AttentionReason.UNSPECIFIED, "info"],
+    ])("reason %i → notificationType %s", (reason, expectedType) => {
+      const { result } = renderHook(() => useNotifications(), { wrapper });
+
+      act(() => {
+        result.current.showSessionNotification(makeReviewItem(reason));
+      });
+
+      expect(result.current.notifications[0].notificationType).toBe(expectedType);
+    });
+
+    it("populates sessionId, sessionName, and message from the ReviewItem", () => {
+      const { result } = renderHook(() => useNotifications(), { wrapper });
+
+      act(() => {
+        result.current.showSessionNotification(makeReviewItem(AttentionReason.APPROVAL_PENDING));
+      });
+
+      const n = result.current.notifications[0];
+      expect(n.sessionId).toBe("session-1");
+      expect(n.sessionName).toBe("Test Session");
+      expect(n.message).toBeTruthy();
+    });
+
+    it("passes onView and onAcknowledge callbacks through to the notification", () => {
+      const onView = jest.fn();
+      const onAcknowledge = jest.fn();
+      const { result } = renderHook(() => useNotifications(), { wrapper });
+
+      act(() => {
+        result.current.showSessionNotification(
+          makeReviewItem(AttentionReason.APPROVAL_PENDING),
+          onView,
+          onAcknowledge
+        );
+      });
+
+      const n = result.current.notifications[0];
+      n.onView?.();
+      n.onAcknowledge?.();
+      expect(onView).toHaveBeenCalledTimes(1);
+      expect(onAcknowledge).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("approval toast guard (addNotification displacement prevention)", () => {
+    it("does not displace an approval toast with a non-approval notification from the same session", () => {
+      const { result } = renderHook(() => useNotifications(), { wrapper });
+      const onApprove = jest.fn();
+      const onDeny = jest.fn();
+
+      act(() => {
+        result.current.addNotification(
+          makeNotification({ notificationType: "approval_needed", onApprove, onDeny })
+        );
+      });
+      const approvalId = result.current.notifications[0].id;
+
+      act(() => {
+        result.current.addNotification(makeNotification({ notificationType: "info" }));
+      });
+
+      expect(result.current.notifications).toHaveLength(1);
+      expect(result.current.notifications[0].id).toBe(approvalId);
+      expect(result.current.notifications[0].notificationType).toBe("approval_needed");
+    });
+
+    it("allows a new approval-capable notification to replace an existing approval toast", () => {
+      const { result } = renderHook(() => useNotifications(), { wrapper });
+
+      act(() => {
+        result.current.addNotification(
+          makeNotification({ message: "first approval", notificationType: "approval_needed", onApprove: jest.fn(), onDeny: jest.fn() })
+        );
+      });
+
+      act(() => {
+        result.current.addNotification(
+          makeNotification({ message: "second approval", notificationType: "approval_needed", onApprove: jest.fn(), onDeny: jest.fn() })
+        );
+      });
+
+      expect(result.current.notifications).toHaveLength(1);
+      expect(result.current.notifications[0].message).toBe("second approval");
+    });
+
+    it("allows notifications from a different session to appear alongside an approval toast", () => {
+      const { result } = renderHook(() => useNotifications(), { wrapper });
+
+      act(() => {
+        result.current.addNotification(
+          makeNotification({ sessionId: "s1", notificationType: "approval_needed", onApprove: jest.fn(), onDeny: jest.fn() })
+        );
+        result.current.addNotification(
+          makeNotification({ sessionId: "s2", notificationType: "info" })
+        );
+      });
+
+      expect(result.current.notifications).toHaveLength(2);
+    });
+
+    it("allows normal replacement when no approval toast is active", () => {
+      const { result } = renderHook(() => useNotifications(), { wrapper });
+
+      act(() => {
+        result.current.addNotification(makeNotification({ message: "first" }));
+      });
+      act(() => {
+        result.current.addNotification(makeNotification({ message: "second" }));
+      });
+
+      expect(result.current.notifications).toHaveLength(1);
+      expect(result.current.notifications[0].message).toBe("second");
+    });
+
+    it("suppressed notification is still recorded in history", () => {
+      const { result } = renderHook(() => useNotifications(), { wrapper });
+
+      act(() => {
+        result.current.addNotification(
+          makeNotification({ notificationType: "approval_needed", onApprove: jest.fn(), onDeny: jest.fn() })
+        );
+      });
+      act(() => {
+        result.current.addNotification(makeNotification({ notificationType: "info" }));
+      });
+
+      // Toast suppressed — only 1 active
+      expect(result.current.notifications).toHaveLength(1);
+      // Both in history
+      expect(result.current.notificationHistory).toHaveLength(2);
     });
   });
 });
