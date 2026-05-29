@@ -16,7 +16,7 @@ import { LiveTailToggle } from "@/components/shared/LiveTailToggle";
 import { ExportButton } from "@/components/logs/ExportButton";
 import { SearchWithHistory } from "@/components/logs/SearchWithHistory";
 import { DensityToggle, type LogDensity } from "@/components/logs/DensityToggle";
-import { LogViewer } from "@/components/logs/LogViewer";
+import { LogViewer } from "@/components/shared/LogViewer";
 import { useLiveTail } from "@/lib/hooks/useLiveTail";
 import { ActionBar } from "@/components/ui/ActionBar";
 import { usePageView } from "@/lib/analytics/usePageView";

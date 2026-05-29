@@ -252,11 +252,11 @@ func TestBacklogLifecycleListener_OnSessionExited_ReviewSession_NoTransition(t *
 	require.NoError(t, err)
 	require.Equal(t, string(BacklogStatusInProgress), fetchedItem.Status)
 
-	// Verify that the ItemSession EndedAt was NOT set (review sessions are guarded).
+	// Verify that the ItemSession EndedAt IS set (exit is recorded for all roles).
 	repo := storage.repo.(*EntRepository)
 	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
 	require.NoError(t, err)
-	require.Nil(t, fetchedIS.EndedAt, "review session should not have EndedAt set (recursion guard)")
+	require.NotNil(t, fetchedIS.EndedAt, "review session should have EndedAt recorded when it exits")
 }
 
 // TestBacklogLifecycleListener_OnSessionExited_NotFound_NoError

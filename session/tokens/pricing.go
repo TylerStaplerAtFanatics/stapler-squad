@@ -243,4 +243,3 @@ func (pt *PricingTable) LookupByModel(modelID string) (ModelPricing, bool) {
 	p, ok := pt.Prices[family]
 	return p, ok
 }
-

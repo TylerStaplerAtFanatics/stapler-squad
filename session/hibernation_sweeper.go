@@ -270,7 +270,7 @@ func (s *HibernationSweeper) warmRSSCache(ctx context.Context, instances []*Inst
 			log.Warn("hibernation sweeper: RSS warming timed out, some sessions skipped")
 			return
 		}
-		capturedName := inst.tmuxManager.GetTmuxSessionName()
+		capturedName := inst.GetTmuxSessionName()
 		capturedUUID := inst.UUID
 		s.memCache.GetOrFetch(capturedUUID, func() int64 {
 			rss, err := s.memReader.SessionRSSMB(capturedName)

@@ -47,12 +47,7 @@ require (
 require github.com/petermattis/goid v0.0.0-20250813065127-a731cc31b4fe // indirect
 
 require (
-	github.com/grafana/pyroscope-go v1.2.8 // indirect
-	github.com/grafana/pyroscope-go/godeltaprof v0.1.9 // indirect
-)
-
-require (
-	github.com/grafana/pyroscope-go v1.2.8 // indirect
+	github.com/grafana/pyroscope-go v1.2.8
 	github.com/grafana/pyroscope-go/godeltaprof v0.1.9 // indirect
 )
 

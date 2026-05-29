@@ -51,6 +51,18 @@ func addPausedSession(t *testing.T, fix *forkTestFixture, title string) {
 	}
 	err := fix.storage.AddInstance(inst)
 	require.NoError(t, err, "addPausedSession: failed to persist %q", title)
+
+	// Load back from storage so FromInstanceData sets started=true (required for
+	// SaveInstances to persist subsequent mutations via the live poller path).
+	loaded, err := fix.storage.LoadInstances()
+	require.NoError(t, err, "addPausedSession: failed to reload after persist")
+	for _, li := range loaded {
+		if li.Title == title {
+			addInstanceToPoller(fix.poller, li)
+			return
+		}
+	}
+	t.Fatalf("addPausedSession: could not find %q after reload", title)
 }
 
 // --------------------------------------------------------------------------
@@ -429,6 +441,15 @@ func TestUpdateSession_TagsUpdate_Replaces(t *testing.T) {
 	}
 	err := fix.storage.AddInstance(inst)
 	require.NoError(t, err)
+	// Load back so started=true; required for SaveInstances to persist mutations.
+	loaded, err := fix.storage.LoadInstances()
+	require.NoError(t, err)
+	for _, li := range loaded {
+		if li.Title == "tagged-session" {
+			addInstanceToPoller(fix.poller, li)
+			break
+		}
+	}
 
 	// Replace tags with a new set.
 	resp, err := fix.svc.UpdateSession(context.Background(), connect.NewRequest(&sessionv1.UpdateSessionRequest{

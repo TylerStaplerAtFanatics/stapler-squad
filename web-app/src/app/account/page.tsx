@@ -174,9 +174,8 @@ function AddDeviceModal({ onClose, onSuccess }: { onClose: () => void; onSuccess
                 </div>
               ) : (
                 <button
-                  className={s.ghostButton}
+                  className={`${s.ghostButton} ${s.urlShowButton}`}
                   onClick={() => setShowUrl(true)}
-                  style={{ alignSelf: "flex-start" }}
                 >
                   Can&rsquo;t scan? Show URL
                 </button>

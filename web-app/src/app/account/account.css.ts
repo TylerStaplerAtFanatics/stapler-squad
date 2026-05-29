@@ -292,3 +292,7 @@ export const errorText = style({
   borderRadius: vars.radii.sm,
   padding: `${vars.space["2"]} ${vars.space["3"]}`,
 });
+
+export const urlShowButton = style({
+  alignSelf: "flex-start",
+});

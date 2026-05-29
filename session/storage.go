@@ -105,6 +105,9 @@ type InstanceData struct {
 	// OneShot runs claude in -p mode; session exits after task completes.
 	OneShot bool `json:"one_shot,omitempty"`
 
+	// Hidden excludes this session from the default session list and review queue.
+	Hidden bool `json:"hidden,omitempty"`
+
 	// ProjectID is the optional project this session belongs to.
 	ProjectID string `json:"project_id,omitempty"`
 
@@ -247,6 +250,10 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 			log.Warn("skipping instance from repository", "session", data.Title, "err", err)
 			continue
 		}
+		// Inject shell repository so shell operations can persist to the DB.
+		if sr, ok := s.repo.(ShellRepository); ok {
+			inst.SetShellRepository(sr)
+		}
 		instances = append(instances, inst)
 	}
 	return instances, nil
@@ -297,7 +304,13 @@ func (s *Storage) AddInstance(instance *Instance) error {
 			return fmt.Errorf("failed to persist session %q: %w", data.Title, err)
 		}
 		// Unique constraint violation → session already exists, update instead.
-		return s.repo.Update(ctx, data)
+		if updateErr := s.repo.Update(ctx, data); updateErr != nil {
+			return updateErr
+		}
+	}
+	// Inject shell repository so shell operations can persist to the DB.
+	if sr, ok := s.repo.(ShellRepository); ok {
+		instance.SetShellRepository(sr)
 	}
 	return nil
 }

@@ -17,7 +17,7 @@ type ParseResult struct {
 	CacheRead     int64
 	MessageCount  int
 
-	TurnTimeline     []TurnStats            // per-assistant-message stats for burn rate chart
+	TurnTimeline     []TurnStats // per-assistant-message stats for burn rate chart
 	ToolUsage        map[string]ToolTokenStats
 	SkillActivations []SkillActivation
 

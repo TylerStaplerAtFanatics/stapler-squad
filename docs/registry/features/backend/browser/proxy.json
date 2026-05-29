@@ -1,0 +1,17 @@
+{
+  "id": "browser:proxy",
+  "type": "backend",
+  "service": "HTTPHandler",
+  "method": "GET /api/sessions/{id}/vnc",
+  "httpMethod": "GET",
+  "httpPath": "/api/sessions/{id}/vnc",
+  "markerFound": true,
+  "handlerFile": "server/services/vnc_proxy_handler.go",
+  "tested": true,
+  "testIds": [
+    "TestVNCProxyHandler_MissingSessionID_Returns400",
+    "TestVNCProxyHandler_UnknownSessionID_Returns404",
+    "TestVNCProxyHandler_VNCPortZero_Returns503"
+  ],
+  "lastModified": "2026-05-28T14:24:38.711652362-07:00"
+}

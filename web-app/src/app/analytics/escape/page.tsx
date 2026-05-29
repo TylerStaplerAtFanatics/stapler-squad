@@ -1,3 +1,4 @@
+// analytics-exempt
 import type { Metadata } from "next";
 import { EscapeAnalyticsPage } from "@/components/analytics/EscapeAnalyticsPage";
 

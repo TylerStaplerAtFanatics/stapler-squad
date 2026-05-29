@@ -409,7 +409,7 @@ function HomeContent() {
       <CockpitActionsProvider value={cockpitActions}>
         <div
           ref={sessionDetailRef}
-          style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+          className={styles.cockpitContainer}
           tabIndex={-1}
           role="region"
           aria-label="Session cockpit"
@@ -455,7 +455,7 @@ function HomeContent() {
             <div className={styles.modalBody}>
               <p>Delete &quot;{deleteConfirmTarget.title}&quot;?</p>
               <p style={{ color: "var(--error, #ef4444)", fontSize: "0.875rem", marginTop: "0.5rem" }}>This action cannot be undone.</p>
-              <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+              <div className={styles.deleteConfirmActions}>
                 <button className={styles.cancelButton} onClick={() => setDeleteConfirmTarget(null)}>Cancel</button>
                 <button
                   className={styles.dangerButton}

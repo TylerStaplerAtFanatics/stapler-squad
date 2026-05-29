@@ -443,6 +443,47 @@ func TestResolveSessionID_UnknownReturnsEmpty(t *testing.T) {
 	assert.Equal(t, "", got, "resolveSessionID should return empty string for an unknown session")
 }
 
+// TestMatchesIDData_TmuxNameBranch verifies that when a session has a non-empty
+// TmuxPrefix, matchesIDData matches the computed tmux session name
+// (prefix + sanitized title), and that an empty TmuxPrefix does NOT match via
+// that branch (preventing title-only bypass of UUID resolution).
+func TestMatchesIDData_TmuxNameBranch(t *testing.T) {
+	t.Run("matches_tmux_name_with_prefix", func(t *testing.T) {
+		d := session.InstanceData{
+			Title:      "my.project:work",
+			TmuxPrefix: "ss-",
+			UUID:       "aaaabbbb-1111-2222-3333-ffffffffffff",
+		}
+		// sanitized: "my_project_work", prefixed: "ss-my_project_work"
+		if !matchesIDData(d, "ss-my_project_work") {
+			t.Error("expected matchesIDData to match computed tmux session name ss-my_project_work")
+		}
+	})
+
+	t.Run("no_match_without_prefix", func(t *testing.T) {
+		d := session.InstanceData{
+			Title:      "my.project:work",
+			TmuxPrefix: "",
+			UUID:       "aaaabbbb-1111-2222-3333-ffffffffffff",
+		}
+		// Without a prefix, "my_project_work" must NOT match via the tmux-name branch.
+		if matchesIDData(d, "my_project_work") {
+			t.Error("expected matchesIDData NOT to match sanitized title when TmuxPrefix is empty")
+		}
+	})
+
+	t.Run("title_still_matches_directly", func(t *testing.T) {
+		d := session.InstanceData{
+			Title:      "my.project:work",
+			TmuxPrefix: "",
+			UUID:       "aaaabbbb-1111-2222-3333-ffffffffffff",
+		}
+		if !matchesIDData(d, "my.project:work") {
+			t.Error("expected matchesIDData to still match exact title even without TmuxPrefix")
+		}
+	})
+}
+
 // TestHandlePermissionRequest_NotificationUsesUUID verifies end-to-end that
 // when HandlePermissionRequest fires a broadcastApprovalNotification, the
 // event published on the event bus has the session UUID, not the title.

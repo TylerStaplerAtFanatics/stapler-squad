@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	appconfig "github.com/tstapler/stapler-squad/config"
-	"github.com/tstapler/stapler-squad/session/memory/memorytest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appconfig "github.com/tstapler/stapler-squad/config"
+	"github.com/tstapler/stapler-squad/session/memory/memorytest"
 )
 
 // --- sessionMemoryCache tests ---
