@@ -274,6 +274,7 @@ type Instance struct {
 	started bool
 	// processManager abstracts the terminal process lifecycle and I/O.
 	// Initialized to a TmuxBackend by default; future backends implement the ProcessManager interface.
+	pmMu           sync.Mutex
 	processManager ProcessManager
 	// gitManager owns the git worktree and diff stats.
 	gitManager GitWorktreeManager
