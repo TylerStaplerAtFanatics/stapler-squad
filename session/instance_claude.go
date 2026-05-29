@@ -304,8 +304,8 @@ func (i *Instance) tryExtractConversationUUID() {
 	var info *HistoryFileInfo
 
 	// Fast path: inspect open files of the live tmux pane process.
-	if i.tmuxManager.DoesSessionExist() {
-		pid, err := i.tmuxManager.GetPanePID()
+	if i.pm().IsAlive() {
+		pid, err := i.pm().GetPanePID()
 		if err != nil {
 			log.Debug("tryextractconversationuuid: could not get pane pid", "session", i.Title, "err", err)
 		} else {

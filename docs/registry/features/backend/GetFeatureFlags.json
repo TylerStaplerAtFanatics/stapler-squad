@@ -1,12 +1,11 @@
 {
-  "id": "shell:stop",
+  "id": "GetFeatureFlags",
   "type": "backend",
   "service": "SessionService",
-  "method": "StopShell",
+  "method": "GetFeatureFlags",
   "protoFile": "proto/session/v1/session.proto",
   "markerFound": false,
-  "handlerFile": "server/services/session_service_shells.go",
   "tested": false,
   "testIds": [],
-  "lastModified": "2026-05-21T00:00:00.000000000-07:00"
+  "lastModified": "2026-05-27T08:41:35.273501935-07:00"
 }
