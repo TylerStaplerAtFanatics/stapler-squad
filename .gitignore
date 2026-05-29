@@ -69,3 +69,6 @@ coverage.html
 docs/registry/backend-features.json
 docs/registry/frontend-features.json
 docs/registry/coverage-gaps.json
+
+# Uploaded files (user-supplied, not source)
+uploads/
