@@ -45,9 +45,9 @@ func (i *Instance) GetStatusManager() *InstanceStatusManager {
 	return i.controllerManager.GetStatusManager()
 }
 
-// UpdateTerminalTimestamps is a coordinator method that bridges TmuxProcessManager (I/O)
+// UpdateTerminalTimestamps is a coordinator method that bridges ProcessManager (I/O)
 // with ReviewState (timestamp recording). It:
-//  1. Calls tmuxManager.FilterBanners/HasMeaningfulContent (no lock needed, read-only tmux ops)
+//  1. Calls processManager.FilterBanners/HasMeaningfulContent (no lock needed, read-only ops)
 //  2. Acquires stateMutex
 //  3. Delegates to ReviewState.UpdateTimestamps
 //
@@ -57,16 +57,16 @@ func (i *Instance) UpdateTerminalTimestamps(content string, forceUpdate bool) {
 	filteredContent := content
 	shouldUpdateMeaningful := false
 
-	if i.tmuxManager.HasSession() {
+	if i.pm().HasSession() {
 		if forceUpdate {
 			shouldUpdateMeaningful = true
-			filteredContent, _ = i.tmuxManager.FilterBanners(content)
+			filteredContent, _ = i.pm().FilterBanners(content)
 		} else {
-			hasMeaningful := i.tmuxManager.HasMeaningfulContent(content)
+			hasMeaningful := i.pm().HasMeaningfulContent(content)
 			log.ForSession(i.Title).Debug("HasMeaningfulContent check", "hasMeaningful", hasMeaningful, "bytes", len(content))
 			if hasMeaningful {
 				shouldUpdateMeaningful = true
-				filteredContent, _ = i.tmuxManager.FilterBanners(content)
+				filteredContent, _ = i.pm().FilterBanners(content)
 			}
 		}
 	}

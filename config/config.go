@@ -320,6 +320,10 @@ type Config struct {
 	// Set via config.json or the ANTHROPIC_API_KEY environment variable.
 	// Do not log this value.
 	AnthropicAPIKey string `json:"anthropicApiKey,omitempty"`
+	// ProcessManagerBackend selects the process manager implementation.
+	// Valid values: "tmux" (default), "native" (Phase 2).
+	// Empty string is backwards-compatible and defaults to "tmux".
+	ProcessManagerBackend string `json:"process_manager_backend,omitempty"`
 }
 
 // BrowserPassthroughCDPConfig holds tunable parameters for the Chrome DevTools

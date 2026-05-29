@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -149,7 +150,7 @@ func (h *ShellTmuxHandle) Close() error {
 	// Close PTY file descriptor first to unblock any ongoing reads.
 	if h.ptmx != nil {
 		if err := h.ptmx.Close(); err != nil {
-			if !strings.Contains(err.Error(), "file already closed") {
+			if !errors.Is(err, os.ErrClosed) {
 				errs = append(errs, fmt.Sprintf("close PTY: %v", err))
 			}
 		}
@@ -179,7 +180,7 @@ func (h *ShellTmuxHandle) Close() error {
 	killCmd := h.buildCmd("kill-session", "-t", h.sessionName)
 	if err := h.cmdExec.Run(killCmd); err != nil {
 		// Ignore "no such session" errors — already gone.
-		if !strings.Contains(err.Error(), "no such") && !strings.Contains(err.Error(), "not found") {
+		if !isTmuxSessionGone(err) {
 			errs = append(errs, fmt.Sprintf("kill-session: %v", err))
 		}
 	} else {
@@ -220,4 +221,12 @@ func (h *ShellTmuxHandle) DoesSessionExist() bool {
 	cmd := h.buildCmd("has-session", "-t", h.sessionName)
 	err := h.cmdExec.Run(cmd)
 	return err == nil
+}
+
+func isTmuxSessionGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no such") || strings.Contains(msg, "not found") || strings.Contains(msg, "can't find")
 }
