@@ -181,9 +181,9 @@ func TestApprove_AllSourceStatuses(t *testing.T) {
 		expectPass bool
 	}{
 		{"Creating->Active", Creating, true},
-		{"Active->Active", Active, false},   // self-transition not allowed
+		{"Active->Active", Active, false}, // self-transition not allowed
 		{"Paused->Active", Paused, true},
-		{"Stopped->Active", Stopped, true},  // recoverable — reconciler can revive stopped sessions
+		{"Stopped->Active", Stopped, true}, // recoverable — reconciler can revive stopped sessions
 		{"Hibernated->Active", Hibernated, true},
 	}
 
@@ -215,7 +215,7 @@ func TestDeny_AllSourceStatuses(t *testing.T) {
 		from       Status
 		expectPass bool
 	}{
-		{"Creating->Paused", Creating, false},    // not in allowed transitions
+		{"Creating->Paused", Creating, false}, // not in allowed transitions
 		{"Active->Paused", Active, true},
 		{"Paused->Paused", Paused, false},         // self-transition
 		{"Stopped->Paused", Stopped, false},       // not allowed (only Stopped→Active is valid)

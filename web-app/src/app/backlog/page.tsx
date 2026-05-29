@@ -1,7 +1,8 @@
 "use client";
 // +feature: backlog:list-page
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { resizeHandle as resizeHandleCss } from "@/styles/pane/resizeHandle.css";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAnalytics } from "@/lib/analytics";
 import { usePageView } from "@/lib/analytics/usePageView";
@@ -167,6 +168,27 @@ function BacklogPageInner() {
   // Sort
   const [sortCol, setSortCol] = useState<SortColumn>("updatedAt");
   const [sortAsc, setSortAsc] = useState(false);
+
+  // Detail pane resize
+  const [detailWidth, setDetailWidth] = useState(420);
+  const dragRef = useRef({ active: false, startX: 0, startWidth: 0 });
+
+  const handleResizePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    dragRef.current = { active: true, startX: e.clientX, startWidth: detailWidth };
+  }, [detailWidth]);
+
+  const handleResizePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return;
+    const delta = dragRef.current.startX - e.clientX;
+    setDetailWidth(Math.max(240, Math.min(800, dragRef.current.startWidth + delta)));
+  }, []);
+
+  const handleResizePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current.active = false;
+    (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+  }, []);
 
   // New-item modal
   const [showForm, setShowForm] = useState(false);
@@ -422,12 +444,27 @@ function BacklogPageInner() {
 
         {/* Detail pane */}
         {selectedItemId && (
-          <aside className={styles.detailPane} aria-label="Item detail">
-            <BacklogItemDetail
-              itemId={selectedItemId}
-              onClose={handleDetailClose}
+          <>
+            <div
+              className={resizeHandleCss({ direction: "vertical" })}
+              style={{ touchAction: "none" }}
+              aria-label="Resize detail panel"
+              onPointerDown={handleResizePointerDown}
+              onPointerMove={handleResizePointerMove}
+              onPointerUp={handleResizePointerUp}
+              onPointerCancel={handleResizePointerUp}
             />
-          </aside>
+            <aside
+              className={styles.detailPane}
+              style={{ width: detailWidth }}
+              aria-label="Item detail"
+            >
+              <BacklogItemDetail
+                itemId={selectedItemId}
+                onClose={handleDetailClose}
+              />
+            </aside>
+          </>
         )}
       </div>
 

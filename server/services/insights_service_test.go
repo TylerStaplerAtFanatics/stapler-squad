@@ -25,8 +25,8 @@ type fakeTokenStore struct {
 
 func (f *fakeTokenStore) GetAll() []*tokens.ParseResult { return f.results }
 func (f *fakeTokenStore) IsLoading() bool               { return f.isLoading }
-func (f *fakeTokenStore) Subscribe() <-chan struct{}     { return make(chan struct{}, 1) }
-func (f *fakeTokenStore) Unsubscribe(_ <-chan struct{})  {}
+func (f *fakeTokenStore) Subscribe() <-chan struct{}    { return make(chan struct{}, 1) }
+func (f *fakeTokenStore) Unsubscribe(_ <-chan struct{}) {}
 
 // Compile-time assertion: fakeTokenStore must implement TokenStoreReader.
 var _ tokens.TokenStoreReader = (*fakeTokenStore)(nil)
@@ -48,9 +48,9 @@ func (f *fakeSessionStorage) ListSessionRecords() []tokens.SessionRecord { retur
 // newResult builds a minimal ParseResult for tests.
 func newResult(uuid, model, projectPath string, input, output, cacheRead int64, modTime time.Time) *tokens.ParseResult {
 	return &tokens.ParseResult{
-		SessionUUID: uuid,
+		SessionUUID:  uuid,
 		PrimaryModel: model,
-		ProjectPath: projectPath,
+		ProjectPath:  projectPath,
 		TotalInput:   input,
 		TotalOutput:  output,
 		CacheRead:    cacheRead,

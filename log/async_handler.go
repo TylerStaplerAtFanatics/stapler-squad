@@ -18,6 +18,11 @@ type asyncState struct {
 	ch      chan asyncWork
 	wg      sync.WaitGroup
 	dropped atomic.Int64
+	// mu serializes channel close (Flush) against channel sends (Handle).
+	// Handle holds RLock for the duration of the send; Flush acquires WLock
+	// before closing, so close and send are mutually exclusive with no race.
+	mu     sync.RWMutex
+	closed bool // protected by mu
 }
 
 // AsyncHandler wraps a slog.Handler with a channel buffer. Log calls enqueue a
@@ -55,13 +60,24 @@ func (h *AsyncHandler) StartDrain() {
 // Flush closes the channel and waits for all enqueued records to be written.
 // After Flush the handler must not be used.
 func (h *AsyncHandler) Flush(_ context.Context) error {
+	h.shared.mu.Lock()
+	h.shared.closed = true
 	close(h.shared.ch)
+	h.shared.mu.Unlock()
 	h.shared.wg.Wait()
 	return nil
 }
 
 // Handle enqueues the record for async writing. Drops and counts if buffer full.
+// Safe to call concurrently with Flush — the RWMutex ensures close and send are
+// mutually exclusive: Flush cannot close the channel while a send is in progress.
 func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
+	h.shared.mu.RLock()
+	defer h.shared.mu.RUnlock()
+	if h.shared.closed {
+		h.shared.dropped.Add(1)
+		return nil
+	}
 	clone := r.Clone()
 	select {
 	case h.shared.ch <- asyncWork{ctx: ctx, record: clone}:

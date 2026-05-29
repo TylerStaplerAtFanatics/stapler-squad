@@ -148,8 +148,11 @@ func TestHistoryFileWatcher_ContextCancellationStopsWatcher(t *testing.T) {
 	err := watcher.Start(ctx)
 	require.NoError(t, err)
 
-	// Cancel the context
+	// Cancel the context and wait for the goroutine to fully exit before writing.
+	// Without this, the goroutine's select may pick up the fsnotify event before
+	// processing ctx.Done(), causing a spurious callback.
 	cancel()
+	<-watcher.Stopped()
 
 	// Create a file after cancellation — should NOT trigger callback
 	jsonlPath := filepath.Join(tmpDir, "550e8400-e29b-41d4-a716-446655440000.jsonl")

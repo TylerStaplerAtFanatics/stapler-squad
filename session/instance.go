@@ -40,7 +40,6 @@ const (
 	Ready = Active
 	// Deprecated: use Creating.
 	Loading = Creating
-
 )
 
 // String returns a human-readable name for the status.
@@ -189,6 +188,11 @@ type Instance struct {
 	// OneShot runs claude in -p mode; the session exits after the task completes.
 	OneShot bool
 
+	// Hidden excludes this session from the default session list and review queue.
+	// Set true for system/background sessions (triage, validation) that should not
+	// appear in the user-facing session viewer.
+	Hidden bool
+
 	// ProjectID is the optional project this session belongs to.
 	ProjectID string
 
@@ -225,6 +229,14 @@ type Instance struct {
 	// production inspector is used. Set in tests to inject a fake home dir.
 	historyDetector *HistoryFileDetector
 
+	// shellRepo is the persistence backend for shell operations. Injected by Storage
+	// after instance creation/loading; nil disables persistence (tests, external instances).
+	shellRepo ShellRepository
+
+	// shellRegistry holds in-memory shell state (shells, handles, mutexes).
+	// Initialized by initShellRegistry(); shell operations go through instance_shells.go.
+	shellRegistry
+
 	// hibernateReason records why this session was hibernated.
 	// Values: "manual", "idle", "resource_pressure". Read by hibernateProcess.
 	hibernateReason string
@@ -260,8 +272,10 @@ type Instance struct {
 	// The below fields are initialized upon calling Start().
 
 	started bool
-	// tmuxManager owns the tmux session and preview-size tracking state.
-	tmuxManager TmuxProcessManager
+	// processManager abstracts the terminal process lifecycle and I/O.
+	// Initialized to a TmuxBackend by default; future backends implement the ProcessManager interface.
+	pmMu           sync.Mutex
+	processManager ProcessManager
 	// gitManager owns the git worktree and diff stats.
 	gitManager GitWorktreeManager
 	// vncManager owns the Xvfb + x11vnc lifecycle for this session.
@@ -392,6 +406,9 @@ type InstanceOptions struct {
 	// OneShot runs claude in -p mode; the session exits after the task completes.
 	OneShot bool
 
+	// Hidden excludes the session from the default session list and review queue.
+	Hidden bool
+
 	// ProjectID associates the session with a project.
 	ProjectID string
 
@@ -482,8 +499,9 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		GitHubRepo:      opts.GitHubRepo,
 		GitHubSourceRef: opts.GitHubSourceRef,
 		ClonedRepoPath:  opts.ClonedRepoPath,
-		// One-shot mode and project
+		// One-shot mode, hidden flag, and project
 		OneShot:            opts.OneShot,
+		Hidden:             opts.Hidden,
 		ProjectID:          opts.ProjectID,
 		MCPServerURL:       opts.MCPServerURL,
 		AppendSystemPrompt: opts.AppendSystemPrompt,
@@ -493,6 +511,13 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 
 	// Initialize TagManager backed by the Instance.Tags slice
 	instance.tagManager = NewTagManager(&instance.Tags)
+
+	// Initialize the process manager via the factory so selectedBackend is honored.
+	// The session itself is wired later by initTmuxSession() at Start() time.
+	instance.processManager = NewProcessManager(context.Background(), BackendTmux, ProcessManagerOptions{})
+
+	// Initialize shell registry maps.
+	instance.initShellRegistry()
 
 	// Auto-detect worktree info if GitHub owner/repo not explicitly set
 	// This extracts repository information from the git remote URL
@@ -524,6 +549,12 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	instance.initCDPManager(cfg)
 
 	return instance, nil
+}
+
+// SetShellRepository injects the shell persistence backend. Called by Storage after
+// loading or creating an instance. Pass nil to disable persistence (e.g., in tests).
+func (i *Instance) SetShellRepository(repo ShellRepository) {
+	i.shellRepo = repo
 }
 
 // NewInstanceWithCleanup creates a new Instance and returns it along with a cleanup function.
@@ -589,8 +620,8 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 	// Wire the exit callback so control-mode %exit / PTY EOF fires our handler.
 	// ResetExitOnce is called first so repeated start() calls (restarts) allow
 	// the callback to fire again after the sync.Once was exhausted in the prior run.
-	i.tmuxManager.ResetExitOnce()
-	i.tmuxManager.SetOnExitCallback(func(reason string) {
+	i.pm().ResetExitOnce()
+	i.pm().SetOnExitCallback(func(reason string) {
 		log.Info("unexpected exit detected via control mode", "session", i.Title, "reason", reason)
 		log.ForSession(i.Title).Info("session exited unexpectedly", "reason", reason)
 		i.stateMutex.Lock()
@@ -623,7 +654,7 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 	}()
 
 	if !firstTimeSetup {
-		if !i.tmuxManager.DoesSessionExist() {
+		if !i.pm().IsAlive() {
 			// tmux session is dead (machine reboot, tmux kill-server, etc.)
 			startPath := i.resolveStartPath(i.GetEffectiveRootDir())
 			if i.HasClaudeSession() {
@@ -644,22 +675,26 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 			// updated PATH (wrapper dir) can be injected via ExtraEnv at new-session time.
 			i.allocateCDPPort()
 			if displayEnv := i.VNCDisplayEnv(); displayEnv != "" {
-				if sess := i.tmuxManager.Session(); sess != nil {
-					sess.ExtraEnv = append(sess.ExtraEnv, displayEnv)
+				if tb, ok := i.processManager.(*TmuxBackend); ok {
+					if sess := tb.TmuxManager().Session(); sess != nil {
+						sess.ExtraEnv = append(sess.ExtraEnv, displayEnv)
+					}
 				}
 			}
 			if cdpEnvs := i.CDPDisplayEnv(); len(cdpEnvs) > 0 {
-				if sess := i.tmuxManager.Session(); sess != nil {
-					sess.ExtraEnv = append(sess.ExtraEnv, cdpEnvs...)
+				if tb, ok := i.processManager.(*TmuxBackend); ok {
+					if sess := tb.TmuxManager().Session(); sess != nil {
+						sess.ExtraEnv = append(sess.ExtraEnv, cdpEnvs...)
+					}
 				}
 			}
-			if err := i.tmuxManager.Start(startPath); err != nil {
+			if err := i.pm().Start(startPath); err != nil {
 				setupErr = fmt.Errorf("cold restore Start failed for '%s': %w", i.Title, err)
 				return setupErr
 			}
 			// Attach PTY — same pattern as firstTimeSetup path (lines 867-870).
-			_ = i.tmuxManager.RestoreWithWorkDir(startPath)
-			if _, ptyErr := i.tmuxManager.GetPTY(); ptyErr != nil {
+			_ = i.pm().RestoreWithWorkDir(startPath)
+			if _, ptyErr := i.pm().GetPTY(); ptyErr != nil {
 				log.Error("cold-restored session: pty attach failed, controller and sendkeys unavailable", "session", i.Title, "err", ptyErr)
 			}
 			// Clear the stored session ID so HistoryLinker re-detects the actual
@@ -688,7 +723,7 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 				workDir = i.gitManager.GetWorktreePath()
 			}
 			log.Info("restoring existing tmux session", "session", i.Title, "path", workDir)
-			if err := i.tmuxManager.RestoreWithWorkDir(workDir); err != nil {
+			if err := i.pm().RestoreWithWorkDir(workDir); err != nil {
 				setupErr = fmt.Errorf("failed to restore existing session: %w", err)
 				return setupErr
 			}
@@ -716,16 +751,20 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 		// updated PATH (wrapper dir) can be injected via ExtraEnv at new-session time.
 		i.allocateCDPPort()
 		if displayEnv := i.VNCDisplayEnv(); displayEnv != "" {
-			if sess := i.tmuxManager.Session(); sess != nil {
-				sess.ExtraEnv = append(sess.ExtraEnv, displayEnv)
+			if tb, ok := i.processManager.(*TmuxBackend); ok {
+				if sess := tb.TmuxManager().Session(); sess != nil {
+					sess.ExtraEnv = append(sess.ExtraEnv, displayEnv)
+				}
 			}
 		}
 		if cdpEnvs := i.CDPDisplayEnv(); len(cdpEnvs) > 0 {
-			if sess := i.tmuxManager.Session(); sess != nil {
-				sess.ExtraEnv = append(sess.ExtraEnv, cdpEnvs...)
+			if tb, ok := i.processManager.(*TmuxBackend); ok {
+				if sess := tb.TmuxManager().Session(); sess != nil {
+					sess.ExtraEnv = append(sess.ExtraEnv, cdpEnvs...)
+				}
 			}
 		}
-		if err := i.tmuxManager.Start(startPath); err != nil {
+		if err := i.pm().Start(startPath); err != nil {
 			if i.gitManager.HasWorktree() {
 				if cleanupErr := i.gitManager.Cleanup(); cleanupErr != nil {
 					err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
@@ -735,12 +774,12 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 			return setupErr
 		}
 		// Establish PTY connection after creating the tmux session.
-		// tmuxManager.Start() creates the detached session but does not attach a PTY.
+		// processManager.Start() creates the detached session but does not attach a PTY.
 		// RestoreWithWorkDir finds the existing session and attaches via attach-session,
 		// setting t.ptmx so StartController() can call GetPTYReader() successfully.
 		// Note: RestoreWithWorkDir always returns nil even on PTY failure; check GetPTY() to confirm.
-		_ = i.tmuxManager.RestoreWithWorkDir(startPath)
-		if _, ptyErr := i.tmuxManager.GetPTY(); ptyErr != nil {
+		_ = i.pm().RestoreWithWorkDir(startPath)
+		if _, ptyErr := i.pm().GetPTY(); ptyErr != nil {
 			log.Error("new session: pty attach failed after retries, controller and sendkeys unavailable", "session", i.Title, "err", ptyErr)
 		}
 	}
@@ -777,7 +816,7 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 			log.Warn("controller start failed, retrying after pty re-attach", "session", i.Title, "err", err)
 			time.Sleep(200 * time.Millisecond)
 			// Session already exists; workDir only matters for the fallback recreation path.
-			_ = i.tmuxManager.RestoreWithWorkDir("")
+			_ = i.pm().RestoreWithWorkDir("")
 			if retryErr := i.StartController(); retryErr != nil {
 				log.Error("controller start failed after retry, marking degraded", "session", i.Title, "err", retryErr)
 				i.fireLifecycleEvent(EventExited, "controller-start-failed")
@@ -857,7 +896,7 @@ func (i *Instance) Pause() error {
 	}
 
 	// Detach from tmux session instead of closing to preserve session output
-	if err := i.tmuxManager.DetachSafely(); err != nil {
+	if err := i.pm().DetachSafely(); err != nil {
 		errs = append(errs, fmt.Errorf("failed to detach tmux session: %w", err))
 		log.Error("failed to detach tmux session", "err", err)
 		// Continue with pause process even if detach fails
@@ -938,12 +977,12 @@ func (i *Instance) Resume() error {
 	}
 
 	// Check if tmux session still exists from pause, otherwise create new one
-	if i.tmuxManager.DoesSessionExist() {
+	if i.pm().IsAlive() {
 		// Session exists, just restore PTY connection to it (retains stdout from before pause)
-		if err := i.tmuxManager.RestoreWithWorkDir(worktreePath); err != nil {
+		if err := i.pm().RestoreWithWorkDir(worktreePath); err != nil {
 			log.Error("restore failed, falling back to new session", "err", err)
 			// If restore fails, fall back to creating new session
-			if err := i.tmuxManager.Start(worktreePath); err != nil {
+			if err := i.pm().Start(worktreePath); err != nil {
 				log.Error("failed to start new session after restore failure", "err", err)
 				// Cleanup git worktree if tmux session creation fails
 				if i.gitManager.HasWorktree() {
@@ -957,7 +996,7 @@ func (i *Instance) Resume() error {
 		}
 	} else {
 		// Create new tmux session
-		if err := i.tmuxManager.Start(worktreePath); err != nil {
+		if err := i.pm().Start(worktreePath); err != nil {
 			log.Error("failed to start new tmux session on resume", "err", err)
 			// Cleanup git worktree if tmux session creation fails
 			if i.gitManager.HasWorktree() {
@@ -1001,8 +1040,8 @@ func (i *Instance) Restart(preserveOutput bool) error {
 
 	// Capture terminal output if requested
 	var savedOutput string
-	if preserveOutput && i.tmuxManager.HasSession() {
-		output, err := i.tmuxManager.CapturePaneContentWithOptions("-", "-")
+	if preserveOutput && i.pm().HasSession() {
+		output, err := i.pm().CapturePaneContentWithOptions("-", "-")
 		if err != nil {
 			log.Warn("failed to capture terminal output before restart", "err", err)
 		} else {
@@ -1069,14 +1108,16 @@ func (i *Instance) Restart(preserveOutput bool) error {
 	i.LaunchCommand = program
 
 	// Use server socket isolation if specified, otherwise use prefix-only isolation
-	if i.TmuxServerSocket != "" {
-		i.tmuxManager.SetSession(tmux.NewTmuxSessionWithServerSocket(i.Title, program, tmuxPrefix, i.TmuxServerSocket, tmux.WithRegistry(nil)))
-	} else {
-		i.tmuxManager.SetSession(tmux.NewTmuxSessionWithPrefix(i.Title, program, tmuxPrefix))
+	if tb, ok := i.processManager.(*TmuxBackend); ok {
+		if i.TmuxServerSocket != "" {
+			tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithServerSocket(i.Title, program, tmuxPrefix, i.TmuxServerSocket, tmux.WithRegistry(nil)))
+		} else {
+			tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithPrefix(i.Title, program, tmuxPrefix))
+		}
 	}
 
 	// Start the new session
-	if err := i.tmuxManager.Start(worktreePath); err != nil {
+	if err := i.pm().Start(worktreePath); err != nil {
 		return fmt.Errorf("failed to start new tmux session: %w", err)
 	}
 
@@ -1085,11 +1126,11 @@ func (i *Instance) Restart(preserveOutput bool) error {
 		// Add a marker to indicate this is restored output
 		marker := fmt.Sprintf("\n=== Session restarted at %s ===\n=== Previous output restored below ===\n\n",
 			time.Now().Format(time.RFC3339))
-		if _, err := i.tmuxManager.SendKeys(fmt.Sprintf("echo '%s'", marker)); err != nil {
+		if _, err := i.pm().SendKeys(fmt.Sprintf("echo '%s'", marker)); err != nil {
 			log.Warn("failed to write restart marker", "err", err)
 		}
 		time.Sleep(100 * time.Millisecond)
-		if err := i.tmuxManager.TapEnter(); err != nil {
+		if err := i.pm().TapEnter(); err != nil {
 			log.Warn("failed to send enter after marker", "err", err)
 		}
 	}

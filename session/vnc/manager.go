@@ -86,8 +86,8 @@ type vncProcessManager struct {
 	// detected a pre-existing display and skipped Xvfb allocation.
 	passthroughDisplay string
 
-	xvfb      *executor.ManagedProcess
-	x11vnc    *executor.ManagedProcess
+	xvfb   *executor.ManagedProcess
+	x11vnc *executor.ManagedProcess
 	// managerCtx is the context shared by Xvfb, x11vnc, and all goroutines.
 	// It is created in doStartDisplay and cancelled by Stop().
 	managerCtx context.Context

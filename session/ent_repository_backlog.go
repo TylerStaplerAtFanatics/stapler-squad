@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
 )
 
@@ -37,6 +38,10 @@ func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 	// Resolve source ID from the eager-loaded edge when available.
 	if item.Edges.Source != nil {
 		data.SourceID = item.Edges.Source.ID.String()
+	}
+	// Propagate eagerly-loaded status events when present.
+	if item.Edges.StatusEvents != nil {
+		data.StatusEvents = item.Edges.StatusEvents
 	}
 	return data
 }
@@ -111,6 +116,9 @@ func (r *EntRepository) GetBacklogItem(ctx context.Context, id string) (*Backlog
 	item, err := r.client.BacklogItem.Query().
 		Where(backlogitem.ID(parsedID)).
 		WithSource().
+		WithStatusEvents(func(q *ent.BacklogStatusEventQuery) {
+			q.Order(ent.Asc(backlogstatusevent.FieldCreatedAt))
+		}).
 		Only(ctx)
 	if err != nil {
 		if ent.IsNotFound(err) {
@@ -297,6 +305,18 @@ func (r *EntRepository) TransitionBacklogItemStatus(ctx context.Context, id stri
 		}
 		return nil, fmt.Errorf("failed to transition backlog item %s status: %w", id, err)
 	}
+
+	// Append an immutable audit record for this transition.
+	if _, evErr := r.client.BacklogStatusEvent.Create().
+		SetItemID(parsedID).
+		SetFromStatus(current.Status).
+		SetToStatus(string(toStatus)).
+		SetTriggeredBy(TriggeredBySystem).
+		Save(ctx); evErr != nil {
+		// Non-fatal: audit log failure should not block the transition itself.
+		_ = evErr
+	}
+
 	result := backlogItemToData(item)
 	return &result, nil
 }

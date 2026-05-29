@@ -14,10 +14,10 @@ import (
 // X11 lock-file protocol. Each allocated display number gets an exclusive lock
 // at /tmp/.X<N>-lock. The POSIX O_EXCL flag makes the allocation atomic.
 type DisplayAllocator struct {
-	mu          sync.Mutex
-	allocated   map[int]string // display number → session ID
-	base        int
-	rangeMax    int
+	mu        sync.Mutex
+	allocated map[int]string // display number → session ID
+	base      int
+	rangeMax  int
 }
 
 // NewDisplayAllocator creates a DisplayAllocator that searches display numbers
