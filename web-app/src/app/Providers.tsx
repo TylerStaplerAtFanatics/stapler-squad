@@ -8,6 +8,7 @@ import { OmnibarProvider } from "@/lib/contexts/OmnibarContext";
 import { ReviewQueueProvider } from "@/lib/contexts/ReviewQueueContext";
 import { ApprovalsProvider } from "@/lib/contexts/ApprovalsContext";
 import { GlobalSessionServiceProvider } from "@/lib/contexts/SessionServiceContext";
+import { SystemMemoryProvider } from "@/lib/contexts/SystemMemoryContext";
 import { NavigationProvider } from "@/lib/contexts/NavigationContext";
 import { ThemeProvider } from "@/lib/contexts/ThemeContext";
 import { AnalyticsContextProvider } from "@/lib/contexts/AnalyticsContext";
@@ -38,6 +39,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
           <NavigationProvider>
             <NotificationProvider>
               <GlobalSessionServiceProvider>
+                <SystemMemoryProvider>
                 <OmnibarProvider>
                   <OnboardingProvider>
                     <ReviewQueueProvider>
@@ -47,6 +49,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
                     </ReviewQueueProvider>
                   </OnboardingProvider>
                 </OmnibarProvider>
+                </SystemMemoryProvider>
               </GlobalSessionServiceProvider>
             </NotificationProvider>
           </NavigationProvider>

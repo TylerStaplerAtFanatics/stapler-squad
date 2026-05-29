@@ -39,8 +39,8 @@ type PTYSubscriber interface {
 // SubscribeToControlModeUpdates can satisfy the ProcessManager interface which
 // requires a bidirectional chan []byte.
 type memPTYSubscriber struct {
-	pushCh chan []byte   // internal buffer; fanOut writes here
-	ch     chan []byte   // consumer-facing; drain goroutine writes here
+	pushCh chan []byte // internal buffer; fanOut writes here
+	ch     chan []byte // consumer-facing; drain goroutine writes here
 	stopCh chan struct{}
 	once   sync.Once
 }

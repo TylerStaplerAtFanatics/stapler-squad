@@ -177,10 +177,22 @@ message Session {
   // Only meaningful when lifecycle_status == SESSION_STATUS_ACTIVE.
   SubStatus sub_status = 54;
 
+  // Approximate resident set size (RSS) in MB for all processes in this session.
+  // Zero for hibernated sessions or when measurement is unavailable.
+  int64 memory_rss_mb = 55;
+
+  // Estimated RAM freed in MB if this session were hibernated now.
+  // Equal to memory_rss_mb for Active sessions; zero for Hibernated sessions.
+  int64 estimated_savings_mb = 56;
+
   // When true, this session is excluded from the default session list and review queue.
   // Used for system/background sessions (e.g. triage, validation) that should not
   // pollute the user-facing session viewer.
-  bool hidden = 55;
+  bool hidden = 57;
+
+  // Reason why the session was paused. Empty when session has never been paused.
+  // Values: "manual", "auto:inactivity", "auto:session_limit", "auto:resource"
+  string pause_reason = 58;
 }
 
 // VNCStatus represents the operational state of the VNC subsystem for a session.

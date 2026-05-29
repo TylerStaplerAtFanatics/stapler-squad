@@ -25,6 +25,7 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/detection"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/namegen"
 	"github.com/tstapler/stapler-squad/session/prompts"
 	"github.com/tstapler/stapler-squad/session/search"
@@ -126,6 +127,14 @@ type SessionService struct {
 	// analyticsClient is the ent client for the analytics database (escape events, etc.).
 	// May be nil when escape analytics is disabled or in tests that don't need it.
 	analyticsClient *ent.Client
+
+	// memoryCacheReader provides per-session RSS and system memory percentage.
+	// Wired to the HibernationSweeper after startup. May be nil (fields default to 0).
+	memoryCacheReader session.MemoryCacheReader
+
+	// headlessPool is the shared LLM pool for non-interactive AI calls (RunOneShot, etc.).
+	// May be nil when the claude binary is not found at startup.
+	headlessPool *headless.Pool
 }
 
 // ScrollbackSequencer is the minimal interface SessionService needs from ScrollbackManager.
@@ -572,6 +581,11 @@ func (s *SessionService) SetHistoryLinker(hl *session.HistoryLinker) {
 	s.historyLinker = hl
 }
 
+// SetHeadlessPool wires the headless LLM pool for use by RunOneShot and other AI features.
+func (s *SessionService) SetHeadlessPool(pool *headless.Pool) {
+	s.headlessPool = pool
+}
+
 // SetReviewQueuePoller wires the ReviewQueuePoller so new/deleted sessions are
 // added/removed from the poller and AcknowledgeSession updates poller references.
 // Must be called during server startup before any session mutation RPCs are used.
@@ -580,6 +594,12 @@ func (s *SessionService) SetReviewQueuePoller(poller *session.ReviewQueuePoller)
 	s.reviewQueueSvc.SetReviewQueuePoller(poller)
 	s.notificationSvc.SetReviewQueuePoller(poller)
 	s.utilitySvc.SetReviewQueuePoller(poller)
+}
+
+// SetMemoryCacheReader wires the HibernationSweeper so that ListSessions can
+// populate memory_rss_mb, estimated_savings_mb, and system_memory_pct fields.
+func (s *SessionService) SetMemoryCacheReader(r session.MemoryCacheReader) {
+	s.memoryCacheReader = r
 }
 
 // SetStatusManager wires the InstanceStatusManager so that instances loaded via
@@ -662,7 +682,13 @@ func (s *SessionService) ListSessions(
 			continue
 		}
 
-		sessions = append(sessions, adapters.InstanceToProto(inst))
+		protoSess := adapters.InstanceToProto(inst)
+		if s.memoryCacheReader != nil && inst.IsActive() {
+			rss := s.memoryCacheReader.GetCachedRSSMB(inst.UUID)
+			protoSess.MemoryRssMb = rss
+			protoSess.EstimatedSavingsMb = rss
+		}
+		sessions = append(sessions, protoSess)
 	}
 
 	// Include external sessions from mux discovery if available
@@ -690,8 +716,15 @@ func (s *SessionService) ListSessions(
 		}
 	}
 
+	var sysPct float32
+	if s.memoryCacheReader != nil {
+		pct, _ := s.memoryCacheReader.SystemMemoryPct()
+		sysPct = float32(pct)
+	}
+
 	return connect.NewResponse(&sessionv1.ListSessionsResponse{
-		Sessions: sessions,
+		Sessions:        sessions,
+		SystemMemoryPct: sysPct,
 	}), nil
 }
 
@@ -946,7 +979,6 @@ func (s *SessionService) CreateSession(
 		log.Info("[CreateSession] async start complete", "session", instanceTitle)
 	}()
 
-
 	return connect.NewResponse(&sessionv1.CreateSessionResponse{
 		Session: creatingProto,
 	}), nil
@@ -1099,11 +1131,19 @@ func (s *SessionService) UpdateSession(
 		oldStatus = instance.Status
 
 		if targetStatus == session.Paused && instance.Status != session.Paused {
+			// Set pause reason before transitioning — mirrors HibernateSession pattern.
+			if req.Msg.PauseReason == nil || *req.Msg.PauseReason == "" {
+				instance.PauseReason = session.PauseReasonManual
+			} else {
+				instance.PauseReason = *req.Msg.PauseReason
+			}
 			if err := instance.Pause(); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to pause session: %w", err))
 			}
 			updatedFields = append(updatedFields, "status")
 		} else if targetStatus != session.Paused && instance.Status == session.Paused {
+			// Clear pause reason on resume.
+			instance.PauseReason = ""
 			// Resume from paused state
 			if err := instance.Resume(); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resume session: %w", err))
@@ -2813,38 +2853,50 @@ func (s *SessionService) RunOneShot(
 		workDir = inst.Path
 	}
 
-	// Clamp timeout: default 120 s, max 300 s.
+	// Clamp timeout: default 900 s (raised from 120 s for longer operations), max 1800 s.
 	timeoutSecs := int(req.Msg.TimeoutSeconds)
 	if timeoutSecs <= 0 {
-		timeoutSecs = 120
+		timeoutSecs = 900
 	}
-	if timeoutSecs > 300 {
-		timeoutSecs = 300
-	}
-
-	claudeBin, err := exec.LookPath("claude")
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("claude binary not found in PATH: %w", err))
+	if timeoutSecs > 1800 {
+		timeoutSecs = 1800
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
-	cmd := safeexec.CommandContext(runCtx, claudeBin, "-p", req.Msg.Prompt)
-	cmd.Dir = workDir
-
-	output, runErr := cmd.CombinedOutput()
+	var outputStr string
 	exitCode := 0
 	errMsg := ""
-	if runErr != nil {
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			errMsg = runErr.Error()
-		}
-	}
 
-	outputStr := string(output)
+	if s.headlessPool != nil {
+		// Use headless pool for improved streaming and session reuse.
+		var callErr error
+		outputStr, callErr = s.headlessPool.CallBlockingWithOptions(runCtx, headless.FeatureKeyCustom, "", req.Msg.Prompt, headless.CallOptions{WorkDir: workDir})
+		if callErr != nil {
+			errMsg = callErr.Error()
+			exitCode = 1
+		}
+	} else {
+		// Fallback: direct subprocess (requires claude in PATH).
+		claudeBin, err := exec.LookPath("claude")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("claude binary not found in PATH: %w", err))
+		}
+
+		cmd := safeexec.CommandContext(runCtx, claudeBin, "-p", req.Msg.Prompt)
+		cmd.Dir = workDir
+
+		output, runErr := cmd.CombinedOutput()
+		if runErr != nil {
+			if exitErr, ok := runErr.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			} else {
+				errMsg = runErr.Error()
+			}
+		}
+		outputStr = string(output)
+	}
 	prURL := extractPRURL(outputStr)
 	branchDiverged := checkBranchDivergence(workDir)
 

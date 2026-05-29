@@ -44,7 +44,7 @@ func TestIsClaudeMuxSocket(t *testing.T) {
 		{"/tmp/ssq-mux-12345.txt", false},
 		{"ssq-mux-12345.sock", true},              // Base name only
 		{"/var/run/ssq-mux-789.sock", true},       // Different directory
-		{"/tmp/CLAUDE-MUX-12345.sock", false},        // Case sensitive
+		{"/tmp/CLAUDE-MUX-12345.sock", false},     // Case sensitive
 		{"/tmp/ssq-mux-12345.sock.old", false},    // Extra extension
 		{"/tmp/.ssq-mux-12345.sock", false},       // Hidden file
 		{"/tmp/my-ssq-mux-12345.sock", false},     // Prefix mismatch

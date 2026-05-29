@@ -410,7 +410,6 @@ func (s *Scanner) scanWorktree(wt WorktreeInfo, defaultBranch, repoPath string) 
 	return result
 }
 
-
 // parseDiffShortstat parses "3 files changed, 142 insertions(+), 28 deletions(-)" into a DiffStat.
 func parseDiffShortstat(s string) DiffStat {
 	var d DiffStat

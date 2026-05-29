@@ -20,6 +20,8 @@ import (
 // was always valid for method calls (session == nil → IsAlive()/HasSession() return false).
 // Tests that create bare &Instance{} structs rely on this guarantee.
 func (i *Instance) pm() ProcessManager {
+	i.pmMu.Lock()
+	defer i.pmMu.Unlock()
 	if i.processManager == nil {
 		i.processManager = NewProcessManager(context.Background(), BackendTmux, ProcessManagerOptions{})
 	}

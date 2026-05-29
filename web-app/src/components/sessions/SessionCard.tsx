@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import { Session, SessionStatus, SubStatus, ReviewItem, InstanceType, RateLimitState, CheckpointProto } from "@/gen/session/v1/types_pb";
+import { Tooltip } from "../ui/Tooltip";
 import { ReviewQueueBadge } from "./ReviewQueueBadge";
 import { StatusBadge } from "./StatusBadge";
 import { SubStatusChip } from "./SubStatusChip";
@@ -9,12 +10,14 @@ import { GitHubBadge } from "./GitHubBadge";
 import { TagEditor } from "./TagEditor";
 import { useTerminalSnapshot } from "@/lib/hooks/useTerminalSnapshot";
 import { SessionActionsOverflow } from "./SessionActionsOverflow";
+import { formatPauseReason } from "@/lib/sessions/formatPauseReason";
 import {
   card,
   cardDeleting,
   cardSelectMode,
   cardSelected,
   cardExternal,
+  cardPaused,
   checkbox,
   header,
   titleRow,
@@ -29,6 +32,7 @@ import {
   statusRunning,
   statusReady,
   statusPaused,
+  statusPausedDistinct,
   statusLoading,
   statusNeedsApproval,
   statusUnknown,
@@ -59,6 +63,8 @@ import {
   snapshotEmpty,
   snapshotLoading,
   snapshotError,
+  memoryBadge,
+  cardMemoryPressure,
 } from "./SessionCard.css";
 
 interface SessionCardProps {
@@ -128,6 +134,7 @@ export function SessionCard({
   // SessionStatus.ACTIVE covers both ACTIVE and legacy RUNNING (same wire value = 1).
   const isSnapshotEnabled = session.status === SessionStatus.ACTIVE && isSnapshotOpen;
   const isCreating = session.status === SessionStatus.CREATING;
+  const isPaused = session.status === SessionStatus.PAUSED;
   const { html: snapshotHtml, isEmpty: snapshotIsEmpty, loading: snapshotLoadingState, error: snapshotErrorMsg } =
     useTerminalSnapshot(session.id, isSnapshotEnabled);
 
@@ -138,7 +145,7 @@ export function SessionCard({
       case SessionStatus.READY:
         return statusReady;
       case SessionStatus.PAUSED:
-        return statusPaused;
+        return statusPausedDistinct;  // distinct from STOPPED/HIBERNATED which use statusPaused
       case SessionStatus.LOADING:
         return statusLoading;
       case SessionStatus.CREATING:
@@ -341,8 +348,11 @@ export function SessionCard({
         isSelected ? cardSelected : "",
         isExternal ? cardExternal : "",
         isDeleting ? cardDeleting : "",
+        Number(session.estimatedSavingsMb ?? 0n) > 0 ? cardMemoryPressure : "",
+        isPaused ? cardPaused : "",
       ].filter(Boolean).join(" ")}
       data-testid="session-card"
+      data-paused={isPaused ? "true" : undefined}
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
       role="group"
@@ -423,13 +433,25 @@ export function SessionCard({
                 compact={true}
               />
             )}
-            <span
-              className={`${status} ${getStatusColor(session.status)}`}
-              role="status"
-              aria-label={`Session status: ${getStatusText(session.status)}`}
-            >
-              {getStatusText(session.status)}
-            </span>
+            {isPaused && session.pauseReason ? (
+              <Tooltip label={formatPauseReason(session.pauseReason)} side="top">
+                <span
+                  className={`${status} ${getStatusColor(session.status)}`}
+                  role="status"
+                  aria-label={`Session status: ${getStatusText(session.status)}`}
+                >
+                  {getStatusText(session.status)}
+                </span>
+              </Tooltip>
+            ) : (
+              <span
+                className={`${status} ${getStatusColor(session.status)}`}
+                role="status"
+                aria-label={`Session status: ${getStatusText(session.status)}`}
+              >
+                {getStatusText(session.status)}
+              </span>
+            )}
             {session.rateLimitState && session.rateLimitState !== RateLimitState.NONE && (
               <span
                 className={`${status} ${getRateLimitStateColor(session.rateLimitState)}`}
@@ -450,6 +472,11 @@ export function SessionCard({
               session.subStatus !== SubStatus.IDLE && (
                 <SubStatusChip subStatus={session.subStatus} />
               )}
+            {Number(session.memoryRssMb ?? 0n) > 0 && (
+              <span className={memoryBadge}>
+                {Number(session.memoryRssMb)} MB
+              </span>
+            )}
           </div>
         </div>
         {session.category && (

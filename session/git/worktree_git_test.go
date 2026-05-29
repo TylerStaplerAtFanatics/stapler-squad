@@ -15,8 +15,8 @@ type raceSimulatorExecutor struct {
 	raceSetup func()
 }
 
-func (e *raceSimulatorExecutor) Run(_ *exec.Cmd) error                    { return nil }
-func (e *raceSimulatorExecutor) Output(_ *exec.Cmd) ([]byte, error)       { return e.output, nil }
+func (e *raceSimulatorExecutor) Run(_ *exec.Cmd) error              { return nil }
+func (e *raceSimulatorExecutor) Output(_ *exec.Cmd) ([]byte, error) { return e.output, nil }
 func (e *raceSimulatorExecutor) CombinedOutput(_ *exec.Cmd) ([]byte, error) {
 	if e.raceSetup != nil {
 		e.raceSetup()
@@ -48,7 +48,7 @@ func TestIsDirtyWithHint_ReturnsLocallyComputedValue_WhenCacheIsWrittenByRacingG
 	// It stores dirty=false with a fresh timestamp, making the cache appear valid.
 	mock.raceSetup = func() {
 		g.isDirtyCacheMu.Lock()
-		g.isDirtyCache = false         // racing goroutine observed: not dirty
+		g.isDirtyCache = false          // racing goroutine observed: not dirty
 		g.isDirtyCacheTime = time.Now() // marks cache fresh — causes our write to be skipped
 		g.isDirtyCacheMu.Unlock()
 	}

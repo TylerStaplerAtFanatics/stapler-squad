@@ -107,6 +107,9 @@ func InstanceToProto(inst *session.Instance) *sessionv1.Session {
 	}
 	protoSession.RateLimitEnabled = inst.IsRateLimitEnabled()
 
+	// Pause reason — empty for sessions that have never been paused.
+	protoSession.PauseReason = inst.PauseReason
+
 	// VNC / browser-passthrough state.
 	if vncMgr := inst.VNCManager(); vncMgr != nil {
 		vncState := vncMgr.State()
@@ -197,7 +200,6 @@ func toProtoSubStatus(inst *session.Instance) sessionv1.SubStatus {
 		return sessionv1.SubStatus_SUB_STATUS_UNSPECIFIED
 	}
 }
-
 
 // rateLimitStateToProto converts a ratelimit.RateLimitState to proto RateLimitState enum.
 func rateLimitStateToProto(state ratelimit.RateLimitState) sessionv1.RateLimitState {

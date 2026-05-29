@@ -74,5 +74,7 @@ func (ItemSession) Indexes() []ent.Index {
 	return []ent.Index{
 		// CRITICAL: O(1) lookup on every EventExited hook
 		index.Fields("session_uuid"),
+		// Composite index for "all sessions for an item ordered by time" queries.
+		index.Fields("created_at").Edges("backlog_item"),
 	}
 }

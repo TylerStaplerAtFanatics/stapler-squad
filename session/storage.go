@@ -118,6 +118,11 @@ type InstanceData struct {
 	// MCPServerURL is the stapler-squad HTTP MCP endpoint passed to claude via
 	// --mcp-config on session start. Persisted so restarts re-inject the flag.
 	MCPServerURL string `json:"mcp_server_url,omitempty"`
+
+	// PauseReason records why this session was paused.
+	// Values: "manual", "auto:inactivity", "auto:session_limit", "auto:resource".
+	// Empty when session has never been paused.
+	PauseReason string `json:"pause_reason,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
@@ -638,6 +643,17 @@ func (s *Storage) CreateItemSession(ctx context.Context, data ItemSessionData) (
 		return nil, fmt.Errorf("item sessions not supported by this storage backend")
 	}
 	return er.CreateItemSession(ctx, data)
+}
+
+// CreateItemSessionWithVerdict atomically creates an ItemSession and its initial
+// ReviewVerdict in a single transaction. Falls back gracefully if the backend is
+// not ent-based.
+func (s *Storage) CreateItemSessionWithVerdict(ctx context.Context, isData ItemSessionData, verdict ReviewVerdictData) (*ent.ItemSession, *ent.ReviewVerdict, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, nil, fmt.Errorf("item sessions not supported by this storage backend")
+	}
+	return er.CreateItemSessionWithVerdict(ctx, isData, verdict)
 }
 
 // ListItemSessions returns all ItemSessions for a given BacklogItem UUID string.

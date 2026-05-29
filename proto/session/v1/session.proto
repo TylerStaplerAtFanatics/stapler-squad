@@ -363,6 +363,9 @@ message ListSessionsRequest {
 
 message ListSessionsResponse {
   repeated Session sessions = 1;
+  // System-wide memory usage percentage (0–100). Populated by the server on each response.
+  // Zero when measurement is unavailable (e.g., macOS without /proc).
+  float system_memory_pct = 2;
 }
 
 message GetSessionRequest {
@@ -464,6 +467,10 @@ message UpdateSessionRequest {
 
   // Update whether rate limit auto-resume is enabled for this session.
   optional bool rate_limit_enabled = 8;
+
+  // Reason for pausing (only meaningful when status is set to PAUSED).
+  // If empty when pausing, defaults to "manual" in the backend handler.
+  optional string pause_reason = 9;
 }
 
 message UpdateSessionResponse {

@@ -7,6 +7,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/tmux"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,6 +18,7 @@ import (
 // here.  TmuxProcessManager itself has no knowledge of Instance lifecycle; it
 // only manages the tmux session and the preview-resize bookkeeping.
 type TmuxProcessManager struct {
+	mu      sync.RWMutex
 	session *tmux.TmuxSession
 
 	// Preview size tracking — avoid sending redundant resize commands.
@@ -27,43 +29,58 @@ type TmuxProcessManager struct {
 
 // HasSession reports whether a tmux session has been initialized.
 func (tm *TmuxProcessManager) HasSession() bool {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
 	return tm.session != nil
 }
 
 // Session returns the underlying tmux session (may be nil before Start).
 func (tm *TmuxProcessManager) Session() *tmux.TmuxSession {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
 	return tm.session
 }
 
 // SetSession replaces the underlying tmux session.  Used by tests and by
 // Instance.start() when reusing a pre-created session.
 func (tm *TmuxProcessManager) SetSession(s *tmux.TmuxSession) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
 	tm.session = s
 }
 
 // GetTmuxSessionName returns the sanitized tmux session name for reconciliation.
 // Returns empty string when no session has been initialized.
 func (tm *TmuxProcessManager) GetTmuxSessionName() string {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return ""
 	}
-	return tm.session.GetSanitizedName()
+	return s.GetSanitizedName()
 }
 
 // IsAlive reports whether the tmux session process is still running.
 func (tm *TmuxProcessManager) IsAlive() bool {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return false
 	}
-	return tm.session.DoesSessionExist()
+	return s.DoesSessionExist()
 }
 
 // Close terminates the tmux session.
 func (tm *TmuxProcessManager) Close() error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return nil
 	}
-	if err := tm.session.Close(); err != nil {
+	if err := s.Close(); err != nil {
 		return fmt.Errorf("failed to close tmux session: %w", err)
 	}
 	return nil
@@ -71,44 +88,47 @@ func (tm *TmuxProcessManager) Close() error {
 
 // DetachSafely detaches the current tmux client from the session without closing it.
 func (tm *TmuxProcessManager) DetachSafely() error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return nil
 	}
-	return tm.session.DetachSafely()
+	return s.DetachSafely()
 }
 
 // DoesSessionExist returns true if the tmux session name is registered with the server.
 func (tm *TmuxProcessManager) DoesSessionExist() bool {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return false
 	}
-	return tm.session.DoesSessionExist()
+	return s.DoesSessionExist()
 }
 
 // SetDetachedSize updates the tmux window dimensions without attaching.
 // Rate-limits PTY-not-initialized warnings to avoid log spam.
 func (tm *TmuxProcessManager) SetDetachedSize(width, height int, instanceTitle string) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
 	if tm.session == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
-
-	// Skip resize if dimensions haven't changed.
 	if width == tm.lastPreviewWidth && height == tm.lastPreviewHeight {
 		return nil
 	}
-
 	if err := tm.session.SetDetachedSize(width, height); err != nil {
 		if strings.Contains(err.Error(), "PTY is not initialized") {
-			// Rate-limit: warn at most once per 30 seconds per instance.
 			if time.Since(tm.lastPTYWarningTime) > 30*time.Second {
 				log.Warn("PTY not ready for instance, skipping resize", "session", instanceTitle, "err", err)
 				tm.lastPTYWarningTime = time.Now()
 			}
-			return nil // Not fatal — don't disrupt the UI.
+			return nil
 		}
 		return err
 	}
-
 	tm.lastPreviewWidth = width
 	tm.lastPreviewHeight = height
 	return nil
@@ -116,237 +136,314 @@ func (tm *TmuxProcessManager) SetDetachedSize(width, height int, instanceTitle s
 
 // Attach returns a channel that closes when the user detaches from the session.
 func (tm *TmuxProcessManager) Attach() (chan struct{}, error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return nil, fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.Attach()
+	return s.Attach()
 }
 
 // CapturePaneContent returns the current visible pane content.
 func (tm *TmuxProcessManager) CapturePaneContent() (string, error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.CapturePaneContent()
+	return s.CapturePaneContent()
 }
 
 // CapturePaneContentRaw returns pane content with ANSI escape codes preserved.
 func (tm *TmuxProcessManager) CapturePaneContentRaw() (string, error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.CapturePaneContentRaw()
+	return s.CapturePaneContentRaw()
 }
 
 // CapturePaneContentWithOptions captures pane content between startLine and endLine.
 func (tm *TmuxProcessManager) CapturePaneContentWithOptions(startLine, endLine string) (string, error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.CapturePaneContentWithOptions(startLine, endLine)
+	return s.CapturePaneContentWithOptions(startLine, endLine)
 }
 
 // GetPaneDimensions returns the current pane width and height.
 func (tm *TmuxProcessManager) GetPaneDimensions() (width, height int, err error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return 0, 0, fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.GetPaneDimensions()
+	return s.GetPaneDimensions()
 }
 
 // GetCursorPosition returns the current cursor column and row (0-based).
 func (tm *TmuxProcessManager) GetCursorPosition() (x, y int, err error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return 0, 0, fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.GetCursorPosition()
+	return s.GetCursorPosition()
 }
 
 // GetPTY returns the PTY master file for reading terminal output.
 func (tm *TmuxProcessManager) GetPTY() (*os.File, error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return nil, fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.GetPTY()
+	return s.GetPTY()
 }
 
 // SendKeys sends a string of keys to the tmux session and returns the number of bytes written.
 func (tm *TmuxProcessManager) SendKeys(keys string) (int, error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return 0, fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.SendKeys(keys)
+	return s.SendKeys(keys)
 }
 
 // SendInputViaControlMode sends raw bytes through the existing control mode connection.
 func (tm *TmuxProcessManager) SendInputViaControlMode(ctx context.Context, data []byte) error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.SendInputViaControlMode(ctx, data)
+	return s.SendInputViaControlMode(ctx, data)
 }
 
 // SetWindowSize resizes the tmux window to the given columns and rows.
 func (tm *TmuxProcessManager) SetWindowSize(cols, rows int) error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return nil
 	}
-	return tm.session.SetWindowSize(cols, rows)
+	return s.SetWindowSize(cols, rows)
 }
 
 // RefreshClient forces the tmux client to redraw.
 func (tm *TmuxProcessManager) RefreshClient() error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return nil
 	}
-	return tm.session.RefreshClient()
+	return s.RefreshClient()
 }
 
 // TapEnter sends an Enter key to the session.
 func (tm *TmuxProcessManager) TapEnter() error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.TapEnter()
+	return s.TapEnter()
 }
 
 // HasUpdated reports whether the pane content has changed since the last check.
 func (tm *TmuxProcessManager) HasUpdated() (updated bool, hasPrompt bool, content string) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return false, false, ""
 	}
-	return tm.session.HasUpdated()
+	return s.HasUpdated()
 }
 
 // RestoreWithWorkDir re-attaches to an existing session in the given directory.
 func (tm *TmuxProcessManager) RestoreWithWorkDir(workDir string) error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.RestoreWithWorkDir(workDir)
+	return s.RestoreWithWorkDir(workDir)
 }
 
 // Start creates and starts the tmux session in the given directory.
 func (tm *TmuxProcessManager) Start(dir string) error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.Start(dir)
+	return s.Start(dir)
 }
 
 // FilterBanners strips banner/header content from terminal output.
 func (tm *TmuxProcessManager) FilterBanners(content string) (string, int) {
-	if tm.session == nil {
-		return content, 0 // No-op without a session.
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
+		return content, 0
 	}
-	return tm.session.FilterBanners(content)
+	return s.FilterBanners(content)
 }
 
 // HasMeaningfulContent reports whether the terminal output contains substantive content.
 func (tm *TmuxProcessManager) HasMeaningfulContent(content string) bool {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return false
 	}
-	return tm.session.HasMeaningfulContent(content)
+	return s.HasMeaningfulContent(content)
 }
 
 // CaptureViewport captures the last N lines of the pane.
 // If lines <= 0, captures the current viewport height.
 func (tm *TmuxProcessManager) CaptureViewport(lines int) (string, error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return "", fmt.Errorf("tmux session not initialized")
 	}
 	if lines <= 0 {
-		_, height, err := tm.session.GetPaneDimensions()
+		_, height, err := s.GetPaneDimensions()
 		if err != nil {
-			lines = 40 // Fallback
+			lines = 40
 		} else {
 			lines = height
 		}
 	}
 	startLine := fmt.Sprintf("-%d", lines)
-	return tm.session.CapturePaneContentWithOptions(startLine, "-")
+	return s.CapturePaneContentWithOptions(startLine, "-")
 }
 
 // SendPromptWithEnter sends text to the session followed by Enter key.
 // Includes a brief pause between text and Enter to prevent interpretation issues.
 func (tm *TmuxProcessManager) SendPromptWithEnter(prompt string) error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
-	if _, err := tm.session.SendKeys(prompt); err != nil {
+	if _, err := s.SendKeys(prompt); err != nil {
 		return fmt.Errorf("error sending keys to tmux session: %w", err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if err := tm.session.TapEnter(); err != nil {
+	if err := s.TapEnter(); err != nil {
 		return fmt.Errorf("error tapping enter: %w", err)
 	}
 	return nil
 }
 
 // GetPanePID returns the PID of the foreground process in the pane.
-// Returns an error if the session is not initialized or the command fails.
 func (tm *TmuxProcessManager) GetPanePID() (int32, error) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return 0, fmt.Errorf("tmux session not initialized")
 	}
-	return tm.session.GetPanePID()
+	return s.GetPanePID()
 }
 
 // SetOnExitCallback registers a callback that fires when the tmux session exits
 // unexpectedly. No-op if no session is initialized.
 func (tm *TmuxProcessManager) SetOnExitCallback(fn func(string)) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return
 	}
-	tm.session.SetOnExitCallback(fn)
+	s.SetOnExitCallback(fn)
 }
 
 // ResetExitOnce resets the sync.Once guard so that the exit callback can fire
 // again on the next start cycle (e.g., after a restart). No-op if no session.
 func (tm *TmuxProcessManager) ResetExitOnce() {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return
 	}
-	tm.session.ResetExitOnce()
+	s.ResetExitOnce()
 }
 
 // StartControlMode starts the tmux control mode stream.
 // Returns nil if no session is initialized.
 func (tm *TmuxProcessManager) StartControlMode() error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return nil
 	}
-	return tm.session.StartControlMode()
+	return s.StartControlMode()
 }
 
 // StopControlMode stops the tmux control mode stream.
 // Returns nil if no session is initialized.
 func (tm *TmuxProcessManager) StopControlMode() error {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return nil
 	}
-	return tm.session.StopControlMode()
+	return s.StopControlMode()
 }
 
 // SubscribeToControlModeUpdates registers a new subscriber for real-time terminal output.
 // Returns a pre-closed channel if no session is initialized.
 func (tm *TmuxProcessManager) SubscribeToControlModeUpdates() (string, chan []byte) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		ch := make(chan []byte)
 		close(ch)
 		return "", ch
 	}
-	return tm.session.SubscribeToControlModeUpdates()
+	return s.SubscribeToControlModeUpdates()
 }
 
 // UnsubscribeFromControlModeUpdates removes a subscriber by ID.
 // No-op if no session is initialized.
 func (tm *TmuxProcessManager) UnsubscribeFromControlModeUpdates(id string) {
-	if tm.session == nil {
+	tm.mu.RLock()
+	s := tm.session
+	tm.mu.RUnlock()
+	if s == nil {
 		return
 	}
-	tm.session.UnsubscribeFromControlModeUpdates(id)
+	s.UnsubscribeFromControlModeUpdates(id)
 }
 
 // TmuxManager is the interface satisfied by *TmuxProcessManager.

@@ -23,7 +23,7 @@ type ExternalItem struct {
 	Title       string
 	Description string
 	Labels      []string
-	Priority    int    // 1-5, derived from labels
+	Priority    int // 1-5, derived from labels
 	URL         string
 }
 

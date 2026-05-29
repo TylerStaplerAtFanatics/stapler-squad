@@ -91,12 +91,16 @@ func TestHistoryLinker_CorrelateSession_Force_UpdatesUUIDAfterClear(t *testing.T
 	oldUUID := "aaaaaaaa-0000-0000-0000-000000000000"
 	newUUID := "bbbbbbbb-1111-1111-1111-111111111111"
 
-	// Build two JSONL files; newUUID has a later mod time so it wins the detection.
+	// Build two JSONL files; pin oldUUID 1 s in the past so DetectByPath reliably
+	// picks newUUID regardless of filesystem mtime granularity.
 	projectDir := filepath.Join(tempHome, ".claude", "projects", ClaudeProjectDirName(sessionPath))
 	require.NoError(t, os.MkdirAll(projectDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(projectDir, oldUUID+".jsonl"), []byte("{}"), 0644))
-	time.Sleep(2 * time.Millisecond)
-	require.NoError(t, os.WriteFile(filepath.Join(projectDir, newUUID+".jsonl"), []byte("{}"), 0644))
+	oldPath := filepath.Join(projectDir, oldUUID+".jsonl")
+	newPath := filepath.Join(projectDir, newUUID+".jsonl")
+	require.NoError(t, os.WriteFile(oldPath, []byte("{}"), 0644))
+	require.NoError(t, os.WriteFile(newPath, []byte("{}"), 0644))
+	past := time.Now().Add(-1 * time.Second)
+	require.NoError(t, os.Chtimes(oldPath, past, past))
 
 	// Instance was linked to the old UUID (e.g., from before /clear).
 	inst := &Instance{Title: "cleared-session", Path: sessionPath, Status: Running}
@@ -244,9 +248,10 @@ func TestHistoryLinker_CorrelateSession_UsesWorktreePath_NotBasePath(t *testing.
 	worktreeDir := filepath.Join(tempHome, ".claude", "projects", ClaudeProjectDirName(worktreePath))
 	require.NoError(t, os.MkdirAll(repoDir, 0755))
 	require.NoError(t, os.MkdirAll(worktreeDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(repoDir, repoUUID+".jsonl"), []byte("{}"), 0644))
-	// Give the worktree file a later mod time so it wins if both dirs are scanned.
-	time.Sleep(2 * time.Millisecond)
+	repoFile := filepath.Join(repoDir, repoUUID+".jsonl")
+	require.NoError(t, os.WriteFile(repoFile, []byte("{}"), 0644))
+	// Pin repoFile 1 s in the past so worktreeUUID wins if both dirs are scanned.
+	require.NoError(t, os.Chtimes(repoFile, time.Now().Add(-1*time.Second), time.Now().Add(-1*time.Second)))
 	require.NoError(t, os.WriteFile(filepath.Join(worktreeDir, worktreeUUID+".jsonl"), []byte("{}"), 0644))
 
 	// Build an instance whose Path is the base repo but whose gitManager worktree

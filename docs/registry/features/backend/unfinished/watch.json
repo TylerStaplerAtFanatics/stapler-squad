@@ -5,7 +5,10 @@
   "method": "WatchUnfinishedWork",
   "protoFile": "proto/session/v1/unfinished.proto",
   "markerFound": false,
-  "tested": false,
-  "testIds": [],
-  "lastModified": "2026-05-14T16:11:09.999673338-07:00"
+  "tested": true,
+  "testIds": [
+    "unfinished-work \u003e scan completed event updates last-scanned timestamp",
+    "unfinished-work \u003e filter chips toggle between All Uncommitted Ahead Behind"
+  ],
+  "lastModified": "2026-05-02T19:34:43.996497514-07:00"
 }
