@@ -230,6 +230,18 @@ function ReviewQueueContent() {
     handleAutoAdvance(current.id, true); // explicit dismiss always advances regardless of auto-advance setting
   }, [acknowledgeSession, handleAutoAdvance]);
 
+  // Auto-advance when the currently selected session is deleted externally (not via dismiss/acknowledge).
+  // reviewQueueItems updates as soon as the Redux removeItem dispatch fires from the sessionDeleted event,
+  // so this catches the case where another tab or the session list deletes the session.
+  useEffect(() => {
+    if (!selectedSession) return;
+    const stillInQueue = reviewQueueItems.some((s) => s.id === selectedSession.id);
+    if (!stillInQueue) {
+      handleAutoAdvance(selectedSession.id, true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewQueueItems]);
+
   // Queue position for the header badge ("2 of 5")
   const queuePosition = selectedSession
     ? reviewQueueItems.findIndex((s) => s.id === selectedSession.id) + 1

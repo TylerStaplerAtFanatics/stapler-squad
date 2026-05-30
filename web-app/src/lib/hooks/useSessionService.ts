@@ -30,6 +30,7 @@ import {
   selectSessionsError,
   selectConnectionState,
 } from "@/lib/store/sessionsSlice";
+import { removeItem as removeReviewQueueItem } from "@/lib/store/reviewQueueSlice";
 
 interface UseSessionServiceOptions {
   baseUrl?: string;
@@ -49,6 +50,11 @@ interface UseSessionServiceOptions {
    * device resolves an approval.
    */
   onApprovalResponse?: () => void;
+  /**
+   * Called when a session is deleted. Use this to clear related state such as
+   * notifications keyed to the deleted session.
+   */
+  onSessionDeleted?: (sessionId: string) => void;
 }
 
 interface UseSessionServiceReturn {
@@ -630,6 +636,8 @@ export function useSessionService(
       case "sessionDeleted": {
         const sessionId = event.event.value.sessionId;
         dispatch(removeSession(sessionId));
+        dispatch(removeReviewQueueItem(sessionId));
+        options.onSessionDeleted?.(sessionId);
         break;
       }
       case "statusChanged": {
