@@ -59,7 +59,7 @@ const SessionServiceContext = createContext<SessionServiceContextValue | null>(n
  */
 export function GlobalSessionServiceProvider({ children }: { children: React.ReactNode }) {
   const { authEnabled, authenticated, loading: authLoading } = useAuth();
-  const { refreshHistory } = useNotifications();
+  const { refreshHistory, markAsReadBySessionId } = useNotifications();
   const router = useRouter();
 
   // Navigate to the session detail when user clicks "View" on a toast.
@@ -80,6 +80,7 @@ export function GlobalSessionServiceProvider({ children }: { children: React.Rea
     onNotification: handleNotification,
     onReconnect: refreshHistory,
     onApprovalResponse: refreshHistory,
+    onSessionDeleted: markAsReadBySessionId,
   });
 
   return (
