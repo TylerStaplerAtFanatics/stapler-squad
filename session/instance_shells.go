@@ -56,7 +56,6 @@ func (i *Instance) shellWgDone() {
 		i.shells.wg.Done()
 	}
 }
-
 // shellTmuxSessionName computes the sibling tmux session name for a given shell.
 // Format: "{parentSessionName}_shell_{shellID}"
 func (i *Instance) shellTmuxSessionName(shellID string) string {
