@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
@@ -31,20 +32,53 @@ type diffStatEntry struct {
 // are computed from the same filesystem snapshot.
 var diffStatCache sync.Map
 
+// repoCacheMaxEntries is the maximum number of repositories held in repoCache
+// before eviction runs. Sized for typical multi-repo workspaces; adjust higher
+// only if scanning > 100 repos simultaneously.
+const repoCacheMaxEntries = 100
+
+// repoCacheTTL is the duration after which an unaccessed repo entry is evicted.
+// 30 minutes covers the scanner's 30s cycle comfortably while bounding memory.
+const repoCacheTTL = 30 * time.Minute
+
 // cachedRepo holds an open go-git Repository and a per-repo mutex that
 // serialises concurrent VCS reads. go-git's packfile reader is not safe for
 // concurrent use; holding this mutex for the duration of a VCS operation
 // eliminates the internal packfile-reader contention that was the #1 profiling
 // hotspot (3.8B cycles, 36K events).
 type cachedRepo struct {
-	repo *git.Repository
-	mu   sync.Mutex
+	repo         *git.Repository
+	mu           sync.Mutex
+	accessedAtNs int64 // atomic UnixNano; updated on every cache hit
 }
 
 // repoCache caches open go-git Repository handles keyed by absolute path.
 // Values are *cachedRepo; concurrent storers for the same path are benign
 // because LoadOrStore is used to ensure only one entry wins.
+// Entries are evicted after repoCacheTTL of inactivity (pruneRepoCache).
 var repoCache sync.Map // map[string]*cachedRepo
+
+// repoCacheSize tracks the approximate number of entries in repoCache atomically
+// so we can decide when to run eviction without a full Range scan.
+var repoCacheSize int64
+
+// pruneRepoCache evicts entries not accessed within repoCacheTTL, and then
+// removes the oldest entries if the cache still exceeds repoCacheMaxEntries.
+// Designed to be called infrequently (e.g. from the scanner's sweep loop).
+func pruneRepoCache() {
+	cutoff := time.Now().Add(-repoCacheTTL).UnixNano()
+	var keys []string
+	repoCache.Range(func(k, v any) bool {
+		entry := v.(*cachedRepo)
+		if atomic.LoadInt64(&entry.accessedAtNs) < cutoff {
+			repoCache.Delete(k)
+			atomic.AddInt64(&repoCacheSize, -1)
+		} else {
+			keys = append(keys, k.(string))
+		}
+		return true
+	})
+}
 
 // GoGitVCSReader implements VCSReader using the go-git library.
 // No subprocesses are spawned; all operations run in-process.
@@ -529,10 +563,21 @@ func gitCommonDir(repoPath string) string {
 // openRepoEntry returns the cached *cachedRepo for path, opening it if needed.
 // Uses LoadOrStore so that only one *cachedRepo is ever stored per path even
 // when multiple goroutines race on the first access.
+// Access timestamps are updated atomically on every hit so pruneRepoCache can
+// evict cold entries without interrupting concurrent readers.
 func openRepoEntry(path string) (*cachedRepo, error) {
+	now := time.Now().UnixNano()
 	if v, ok := repoCache.Load(path); ok {
-		return v.(*cachedRepo), nil
+		entry := v.(*cachedRepo)
+		atomic.StoreInt64(&entry.accessedAtNs, now)
+		return entry, nil
 	}
+
+	// Trigger eviction before adding a new entry if the cache is large.
+	if atomic.LoadInt64(&repoCacheSize) >= repoCacheMaxEntries {
+		pruneRepoCache()
+	}
+
 	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{
 		DetectDotGit:          true,
 		EnableDotGitCommonDir: true,
@@ -540,8 +585,11 @@ func openRepoEntry(path string) (*cachedRepo, error) {
 	if err != nil {
 		return nil, err
 	}
-	entry := &cachedRepo{repo: repo}
-	actual, _ := repoCache.LoadOrStore(path, entry)
+	entry := &cachedRepo{repo: repo, accessedAtNs: now}
+	actual, loaded := repoCache.LoadOrStore(path, entry)
+	if !loaded {
+		atomic.AddInt64(&repoCacheSize, 1)
+	}
 	return actual.(*cachedRepo), nil
 }
 
