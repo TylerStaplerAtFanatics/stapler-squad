@@ -215,11 +215,17 @@ func (s *HibernationSweeper) sweep(ctx context.Context) {
 		}
 	}
 
-	// Idle-timeout hibernation (original behaviour).
+	// Idle-timeout hibernation.
+	// A session is eligible only when: active, idle ≥ timeout, AND not in the
+	// review queue (which would mean Claude is waiting for user input — hibernating
+	// that session would silently discard a pending approval or question).
 	idleTimeout := time.Duration(s.cfg.Hibernation.IdleTimeoutMinutes) * time.Minute
 	if idleTimeout > 0 {
 		for _, inst := range instances {
 			if !inst.IsActive() {
+				continue
+			}
+			if inst.NeedsReview() {
 				continue
 			}
 			idle := inst.TimeSinceLastMeaningfulOutput(inst.CreatedAt)
@@ -308,7 +314,8 @@ func (s *HibernationSweeper) sweepResourcePressure(ctx context.Context, instance
 		"used_pct", sysPct,
 		"threshold", threshold)
 
-	// Collect eligible candidates: Active sessions idle > pressureGracePeriod.
+	// Collect eligible candidates: Active sessions idle > pressureGracePeriod
+	// that are NOT waiting for user input in the review queue.
 	type candidate struct {
 		inst    *Instance
 		idleFor time.Duration
@@ -316,6 +323,9 @@ func (s *HibernationSweeper) sweepResourcePressure(ctx context.Context, instance
 	var candidates []candidate
 	for _, inst := range instances {
 		if !inst.IsActive() {
+			continue
+		}
+		if inst.NeedsReview() {
 			continue
 		}
 		idle := inst.TimeSinceLastMeaningfulOutput(inst.CreatedAt)

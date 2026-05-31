@@ -186,7 +186,7 @@ type HibernationConfig struct {
 	// Enabled controls whether hibernation is active. Default: true.
 	Enabled bool `json:"enabled"`
 	// IdleTimeoutMinutes is the number of minutes a session must be idle before
-	// the sweeper automatically hibernates it. Default: 120.
+	// the sweeper automatically hibernates it. Default: 20.
 	IdleTimeoutMinutes int `json:"idle_timeout_minutes"`
 	// ResourcePressureThreshold is the memory usage percentage at which the
 	// sweeper begins hibernating idle sessions. Default: 85.
@@ -482,7 +482,7 @@ func defaultConfigWithExecutor(exec CommandExecutor) *Config {
 	cfg.AvailablePrograms = availablePrograms
 	cfg.Hibernation = HibernationConfig{
 		Enabled:                   true,
-		IdleTimeoutMinutes:        120,
+		IdleTimeoutMinutes:        20,
 		ResourcePressureThreshold: 85,
 		RetentionDays:             30,
 	}
