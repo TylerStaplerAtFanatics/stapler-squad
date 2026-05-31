@@ -16,7 +16,7 @@ var commandPattern = regexp.MustCompile(`(?:^|\s)/([a-zA-Z][a-zA-Z0-9:_-]*)`)
 // detectSkillActivations scans user message content blocks for:
 //  1. Text blocks starting with a /command → IsCommand=true
 //  2. Tool result blocks whose tool input path contains /.claude/skills/ → IsCommand=false
-func detectSkillActivations(contents []jsonlContent, turnIndex int) []SkillActivation {
+func detectSkillActivations(contents []jsonlUserContent, turnIndex int) []SkillActivation {
 	var activations []SkillActivation
 
 	for _, c := range contents {
@@ -55,7 +55,7 @@ func detectCommandsInText(text string, turnIndex int) []SkillActivation {
 
 // detectSkillFromToolResult checks if a tool_result content block came from a
 // Read tool on a skills file.
-func detectSkillFromToolResult(c jsonlContent, turnIndex int) []SkillActivation {
+func detectSkillFromToolResult(c jsonlUserContent, turnIndex int) []SkillActivation {
 	// The tool_result content field can be a string or array.
 	// We need to find skill paths in nested content.
 	if len(c.Content) == 0 {
