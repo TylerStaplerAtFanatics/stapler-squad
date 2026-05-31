@@ -31,6 +31,21 @@ type diffStatEntry struct {
 // are computed from the same filesystem snapshot.
 var diffStatCache sync.Map
 
+// cachedRepo holds an open go-git Repository and a per-repo mutex that
+// serialises concurrent VCS reads. go-git's packfile reader is not safe for
+// concurrent use; holding this mutex for the duration of a VCS operation
+// eliminates the internal packfile-reader contention that was the #1 profiling
+// hotspot (3.8B cycles, 36K events).
+type cachedRepo struct {
+	repo *git.Repository
+	mu   sync.Mutex
+}
+
+// repoCache caches open go-git Repository handles keyed by absolute path.
+// Values are *cachedRepo; concurrent storers for the same path are benign
+// because LoadOrStore is used to ensure only one entry wins.
+var repoCache sync.Map // map[string]*cachedRepo
+
 // GoGitVCSReader implements VCSReader using the go-git library.
 // No subprocesses are spawned; all operations run in-process.
 // Prefer this in environments where spawning git subprocesses is undesirable
@@ -149,10 +164,13 @@ func (g *GoGitVCSReader) ResolveDefaultBranch(repoPath string) string {
 // This avoids the 1.85 GB allocation caused by wt.Status(), which hashes every
 // modified file in full.
 func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
-	repo, err := openWorktree(worktreePath)
+	entry, err := openRepoEntry(worktreePath)
 	if err != nil {
 		return false, fmt.Errorf("open repo %s: %w", worktreePath, err)
 	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	repo := entry.repo
 
 	idx, err := repo.Storer.Index()
 	if err != nil {
@@ -270,10 +288,13 @@ func hasUntrackedFilesRec(root, dir string, indexed map[string]bool) (bool, erro
 // then count commits between each tip and the merge base. This bounds the
 // walk to the diverged portion of history rather than the full reachable set.
 func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error) {
-	repo, err := openWorktree(worktreePath)
+	entry, err := openRepoEntry(worktreePath)
 	if err != nil {
 		return 0, 0, fmt.Errorf("open repo %s: %w", worktreePath, err)
 	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	repo := entry.repo
 
 	headRef, err := repo.Head()
 	if err != nil {
@@ -306,10 +327,13 @@ func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error
 }
 
 func (g *GoGitVCSReader) CommitMessages(worktreePath, base string, max int) ([]string, error) {
-	repo, err := openWorktree(worktreePath)
+	entry, err := openRepoEntry(worktreePath)
 	if err != nil {
 		return nil, err
 	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	repo := entry.repo
 
 	headRef, err := repo.Head()
 	if err != nil {
@@ -368,10 +392,13 @@ func (g *GoGitVCSReader) DiffShortstat(worktreePath string) (DiffStat, error) {
 }
 
 func (g *GoGitVCSReader) diffShortstatUncached(worktreePath string) (DiffStat, error) {
-	repo, err := openWorktree(worktreePath)
+	entry, err := openRepoEntry(worktreePath)
 	if err != nil {
 		return DiffStat{}, err
 	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	repo := entry.repo
 
 	head, err := repo.Head()
 	if err != nil {
@@ -499,13 +526,35 @@ func gitCommonDir(repoPath string) string {
 	return filepath.Dir(wtGitDir)
 }
 
-// openWorktree opens a git repo that may be a linked worktree (has a .git file
-// rather than a .git directory).
-func openWorktree(path string) (*git.Repository, error) {
-	return git.PlainOpenWithOptions(path, &git.PlainOpenOptions{
+// openRepoEntry returns the cached *cachedRepo for path, opening it if needed.
+// Uses LoadOrStore so that only one *cachedRepo is ever stored per path even
+// when multiple goroutines race on the first access.
+func openRepoEntry(path string) (*cachedRepo, error) {
+	if v, ok := repoCache.Load(path); ok {
+		return v.(*cachedRepo), nil
+	}
+	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{
 		DetectDotGit:          true,
 		EnableDotGitCommonDir: true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	entry := &cachedRepo{repo: repo}
+	actual, _ := repoCache.LoadOrStore(path, entry)
+	return actual.(*cachedRepo), nil
+}
+
+// openWorktree opens a git repo that may be a linked worktree (has a .git file
+// rather than a .git directory). It returns the cached *git.Repository.
+// Callers that perform heavy VCS work should use openRepoEntry directly so
+// they can hold the per-repo mutex for the duration of their operation.
+func openWorktree(path string) (*git.Repository, error) {
+	entry, err := openRepoEntry(path)
+	if err != nil {
+		return nil, err
+	}
+	return entry.repo, nil
 }
 
 // resolveRef resolves a short ref name (e.g. "origin/main") to a commit hash.
@@ -552,51 +601,61 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// mergeBaseBFSLimit caps the number of commits visited per side in findMergeBase.
+// For a 10K-commit repo the unbounded walk allocates ~640 KB; bounding at 2000
+// limits that to ~128 KB while still covering typical branch divergences.
+const mergeBaseBFSLimit = 2000
+
 // findMergeBase returns the most-recent common ancestor of h1 and h2 using BFS.
-// It first marks all ancestors of h1, then walks ancestors of h2 until it finds
-// one that is already marked.
+// It first marks ancestors of h1 (up to mergeBaseBFSLimit), then walks ancestors
+// of h2 until it finds one that is already marked. If no merge base is found
+// within the depth limit, a sentinel error is returned.
 func findMergeBase(repo *git.Repository, h1, h2 plumbing.Hash) (plumbing.Hash, error) {
 	if h1 == h2 {
 		return h1, nil
 	}
 
-	// Mark all commits reachable from h1.
-	anc := make(map[plumbing.Hash]bool)
+	// Mark ancestors of h1 (bounded).
+	anc := make(map[plumbing.Hash]bool, mergeBaseBFSLimit)
 	q := []plumbing.Hash{h1}
-	for len(q) > 0 {
+	visited := 0
+	for len(q) > 0 && visited < mergeBaseBFSLimit {
 		h := q[len(q)-1]
 		q = q[:len(q)-1]
 		if anc[h] {
 			continue
 		}
 		anc[h] = true
+		visited++
 		c, err := repo.CommitObject(h)
 		if err != nil {
-			return plumbing.ZeroHash, err
+			continue
 		}
 		q = append(q, c.ParentHashes...)
 	}
 
-	// Walk from h2 breadth-first; first ancestor also in anc is the nearest merge base.
+	// Walk from h2 breadth-first; first ancestor in anc is the nearest merge base.
 	seen := make(map[plumbing.Hash]bool)
 	q = []plumbing.Hash{h2}
-	for len(q) > 0 {
+	visited = 0
+	for len(q) > 0 && visited < mergeBaseBFSLimit {
 		h := q[0]
 		q = q[1:]
 		if seen[h] {
 			continue
 		}
 		seen[h] = true
+		visited++
 		if anc[h] {
 			return h, nil
 		}
 		c, err := repo.CommitObject(h)
 		if err != nil {
-			return plumbing.ZeroHash, err
+			continue
 		}
 		q = append(q, c.ParentHashes...)
 	}
-	return plumbing.ZeroHash, fmt.Errorf("no common ancestor for %s and %s", h1, h2)
+	return plumbing.ZeroHash, fmt.Errorf("merge base not found within %d commits", mergeBaseBFSLimit)
 }
 
 // countCommitsTo counts commits reachable from start that are not reachable from
