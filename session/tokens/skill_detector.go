@@ -35,16 +35,20 @@ func detectSkillActivations(contents []jsonlUserContent, turnIndex int) []SkillA
 
 // detectCommandsInText finds /command patterns in text content.
 func detectCommandsInText(text string, turnIndex int) []SkillActivation {
-	var activations []SkillActivation
+	// Fast-path guard: skip the regexp engine entirely when no '/' is present.
+	// Most user turns are plain prose; this avoids regexp allocation on the hot path.
+	if !strings.ContainsRune(text, '/') {
+		return nil
+	}
 
 	matches := commandPattern.FindAllStringSubmatch(text, -1)
+	activations := make([]SkillActivation, 0, len(matches))
 	for _, m := range matches {
 		if len(m) < 2 {
 			continue
 		}
-		name := m[1]
 		activations = append(activations, SkillActivation{
-			Name:      name,
+			Name:      m[1],
 			TurnIndex: turnIndex,
 			IsCommand: true,
 		})

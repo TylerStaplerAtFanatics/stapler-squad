@@ -579,7 +579,7 @@ func resolveRef(repo *git.Repository, name string) (plumbing.Hash, error) {
 
 // reachableSet returns the set of all commits reachable from start.
 func reachableSet(repo *git.Repository, start plumbing.Hash) (map[plumbing.Hash]bool, error) {
-	seen := map[plumbing.Hash]bool{}
+	seen := make(map[plumbing.Hash]bool, 64)
 	iter, err := repo.Log(&git.LogOptions{From: start})
 	if err != nil {
 		return nil, err
@@ -635,7 +635,7 @@ func findMergeBase(repo *git.Repository, h1, h2 plumbing.Hash) (plumbing.Hash, e
 	}
 
 	// Walk from h2 breadth-first; first ancestor in anc is the nearest merge base.
-	seen := make(map[plumbing.Hash]bool)
+	seen := make(map[plumbing.Hash]bool, mergeBaseBFSLimit)
 	q = []plumbing.Hash{h2}
 	visited = 0
 	for len(q) > 0 && visited < mergeBaseBFSLimit {
@@ -661,7 +661,7 @@ func findMergeBase(repo *git.Repository, h1, h2 plumbing.Hash) (plumbing.Hash, e
 // countCommitsTo counts commits reachable from start that are not reachable from
 // stop (i.e. the number of commits between start and stop exclusive).
 func countCommitsTo(repo *git.Repository, start, stop plumbing.Hash) (int, error) {
-	seen := make(map[plumbing.Hash]bool)
+	seen := make(map[plumbing.Hash]bool, 32)
 	q := []plumbing.Hash{start}
 	n := 0
 	for len(q) > 0 {
