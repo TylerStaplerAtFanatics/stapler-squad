@@ -224,9 +224,9 @@ describe("useSessionNotifications", () => {
   // ── 3. 10-second dedup window ────────────────────────────────────────────
 
   describe("dedup window (non-approval types)", () => {
-    it("suppresses a second identical event within DEDUP_WINDOW_MS", () => {
+    it("refreshes the toast but suppresses audio on a second identical event within DEDUP_WINDOW_MS", () => {
       const { result } = renderHook(() =>
-        useSessionNotifications({ enableAudio: false })
+        useSessionNotifications({ enableAudio: true })
       );
 
       act(() => {
@@ -236,7 +236,10 @@ describe("useSessionNotifications", () => {
         result.current(makeEvent(NT.ERROR)); // same key, within 10s
       });
 
-      expect(mockAddNotification).toHaveBeenCalledTimes(1);
+      // Toast is refreshed (addNotification called twice — second replaces via sessionId dedup)
+      expect(mockAddNotification).toHaveBeenCalledTimes(2);
+      // Audio fires only once — the duplicate refresh is silent
+      expect(mockPlayPriorityNotificationSound).toHaveBeenCalledTimes(1);
     });
 
     it("fires again after DEDUP_WINDOW_MS elapses", () => {
@@ -327,9 +330,9 @@ describe("useSessionNotifications", () => {
   // ── 6. CONFIRMATION_NEEDED is NOT in approval bypass set ─────────────────
 
   describe("CONFIRMATION_NEEDED is subject to dedup", () => {
-    it("is deduplicated within DEDUP_WINDOW_MS (not in bypass set)", () => {
+    it("refreshes toast silently (no audio) within DEDUP_WINDOW_MS (not in bypass set)", () => {
       const { result } = renderHook(() =>
-        useSessionNotifications({ enableAudio: false })
+        useSessionNotifications({ enableAudio: true })
       );
 
       act(() => {
@@ -339,7 +342,9 @@ describe("useSessionNotifications", () => {
         result.current(makeEvent(NT.CONFIRMATION_NEEDED));
       });
 
-      expect(mockAddNotification).toHaveBeenCalledTimes(1);
+      // Toast is refreshed on duplicate — addNotification called twice, audio once
+      expect(mockAddNotification).toHaveBeenCalledTimes(2);
+      expect(mockPlayPriorityNotificationSound).toHaveBeenCalledTimes(1);
     });
   });
 
