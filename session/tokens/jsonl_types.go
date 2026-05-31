@@ -31,7 +31,7 @@ type jsonlUsage struct {
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 }
 
-// jsonlContent is one element in the content array.
+// jsonlContent is one element in the content array of an assistant message.
 type jsonlContent struct {
 	Type string `json:"type"`
 	// For tool_use blocks
@@ -44,8 +44,24 @@ type jsonlContent struct {
 	Content   json.RawMessage `json:"content"`
 }
 
+// jsonlUserContent is a minimal content element for user message parsing.
+// It intentionally omits the Input field (present on tool_use blocks in assistant
+// messages) to avoid allocating the large tool-input JSON payload — the source of
+// the ~237 KB per-call allocation reported in PerfFix-4. User entries never
+// contain tool_use blocks, so Input is always absent and safe to skip.
+type jsonlUserContent struct {
+	Type string `json:"type"`
+	// For text blocks
+	Text string `json:"text"`
+	// For tool_result blocks
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+}
+
 // jsonlUserMessage is the "message" field of a user entry.
+// It uses jsonlUserContent instead of jsonlContent to avoid allocating
+// the large Input json.RawMessage field that appears only in assistant messages.
 type jsonlUserMessage struct {
-	Role    string         `json:"role"`
-	Content []jsonlContent `json:"content"`
+	Role    string             `json:"role"`
+	Content []jsonlUserContent `json:"content"`
 }
