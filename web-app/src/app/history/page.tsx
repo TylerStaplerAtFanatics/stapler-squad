@@ -322,16 +322,18 @@ export default function HistoryBrowserPage() {
               <h2 className={styles.sectionTitle}>
                 History ({filteredEntries.length} of {entries.length} entries{nextPageToken ? "+" : ""})
               </h2>
-              <VirtualHistoryList
-                groupedEntries={groupedEntries} flatEntries={flatEntries} selectedEntry={selectedEntry}
-                enrichedEntry={selectedEntry}
-                loading={loading} entriesCount={entries.length} filteredCount={filteredEntries.length}
-                hasActiveFilters={hasActiveFilters} groupingStrategy={groupingStrategy}
-                hasNextPage={!!nextPageToken} loadingMore={loadingMore}
-                onSelectEntry={selectEntry} onClearFilters={clearFilters}
-                onLoadMore={loadMoreHistory} fetchMessages={fetchPreview}
-                virtualizerRef={virtualizerRef}
-              />
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <VirtualHistoryList
+                  groupedEntries={groupedEntries} flatEntries={flatEntries} selectedEntry={selectedEntry}
+                  enrichedEntry={selectedEntry}
+                  loading={loading} entriesCount={entries.length} filteredCount={filteredEntries.length}
+                  hasActiveFilters={hasActiveFilters} groupingStrategy={groupingStrategy}
+                  hasNextPage={!!nextPageToken} loadingMore={loadingMore}
+                  onSelectEntry={selectEntry} onClearFilters={clearFilters}
+                  onLoadMore={loadMoreHistory} fetchMessages={fetchPreview}
+                  virtualizerRef={virtualizerRef}
+                />
+              </div>
             </>
           )}
         </div>

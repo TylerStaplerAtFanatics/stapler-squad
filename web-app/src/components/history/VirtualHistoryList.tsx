@@ -147,7 +147,7 @@ export function VirtualHistoryList({
   }
 
   return (
-    <div ref={scrollRef} style={{ overflowY: "auto", height: "100%" }}>
+    <div ref={scrollRef} style={{ overflowY: "auto", height: "100%", maxHeight: "calc(var(--viewport-height, 100dvh) - 280px)" }}>
       <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
         {virtualizer.getVirtualItems().map((vItem) => {
           const item = items[vItem.index];
