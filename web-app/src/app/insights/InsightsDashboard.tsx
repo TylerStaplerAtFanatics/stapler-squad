@@ -1,16 +1,22 @@
 // +feature: insights-dashboard
 "use client";
 
+import { useState, useMemo, Suspense } from "react";
 import dynamic from "next/dynamic";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useInsightsSummary } from "@/lib/hooks/useInsightsService";
+import { useProjectedCost } from "@/lib/hooks/useProjectedCost";
+import { useBudgetThreshold } from "@/lib/hooks/useBudgetThreshold";
 import { SummaryCards } from "./SummaryCards";
 import { TopNTable } from "./TopNTables";
 import { SessionsTable } from "./SessionsTable";
-
-// Lazy-load recharts and its D3 dependencies (~1.2MB) only when the insights page is visited.
-const DailySpendChart = dynamic(() => import("./DailySpendChart").then((m) => m.DailySpendChart), { ssr: false });
-const ModelBreakdownChart = dynamic(() => import("./ModelBreakdownChart").then((m) => m.ModelBreakdownChart), { ssr: false });
-const ModelOverTimeChart = dynamic(() => import("./ModelOverTimeChart").then((m) => m.ModelOverTimeChart), { ssr: false });
+import { SessionDetailDrawer } from "./SessionDetailDrawer";
+import { ProjectedCostCard } from "./ProjectedCostCard";
+import { TimeRangeFilter, resolveTimeRangeDates } from "./TimeRangeFilter";
+import type { TimeRangeValue, TimeRangePreset } from "./TimeRangeFilter";
+import { InsightsDashboardSkeleton } from "./InsightsDashboardSkeleton";
+import { Skeleton } from "@/components/ui/Skeleton";
+import type { SessionTokenSummary } from "@/gen/session/v1/insights_pb";
 import {
   page,
   pageHeader,
@@ -27,10 +33,93 @@ import {
   sectionTitle,
 } from "./InsightsDashboard.css";
 
-export function InsightsDashboard() {
+// Lazy-load recharts and its D3 dependencies (~1.2MB) only when the insights page is visited.
+const DailySpendChart = dynamic(
+  () => import("./DailySpendChart").then((m) => m.DailySpendChart),
+  { ssr: false, loading: () => <Skeleton variant="rectangular" width="100%" height={200} /> }
+);
+const ModelBreakdownChart = dynamic(
+  () => import("./ModelBreakdownChart").then((m) => m.ModelBreakdownChart),
+  { ssr: false, loading: () => <Skeleton variant="rectangular" width="100%" height={200} /> }
+);
+const ModelOverTimeChart = dynamic(
+  () => import("./ModelOverTimeChart").then((m) => m.ModelOverTimeChart),
+  { ssr: false, loading: () => <Skeleton variant="rectangular" width="100%" height={200} /> }
+);
+
+function friendlyError(err: string): string {
+  if (err.toLowerCase().includes("unauthenticated") || err.includes("code: 16")) {
+    return "Authentication required. Please refresh the page.";
+  }
+  if (err.includes("code: 14") || err.toLowerCase().includes("unavailable")) {
+    return "The server is temporarily unavailable. Retrying automatically…";
+  }
+  if (err.includes("code: 13") || err.toLowerCase().includes("internal")) {
+    return "An internal error occurred loading insights. Please try refreshing.";
+  }
+  return err;
+}
+
+function toLocalDateString(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function InsightsDashboardInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const preset = (searchParams.get("preset") ?? "all") as TimeRangePreset;
+  const fromParam = searchParams.get("from") ?? undefined;
+  const toParam = searchParams.get("to") ?? undefined;
+
+  // Stable Date references — avoid new Date() inline which recreates on every render
+  const { from: fromDate, to: toDate } = useMemo(
+    () => resolveTimeRangeDates(preset, fromParam, toParam),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [preset, fromParam, toParam]
+  );
+
   const { summary, loading, isLiveUpdating, error } = useInsightsSummary({
     includeOrphans: true,
+    from: fromDate,
+    to: toDate,
   });
+
+  const projection = useProjectedCost(summary?.daily ?? []);
+  const { threshold, setThreshold, isHydrated } = useBudgetThreshold();
+
+  const isOverBudget =
+    isHydrated &&
+    threshold !== null &&
+    threshold > 0 &&
+    projection !== null &&
+    projection.projectedMonthly > threshold;
+
+  const [selectedSession, setSelectedSession] = useState<SessionTokenSummary | null>(null);
+
+  const timeRangeValue: TimeRangeValue = {
+    preset,
+    from: fromDate,
+    to: toDate,
+  };
+
+  function handleTimeRangeChange(v: TimeRangeValue) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("preset", v.preset);
+    if (v.preset === "custom") {
+      if (v.from) params.set("from", toLocalDateString(v.from));
+      else params.delete("from");
+      if (v.to) params.set("to", toLocalDateString(v.to));
+      else params.delete("to");
+    } else {
+      params.delete("from");
+      params.delete("to");
+    }
+    router.replace(`?${params.toString()}`);
+  }
 
   return (
     <div className={page}>
@@ -39,22 +128,23 @@ export function InsightsDashboard() {
           <h1 className={title}>Insights</h1>
           <p className={subtitle}>Token usage analytics and cost breakdown</p>
         </div>
-        {isLiveUpdating && (
-          <div className={liveIndicator}>
-            <div className={liveDot} />
-            Live
-          </div>
-        )}
+        <div className={liveIndicator} data-live={String(isLiveUpdating)}>
+          <div className={liveDot} />
+          Live
+        </div>
       </div>
 
-      {error && <div className={errorBox}>{error}</div>}
+      <TimeRangeFilter value={timeRangeValue} onChange={handleTimeRangeChange} />
 
-      {loading && !summary && (
-        <div className={loadingBanner}>
-          <div className={spinner} />
-          Loading token data…
+      {isOverBudget && (
+        <div className={errorBox} role="alert">
+          Budget alert: projected monthly spend (${projection!.projectedMonthly.toFixed(2)}) exceeds your threshold (${threshold!.toFixed(2)}).
         </div>
       )}
+
+      {error && <div className={errorBox}>{friendlyError(error)}</div>}
+
+      {loading && !summary && <InsightsDashboardSkeleton />}
 
       {summary?.isLoading && (
         <div className={loadingBanner}>
@@ -73,6 +163,14 @@ export function InsightsDashboard() {
         <>
           <section className={section}>
             <SummaryCards summary={summary} />
+            {projection && (
+              <ProjectedCostCard
+                projection={projection}
+                threshold={threshold}
+                isHydrated={isHydrated}
+                onThresholdChange={setThreshold}
+              />
+            )}
           </section>
 
           <section className={section}>
@@ -110,10 +208,27 @@ export function InsightsDashboard() {
 
           <section className={section}>
             <h2 className={sectionTitle}>Sessions</h2>
-            <SessionsTable sessions={summary.sessions} />
+            <SessionsTable
+              sessions={summary.sessions}
+              onSessionClick={(s) => setSelectedSession(s)}
+            />
           </section>
         </>
       )}
+
+      <SessionDetailDrawer
+        session={selectedSession}
+        onClose={() => setSelectedSession(null)}
+      />
     </div>
+  );
+}
+
+/** Exported wrapper that provides the Suspense boundary required for useSearchParams in App Router. */
+export function InsightsDashboard() {
+  return (
+    <Suspense fallback={<InsightsDashboardSkeleton />}>
+      <InsightsDashboardInner />
+    </Suspense>
   );
 }
