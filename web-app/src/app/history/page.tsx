@@ -322,7 +322,7 @@ export default function HistoryBrowserPage() {
               <h2 className={styles.sectionTitle}>
                 History ({filteredEntries.length} of {entries.length} entries{nextPageToken ? "+" : ""})
               </h2>
-              <div style={{ flex: 1, minHeight: 0 }}>
+              <div className={styles.entryList}>
                 <VirtualHistoryList
                   groupedEntries={groupedEntries} flatEntries={flatEntries} selectedEntry={selectedEntry}
                   enrichedEntry={selectedEntry}
