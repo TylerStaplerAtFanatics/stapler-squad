@@ -558,7 +558,7 @@ func TestValidateRules_RuleCount_500_AtLimit(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("rules:\n")
 	for i := 0; i < 500; i++ {
-		sb.WriteString(fmt.Sprintf("- name: Rule %d\n  tool: Bash\n  decision: allow\n", i))
+		fmt.Fprintf(&sb, "- name: Rule %d\n  tool: Bash\n  decision: allow\n", i)
 	}
 	resp, err := svc.ValidateRules(context.Background(), connect.NewRequest(&sessionv1.ValidateRulesRequest{
 		YamlContent: sb.String(),
@@ -572,7 +572,7 @@ func TestValidateRules_RuleCount_501_OverLimit(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("rules:\n")
 	for i := 0; i < 501; i++ {
-		sb.WriteString(fmt.Sprintf("- name: Rule %d\n  tool: Bash\n  decision: allow\n", i))
+		fmt.Fprintf(&sb, "- name: Rule %d\n  tool: Bash\n  decision: allow\n", i)
 	}
 	_, err := svc.ValidateRules(context.Background(), connect.NewRequest(&sessionv1.ValidateRulesRequest{
 		YamlContent: sb.String(),
@@ -1015,7 +1015,7 @@ func TestValidateRules_YAMLBombAliasExpansion(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("rules:\n")
 	for i := 0; i < 502; i++ {
-		sb.WriteString(fmt.Sprintf("- name: Rule %d\n  tool: Bash\n  decision: allow\n", i))
+		fmt.Fprintf(&sb, "- name: Rule %d\n  tool: Bash\n  decision: allow\n", i)
 	}
 	_, err := svc.ValidateRules(context.Background(), connect.NewRequest(&sessionv1.ValidateRulesRequest{
 		YamlContent: sb.String(),
@@ -1084,7 +1084,7 @@ func TestIntegration_ValidateAndApply_20Rules(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("rules:\n")
 	for i := 0; i < 20; i++ {
-		sb.WriteString(fmt.Sprintf("- name: IT Apply Rule %d\n  tool: Bash\n  decision: allow\n  priority: 10\n", i))
+		fmt.Fprintf(&sb, "- name: IT Apply Rule %d\n  tool: Bash\n  decision: allow\n  priority: 10\n", i)
 	}
 	yamlContent := sb.String()
 
