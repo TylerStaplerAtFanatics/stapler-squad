@@ -134,8 +134,11 @@ export function SessionsTable({ sessions, onSessionClick }: Props) {
       <table className={table} style={s} {...props} />
     ),
     TableHead: (props: React.ComponentPropsWithRef<"thead">) => <thead {...props} />,
-    TableBody: React.forwardRef<HTMLTableSectionElement, React.ComponentPropsWithRef<"tbody">>(
-      (props, ref) => <tbody ref={ref} {...props} />
+    TableBody: Object.assign(
+      React.forwardRef<HTMLTableSectionElement, React.ComponentPropsWithRef<"tbody">>(
+        (props, ref) => <tbody ref={ref} {...props} />
+      ),
+      { displayName: "VirtuosoTableBody" }
     ),
     TableRow: ({ "data-index": dataIndex, ...props }: React.ComponentPropsWithRef<"tr"> & { "data-index": number }) => {
       const s = displayed[dataIndex];
