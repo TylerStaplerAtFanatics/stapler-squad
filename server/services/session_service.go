@@ -245,6 +245,9 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 	// Wire the fast-path live-instance lookup so WorkspaceService read-only RPCs
 	// (GetVCSStatus, GetWorkspaceInfo, ListWorkspaceTargets) bypass LoadInstances.
 	workspaceSvc.SetLiveFinder(svc)
+	// Wire the live-instance provider so ListClaudeHistory can populate
+	// session_status on history entries without a separate storage call.
+	svc.searchSvc.SetInstanceProvider(svc.allInstances)
 	return svc
 }
 
@@ -801,6 +804,27 @@ func (s *SessionService) CreateSession(
 		if data.Title == req.Msg.Title {
 			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("session with title '%s' already exists", req.Msg.Title))
 		}
+	}
+
+	// Fork dispatch: when fork_source_id is set, copy the source conversation
+	// file and set resume_id to the new UUID so the normal start path picks it
+	// up with --resume.
+	if req.Msg.ForkSourceId != "" {
+		srcPath, findErr := session.FindConversationFilePath(req.Msg.ForkSourceId)
+		if findErr != nil {
+			return nil, connect.NewError(connect.CodeNotFound,
+				fmt.Errorf("fork source conversation not found: %w", findErr))
+		}
+		lineCount := uint64(req.Msg.ForkAtMessage) //nolint:gosec // bounded by int32
+		newUUID, forkErr := session.ForkClaudeConversation(srcPath, lineCount, filepath.Dir(srcPath))
+		if forkErr != nil {
+			return nil, connect.NewError(connect.CodeInternal,
+				fmt.Errorf("fork conversation failed: %w", forkErr))
+		}
+		req.Msg.ResumeId = newUUID
+		log.Info("[CreateSession] forked conversation",
+			"source", req.Msg.ForkSourceId, "new_uuid", newUUID,
+			"fork_at_message", req.Msg.ForkAtMessage)
 	}
 
 	// Resolve GitHub URLs to local paths (GOPATH-style: ~/.stapler-squad/repos/github.com/owner/repo)
