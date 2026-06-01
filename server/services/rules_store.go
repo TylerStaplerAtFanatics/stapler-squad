@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -376,6 +377,18 @@ func (s *RulesStore) BulkUpsert(ctx context.Context, specs []RuleSpec, overwrite
 	}
 
 	result := BulkUpsertResult{}
+
+	// Pre-flight: validate all specs before touching storage.
+	// This catches the most common errors (bad data) before any writes occur.
+	for i := range specs {
+		if strings.TrimSpace(specs[i].Name) == "" {
+			result.Errors = append(result.Errors, fmt.Sprintf("rule at index %d: name is required", i))
+		}
+	}
+	if len(result.Errors) > 0 {
+		return result
+	}
+
 	for i := range specs {
 		spec := specs[i]
 		existingID, isDuplicate := nameIndex[spec.Name]

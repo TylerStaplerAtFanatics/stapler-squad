@@ -12,7 +12,7 @@ import { create } from "@bufbuild/protobuf";
 import { getConnectTransport } from "@/lib/api/transport";
 
 export interface UseBulkUpsertRulesReturn {
-  applyRules: (rules: ApprovalRuleProto[], overwriteDuplicates: boolean) => Promise<void>;
+  applyRules: (rules: ApprovalRuleProto[], overwriteDuplicates: boolean) => Promise<{ errors: string[] }>;
   loading: boolean;
   result: BulkUpsertRulesResponse | null;
   error: Error | null;
@@ -35,8 +35,8 @@ export function useBulkUpsertRules(): UseBulkUpsertRulesReturn {
     clientRef.current = createClient(SessionService, getConnectTransport());
   }, []);
 
-  const applyRules = useCallback(async (rules: ApprovalRuleProto[], overwriteDuplicates: boolean) => {
-    if (!clientRef.current) return;
+  const applyRules = useCallback(async (rules: ApprovalRuleProto[], overwriteDuplicates: boolean): Promise<{ errors: string[] }> => {
+    if (!clientRef.current) return { errors: [] };
     setLoading(true);
     setError(null);
     setResult(null);
@@ -47,8 +47,11 @@ export function useBulkUpsertRules(): UseBulkUpsertRulesReturn {
       });
       const resp = await clientRef.current.bulkUpsertRules(req);
       setResult(resp);
+      return { errors: [] };
     } catch (err) {
-      setError(err instanceof Error ? err : new Error("Apply rules failed"));
+      const error = err instanceof Error ? err : new Error("Apply rules failed");
+      setError(error);
+      return { errors: [error.message] };
     } finally {
       setLoading(false);
     }

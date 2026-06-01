@@ -93,10 +93,10 @@ export function ImportRulesModal({ open, onClose, onApplied, existingRules }: Im
       })
       .map((r) => r.rule!);
 
-    await applyRules(validRules, duplicateMode === "overwrite");
+    const { errors } = await applyRules(validRules, duplicateMode === "overwrite");
 
-    if (applyError) {
-      setPartialErrors([applyError.message]);
+    if (errors.length > 0) {
+      setPartialErrors(errors);
       return;
     }
 

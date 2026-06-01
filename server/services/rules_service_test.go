@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/pkg/classifier"
+	"github.com/tstapler/stapler-squad/session"
 	"gopkg.in/yaml.v3"
 )
 
@@ -662,6 +663,21 @@ func TestValidateRules_DefaultEnabled(t *testing.T) {
 
 func TestExportRules_ExcludesSeedAndClaudeSettingsRules(t *testing.T) {
 	svc := newSimpleRulesService(t)
+	// Insert non-user rules directly via storage (bypassing Upsert guard) so we
+	// can prove that ExportRules filters them out.
+	for i, src := range []string{"seed", "claude-settings"} {
+		err := svc.rulesStore.storage.UpsertRule(context.Background(), session.ApprovalRuleData{
+			ID:       fmt.Sprintf("%s-rule-%d", src, i),
+			Name:     fmt.Sprintf("%s Rule %d", src, i),
+			Decision: 1, // auto_allow
+			Enabled:  true,
+			Source:   src,
+			Priority: 10,
+		})
+		require.NoError(t, err)
+	}
+	// Reload so the in-memory store reflects the new rows.
+	require.NoError(t, svc.rulesStore.reload())
 	// Add 2 user rules.
 	for i := 0; i < 2; i++ {
 		_, err := svc.rulesStore.Upsert(RuleSpec{
@@ -679,7 +695,11 @@ func TestExportRules_ExcludesSeedAndClaudeSettingsRules(t *testing.T) {
 	// Parse the returned YAML to count rules.
 	var file yamlRulesFile
 	require.NoError(t, parseYAMLStrict(resp.Msg.YamlContent, &file))
+	// Must be exactly 2 — seed and claude-settings rules must be excluded.
 	assert.Len(t, file.Rules, 2)
+	for _, r := range file.Rules {
+		assert.True(t, strings.HasPrefix(r.Name, "User Rule"), "unexpected non-user rule in export: %s", r.Name)
+	}
 }
 
 // ── UT-BE-15: ExportRules with filter ────────────────────────────────────────

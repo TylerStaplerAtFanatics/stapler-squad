@@ -947,6 +947,13 @@ func validateYAMLEntry(e yamlRuleEntry) (*sessionv1.ApprovalRuleProto, []string)
 	}
 	_ = ok
 
+	// Overbroad allow: decision=allow with no match criteria at all.
+	if e.Decision == "allow" && e.Tool == "" && e.ToolPattern == "" &&
+		e.CommandPattern == "" && e.FilePattern == "" &&
+		len(e.Programs) == 0 && len(e.Subcommands) == 0 {
+		errs = append(errs, "overbroad allow rule: at least one match criterion (tool, tool_pattern, command_pattern, file_pattern, programs, or subcommands) is required for decision=allow")
+	}
+
 	// Regex validation -- collect all invalid patterns, do not stop at first error.
 	if e.ToolPattern != "" {
 		if _, err := regexp.Compile(e.ToolPattern); err != nil {
@@ -1077,6 +1084,38 @@ func (rs *RulesService) BulkUpsertRules(
 	ctx context.Context,
 	req *connect.Request[sessionv1.BulkUpsertRulesRequest],
 ) (*connect.Response[sessionv1.BulkUpsertRulesResponse], error) {
+	if len(req.Msg.Rules) == 0 {
+		return connect.NewResponse(&sessionv1.BulkUpsertRulesResponse{}), nil
+	}
+	if len(req.Msg.Rules) > maxRuleCount {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("too many rules: %d exceeds limit of %d", len(req.Msg.Rules), maxRuleCount))
+	}
+
+	var validationErrors []string
+	for _, proto := range req.Msg.Rules {
+		entry := yamlRuleEntry{
+			Name:           proto.Name,
+			Tool:           proto.ToolName,
+			ToolPattern:    proto.ToolPattern,
+			CommandPattern: proto.CommandPattern,
+			FilePattern:    proto.FilePattern,
+			Programs:       proto.CriteriaPrograms,
+			Subcommands:    proto.CriteriaSubcommands,
+			Decision:       autoDecisionToYAML(proto.Decision),
+			Reason:         proto.Reason,
+			Alternative:    proto.Alternative,
+		}
+		_, errs := validateYAMLEntry(entry)
+		for _, e := range errs {
+			validationErrors = append(validationErrors, fmt.Sprintf("rule %q: %s", proto.Name, e))
+		}
+	}
+	if len(validationErrors) > 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("validation errors: %s", strings.Join(validationErrors, "; ")))
+	}
+
 	specs := make([]RuleSpec, 0, len(req.Msg.Rules))
 	for _, proto := range req.Msg.Rules {
 		specs = append(specs, ruleProtoToSpec(proto))

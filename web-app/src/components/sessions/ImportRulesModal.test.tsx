@@ -156,7 +156,7 @@ describe("ImportRulesModal", () => {
   });
 
   it("UT-FE-14: ImportRulesModal_clicking_apply_calls_applyRules", async () => {
-    mockApplyRules.mockResolvedValueOnce(undefined);
+    mockApplyRules.mockResolvedValueOnce({ errors: [] });
     mockValidateResults.mockReturnValue({
       results: [makeParsedResult("Rule 1", true), makeParsedResult("Rule 2", true)],
       loading: false,
@@ -218,9 +218,45 @@ describe("ImportRulesModal", () => {
     expect(screen.queryByTestId("overwrite-badge")).not.toBeInTheDocument();
   });
 
+  it("UT-FE-15b: ImportRulesModal_overwrite_mode_calls_applyRules_with_overwrite_true", async () => {
+    mockApplyRules.mockResolvedValueOnce({ errors: [] });
+    mockValidateResults.mockReturnValue({
+      results: [makeParsedResult("Allow git log", true)],
+      loading: false,
+      validCount: 1,
+      errorCount: 0,
+      error: null,
+    });
+
+    const onApplied = jest.fn();
+    renderModal([makeRule("Allow git log")], onApplied);
+
+    const textarea = screen.getByTestId("yaml-input");
+    fireEvent.change(textarea, { target: { value: "yaml" } });
+
+    // Select overwrite mode
+    const overwriteRadio = screen.getByTestId("duplicate-mode-overwrite");
+    fireEvent.click(overwriteRadio);
+
+    // Overwrite badge should now be visible (not skip)
+    expect(screen.getByTestId("overwrite-badge")).toBeInTheDocument();
+    expect(screen.queryByTestId("skip-badge")).not.toBeInTheDocument();
+
+    // Apply
+    const applyButton = screen.getByTestId("apply-button");
+    fireEvent.click(applyButton);
+
+    await waitFor(() => {
+      expect(mockApplyRules).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ name: "Allow git log" })]),
+        true  // overwrite=true
+      );
+      expect(onApplied).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("UT-FE-17: ImportRulesModal_partial_apply_error_stays_open", async () => {
-    mockBulkUpsertState.error = new Error("Partial failure");
-    mockApplyRules.mockResolvedValueOnce(undefined);
+    mockApplyRules.mockResolvedValueOnce({ errors: ["Partial failure"] });
 
     mockValidateResults.mockReturnValue({
       results: [makeParsedResult("Rule 1", true)],
@@ -240,13 +276,15 @@ describe("ImportRulesModal", () => {
     fireEvent.click(applyButton);
 
     await waitFor(() => {
+      // Error banner must be visible
+      expect(screen.getByTestId("partial-error-banner")).toBeInTheDocument();
       // Modal should not be closed (onClose not called)
       expect(onClose).not.toHaveBeenCalled();
     });
   });
 
   it("UT-FE-18: ImportRulesModal_onApplied_called_on_success", async () => {
-    mockApplyRules.mockResolvedValueOnce(undefined);
+    mockApplyRules.mockResolvedValueOnce({ errors: [] });
     // No error in state
     mockBulkUpsertState.error = null;
 
