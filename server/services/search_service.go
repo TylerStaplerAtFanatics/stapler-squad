@@ -5,12 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/server/adapters"
 	"github.com/tstapler/stapler-squad/session"
@@ -55,14 +55,6 @@ func decodeHistoryCursor(token string) (historyCursor, bool) {
 	return c, true
 }
 
-// SearchService handles all Claude history and full-text search RPC methods.
-//
-// It owns the history cache and search engine state that were previously
-// scattered across SessionService.
-//
-// Bug note: historyCacheMu protects the history cache fields from concurrent
-// access. Without this, concurrent ListClaudeHistory calls would race on cache
-// refresh (previously unprotected on SessionService).
 // historyBranchEntry is a TTL-cached git branch name for a project path.
 type historyBranchEntry struct {
 	branch    string
@@ -133,7 +125,7 @@ func (ss *SearchService) cachedBranch(projectPath string) string {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", projectPath, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	out, err := safeexec.CommandContext(ctx, "git", "-C", projectPath, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	branch := ""
 	if err == nil {
 		branch = strings.TrimSpace(string(out))
