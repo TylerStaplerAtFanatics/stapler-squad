@@ -888,11 +888,22 @@ func (s *SessionService) CreateSession(
 	// Determine session type - use explicit session_type if provided, otherwise infer from fields
 	sessionType := resolveSessionType(req.Msg, branch)
 
+	// For resume sessions, force DIRECTORY type — we must not create a new worktree
+	// that would produce a different project path and break the --resume lookup.
+	if req.Msg.ResumeId != "" && req.Msg.ForkSourceId == "" &&
+		req.Msg.SessionType == sessionv1.SessionType_SESSION_TYPE_UNSPECIFIED {
+		sessionType = session.SessionTypeDirectory
+	}
+
 	// For Directory mode: if path does not exist and create_if_missing is not set, return
 	// CodeNotFound so the frontend can show a confirmation dialog.
 	if sessionType == session.SessionTypeDirectory {
 		if _, err := os.Stat(resolvedPath); os.IsNotExist(err) {
 			if !req.Msg.CreateIfMissing {
+				if req.Msg.ResumeId != "" {
+					return nil, connect.NewError(connect.CodeNotFound,
+						fmt.Errorf("cannot resume: project directory no longer exists: %s", resolvedPath))
+				}
 				return nil, connect.NewError(connect.CodeNotFound,
 					fmt.Errorf("path does not exist: %s", resolvedPath))
 			}

@@ -6,6 +6,7 @@ import { usePageView } from "@/lib/analytics/usePageView";
 import { useRouter } from "next/navigation";
 import { SessionService } from "@/gen/session/v1/session_pb";
 import { ClaudeHistoryEntry, ClaudeMessage } from "@/gen/session/v1/session_pb";
+import { SessionType } from "@/gen/session/v1/types_pb";
 import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { getApiBaseUrl } from "@/lib/config";
@@ -176,7 +177,11 @@ export default function HistoryBrowserPage() {
       setResuming(true); setError(null);
       track({ name: "history_resume_session", category: "user_action" });
       const response = await clientRef.current.createSession({
-        title, path: resumeTarget.project, resumeId: resumeTarget.id, category: "Resumed",
+        title,
+        path: resumeTarget.project,
+        resumeId: resumeTarget.id,
+        category: "Resumed",
+        sessionType: SessionType.DIRECTORY,
       });
       if (response.session) { setResumeTarget(null); router.push("/"); }
     } catch (err) { setError(`Failed to resume session: ${err}`); }
