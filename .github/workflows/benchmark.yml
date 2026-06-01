@@ -123,8 +123,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add benchmarks/go/tier1-baseline.txt
           git diff --cached --quiet || git commit -m "chore(bench): update go tier1 baseline [skip ci]"
-          git pull --rebase --autostash
-          git push
+          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Tier 2: Full Go benchmark suite — push to main only.
@@ -166,8 +165,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add benchmarks/go/tier2-baseline.txt
           git diff --cached --quiet || git commit -m "chore(bench): update go tier2 baseline [skip ci]"
-          git pull --rebase --autostash
-          git push
+          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Frontend: Bundle size gate via size-limit.
@@ -324,8 +322,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add benchmarks/frontend/throughput-baseline.json
           git diff --cached --quiet || git commit -m "chore(bench): update frontend throughput baseline [skip ci]"
-          git pull --rebase --autostash
-          git push
+          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Lighthouse CI: Advisory performance audit (non-blocking).
@@ -517,5 +514,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add benchmarks/e2e/latency-baseline.json
           git diff --cached --quiet || git commit -m "chore(bench): update e2e latency baseline [skip ci]"
-          git pull --rebase --autostash
-          git push
+          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done
