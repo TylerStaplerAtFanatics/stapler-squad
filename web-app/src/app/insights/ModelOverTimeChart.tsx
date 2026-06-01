@@ -86,6 +86,7 @@ function fmtTick(v: number, mode: "cost" | "tokens"): string {
 
 export function ModelOverTimeChart({ daily, mode = "cost" }: Props) {
   const models = useMemo(() => collectModels(daily), [daily]);
+  const data = useMemo(() => toDataPoints(daily, models, mode), [daily, models, mode]);
 
   if (daily.length === 0 || models.length === 0) {
     return (
@@ -95,8 +96,6 @@ export function ModelOverTimeChart({ daily, mode = "cost" }: Props) {
       </div>
     );
   }
-
-  const data = useMemo(() => toDataPoints(daily, models, mode), [daily, models, mode]);
   const label = mode === "cost" ? "Spend by Model (USD)" : "Tokens by Model";
 
   return (

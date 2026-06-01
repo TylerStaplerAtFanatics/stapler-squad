@@ -38,6 +38,8 @@ function fmtDollar(v: number): string {
 }
 
 export function DailySpendChart({ daily }: Props) {
+  const data = useMemo(() => toDataPoints(daily), [daily]);
+
   if (daily.length === 0) {
     return (
       <div className={chartCard}>
@@ -46,8 +48,6 @@ export function DailySpendChart({ daily }: Props) {
       </div>
     );
   }
-
-  const data = useMemo(() => toDataPoints(daily), [daily]);
 
   return (
     <div className={chartCard}>
