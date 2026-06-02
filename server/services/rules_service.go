@@ -15,6 +15,7 @@ import (
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"gopkg.in/yaml.v3"
 )
 
 // RulesService handles auto-approval rule management and analytics RPCs.
@@ -810,5 +811,350 @@ func (rs *RulesService) attachConflictInfo(s *sessionv1.SuggestedRuleProto) {
 				s.ShadowsRuleIds = append(s.ShadowsRuleIds, spec.ID)
 			}
 		}
+	}
+}
+
+// ── YAML import/export constants and structs ──────────────────────────────────
+
+const (
+	maxYAMLBytes = 512 * 1024
+	maxRuleCount = 500
+)
+
+// yamlRulesFile is the top-level YAML structure for import.
+type yamlRulesFile struct {
+	Rules []yamlRuleEntry `yaml:"rules"`
+}
+
+// yamlRuleEntry is the per-rule import struct (strict: KnownFields enabled).
+type yamlRuleEntry struct {
+	Name           string   `yaml:"name"`
+	Tool           string   `yaml:"tool"`
+	ToolPattern    string   `yaml:"tool_pattern"`
+	Programs       []string `yaml:"programs"`
+	Subcommands    []string `yaml:"subcommands"`
+	CommandPattern string   `yaml:"command_pattern"`
+	FilePattern    string   `yaml:"file_pattern"`
+	Decision       string   `yaml:"decision"`
+	Reason         string   `yaml:"reason"`
+	Alternative    string   `yaml:"alternative"`
+	Priority       int      `yaml:"priority"`
+	Enabled        *bool    `yaml:"enabled"`
+}
+
+// yamlRuleExport is the per-rule export struct (omitempty for optional fields).
+type yamlRuleExport struct {
+	Name           string   `yaml:"name"`
+	Tool           string   `yaml:"tool,omitempty"`
+	ToolPattern    string   `yaml:"tool_pattern,omitempty"`
+	Programs       []string `yaml:"programs,omitempty"`
+	Subcommands    []string `yaml:"subcommands,omitempty"`
+	CommandPattern string   `yaml:"command_pattern,omitempty"`
+	FilePattern    string   `yaml:"file_pattern,omitempty"`
+	Decision       string   `yaml:"decision"`
+	Reason         string   `yaml:"reason,omitempty"`
+	Alternative    string   `yaml:"alternative,omitempty"`
+	// Priority 0 is skipped by omitempty; this is a known limitation (see validation.md Concern 5).
+	Priority int32 `yaml:"priority,omitempty"`
+	Enabled  *bool `yaml:"enabled,omitempty"`
+}
+
+// yamlRulesExportFile is the top-level YAML export structure.
+type yamlRulesExportFile struct {
+	Rules []yamlRuleExport `yaml:"rules"`
+}
+
+// ── ValidateRules ─────────────────────────────────────────────────────────────
+
+// ValidateRules parses and validates a YAML rules file without persisting anything.
+// Returns per-rule results; does not short-circuit on first error.
+// +api: rules:validate
+func (rs *RulesService) ValidateRules(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ValidateRulesRequest],
+) (*connect.Response[sessionv1.ValidateRulesResponse], error) {
+	yamlContent := req.Msg.YamlContent
+
+	// Security: size guard before any parse.
+	if len(yamlContent) > maxYAMLBytes {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("YAML payload too large: %d bytes (max %d)", len(yamlContent), maxYAMLBytes))
+	}
+
+	// Parse with KnownFields(true) to reject unrecognized keys (catches typos).
+	var file yamlRulesFile
+	dec := yaml.NewDecoder(strings.NewReader(yamlContent))
+	dec.KnownFields(true)
+	if err := dec.Decode(&file); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("YAML parse error: %w", err))
+	}
+
+	// Rule count guard (post-parse, catches alias expansion attacks).
+	if len(file.Rules) > maxRuleCount {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("too many rules: %d (max %d)", len(file.Rules), maxRuleCount))
+	}
+
+	results := make([]*sessionv1.ParsedRuleResult, 0, len(file.Rules))
+	validCount, errorCount := int32(0), int32(0)
+	for _, entry := range file.Rules {
+		rule, errs := validateYAMLEntry(entry)
+		pr := &sessionv1.ParsedRuleResult{
+			OriginalName: entry.Name,
+			Valid:        len(errs) == 0,
+			Errors:       errs,
+		}
+		if len(errs) == 0 {
+			pr.Rule = rule
+			validCount++
+		} else {
+			errorCount++
+		}
+		results = append(results, pr)
+	}
+
+	return connect.NewResponse(&sessionv1.ValidateRulesResponse{
+		Results:    results,
+		ValidCount: validCount,
+		ErrorCount: errorCount,
+	}), nil
+}
+
+// validateYAMLEntry validates a single YAML rule entry and converts it to proto.
+// Returns all validation errors found (not just the first).
+func validateYAMLEntry(e yamlRuleEntry) (*sessionv1.ApprovalRuleProto, []string) {
+	var errs []string
+
+	if strings.TrimSpace(e.Name) == "" {
+		errs = append(errs, "name is required")
+	}
+
+	// Mutually exclusive tool fields.
+	if e.Tool != "" && e.ToolPattern != "" {
+		errs = append(errs, "tool and tool_pattern are mutually exclusive; use one or the other")
+	}
+
+	// Decision mapping -- only allow, deny, escalate accepted.
+	decisionMap := map[string]sessionv1.AutoDecision{
+		"allow":    sessionv1.AutoDecision_AUTO_DECISION_ALLOW,
+		"deny":     sessionv1.AutoDecision_AUTO_DECISION_DENY,
+		"escalate": sessionv1.AutoDecision_AUTO_DECISION_ESCALATE,
+	}
+	decision, ok := decisionMap[e.Decision]
+	if !ok {
+		errs = append(errs, fmt.Sprintf("invalid decision %q: must be allow, deny, or escalate", e.Decision))
+	}
+	_ = ok
+
+	// Overbroad allow: decision=allow with no match criteria at all.
+	if e.Decision == "allow" && e.Tool == "" && e.ToolPattern == "" &&
+		e.CommandPattern == "" && e.FilePattern == "" &&
+		len(e.Programs) == 0 && len(e.Subcommands) == 0 {
+		errs = append(errs, "overbroad allow rule: at least one match criterion (tool, tool_pattern, command_pattern, file_pattern, programs, or subcommands) is required for decision=allow")
+	}
+
+	// Regex validation -- collect all invalid patterns, do not stop at first error.
+	if e.ToolPattern != "" {
+		if _, err := regexp.Compile(e.ToolPattern); err != nil {
+			errs = append(errs, fmt.Sprintf("tool_pattern is not a valid regex: %v", err))
+		}
+	}
+	if e.CommandPattern != "" {
+		if _, err := regexp.Compile(e.CommandPattern); err != nil {
+			errs = append(errs, fmt.Sprintf("command_pattern is not a valid regex: %v", err))
+		}
+	}
+	if e.FilePattern != "" {
+		if _, err := regexp.Compile(e.FilePattern); err != nil {
+			errs = append(errs, fmt.Sprintf("file_pattern is not a valid regex: %v", err))
+		}
+	}
+
+	if len(errs) > 0 {
+		return nil, errs
+	}
+
+	priority := int32(e.Priority)
+	if priority == 0 {
+		priority = 10
+	}
+	enabled := true
+	if e.Enabled != nil {
+		enabled = *e.Enabled
+	}
+
+	return &sessionv1.ApprovalRuleProto{
+		Name:                e.Name,
+		ToolName:            e.Tool,
+		ToolPattern:         e.ToolPattern,
+		CriteriaPrograms:    e.Programs,
+		CriteriaSubcommands: e.Subcommands,
+		CommandPattern:      e.CommandPattern,
+		FilePattern:         e.FilePattern,
+		Decision:            decision,
+		Reason:              e.Reason,
+		Alternative:         e.Alternative,
+		Priority:            priority,
+		Enabled:             enabled,
+		Source:              "user",
+	}, nil
+}
+
+// ── ExportRules ───────────────────────────────────────────────────────────────
+
+// ExportRules serializes user-authored rules to YAML for download.
+// Only source="user" rules are exported; seed and claude-settings rules are excluded.
+// +api: rules:export
+func (rs *RulesService) ExportRules(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ExportRulesRequest],
+) (*connect.Response[sessionv1.ExportRulesResponse], error) {
+	allSpecs := rs.rulesStore.All()
+
+	filterIDs := make(map[string]bool, len(req.Msg.RuleIds))
+	for _, id := range req.Msg.RuleIds {
+		filterIDs[id] = true
+	}
+
+	var entries []yamlRuleExport
+	for _, spec := range allSpecs {
+		if spec.Source != "user" {
+			continue
+		}
+		if len(filterIDs) > 0 && !filterIDs[spec.ID] {
+			continue
+		}
+		// Map internal decision string (e.g. "auto_allow") to user-friendly YAML value.
+		decision := autoDecisionToYAML(stringToAutoDecision(spec.Decision))
+		entry := yamlRuleExport{
+			Name:           spec.Name,
+			Tool:           spec.ToolName,
+			ToolPattern:    spec.ToolPattern,
+			Programs:       spec.CriteriaPrograms,
+			Subcommands:    spec.CriteriaSubcommands,
+			CommandPattern: spec.CommandPattern,
+			FilePattern:    spec.FilePattern,
+			Decision:       decision,
+			Reason:         spec.Reason,
+			Alternative:    spec.Alternative,
+			Priority:       int32(spec.Priority), //#nosec G115 -- priority fits int32
+		}
+		// Omit enabled field when true (default), include only when false.
+		if !spec.Enabled {
+			f := false
+			entry.Enabled = &f
+		}
+		entries = append(entries, entry)
+	}
+
+	if entries == nil {
+		entries = []yamlRuleExport{}
+	}
+
+	out, err := yaml.Marshal(yamlRulesExportFile{Rules: entries})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("YAML marshal failed: %w", err))
+	}
+
+	return connect.NewResponse(&sessionv1.ExportRulesResponse{
+		YamlContent: string(out),
+	}), nil
+}
+
+// autoDecisionToYAML maps a proto AutoDecision enum to a user-friendly YAML string.
+func autoDecisionToYAML(d sessionv1.AutoDecision) string {
+	switch d {
+	case sessionv1.AutoDecision_AUTO_DECISION_ALLOW:
+		return "allow"
+	case sessionv1.AutoDecision_AUTO_DECISION_DENY:
+		return "deny"
+	default:
+		return "escalate"
+	}
+}
+
+// ── BulkUpsertRules ───────────────────────────────────────────────────────────
+
+// BulkUpsertRules creates or updates multiple rules in one call.
+// Rebuilds the in-memory classifier exactly once at the end (not per-rule).
+// Security: client-supplied id and source fields are always discarded.
+// +api: rules:bulk-upsert
+func (rs *RulesService) BulkUpsertRules(
+	ctx context.Context,
+	req *connect.Request[sessionv1.BulkUpsertRulesRequest],
+) (*connect.Response[sessionv1.BulkUpsertRulesResponse], error) {
+	if len(req.Msg.Rules) == 0 {
+		return connect.NewResponse(&sessionv1.BulkUpsertRulesResponse{}), nil
+	}
+	if len(req.Msg.Rules) > maxRuleCount {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("too many rules: %d exceeds limit of %d", len(req.Msg.Rules), maxRuleCount))
+	}
+
+	var validationErrors []string
+	for _, proto := range req.Msg.Rules {
+		entry := yamlRuleEntry{
+			Name:           proto.Name,
+			Tool:           proto.ToolName,
+			ToolPattern:    proto.ToolPattern,
+			CommandPattern: proto.CommandPattern,
+			FilePattern:    proto.FilePattern,
+			Programs:       proto.CriteriaPrograms,
+			Subcommands:    proto.CriteriaSubcommands,
+			Decision:       autoDecisionToYAML(proto.Decision),
+			Reason:         proto.Reason,
+			Alternative:    proto.Alternative,
+		}
+		_, errs := validateYAMLEntry(entry)
+		for _, e := range errs {
+			validationErrors = append(validationErrors, fmt.Sprintf("rule %q: %s", proto.Name, e))
+		}
+	}
+	if len(validationErrors) > 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("validation errors: %s", strings.Join(validationErrors, "; ")))
+	}
+
+	specs := make([]RuleSpec, 0, len(req.Msg.Rules))
+	for _, proto := range req.Msg.Rules {
+		specs = append(specs, ruleProtoToSpec(proto))
+	}
+
+	res := rs.rulesStore.BulkUpsert(ctx, specs, req.Msg.OverwriteDuplicates)
+	// Rebuild classifier exactly once after all rules are stored.
+	rs.rebuildClassifier()
+
+	return connect.NewResponse(&sessionv1.BulkUpsertRulesResponse{
+		Created: int32(res.Created), //#nosec G115 -- count fits int32
+		Updated: int32(res.Updated), //#nosec G115 -- count fits int32
+		Skipped: int32(res.Skipped), //#nosec G115 -- count fits int32
+		Errors:  res.Errors,
+	}), nil
+}
+
+// ruleProtoToSpec converts an ApprovalRuleProto to a RuleSpec for storage.
+// Security: always discards client-supplied id and source to prevent injection.
+func ruleProtoToSpec(p *sessionv1.ApprovalRuleProto) RuleSpec {
+	if p == nil {
+		return RuleSpec{}
+	}
+	return RuleSpec{
+		// ID intentionally left empty -- BulkUpsert assigns "user-<uuid>" server-side.
+		Name:                p.Name,
+		ToolName:            p.ToolName,
+		ToolPattern:         p.ToolPattern,
+		CommandPattern:      p.CommandPattern,
+		FilePattern:         p.FilePattern,
+		CriteriaPrograms:    p.CriteriaPrograms,
+		CriteriaSubcommands: p.CriteriaSubcommands,
+		Decision:            autoDecisionToString(p.Decision),
+		RiskLevel:           p.RiskLevel,
+		Reason:              p.Reason,
+		Alternative:         p.Alternative,
+		Priority:            int(p.Priority),
+		Enabled:             p.Enabled,
+		Source:              "user", // always override -- never accept client-supplied source
+		CreatedAt:           time.Now(),
 	}
 }
