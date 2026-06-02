@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.31.1](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.31.0...v1.31.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **lint:** gofmt rules_service_test.go ([cd3c4b1](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/cd3c4b1628e9b8ffa6daf487f31695573b7bf8ec))
+
 ## [1.31.0](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.30.0...v1.31.0) (2026-06-02)
 
 
