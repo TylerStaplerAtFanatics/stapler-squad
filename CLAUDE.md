@@ -129,6 +129,15 @@ Go web server on `localhost:8543` + React SPA. Manages AI agent sessions (Claude
 
 Sessions support tag-based multi-dimensional organization with 8 grouping strategies (Category, Tag, Branch, Path, Program, Status, Session Type, None). Full reference: `.claude/docs/tag-organization.md`
 
+## Git Remotes
+
+| Remote | Repo | Role |
+|---|---|---|
+| `origin` | `TylerStaplerAtFanatics/stapler-squad` | Work upstream (canonical) |
+| `personal` | `tstapler/stapler-squad` | Personal fork |
+
+When running `/sync-remotes`: `FORK_REMOTE=personal`, `UPSTREAM_REMOTE=origin`.
+
 ## Pull Request Requirements
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):
