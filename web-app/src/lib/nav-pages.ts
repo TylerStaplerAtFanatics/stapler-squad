@@ -30,11 +30,13 @@ export interface NavPage {
   headerNav?: boolean;
   /** True = rendered in the BottomNav primary bar; absent = goes into the More sheet */
   bottomNavPrimary?: boolean;
+  /** Feature flag name that must be enabled for this page to appear in nav */
+  featureFlag?: string;
 }
 
 export const NAV_PAGES: NavPage[] = [
   { href: routes.home,          label: "Sessions",      icon: LayoutGrid,     bottomNavPrimary: true },
-  { href: routes.backlog,       label: "Backlog",       icon: LayoutList,     bottomNavPrimary: true },
+  { href: routes.backlog,       label: "Backlog",       icon: LayoutList,     bottomNavPrimary: true, featureFlag: "backlog" },
   { href: routes.unfinished,    label: "Unfinished",    icon: Clock4,         bottomNavPrimary: true },
   { href: routes.reviewQueue,   label: "Review Queue",  shortLabel: "Review", icon: ClipboardCheck, bottomNavPrimary: true },
   // Notifications is custom-rendered in BottomNav (badge logic) — marked primary to keep it out of the More sheet
