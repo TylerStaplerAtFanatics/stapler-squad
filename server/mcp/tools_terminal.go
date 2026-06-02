@@ -605,8 +605,8 @@ func (th *terminalHandlers) runCommand(ctx context.Context, req mcpgo.CallToolRe
 // SteerSessionResult is the response for steer_session.
 type SteerSessionResult struct {
 	MCPResult
-	SessionID  string `json:"session_id"`
-	CharsSent  int    `json:"chars_sent"`
+	SessionID string `json:"session_id"`
+	CharsSent int    `json:"chars_sent"`
 }
 
 func (th *terminalHandlers) steerSession(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

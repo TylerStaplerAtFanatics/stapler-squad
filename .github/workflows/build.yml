@@ -357,16 +357,18 @@ jobs:
 
       - name: Update baseline on success
         run: |
-          mkdir -p benchmarks/go
-          cp bench-current.txt benchmarks/go/benchmark-gate-baseline.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benchmarks/go/benchmark-gate-baseline.txt
-          git diff --cached --quiet && echo "No baseline changes to commit" && exit 0
-          git commit -m "chore(bench): update benchmark-gate baseline [skip ci]"
           pushed=false
           for i in 1 2 3; do
-            git pull --rebase --autostash && git push origin HEAD:main && pushed=true && break
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p benchmarks/go
+            cp bench-current.txt benchmarks/go/benchmark-gate-baseline.txt
+            git add benchmarks/go/benchmark-gate-baseline.txt
+            git diff --cached --quiet && echo "no changes to baseline" && pushed=true && break
+            git commit -m "chore(bench): update benchmark-gate baseline [skip ci]"
+            git push origin HEAD:main && pushed=true && break
             sleep $((5 * i))
           done
           $pushed || { echo "ERROR: git push failed after 3 retries"; exit 1; }

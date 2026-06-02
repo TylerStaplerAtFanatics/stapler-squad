@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/session"
 )
@@ -356,4 +356,3 @@ func TestUpdateSessionTaskMCP_invalidStatusReturnsError(t *testing.T) {
 	m := parseResult(t, result)
 	assert.False(t, m["success"].(bool))
 }
-
