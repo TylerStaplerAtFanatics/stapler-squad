@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/pkg/classifier"
 	"github.com/tstapler/stapler-squad/session"
@@ -345,4 +347,118 @@ func decisionStringFromInt(d int) string {
 // riskLevelStringFromInt delegates to the canonical riskLevelString in analytics_store.go.
 func riskLevelStringFromInt(r int) string {
 	return riskLevelString(classifier.RiskLevel(r))
+}
+
+// ── BulkUpsert ────────────────────────────────────────────────────────────────
+
+// BulkUpsertResult holds the outcome counts for a BulkUpsert operation.
+type BulkUpsertResult struct {
+	Created int
+	Updated int
+	Skipped int
+	Errors  []string
+}
+
+// BulkUpsert creates or updates multiple user rules in one transaction.
+// If overwriteDuplicates is false, rules whose name already exists are skipped.
+// If overwriteDuplicates is true, rules whose name already exists are updated.
+// This method does NOT call rebuildClassifier -- that is RulesService's responsibility.
+// Lock ordering: BulkUpsert holds s.mu.Lock for the full operation, then calls
+// s.storage.UpsertRule while holding the lock. This is safe because storage is
+// independent of the in-memory lock (no recursive locking).
+func (s *RulesStore) BulkUpsert(ctx context.Context, specs []RuleSpec, overwriteDuplicates bool) BulkUpsertResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build name index for O(1) duplicate detection.
+	nameIndex := make(map[string]string, len(s.specs)) // name -> id
+	for _, existing := range s.specs {
+		nameIndex[existing.Name] = existing.ID
+	}
+
+	result := BulkUpsertResult{}
+
+	// Pre-flight: validate all specs before touching storage.
+	// This catches the most common errors (bad data) before any writes occur.
+	for i := range specs {
+		if strings.TrimSpace(specs[i].Name) == "" {
+			result.Errors = append(result.Errors, fmt.Sprintf("rule at index %d: name is required", i))
+		}
+	}
+	if len(result.Errors) > 0 {
+		return result
+	}
+
+	for i := range specs {
+		spec := specs[i]
+		existingID, isDuplicate := nameIndex[spec.Name]
+		if isDuplicate && !overwriteDuplicates {
+			result.Skipped++
+			continue
+		}
+		if isDuplicate {
+			// Overwrite: preserve the existing ID.
+			spec.ID = existingID
+			result.Updated++
+		} else {
+			// New rule: assign server-generated ID.
+			spec.ID = "user-" + uuid.New().String()
+			result.Created++
+		}
+		spec.Source = "user"
+		if spec.CreatedAt.IsZero() {
+			spec.CreatedAt = time.Now()
+		}
+
+		ruleData := session.ApprovalRuleData{
+			ID:                  spec.ID,
+			Name:                spec.Name,
+			ToolName:            spec.ToolName,
+			ToolPattern:         spec.ToolPattern,
+			ToolCategory:        spec.ToolCategory,
+			CommandPattern:      spec.CommandPattern,
+			FilePattern:         spec.FilePattern,
+			CriteriaPrograms:    spec.CriteriaPrograms,
+			CriteriaSubcommands: spec.CriteriaSubcommands,
+			Decision:            decisionToInt(spec.Decision),
+			RiskLevel:           riskLevelToInt(spec.RiskLevel),
+			Reason:              spec.Reason,
+			Alternative:         spec.Alternative,
+			Priority:            spec.Priority,
+			Enabled:             spec.Enabled,
+			Source:              spec.Source,
+			CreatedAt:           spec.CreatedAt,
+			UpdatedAt:           time.Now(),
+		}
+
+		if err := s.storage.UpsertRule(ctx, ruleData); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("rule %q: %v", spec.Name, err))
+			if isDuplicate {
+				result.Updated--
+			} else {
+				result.Created--
+			}
+			continue
+		}
+
+		// Update name index so subsequent rules in this batch see the new name.
+		nameIndex[spec.Name] = spec.ID
+
+		// Update in-memory slice.
+		found := false
+		for j, r := range s.specs {
+			if r.ID == spec.ID {
+				s.specs[j] = spec
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.specs = append(s.specs, spec)
+		}
+	}
+
+	// Write the JSON export file once at the end (not per-rule).
+	s.exportRulesLocked()
+	return result
 }
