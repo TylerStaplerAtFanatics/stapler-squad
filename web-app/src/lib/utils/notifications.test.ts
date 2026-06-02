@@ -17,6 +17,17 @@ jest.mock("@/lib/notification-policy", () => ({
   nativeAutoCloseMs: jest.fn(),
 }));
 
+// Mock generated proto types — real values kept so enum comparisons in tests are meaningful.
+jest.mock("@/gen/session/v1/types_pb", () => ({
+  NotificationPriority: {
+    UNSPECIFIED: 0,
+    LOW: 1,
+    MEDIUM: 2,
+    HIGH: 3,
+    URGENT: 4,
+  },
+}));
+
 // ── Notification mock setup ──────────────────────────────────────────────────
 // We use a factory so each test gets its own fresh instance array.
 

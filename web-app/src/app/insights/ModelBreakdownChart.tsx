@@ -1,6 +1,7 @@
 // +feature: insights-dashboard
 "use client";
 
+import { useMemo } from "react";
 import type { ModelBreakdown } from "@/gen/session/v1/insights_pb";
 import {
   ResponsiveContainer,
@@ -59,6 +60,8 @@ function fmtDollar(v: number): string {
 }
 
 export function ModelBreakdownChart({ models }: Props) {
+  const data = useMemo(() => toDataPoints(models), [models]);
+
   if (models.length === 0) {
     return (
       <div className={chartCard}>
@@ -67,8 +70,6 @@ export function ModelBreakdownChart({ models }: Props) {
       </div>
     );
   }
-
-  const data = toDataPoints(models);
 
   return (
     <div className={chartCard}>

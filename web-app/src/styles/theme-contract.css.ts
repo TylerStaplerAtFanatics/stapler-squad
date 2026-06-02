@@ -67,6 +67,16 @@ export const vars = createThemeContract({
     terminalTextMuted: null,
     terminalHoverBg: null,
 
+    // Log level badge colors (semantic colors for log-level chips/rows)
+    logError: null,   // ERROR badge background
+    logWarn: null,    // WARN badge background
+    logInfo: null,    // INFO badge background
+    logDebug: null,   // DEBUG badge background
+    logTrace: null,   // TRACE badge background
+    logOnDark: null,  // text on dark log badges (error/info/debug/trace)
+    logOnAmber: null, // text on amber log badge (warn)
+    logLive: null,    // live indicator dot / success accent
+
     // Cyberpunk / glow tokens
     glowPrimary: null,
     glowSecondary: null,
@@ -170,6 +180,7 @@ export const zIndex = {
   raised: 10,
   header: 100,
   dropdown: 500,
+  slideOver: 700,
   modal: 1000,
   // Navigation overlay stack (1040–1065).  Values chosen so the bottom nav and its
   // sub-menus sit above all other page content, and the mobile pane picker sits above the nav.
@@ -183,5 +194,6 @@ export const zIndex = {
   // Toast sits above dialog-level overlays but below the Radix modal overlay (1100),
   // so notifications are hidden behind modals rather than covering form actions.
   toast: 1080,
+  floatingTerminalUI: 1085,
   tooltip: 1100,
 } as const;

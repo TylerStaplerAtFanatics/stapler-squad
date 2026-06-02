@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -503,14 +504,18 @@ func waitForEvent(t *testing.T, eventCh <-chan *sessionv1.ReviewQueueEvent, even
 
 // BenchmarkReactiveQueueManagerThroughput measures event processing throughput
 func BenchmarkReactiveQueueManagerThroughput(b *testing.B) {
-	// Setup test directory
-	testDir := filepath.Join(os.TempDir(), "stapler-squad-bench-throughput")
-	defer os.RemoveAll(testDir)
+	// Use b.TempDir() so each benchmark calibration call gets an isolated directory
+	// and automatic cleanup — avoids path conflicts between successive b.N runs.
+	testDir := b.TempDir()
 
 	// Setup
 	queue := session.NewReviewQueue()
 	statusManager := session.NewInstanceStatusManager()
-	reviewQueuePoller := session.NewReviewQueuePoller(queue, statusManager, nil)
+	// Use a fast poll interval so event delivery isn't gated on the default 2s cycle.
+	benchPollerCfg := session.DefaultReviewQueuePollerConfig()
+	benchPollerCfg.PollInterval = 10 * time.Millisecond
+	benchPollerCfg.SlowPollInterval = 10 * time.Millisecond
+	reviewQueuePoller := session.NewReviewQueuePollerWithConfig(queue, statusManager, nil, benchPollerCfg)
 	eventBus := events.NewEventBus(100)
 	repo, err := session.NewEntRepository(session.WithDatabasePath(filepath.Join(testDir, "sessions.db")))
 	if err != nil {
@@ -554,21 +559,35 @@ func BenchmarkReactiveQueueManagerThroughput(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		item := &session.ReviewItem{
-			SessionID:  "bench-" + string(rune(i)),
+		queue.Add(&session.ReviewItem{
+			SessionID:  fmt.Sprintf("bench-%d", i),
 			Priority:   session.PriorityMedium,
 			Reason:     session.ReasonInputRequired,
 			DetectedAt: time.Now(),
-		}
-		queue.Add(item)
+		})
+	}
 
-		// Drain event channel
+	b.StopTimer()
+
+	// Drain events delivered during the run. The event channel is buffered at 100;
+	// at high b.N most events are dropped by publishToClients (by design — slow consumers
+	// don't block the publisher). We verify at least one event arrived to confirm the
+	// reactive path is wired, without blocking indefinitely.
+	delivered := 0
+	drain := time.After(200 * time.Millisecond)
+drainLoop:
+	for {
 		select {
 		case <-eventCh:
-		case <-time.After(100 * time.Millisecond):
-			b.Fatal("Timeout receiving event")
+			delivered++
+		case <-drain:
+			break drainLoop
 		}
 	}
+	if delivered == 0 {
+		b.Fatalf("no events delivered: reactive observer not wired (added %d items)", b.N)
+	}
+	b.ReportMetric(float64(delivered)/float64(b.N)*100, "delivery%")
 
 	reactiveQueueMgr.Stop()
 }

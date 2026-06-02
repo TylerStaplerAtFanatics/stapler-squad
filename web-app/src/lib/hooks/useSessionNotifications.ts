@@ -93,32 +93,34 @@ export function useSessionNotifications(options: UseSessionNotificationsOptions 
 
   const handleNotification = useCallback((event: NotificationEvent) => {
     // --- Toast deduplication ---
-    // Suppress duplicate toasts for the same (sessionId, notificationType)
-    // within a 10-second window. The server handles history-store dedup
-    // independently; this only prevents redundant UI toasts.
+    // Within a 10-second window, suppress audio and native notifications for
+    // repeat (sessionId, notificationType) events. However, visible toasts are
+    // still refreshed with the latest content so that rapidly-updating system
+    // alerts (e.g. fork-pressure) replace their stale toast rather than going
+    // silent until the window expires.
     const dedupKey = `${event.sessionId}:${event.notificationType}`;
     const now = Date.now();
-    const lastShown = recentToastKeys.current.get(dedupKey);
 
-    // Prune stale entries to prevent unbounded map growth
+    // Prune stale entries before reading — ensures lastShown reflects the
+    // post-prune state, so a boundary-case entry doesn't linger in the map.
     for (const [key, ts] of recentToastKeys.current) {
       if (now - ts >= TOAST_DEDUP_WINDOW_MS) {
         recentToastKeys.current.delete(key);
       }
     }
 
+    const lastShown = recentToastKeys.current.get(dedupKey);
+
     // Never suppress approval_needed or question notifications — each one blocks Claude and requires a response.
     const isApproval = event.notificationType === NotificationType.APPROVAL_NEEDED ||
       event.notificationType === NotificationType.INPUT_REQUIRED;
-    if (!isApproval && lastShown && now - lastShown < TOAST_DEDUP_WINDOW_MS) {
-      // Duplicate toast suppressed — event still reaches history store via server
-      return;
-    }
-    recentToastKeys.current.set(dedupKey, now);
+    const isDuplicate = !isApproval && !!lastShown && now - lastShown < TOAST_DEDUP_WINDOW_MS;
 
-    // History-only types: no toast, no sound — just record in the history panel
+    // History-only types: no toast, no sound — just record in the history panel.
+    // Duplicates are fully suppressed (no visible toast to refresh).
     if (HISTORY_ONLY_TYPES.has(event.notificationType)) {
-      const notificationData: Omit<NotificationData, "id" | "timestamp"> = {
+      if (isDuplicate) return;
+      addToHistoryOnly({
         sessionId: event.sessionId,
         sessionName: event.sessionName || "Unknown Session",
         title: event.title,
@@ -129,14 +131,8 @@ export function useSessionNotifications(options: UseSessionNotificationsOptions 
         onView: onViewSessionRef.current
           ? () => onViewSessionRef.current?.(event.sessionId)
           : undefined,
-      };
-      addToHistoryOnly(notificationData);
+      });
       return;
-    }
-
-    // Play audio chime based on priority
-    if (enableAudioRef.current) {
-      playPriorityNotificationSound(event.priority);
     }
 
     // Extract source app metadata from the event
@@ -144,6 +140,7 @@ export function useSessionNotifications(options: UseSessionNotificationsOptions 
     const sourceBundleId = event.metadata?.["source_bundle"];
     const sourceWorkingDir = event.metadata?.["cwd"];
     const sourceProject = event.metadata?.["source_project"];
+    const approvalId = event.metadata?.["approval_id"];
 
     // Build the notification data with all available fields
     const notificationData: Omit<NotificationData, "id" | "timestamp"> = {
@@ -166,9 +163,24 @@ export function useSessionNotifications(options: UseSessionNotificationsOptions 
         ? () => focusWindow(sourceBundleId, sourceApp)
         : undefined,
       // Attach approve/deny callbacks for tool-use approval requests
-      onApprove: event.metadata?.["approval_id"] ? () => resolveApproval(event.metadata?.["approval_id"]!, "allow") : undefined,
-      onDeny: event.metadata?.["approval_id"] ? () => resolveApproval(event.metadata?.["approval_id"]!, "deny") : undefined,
+      onApprove: approvalId ? () => resolveApproval(approvalId, "allow") : undefined,
+      onDeny:    approvalId ? () => resolveApproval(approvalId, "deny")  : undefined,
     };
+
+    // Duplicate visible-toast event: refresh the existing toast with updated
+    // content (addNotification replaces by sessionId, not stacks) but skip
+    // audio and native notification to avoid spamming the user.
+    if (isDuplicate) {
+      addNotification(notificationData);
+      return;
+    }
+
+    recentToastKeys.current.set(dedupKey, now);
+
+    // Play audio chime based on priority
+    if (enableAudioRef.current) {
+      playPriorityNotificationSound(event.priority);
+    }
 
     // Add visual notification
     addNotification(notificationData);
