@@ -15,6 +15,8 @@ jobs:
   publish-demos:
     name: Record and Publish Demo GIFs
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -122,4 +124,4 @@ jobs:
           git add docs/demos/
           git diff --cached --quiet && echo "No GIF changes to commit" && exit 0
           git commit -m "chore(demos): update E2E feature GIFs [skip ci]"
-          git push
+          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done

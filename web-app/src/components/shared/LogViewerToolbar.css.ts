@@ -1,4 +1,5 @@
 import { style } from "@vanilla-extract/css";
+import { vars } from "@/styles/theme-contract.css";
 
 // ---------------------------------------------------------------------------
 // T3: LogViewerToolbar — collapsible search bar for narrow screens (< 430px)
@@ -17,6 +18,19 @@ export const toolbarRow = style({
   display: "flex",
   alignItems: "center",
   gap: 6,
+  // On narrow screens, reverse the row so the live-tail button (most-used action)
+  // lands in the right-thumb zone for right-handed users.
+  "@media": {
+    "(max-width: 430px)": {
+      flexDirection: "row-reverse",
+    },
+  },
+  selectors: {
+    // Left-handed: on narrow screens keep natural row order so live-tail is on the left
+    ':root[data-left-handed] &': {
+      flexDirection: "row",
+    },
+  },
 });
 
 export const searchWrapper = style({
@@ -147,8 +161,8 @@ export const liveTailDot = style({
   flexShrink: 0,
   selectors: {
     "[data-live='true'] &": {
-      background: "#22c55e",
-      boxShadow: "0 0 4px #22c55e",
+      background: vars.color.logLive,
+      boxShadow: `0 0 4px ${vars.color.logLive}`,
     },
   },
 });

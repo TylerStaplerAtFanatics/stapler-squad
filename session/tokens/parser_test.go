@@ -1,6 +1,7 @@
 package tokens
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -138,4 +139,32 @@ func TestParseFile_WhenCacheHeavySession_ExpectCacheTokensSummedCorrectly(t *tes
 	assert.Equal(t, int64(5000), result.CacheCreation)
 	assert.Greater(t, result.CacheRead, int64(0))
 	assert.Equal(t, int64(8000), result.CacheRead)
+}
+
+// BenchmarkTokenParser_ProcessUserEntry measures allocations in user-entry parsing.
+// The fixture includes a large tool_result content payload to surface the allocation
+// profile of jsonlUserContent vs the old jsonlContent (which carried Input json.RawMessage).
+func BenchmarkTokenParser_ProcessUserEntry(b *testing.B) {
+	// A user entry with a tool_result block carrying a large text payload — the kind
+	// of message that previously triggered the ~237 KB allocation via jsonlContent.Input.
+	largeText := strings.Repeat("x", 200*1024) // 200 KB text payload
+	nestedContent := `[{"type":"text","text":"` + largeText + `"}]`
+	// Encode nestedContent as a JSON string for the Content field.
+	nestedContentJSON, err := json.Marshal(nestedContent)
+	if err != nil {
+		b.Fatal(err)
+	}
+	entry := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":` +
+		string(nestedContentJSON) + `}]}}`
+
+	p := NewParser()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		result, parseErr := p.ParseReader(strings.NewReader(entry))
+		if parseErr != nil {
+			b.Fatal(parseErr)
+		}
+		_ = result
+	}
 }

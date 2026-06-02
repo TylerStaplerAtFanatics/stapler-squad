@@ -720,15 +720,19 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 				// Coalesce: drain any immediately available frames into a single write.
 				// Copy data into a fresh buffer — data is broadcast to all subscribers
 				// and shares a backing array; appending into it would corrupt other readers.
+				// The batch cap of 32 bounds worst-case latency: at 10K fps that is ~3 ms.
 				buf := append([]byte(nil), data...)
+				const maxBatchFrames = 32
+				framesInBatch := 1
 			coalesce:
-				for {
+				for framesInBatch < maxBatchFrames {
 					select {
 					case more, ok := <-updateChan:
 						if !ok {
 							break coalesce
 						}
 						buf = append(buf, more...)
+						framesInBatch++
 					default:
 						break coalesce
 					}

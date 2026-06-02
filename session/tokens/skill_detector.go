@@ -16,7 +16,7 @@ var commandPattern = regexp.MustCompile(`(?:^|\s)/([a-zA-Z][a-zA-Z0-9:_-]*)`)
 // detectSkillActivations scans user message content blocks for:
 //  1. Text blocks starting with a /command → IsCommand=true
 //  2. Tool result blocks whose tool input path contains /.claude/skills/ → IsCommand=false
-func detectSkillActivations(contents []jsonlContent, turnIndex int) []SkillActivation {
+func detectSkillActivations(contents []jsonlUserContent, turnIndex int) []SkillActivation {
 	var activations []SkillActivation
 
 	for _, c := range contents {
@@ -35,16 +35,20 @@ func detectSkillActivations(contents []jsonlContent, turnIndex int) []SkillActiv
 
 // detectCommandsInText finds /command patterns in text content.
 func detectCommandsInText(text string, turnIndex int) []SkillActivation {
-	var activations []SkillActivation
+	// Fast-path guard: skip the regexp engine entirely when no '/' is present.
+	// Most user turns are plain prose; this avoids regexp allocation on the hot path.
+	if !strings.ContainsRune(text, '/') {
+		return nil
+	}
 
 	matches := commandPattern.FindAllStringSubmatch(text, -1)
+	activations := make([]SkillActivation, 0, len(matches))
 	for _, m := range matches {
 		if len(m) < 2 {
 			continue
 		}
-		name := m[1]
 		activations = append(activations, SkillActivation{
-			Name:      name,
+			Name:      m[1],
 			TurnIndex: turnIndex,
 			IsCommand: true,
 		})
@@ -55,7 +59,7 @@ func detectCommandsInText(text string, turnIndex int) []SkillActivation {
 
 // detectSkillFromToolResult checks if a tool_result content block came from a
 // Read tool on a skills file.
-func detectSkillFromToolResult(c jsonlContent, turnIndex int) []SkillActivation {
+func detectSkillFromToolResult(c jsonlUserContent, turnIndex int) []SkillActivation {
 	// The tool_result content field can be a string or array.
 	// We need to find skill paths in nested content.
 	if len(c.Content) == 0 {

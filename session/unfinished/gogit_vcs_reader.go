@@ -1,12 +1,15 @@
 package unfinished
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	git "github.com/go-git/go-git/v5"
@@ -25,22 +28,86 @@ type diffStatEntry struct {
 	expiry time.Time
 }
 
-// diffStatCache is a package-level result cache keyed by absolute worktreePath.
-// Values are diffStatEntry (stored by value; no mutation after Store).
-// Two-goroutine races on a miss are benign: last writer wins and both values
-// are computed from the same filesystem snapshot.
-var diffStatCache sync.Map
+// repoCacheMaxEntries is the maximum number of repositories held in repoCache
+// before eviction runs. Sized for typical multi-repo workspaces; adjust higher
+// only if scanning > 100 repos simultaneously.
+const repoCacheMaxEntries = 100
+
+// repoCacheTTL is the duration after which an unaccessed repo entry is evicted.
+// 30 minutes covers the scanner's 30s cycle comfortably while bounding memory.
+const repoCacheTTL = 30 * time.Minute
+
+// cachedRepo holds an open go-git Repository and a per-repo mutex that
+// serialises concurrent VCS reads. go-git's packfile reader is not safe for
+// concurrent use; holding this mutex for the duration of a VCS operation
+// eliminates the internal packfile-reader contention that was the #1 profiling
+// hotspot (3.8B cycles, 36K events).
+type cachedRepo struct {
+	repo         *git.Repository
+	mu           sync.Mutex
+	accessedAtNs int64 // atomic UnixNano; updated on every cache hit
+}
+
+// pruneRepoCache evicts entries not accessed within repoCacheTTL, then trims
+// the oldest entries if the cache still exceeds repoCacheMaxEntries.
+// Designed to be called infrequently (e.g. when openRepoEntry detects overflow).
+func (g *GoGitVCSReader) pruneRepoCache() {
+	cutoff := time.Now().Add(-repoCacheTTL).UnixNano()
+	type liveEntry struct {
+		key          string
+		accessedAtNs int64
+	}
+	var live []liveEntry
+	g.repoCache.Range(func(k, v any) bool {
+		entry := v.(*cachedRepo)
+		ts := atomic.LoadInt64(&entry.accessedAtNs)
+		if ts < cutoff {
+			g.repoCache.Delete(k)
+			atomic.AddInt64(&g.repoCacheSize, -1)
+		} else {
+			live = append(live, liveEntry{k.(string), ts})
+		}
+		return true
+	})
+
+	// LRU trim: if still over cap after TTL pass, evict coldest entries.
+	if len(live) > repoCacheMaxEntries {
+		slices.SortFunc(live, func(a, b liveEntry) int {
+			return cmp.Compare(a.accessedAtNs, b.accessedAtNs)
+		})
+		for _, e := range live[:len(live)-repoCacheMaxEntries] {
+			g.repoCache.Delete(e.key)
+			atomic.AddInt64(&g.repoCacheSize, -1)
+		}
+	}
+}
 
 // GoGitVCSReader implements VCSReader using the go-git library.
 // No subprocesses are spawned; all operations run in-process.
 // Prefer this in environments where spawning git subprocesses is undesirable
 // or where index.lock contention is a concern.
-type GoGitVCSReader struct{}
+//
+// All fields are zero-value safe — GoGitVCSReader{} is valid without a constructor.
+type GoGitVCSReader struct {
+	// repoCache caches open go-git Repository handles keyed by absolute path.
+	// Values are *cachedRepo; LoadOrStore ensures only one entry per path wins.
+	// Entries are evicted after repoCacheTTL of inactivity (pruneRepoCache).
+	repoCache sync.Map // map[string]*cachedRepo
+
+	// repoCacheSize tracks the approximate entry count atomically so eviction
+	// can be triggered without a full Range scan on every cache miss.
+	repoCacheSize int64
+
+	// diffStatCache caches DiffShortstat results keyed by absolute worktreePath.
+	// Values are diffStatEntry (stored by value; no mutation after Store).
+	// Races on a cache miss are benign: last writer wins; both compute the same value.
+	diffStatCache sync.Map // map[string]diffStatEntry
+}
 
 var _ VCSReader = (*GoGitVCSReader)(nil)
 
 func (g *GoGitVCSReader) ListWorktrees(repoPath string) ([]WorktreeInfo, error) {
-	repo, err := openWorktree(repoPath)
+	repo, err := g.openWorktree(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("open repo %s: %w", repoPath, err)
 	}
@@ -109,7 +176,7 @@ func (g *GoGitVCSReader) ListWorktrees(repoPath string) ([]WorktreeInfo, error) 
 }
 
 func (g *GoGitVCSReader) ResolveDefaultBranch(repoPath string) string {
-	repo, err := openWorktree(repoPath)
+	repo, err := g.openWorktree(repoPath)
 	if err != nil {
 		return ""
 	}
@@ -149,25 +216,33 @@ func (g *GoGitVCSReader) ResolveDefaultBranch(repoPath string) string {
 // This avoids the 1.85 GB allocation caused by wt.Status(), which hashes every
 // modified file in full.
 func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
-	repo, err := openWorktree(worktreePath)
+	entry, err := g.openRepoEntry(worktreePath)
 	if err != nil {
 		return false, fmt.Errorf("open repo %s: %w", worktreePath, err)
 	}
 
+	// Phase 1: go-git operations — hold the per-repo mutex for the full phase.
+	// The mutex is NOT deferred so we can release it before the OS-only phase.
+	entry.mu.Lock()
+	repo := entry.repo
+
 	idx, err := repo.Storer.Index()
 	if err != nil {
+		entry.mu.Unlock()
 		return false, fmt.Errorf("read index: %w", err)
 	}
 
-	// --- staged changes: index vs HEAD ---
+	// --- staged changes: index vs HEAD (go-git, needs lock) ---
 	headRef, headErr := repo.Head()
 	if headErr == nil {
 		headCommit, cerr := repo.CommitObject(headRef.Hash())
 		if cerr != nil {
+			entry.mu.Unlock()
 			return false, fmt.Errorf("head commit: %w", cerr)
 		}
 		headTree, terr := headCommit.Tree()
 		if terr != nil {
+			entry.mu.Unlock()
 			return false, fmt.Errorf("head tree: %w", terr)
 		}
 
@@ -176,42 +251,58 @@ func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
 			headHashes[f.Name] = f.Hash
 			return nil
 		}); ferr != nil {
+			entry.mu.Unlock()
 			return false, fmt.Errorf("walk head tree: %w", ferr)
 		}
 
 		indexNames := make(map[string]bool, len(idx.Entries))
-		for _, entry := range idx.Entries {
-			if entry.Stage != 0 { // merge conflict stage → dirty
+		for _, idxEntry := range idx.Entries {
+			if idxEntry.Stage != 0 { // merge conflict stage → dirty
+				entry.mu.Unlock()
 				return true, nil
 			}
-			indexNames[entry.Name] = true
-			if h, ok := headHashes[entry.Name]; !ok || h != entry.Hash {
+			indexNames[idxEntry.Name] = true
+			if h, ok := headHashes[idxEntry.Name]; !ok || h != idxEntry.Hash {
+				entry.mu.Unlock()
 				return true, nil // new or modified staged file
 			}
 		}
 		for name := range headHashes {
 			if !indexNames[name] {
+				entry.mu.Unlock()
 				return true, nil // staged deletion
 			}
 		}
 	} else if !errors.Is(headErr, plumbing.ErrReferenceNotFound) {
+		entry.mu.Unlock()
 		return false, fmt.Errorf("head: %w", headErr)
 	}
 
-	// --- working-tree changes: stat vs index mtime/size ---
-	// Build a set of indexed paths for untracked-file detection.
-	indexed := make(map[string]bool, len(idx.Entries))
-	for _, entry := range idx.Entries {
-		indexed[entry.Name] = true
-		info, serr := os.Lstat(filepath.Join(worktreePath, entry.Name))
+	// Capture index entries needed for the OS phase as plain value types.
+	type trackedFile struct {
+		name       string
+		size       uint32
+		modifiedAt time.Time
+	}
+	tracked := make([]trackedFile, len(idx.Entries))
+	for i, idxEntry := range idx.Entries {
+		tracked[i] = trackedFile{idxEntry.Name, idxEntry.Size, idxEntry.ModifiedAt}
+	}
+	entry.mu.Unlock() // release before all OS calls — no go-git access below
+
+	// Phase 2: filesystem stat + directory walk — no go-git, no lock needed.
+	indexed := make(map[string]bool, len(tracked))
+	for _, tf := range tracked {
+		indexed[tf.name] = true
+		info, serr := os.Lstat(filepath.Join(worktreePath, tf.name))
 		if serr != nil {
 			if os.IsNotExist(serr) {
 				return true, nil // tracked file deleted
 			}
 			continue
 		}
-		if info.Size() != int64(entry.Size) ||
-			!info.ModTime().Truncate(time.Second).Equal(entry.ModifiedAt.Truncate(time.Second)) {
+		if info.Size() != int64(tf.size) ||
+			!info.ModTime().Truncate(time.Second).Equal(tf.modifiedAt.Truncate(time.Second)) {
 			return true, nil
 		}
 	}
@@ -270,10 +361,13 @@ func hasUntrackedFilesRec(root, dir string, indexed map[string]bool) (bool, erro
 // then count commits between each tip and the merge base. This bounds the
 // walk to the diverged portion of history rather than the full reachable set.
 func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error) {
-	repo, err := openWorktree(worktreePath)
+	entry, err := g.openRepoEntry(worktreePath)
 	if err != nil {
 		return 0, 0, fmt.Errorf("open repo %s: %w", worktreePath, err)
 	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	repo := entry.repo
 
 	headRef, err := repo.Head()
 	if err != nil {
@@ -306,10 +400,13 @@ func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error
 }
 
 func (g *GoGitVCSReader) CommitMessages(worktreePath, base string, max int) ([]string, error) {
-	repo, err := openWorktree(worktreePath)
+	entry, err := g.openRepoEntry(worktreePath)
 	if err != nil {
 		return nil, err
 	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	repo := entry.repo
 
 	headRef, err := repo.Head()
 	if err != nil {
@@ -352,14 +449,14 @@ func (g *GoGitVCSReader) CommitMessages(worktreePath, base string, max int) ([]s
 // calls from concurrent scanner workers, which was the top mutex hotspot (537M
 // cycles, 13,941 events in profiling).
 func (g *GoGitVCSReader) DiffShortstat(worktreePath string) (DiffStat, error) {
-	if v, ok := diffStatCache.Load(worktreePath); ok {
+	if v, ok := g.diffStatCache.Load(worktreePath); ok {
 		if e := v.(diffStatEntry); time.Now().Before(e.expiry) {
 			return e.result, nil
 		}
 	}
 	result, err := g.diffShortstatUncached(worktreePath)
 	if err == nil {
-		diffStatCache.Store(worktreePath, diffStatEntry{
+		g.diffStatCache.Store(worktreePath, diffStatEntry{
 			result: result,
 			expiry: time.Now().Add(diffStatCacheTTL),
 		})
@@ -368,10 +465,13 @@ func (g *GoGitVCSReader) DiffShortstat(worktreePath string) (DiffStat, error) {
 }
 
 func (g *GoGitVCSReader) diffShortstatUncached(worktreePath string) (DiffStat, error) {
-	repo, err := openWorktree(worktreePath)
+	entry, err := g.openRepoEntry(worktreePath)
 	if err != nil {
 		return DiffStat{}, err
 	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	repo := entry.repo
 
 	head, err := repo.Head()
 	if err != nil {
@@ -499,13 +599,55 @@ func gitCommonDir(repoPath string) string {
 	return filepath.Dir(wtGitDir)
 }
 
-// openWorktree opens a git repo that may be a linked worktree (has a .git file
-// rather than a .git directory).
-func openWorktree(path string) (*git.Repository, error) {
-	return git.PlainOpenWithOptions(path, &git.PlainOpenOptions{
+// openRepoEntry returns the cached *cachedRepo for path, opening it if needed.
+// Uses LoadOrStore so that only one *cachedRepo is ever stored per path even
+// when multiple goroutines race on the first access.
+// Access timestamps are updated atomically on every hit so pruneRepoCache can
+// evict cold entries without interrupting concurrent readers.
+func (g *GoGitVCSReader) openRepoEntry(path string) (*cachedRepo, error) {
+	now := time.Now().UnixNano()
+	if v, ok := g.repoCache.Load(path); ok {
+		entry := v.(*cachedRepo)
+		atomic.StoreInt64(&entry.accessedAtNs, now)
+		return entry, nil
+	}
+
+	// Trigger eviction before adding a new entry if the cache is large.
+	if atomic.LoadInt64(&g.repoCacheSize) >= repoCacheMaxEntries {
+		g.pruneRepoCache()
+		// Re-check after eviction — another goroutine may have stored this path.
+		if v, ok := g.repoCache.Load(path); ok {
+			entry := v.(*cachedRepo)
+			atomic.StoreInt64(&entry.accessedAtNs, now)
+			return entry, nil
+		}
+	}
+
+	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{
 		DetectDotGit:          true,
 		EnableDotGitCommonDir: true,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("plain open %s: %w", path, err)
+	}
+	entry := &cachedRepo{repo: repo, accessedAtNs: now}
+	actual, loaded := g.repoCache.LoadOrStore(path, entry)
+	if !loaded {
+		atomic.AddInt64(&g.repoCacheSize, 1)
+	}
+	return actual.(*cachedRepo), nil
+}
+
+// openWorktree opens a git repo that may be a linked worktree (has a .git file
+// rather than a .git directory). It returns the cached *git.Repository.
+// Callers that perform heavy VCS work should use openRepoEntry directly so
+// they can hold the per-repo mutex for the duration of their operation.
+func (g *GoGitVCSReader) openWorktree(path string) (*git.Repository, error) {
+	entry, err := g.openRepoEntry(path)
+	if err != nil {
+		return nil, err
+	}
+	return entry.repo, nil
 }
 
 // resolveRef resolves a short ref name (e.g. "origin/main") to a commit hash.
@@ -530,7 +672,7 @@ func resolveRef(repo *git.Repository, name string) (plumbing.Hash, error) {
 
 // reachableSet returns the set of all commits reachable from start.
 func reachableSet(repo *git.Repository, start plumbing.Hash) (map[plumbing.Hash]bool, error) {
-	seen := map[plumbing.Hash]bool{}
+	seen := make(map[plumbing.Hash]bool, 64)
 	iter, err := repo.Log(&git.LogOptions{From: start})
 	if err != nil {
 		return nil, err
@@ -552,57 +694,73 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// mergeBaseBFSLimit caps the number of commits visited per side in findMergeBase.
+// For a 10K-commit repo the unbounded walk allocates ~640 KB; bounding at 2000
+// limits that to ~128 KB while still covering typical branch divergences.
+const mergeBaseBFSLimit = 2000
+
 // findMergeBase returns the most-recent common ancestor of h1 and h2 using BFS.
-// It first marks all ancestors of h1, then walks ancestors of h2 until it finds
-// one that is already marked.
+// It first marks ancestors of h1 (up to mergeBaseBFSLimit), then walks ancestors
+// of h2 until it finds one that is already marked. If no merge base is found
+// within the depth limit, a sentinel error is returned.
 func findMergeBase(repo *git.Repository, h1, h2 plumbing.Hash) (plumbing.Hash, error) {
 	if h1 == h2 {
 		return h1, nil
 	}
 
-	// Mark all commits reachable from h1.
-	anc := make(map[plumbing.Hash]bool)
+	// Mark ancestors of h1 (bounded).
+	anc := make(map[plumbing.Hash]bool, mergeBaseBFSLimit)
 	q := []plumbing.Hash{h1}
-	for len(q) > 0 {
+	visited := 0
+	for len(q) > 0 && visited < mergeBaseBFSLimit {
 		h := q[len(q)-1]
 		q = q[:len(q)-1]
 		if anc[h] {
 			continue
 		}
 		anc[h] = true
+		visited++
 		c, err := repo.CommitObject(h)
 		if err != nil {
-			return plumbing.ZeroHash, err
+			if !errors.Is(err, plumbing.ErrObjectNotFound) {
+				return plumbing.ZeroHash, fmt.Errorf("commit object %s: %w", h, err)
+			}
+			continue // object missing from shallow clone or pack — skip
 		}
 		q = append(q, c.ParentHashes...)
 	}
 
-	// Walk from h2 breadth-first; first ancestor also in anc is the nearest merge base.
-	seen := make(map[plumbing.Hash]bool)
+	// Walk from h2 breadth-first; first ancestor in anc is the nearest merge base.
+	seen := make(map[plumbing.Hash]bool, mergeBaseBFSLimit)
 	q = []plumbing.Hash{h2}
-	for len(q) > 0 {
+	visited = 0
+	for len(q) > 0 && visited < mergeBaseBFSLimit {
 		h := q[0]
 		q = q[1:]
 		if seen[h] {
 			continue
 		}
 		seen[h] = true
+		visited++
 		if anc[h] {
 			return h, nil
 		}
 		c, err := repo.CommitObject(h)
 		if err != nil {
-			return plumbing.ZeroHash, err
+			if !errors.Is(err, plumbing.ErrObjectNotFound) {
+				return plumbing.ZeroHash, fmt.Errorf("commit object %s: %w", h, err)
+			}
+			continue
 		}
 		q = append(q, c.ParentHashes...)
 	}
-	return plumbing.ZeroHash, fmt.Errorf("no common ancestor for %s and %s", h1, h2)
+	return plumbing.ZeroHash, fmt.Errorf("merge base not found within %d commits", mergeBaseBFSLimit)
 }
 
 // countCommitsTo counts commits reachable from start that are not reachable from
 // stop (i.e. the number of commits between start and stop exclusive).
 func countCommitsTo(repo *git.Repository, start, stop plumbing.Hash) (int, error) {
-	seen := make(map[plumbing.Hash]bool)
+	seen := make(map[plumbing.Hash]bool, 32)
 	q := []plumbing.Hash{start}
 	n := 0
 	for len(q) > 0 {
