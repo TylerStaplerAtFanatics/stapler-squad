@@ -359,6 +359,6 @@ jobs:
           cp bench-current.txt bench-baseline.txt
           git config user.email "ci@stapler-squad"
           git config user.name "CI"
-          git add bench-baseline.txt
-          git commit -m "chore(bench): update baseline [skip ci]" || true
-          git push origin HEAD:main
+          git add -f bench-baseline.txt
+          git commit -m "chore(bench): update go tier2 baseline [skip ci]" || true
+          for i in 1 2 3; do git pull --rebase --autostash && git push origin HEAD:main && break || sleep 5; done
