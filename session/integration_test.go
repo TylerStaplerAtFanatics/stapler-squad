@@ -831,6 +831,9 @@ func testFullResumptionScenario(t *testing.T, tempRepo string) {
 
 // BenchmarkSessionRestorePerformance benchmarks the session restore performance
 func BenchmarkSessionRestorePerformance(b *testing.B) {
+	if testing.Short() {
+		b.Skip("skipping integration benchmark that starts real tmux sessions; run without -short to include")
+	}
 	tempRepo := setupTestRepositoryBench(b)
 	defer os.RemoveAll(tempRepo)
 
