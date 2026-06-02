@@ -299,4 +299,3 @@ func isValidGoalStatus(s string) bool {
 	}
 	return false
 }
-

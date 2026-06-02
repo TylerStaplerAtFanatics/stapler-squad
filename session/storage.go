@@ -14,19 +14,19 @@ import (
 
 // InstanceData represents the serializable data of an Instance
 type InstanceData struct {
-	Title      string    `json:"title"`
-	UUID       string    `json:"uuid,omitempty"`
-	Path       string    `json:"path"`
-	WorkingDir string    `json:"working_dir"`
-	Branch     string    `json:"branch"`
-	Status     Status    `json:"status"`
-	Height     int       `json:"height"`
-	Width      int       `json:"width"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	AutoYes       bool   `json:"auto_yes"`
-	Prompt        string `json:"prompt"`
-	InitialPrompt string `json:"initial_prompt,omitempty"`
+	Title         string    `json:"title"`
+	UUID          string    `json:"uuid,omitempty"`
+	Path          string    `json:"path"`
+	WorkingDir    string    `json:"working_dir"`
+	Branch        string    `json:"branch"`
+	Status        Status    `json:"status"`
+	Height        int       `json:"height"`
+	Width         int       `json:"width"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	AutoYes       bool      `json:"auto_yes"`
+	Prompt        string    `json:"prompt"`
+	InitialPrompt string    `json:"initial_prompt,omitempty"`
 
 	Program          string          `json:"program"`
 	ExistingWorktree string          `json:"existing_worktree,omitempty"`
@@ -880,4 +880,3 @@ func (s *Storage) UpdateSessionTaskStatus(ctx context.Context, sessionUUID strin
 		UpdatedAt:   time.Now(),
 	}, nil
 }
-
