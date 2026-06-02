@@ -55,7 +55,9 @@ tests/e2e/allure-report/
 tests/e2e/playwright-report/
 tests/e2e/test-results/
 
-bench-*.txt
+# Scratch benchmark output files (not the committed baselines in benchmarks/go/)
+bench-current.txt
+bench-diff.txt
 benchmark_results.txt
 /web-app/out/
 /server/web/dist/

@@ -175,16 +175,9 @@ jobs:
           done
         continue-on-error: true
 
-      - name: Benchmark comparison (advisory, PR only)
-        if: github.event_name == 'pull_request'
-        run: |
-          go install golang.org/x/perf/cmd/benchstat@latest
-          TMUX_BIN="$(pwd)/bin/tmux" go test -bench=BenchmarkNavigation -benchmem -count=5 ./... \
-            -timeout=15m > bench-current.txt || true
-          if [ -f bench-baseline.txt ]; then
-            benchstat bench-baseline.txt bench-current.txt || true
-          fi
-        continue-on-error: true
+      # Benchmark comparison on PRs is handled by benchmark.yml (tier-1 job),
+      # which posts a PR comment via benchstat. Removed dead step that ran
+      # BenchmarkNavigation (a non-existent benchmark) for 15 min per PR.
 
       - name: Integration coverage (advisory)
         run: |
@@ -289,15 +282,23 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────────
   # benchmark-gate: runs on main-merge only. Fails if any benchmark regresses
-  # more than 20%. PRs get advisory comments only (never blocked).
+  # more than 20%. PRs get advisory comments only via benchmark.yml (never blocked).
   # 20% threshold is deliberate — tmux-touching benchmarks have 15-25% natural
-  # variance on shared runners. Use count=10 + utest for statistical significance.
+  # variance on shared runners. count=5 + utest for statistical significance.
+  #
+  # Baseline stored in benchmarks/go/benchmark-gate-baseline.txt (tracked, not
+  # gitignored). Uses same concurrency group as benchmark.yml to prevent 5
+  # concurrent pushers colliding on main.
   # ─────────────────────────────────────────────────────────────────────────────
   benchmark-gate:
     name: Benchmark Gate (main only)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [prepare, test]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    concurrency:
+      group: baseline-push-main
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -330,35 +331,42 @@ jobs:
 
       - name: Run benchmarks (count=5 for significance)
         run: |
-          # -run='^$'  skip all tests, benchmarks only
+          # -run='^$'  benchmarks only (no tests)
           # -short     skip integration benchmarks that spawn real processes
-          # -count=5   statistically significant for ≥20% regression detection
+          # -count=5   statistically meaningful for ≥20% regression detection
           # -timeout=10m per package (search/unfinished are legitimately slow)
           TMUX_BIN="$(pwd)/bin/tmux" go test -bench=. -benchmem -count=5 \
             -run='^$' -short ./... -timeout=10m > bench-current.txt
 
-      - name: Install benchstat
-        run: go install golang.org/x/perf/cmd/benchstat@latest
+      - name: Install benchstat (pinned)
+        run: go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260312031701-16a31bc5fbd0
 
       - name: Compare against baseline (20% threshold)
         run: |
-          if [ ! -f bench-baseline.txt ]; then
-            echo "No baseline found — treating this run as the new baseline (no regression check)"
-            cp bench-current.txt bench-baseline.txt
+          BASELINE=benchmarks/go/benchmark-gate-baseline.txt
+          if [ ! -f "$BASELINE" ]; then
+            echo "No baseline found — will be established on this run (no regression check)"
             exit 0
           fi
-          benchstat -delta-test=utest bench-baseline.txt bench-current.txt \
-            | tee bench-diff.txt
-          if grep -E '\+[2-9][0-9]\.' bench-diff.txt | grep -v '±'; then
-            echo "Benchmark regression > 20% detected — see bench-diff.txt above"
+          benchstat -delta-test=utest "$BASELINE" bench-current.txt | tee bench-diff.txt
+          # Catch regressions ≥20%: match +20.x through +9999.x (two+ digits, first two ≥ 20)
+          if grep -E '\+([2-9][0-9]|[1-9][0-9]{2,})\.' bench-diff.txt | grep -v '±'; then
+            echo "Benchmark regression ≥20% detected — see bench-diff.txt above"
             exit 1
           fi
 
       - name: Update baseline on success
         run: |
-          cp bench-current.txt bench-baseline.txt
-          git config user.email "ci@stapler-squad"
-          git config user.name "CI"
-          git add -f bench-baseline.txt
-          git commit -m "chore(bench): update go tier2 baseline [skip ci]" || true
-          for i in 1 2 3; do git pull --rebase --autostash && git push origin HEAD:main && break || sleep 5; done
+          mkdir -p benchmarks/go
+          cp bench-current.txt benchmarks/go/benchmark-gate-baseline.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/go/benchmark-gate-baseline.txt
+          git diff --cached --quiet && echo "No baseline changes to commit" && exit 0
+          git commit -m "chore(bench): update benchmark-gate baseline [skip ci]"
+          pushed=false
+          for i in 1 2 3; do
+            git pull --rebase --autostash && git push origin HEAD:main && pushed=true && break
+            sleep $((5 * i))
+          done
+          $pushed || { echo "ERROR: git push failed after 3 retries"; exit 1; }
