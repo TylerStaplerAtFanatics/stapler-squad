@@ -25,7 +25,9 @@ on:
 # Cancel in-progress runs on PRs when a new commit is pushed.
 # On main, never cancel — baseline-commit steps must be allowed to complete.
 concurrency:
-  group: benchmarks-${{ github.ref }}
+  # Shared with build.yml benchmark-gate so baseline pushes are serialized.
+  # On PRs cancel old runs; on main never cancel (baseline commits must land).
+  group: baseline-push-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -117,13 +119,21 @@ jobs:
       - name: Update baseline (push to main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          mkdir -p benchmarks/go
-          cp tier1-bench.txt benchmarks/go/tier1-baseline.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benchmarks/go/tier1-baseline.txt
-          git diff --cached --quiet || git commit -m "chore(bench): update go tier1 baseline [skip ci]"
-          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done
+          pushed=false
+          for i in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p benchmarks/go
+            cp tier1-bench.txt benchmarks/go/tier1-baseline.txt
+            git add benchmarks/go/tier1-baseline.txt
+            git diff --cached --quiet && echo "no changes to baseline" && pushed=true && break
+            git commit -m "chore(bench): update go tier1 baseline [skip ci]"
+            git push origin HEAD:main && pushed=true && break
+            sleep $((5*i))
+          done
+          $pushed || { echo "ERROR: git push failed after 3 retries"; exit 1; }
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Tier 2: Full Go benchmark suite — push to main only.
@@ -159,13 +169,21 @@ jobs:
 
       - name: Update baseline
         run: |
-          mkdir -p benchmarks/go
-          cp tier2-bench.txt benchmarks/go/tier2-baseline.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benchmarks/go/tier2-baseline.txt
-          git diff --cached --quiet || git commit -m "chore(bench): update go tier2 baseline [skip ci]"
-          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done
+          pushed=false
+          for i in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p benchmarks/go
+            cp tier2-bench.txt benchmarks/go/tier2-baseline.txt
+            git add benchmarks/go/tier2-baseline.txt
+            git diff --cached --quiet && echo "no changes to baseline" && pushed=true && break
+            git commit -m "chore(bench): update go tier2 baseline [skip ci]"
+            git push origin HEAD:main && pushed=true && break
+            sleep $((5*i))
+          done
+          $pushed || { echo "ERROR: git push failed after 3 retries"; exit 1; }
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Frontend: Bundle size gate via size-limit.
@@ -316,13 +334,21 @@ jobs:
       - name: Update baseline (push to main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          mkdir -p benchmarks/frontend
-          cp web-app/benchmark-results.json benchmarks/frontend/throughput-baseline.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benchmarks/frontend/throughput-baseline.json
-          git diff --cached --quiet || git commit -m "chore(bench): update frontend throughput baseline [skip ci]"
-          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done
+          pushed=false
+          for i in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p benchmarks/frontend
+            cp web-app/benchmark-results.json benchmarks/frontend/throughput-baseline.json
+            git add benchmarks/frontend/throughput-baseline.json
+            git diff --cached --quiet && echo "no changes to baseline" && pushed=true && break
+            git commit -m "chore(bench): update frontend throughput baseline [skip ci]"
+            git push origin HEAD:main && pushed=true && break
+            sleep $((5*i))
+          done
+          $pushed || { echo "ERROR: git push failed after 3 retries"; exit 1; }
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Lighthouse CI: Advisory performance audit (non-blocking).
@@ -508,10 +534,18 @@ jobs:
       - name: Update baseline (push to main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          mkdir -p benchmarks/e2e
-          cp web-app/e2e-latency-results.json benchmarks/e2e/latency-baseline.json
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add benchmarks/e2e/latency-baseline.json
-          git diff --cached --quiet || git commit -m "chore(bench): update e2e latency baseline [skip ci]"
-          for i in 1 2 3; do git pull --rebase --autostash && git push && break || sleep 5; done
+          pushed=false
+          for i in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p benchmarks/e2e
+            cp web-app/e2e-latency-results.json benchmarks/e2e/latency-baseline.json
+            git add benchmarks/e2e/latency-baseline.json
+            git diff --cached --quiet && echo "no changes to baseline" && pushed=true && break
+            git commit -m "chore(bench): update e2e latency baseline [skip ci]"
+            git push origin HEAD:main && pushed=true && break
+            sleep $((5*i))
+          done
+          $pushed || { echo "ERROR: git push failed after 3 retries"; exit 1; }
