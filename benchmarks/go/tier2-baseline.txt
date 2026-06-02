@@ -186,7 +186,7 @@ ok  	github.com/tstapler/stapler-squad/session/detection/ratelimit	28.842s
 ?   	github.com/tstapler/stapler-squad/session/ent	[no test files]
 ?   	github.com/tstapler/stapler-squad/session/ent/schema	[no test files]
 PASS
-ok  	github.com/tstapler/stapler-squad/session/git	0.004s
+ok  	github.com/tstapler/stapler-squad/session/git	0.005s
 PASS
 ok  	github.com/tstapler/stapler-squad/session/headless	0.003s
 ?   	github.com/tstapler/stapler-squad/session/hibernation	[no test files]
