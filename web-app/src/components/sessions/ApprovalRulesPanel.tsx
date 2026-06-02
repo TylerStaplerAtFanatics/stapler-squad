@@ -5,8 +5,10 @@ import { Modal, ModalContent, ModalTitle, ModalClose } from "@/components/ui/Mod
 import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
 import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
+import { useExportRules } from "@/lib/hooks/useExportRules";
 import { ApprovalRuleProto, AutoDecision, SuggestionSource } from "@/gen/session/v1/types_pb";
 import { SuggestedRuleCard } from "./SuggestedRuleCard";
+import { ImportRulesModal } from "./ImportRulesModal";
 import {
   panel, header, titleRow, title, subtitle, refreshButton,
   analyticsBar, analyticsTotal, analyticsRate, rateAllow, rateManual, analyticsTopTool,
@@ -105,6 +107,7 @@ const emptyForm: RuleFormState = {
 export function ApprovalRulesPanel() {
   const { rules, loading, error, upsertRule, deleteRule, refresh } = useApprovalRules();
   const { summary, loading: analyticsLoading } = useApprovalAnalytics({ windowDays: 7 });
+  const { exportRules, loading: exporting, error: exportError } = useExportRules();
 
   // ── Epic 3: panel-level "Generate Suggestions" hook ─────────────────────
   const {
@@ -128,6 +131,7 @@ export function ApprovalRulesPanel() {
 
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [showForm, setShowForm] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
   const [form, setForm] = useState<RuleFormState>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -345,6 +349,23 @@ export function ApprovalRulesPanel() {
                 Cancel
               </button>
             )}
+            {/* Export YAML button — hidden on mobile (consistent with other header buttons) */}
+            <button
+              className={`${addButton} ${headerButtonsHiddenOnMobile}`}
+              onClick={() => void exportRules()}
+              disabled={exporting}
+              data-testid="export-yaml-button"
+            >
+              {exporting ? "Exporting…" : "Export YAML"}
+            </button>
+            {/* Import YAML button */}
+            <button
+              className={`${addButton} ${headerButtonsHiddenOnMobile}`}
+              onClick={() => setImportModalOpen(true)}
+              data-testid="import-yaml-button"
+            >
+              Import YAML
+            </button>
             <button className={`${addButton} ${headerButtonsHiddenOnMobile}`} onClick={openForm} data-testid="add-rule-button">
               + Add Rule
             </button>
@@ -385,6 +406,13 @@ export function ApprovalRulesPanel() {
           >
             ×
           </button>
+        </div>
+      )}
+
+      {/* ── Export error banner ── */}
+      {exportError && (
+        <div className={generateErrorBanner} role="alert" data-testid="export-error-banner">
+          <span>Export failed: {exportError.message}</span>
         </div>
       )}
 
@@ -454,11 +482,35 @@ export function ApprovalRulesPanel() {
         {loading && visibleRules.length === 0 ? (
           <div className={loadingClass}>Loading rules…</div>
         ) : visibleRules.length === 0 ? (
-          <div className={empty}>
-            No rules found.{" "}
-            {sourceFilter === "all" || sourceFilter === "user"
-              ? "Use the '+ Add Rule' button above to create one."
-              : ""}
+          <div className={empty} data-testid="empty-state">
+            <p>
+              Approval rules let you automatically allow or deny tool calls from Claude without manual review.
+            </p>
+            {(sourceFilter === "all" || sourceFilter === "user") && (
+              <p>
+                Use{" "}
+                <button
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", textDecoration: "underline", padding: 0 }}
+                  onClick={openForm}
+                >
+                  + Add Rule
+                </button>
+                {" "}to create a rule or{" "}
+                <button
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", textDecoration: "underline", padding: 0 }}
+                  onClick={() => setImportModalOpen(true)}
+                >
+                  Import YAML
+                </button>
+                {" "}to import from a file.
+              </p>
+            )}
+            {sourceFilter === "seed" && (
+              <p>No built-in rules are available in this workspace.</p>
+            )}
+            {sourceFilter === "claude-settings" && (
+              <p>No rules from your ~/.claude/settings.json file were found.</p>
+            )}
           </div>
         ) : (
           <table className={table}>
@@ -505,7 +557,18 @@ export function ApprovalRulesPanel() {
                     </span>
                   </td>
                   <td className={td}>
-                    <span className={sourceBadge}>{sourceLabel(rule.source)}</span>
+                    <span
+                      className={sourceBadge}
+                      title={
+                        rule.source === "seed"
+                          ? "These rules ship with stapler-squad and cannot be deleted"
+                          : rule.source === "claude-settings"
+                          ? "These rules come from your ~/.claude/settings.json file"
+                          : undefined
+                      }
+                    >
+                      {sourceLabel(rule.source)}
+                    </span>
                   </td>
                   <td className={`${td} ${tdCenter}`}>{rule.priority}</td>
                   <td className={`${td} ${tdCenter}`}>
@@ -554,7 +617,7 @@ export function ApprovalRulesPanel() {
       <button
         className={mobileAddFab}
         onClick={openForm}
-        aria-label="Add rule"
+        aria-label="Add / Import rule"
         data-testid="add-rule-fab"
       >
         +
@@ -663,7 +726,7 @@ export function ApprovalRulesPanel() {
                   </div>
                 </div>
 
-                {/* ── Section 2: Match conditions ── */}
+                {/* ── Section 2: Match conditions — structured fields first ── */}
                 <div className={formSection}>
                   <div className={formSectionHeader}>Match conditions</div>
                   <div className={formGrid}>
@@ -674,6 +737,7 @@ export function ApprovalRulesPanel() {
                         value={form.toolName}
                         onChange={(e) => setFormField("toolName", e.target.value)}
                         placeholder="e.g. Bash"
+                        data-testid="form-tool-name-input"
                       />
                     </label>
 
@@ -699,6 +763,17 @@ export function ApprovalRulesPanel() {
                         data-testid="form-criteria-subcommands-input"
                       />
                     </label>
+
+                    {/* Separator before advanced regex patterns */}
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <hr style={{ border: "none", borderTop: `1px solid var(--border-color)`, margin: "4px 0 8px" }} />
+                      <span className={formSectionHeader} data-testid="advanced-regex-separator">
+                        Advanced: regex patterns
+                      </span>
+                      <p className={priorityHint} style={{ marginTop: 4 }}>
+                        Regex patterns are powerful but hard to maintain. Use the fields above when possible.
+                      </p>
+                    </div>
 
                     <label className={label}>
                       Command Pattern (regex)
@@ -778,6 +853,14 @@ export function ApprovalRulesPanel() {
             </div>
         </ModalContent>
       </Modal>
+
+      {/* ── Import Rules Modal ── */}
+      <ImportRulesModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        onApplied={() => { void refresh(); }}
+        existingRules={rules}
+      />
     </div>
   );
 }
