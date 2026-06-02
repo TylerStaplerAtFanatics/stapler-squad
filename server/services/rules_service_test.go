@@ -983,8 +983,8 @@ func TestBulkUpsertRules_ClientIDsDiscarded(t *testing.T) {
 	svc := newSimpleRulesService(t)
 	rules := []*sessionv1.ApprovalRuleProto{
 		{
-			Id:       "injected-id",   // should be discarded
-			Source:   "seed",          // should be overridden to "user"
+			Id:       "injected-id", // should be discarded
+			Source:   "seed",        // should be overridden to "user"
 			Name:     "Injected Rule",
 			ToolName: "Bash",
 			Decision: sessionv1.AutoDecision_AUTO_DECISION_ALLOW,
