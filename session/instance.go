@@ -213,6 +213,15 @@ type Instance struct {
 	// without modifying any file on disk. Survives context compaction.
 	AppendSystemPrompt string `json:"append_system_prompt,omitempty"`
 
+	// AllowedTools, when non-empty, passes --allowedTools to claude to pre-approve
+	// specific tool calls without requiring interactive permission prompts.
+	// Format: "Bash,Read,Edit" or "Bash(git commit *),Read".
+	AllowedTools string `json:"allowed_tools,omitempty"`
+
+	// PermissionMode, when non-empty, passes --permission-mode to claude.
+	// Values: "default", "acceptEdits", "bypassPermissions", "auto".
+	PermissionMode string `json:"permission_mode,omitempty"`
+
 	// CreationProgress holds a human-readable progress message during Creating state.
 	// Set by the async creation goroutine; cleared once the session becomes Active.
 	// Not persisted to the database — only meaningful in-memory during startup.
@@ -333,6 +342,10 @@ type Instance struct {
 	// onStatusChange is called when the ClaudeController detects a status transition.
 	// Wired by the server layer to trigger reactive queue checks.
 	onStatusChange func(detection.DetectedStatus, string)
+
+	// claudeSessionIDSavedCallback is called when SetClaudeConversationUUID stores a
+	// newly discovered session_id. Used by the service layer to trigger a storage save.
+	claudeSessionIDSavedCallback func()
 }
 
 // SessionType indicates the type of session workflow to use
@@ -434,6 +447,11 @@ type InstanceOptions struct {
 	// prompt without touching any file on disk.
 	AppendSystemPrompt string
 
+	// AllowedTools pre-approves specific Claude Code tool calls (--allowedTools).
+	AllowedTools string
+	// PermissionMode sets Claude Code's permission handling mode (--permission-mode).
+	PermissionMode string
+
 	// CreateIfMissing: when SessionTypeDirectory, create the directory and run git init
 	// if the path does not exist. Only set when the user has confirmed the action.
 	CreateIfMissing bool
@@ -518,6 +536,8 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		ProjectID:          opts.ProjectID,
 		MCPServerURL:       opts.MCPServerURL,
 		AppendSystemPrompt: opts.AppendSystemPrompt,
+		AllowedTools:       opts.AllowedTools,
+		PermissionMode:     opts.PermissionMode,
 		// Directory creation on missing path (R2 confirmation flow)
 		CreateIfMissing: opts.CreateIfMissing,
 	}
