@@ -15,6 +15,7 @@ package session
 // this driver covers everything else that requires interactive input.
 
 import (
+	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -152,6 +153,9 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 				return
 			}
 			// Stopped after initial prompt was sent.
+			if inst.OneShot {
+				tryExtractClaudeSessionID(inst)
+			}
 			if isOneShot(inst) || retried.Load() {
 				// One-shot sessions: BacklogLifecycleListener handles this; driver exits cleanly.
 				return
@@ -164,6 +168,9 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 					"session", inst.Title,
 					"runtime", time.Since(initialPromptSentAt).Round(time.Second),
 				)
+				if inst.OneShot {
+					tryExtractClaudeSessionID(inst)
+				}
 				return
 			}
 			log.Warn("SessionDriver: unexpected session exit after initial prompt",
@@ -197,7 +204,7 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 			timedOut := time.Now().After(readyDeadline)
 
 			if ready || timedOut {
-				if err := inst.SendKeys(initialPrompt + "\n"); err != nil {
+				if err := inst.SendKeys(initialPrompt + "\r"); err != nil {
 					log.Warn("SessionDriver: failed to send initial prompt",
 						"session", inst.Title,
 						"ready", ready,
@@ -388,6 +395,80 @@ func isStartupDialog(output string) bool {
 		// Must have a numbered option to select — avoids false positives on
 		// non-interactive output that merely mentions trust.
 		(strings.Contains(output, "1.") || strings.Contains(output, "❯ 1"))
+}
+
+// parseJSONField extracts a string field value from a JSON blob.
+// Works with both --output-format json (single object) and stream-json (one
+// JSON object per line). Searches recursively through nested objects, so it
+// handles both top-level fields (e.g. "result") and nested fields (e.g.
+// "session_id" inside a "data" sub-object). Returns empty string if the field
+// is not found or its value is not a string.
+func parseJSONField(output, field string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, field) {
+			continue
+		}
+		var tree interface{}
+		if err := json.Unmarshal([]byte(line), &tree); err != nil {
+			continue
+		}
+		if s := searchJSONString(tree, field); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// searchJSONString recursively searches a parsed JSON tree for the first
+// occurrence of a string-valued field with the given key.
+func searchJSONString(v interface{}, field string) string {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		if s, ok := val[field]; ok {
+			if str, ok := s.(string); ok {
+				return str
+			}
+		}
+		for _, child := range val {
+			if s := searchJSONString(child, field); s != "" {
+				return s
+			}
+		}
+	case []interface{}:
+		for _, item := range val {
+			if s := searchJSONString(item, field); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// parseClaudeSessionID extracts the "session_id" value from a JSON blob
+// (both --output-format json and --output-format stream-json).
+// Returns empty string if not found.
+func parseClaudeSessionID(output string) string {
+	return parseJSONField(output, "session_id")
+}
+
+// tryExtractClaudeSessionID reads the terminal output for a completed OneShot
+// session and stores the extracted Claude session_id on the instance so that
+// future restarts use --resume.
+func tryExtractClaudeSessionID(inst *Instance) {
+	if !inst.OneShot {
+		return
+	}
+	output, err := inst.Preview()
+	if err != nil || output == "" {
+		return
+	}
+	uuid := parseClaudeSessionID(output)
+	if uuid == "" {
+		return
+	}
+	inst.SetClaudeConversationUUID(uuid)
+	log.Info("SessionDriver: captured claude session_id", "session", inst.Title, "session_id", uuid)
 }
 
 // shouldApprovePrompt returns true when the terminal output looks like a

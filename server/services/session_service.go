@@ -277,6 +277,7 @@ func (s *SessionService) loadInstancesWithWiring() ([]*session.Instance, error) 
 		}
 		s.wireRateLimitCallbacks(inst)
 		s.wireStatusChangeCallback(inst)
+		s.wireClaudeSessionIDCallback(inst)
 	}
 
 	return instances, nil
@@ -564,6 +565,7 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 	session.StartSessionDriver(instance, path)
 	s.wireRateLimitCallbacks(instance)
 	s.wireStatusChangeCallback(instance)
+	s.wireClaudeSessionIDCallback(instance)
 	if err := s.storage.AddInstance(instance); err != nil {
 		_ = instance.Destroy()
 		return nil, fmt.Errorf("CreateDirectorySession save: %w", err)
@@ -930,6 +932,8 @@ func (s *SessionService) CreateSession(
 		ProjectID:        req.Msg.ProjectId,
 		MCPServerURL:     s.mcpServerURL,
 		CreateIfMissing:  req.Msg.CreateIfMissing,
+		AllowedTools:     req.Msg.AllowedTools,
+		PermissionMode:   req.Msg.PermissionMode,
 	}
 
 	// Add GitHub metadata if this was a GitHub URL
@@ -983,6 +987,7 @@ func (s *SessionService) CreateSession(
 		// Wire callbacks before starting so rate-limit and status-change events fire.
 		s.wireRateLimitCallbacks(instance)
 		s.wireStatusChangeCallback(instance)
+		s.wireClaudeSessionIDCallback(instance)
 
 		instance.CreationProgress = "Starting session..."
 		s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"creation_progress"}))
@@ -3260,6 +3265,17 @@ func (s *SessionService) wireRateLimitCallbacks(inst *session.Instance) {
 			s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"rate_limit_state"}))
 		},
 	)
+}
+
+// wireClaudeSessionIDCallback registers a callback on inst so that when the
+// session driver captures a Claude session_id, the instance is persisted.
+func (s *SessionService) wireClaudeSessionIDCallback(inst *session.Instance) {
+	if inst == nil {
+		return
+	}
+	inst.SetClaudeSessionIDSavedCallback(func() {
+		_ = s.storage.SaveInstances([]*session.Instance{inst})
+	})
 }
 
 // logClientEntry writes a single browser log entry to the server log.

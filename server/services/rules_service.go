@@ -301,6 +301,11 @@ func (rs *RulesService) GetProgramAnalytics(
 
 // coveredSubcommands returns a map of subcommand → true for all known subcommands
 // of the given program that are covered by at least one existing rule.
+// coveredSubcommands returns the set of subcommand strings covered by existing rules for
+// the given program. The empty string key ("") is a sentinel meaning "all subcommands" —
+// set when a rule has no CommandPattern (covers all Bash commands) or when a CommandPattern
+// regex matches the bare program name. Callers must treat covered[""] as "covered regardless
+// of subcommand" rather than as a literal empty-subcommand match.
 // knownSubcmds is the list of subcommand strings observed in the analytics window;
 // it is used to test regex-based CommandPatterns against synthetic "<program> <subcommand>" strings.
 func (rs *RulesService) coveredSubcommands(program string, knownSubcmds []string) map[string]bool {
@@ -313,6 +318,23 @@ func (rs *RulesService) coveredSubcommands(program string, knownSubcmds []string
 		// Check for Bash tool match (exact or category)
 		isBashTool := strings.EqualFold(spec.ToolName, "Bash")
 		isBashCat := strings.EqualFold(spec.ToolCategory, "bash")
+		// If a ToolPattern is set (and ToolName is empty), check whether the pattern
+		// actually matches "Bash". A pattern like "Read|Glob|Grep" does not match Bash;
+		// a pattern like "Bash" or ".*" does.
+		if spec.ToolPattern != "" && !isBashTool {
+			re, err := regexp.Compile(spec.ToolPattern)
+			if err != nil || !re.MatchString("Bash") {
+				continue // pattern excludes Bash → skip
+			}
+			isBashTool = true // treat as bash-applicable
+		}
+		// Reject rules whose ToolCategory explicitly targets a non-Bash tool group.
+		// This catches seed rules like seed-allow-agent-tools (ToolCategory="builtin-agent")
+		// and seed-allow-mcp-read (ToolCategory="mcp-read") that have empty ToolName and
+		// empty ToolPattern — they would otherwise fall through to the "all tools" path.
+		if spec.ToolCategory != "" && !strings.EqualFold(spec.ToolCategory, "bash") && !isBashTool {
+			continue
+		}
 		if !isBashTool && !isBashCat && spec.ToolName != "" {
 			continue
 		}
@@ -344,6 +366,9 @@ func (rs *RulesService) coveredSubcommands(program string, knownSubcmds []string
 		if spec.CommandPattern == "" {
 			// A rule with no CommandPattern matches all commands — every subcommand covered.
 			covered[""] = true
+			for _, sub := range knownSubcmds {
+				covered[sub] = true
+			}
 			continue
 		}
 		// Compile the pattern once; skip invalid patterns rather than panicking.
