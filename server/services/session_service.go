@@ -136,6 +136,16 @@ type SessionService struct {
 	// May be nil when the claude binary is not found at startup.
 	headlessPool *headless.Pool
 
+	// lifecycleCtx is the server's root context, cancelled by Shutdown().
+	// Autonomous driver goroutines are bound to this context so they exit with the server.
+	lifecycleCtx context.Context
+
+	// driverMu guards driverRegistry.
+	driverMu sync.RWMutex
+	// driverRegistry maps session title → running AutonomousDriver.
+	// Used to stop drivers on session delete/hibernate and prevent use-after-free.
+	driverRegistry map[string]*session.AutonomousDriver
+
 	// workflowSvc handles workflow CRUD and RunWorkflow RPC delegation.
 	// Injected after construction via SetWorkflowService to avoid bootstrapping cycle.
 	workflowSvc *WorkflowService
@@ -595,6 +605,60 @@ func (s *SessionService) SetHeadlessPool(pool *headless.Pool) {
 	s.headlessPool = pool
 }
 
+// SetLifecycleContext binds the server's root context to the service.
+// Autonomous driver goroutines are started with this context so they exit when the server shuts down.
+// Must be called once during server startup, before any sessions are created.
+func (s *SessionService) SetLifecycleContext(ctx context.Context) {
+	s.lifecycleCtx = ctx
+}
+
+// driverCtx returns the lifecycle context, falling back to Background() if not set.
+func (s *SessionService) driverCtx() context.Context {
+	if s.lifecycleCtx != nil {
+		return s.lifecycleCtx
+	}
+	return context.Background()
+}
+
+// registerDriver records a running AutonomousDriver in the registry so it can be stopped later.
+func (s *SessionService) registerDriver(sessionTitle string, d *session.AutonomousDriver) {
+	s.driverMu.Lock()
+	if s.driverRegistry == nil {
+		s.driverRegistry = make(map[string]*session.AutonomousDriver)
+	}
+	s.driverRegistry[sessionTitle] = d
+	s.driverMu.Unlock()
+}
+
+// stopAndDeregisterDriver stops the driver for sessionTitle (if any) and removes it from the registry.
+func (s *SessionService) stopAndDeregisterDriver(sessionTitle string) {
+	s.driverMu.Lock()
+	d, ok := s.driverRegistry[sessionTitle]
+	if ok {
+		delete(s.driverRegistry, sessionTitle)
+	}
+	s.driverMu.Unlock()
+	if ok && d != nil {
+		d.Stop()
+	}
+}
+
+// StartAutonomousDriverForInstance satisfies the AutonomousDriverStarter interface.
+// Starts an AutonomousDriver on inst if headlessPool is available.
+func (s *SessionService) StartAutonomousDriverForInstance(inst *session.Instance) {
+	if s.headlessPool == nil {
+		log.Warn("[SessionService] StartAutonomousDriverForInstance: headlessPool is nil", "session", inst.Title)
+		return
+	}
+	driver := session.NewAutonomousDriver(inst, s.headlessPool, inst.Prompt, 0)
+	driver.RegisterCompletionCallback(s.onAutonomousDriverComplete)
+	if err := driver.Start(s.driverCtx()); err != nil {
+		log.Warn("[SessionService] failed to start autonomous driver for backlog session", "session", inst.Title, "err", err)
+		return
+	}
+	s.registerDriver(inst.Title, driver)
+}
+
 // SetReviewQueuePoller wires the ReviewQueuePoller so new/deleted sessions are
 // added/removed from the poller and AcknowledgeSession updates poller references.
 // Must be called during server startup before any session mutation RPCs are used.
@@ -938,6 +1002,7 @@ func (s *SessionService) CreateSession(
 		CreateIfMissing:  req.Msg.CreateIfMissing,
 		AllowedTools:     req.Msg.AllowedTools,
 		PermissionMode:   req.Msg.PermissionMode,
+		AutonomousMode:   req.Msg.AutonomousMode,
 	}
 
 	// Add GitHub metadata if this was a GitHub URL
@@ -1025,6 +1090,18 @@ func (s *SessionService) CreateSession(
 		// StartSessionDriver is idempotent (CAS guard) — safe to call even if a driver
 		// was already started by another code path.
 		session.StartSessionDriver(instance, instanceRootDir)
+
+		if instance.AutonomousMode && s.headlessPool != nil {
+			driver := session.NewAutonomousDriver(instance, s.headlessPool, instance.Prompt, 0)
+			driver.RegisterCompletionCallback(s.onAutonomousDriverComplete)
+			if driverErr := driver.Start(s.driverCtx()); driverErr != nil {
+				log.Warn("[CreateSession] failed to start autonomous driver", "session", instanceTitle, "err", driverErr)
+			} else {
+				s.registerDriver(instanceTitle, driver)
+			}
+		} else if instance.AutonomousMode {
+			log.Warn("[CreateSession] autonomous_mode requested but headlessPool is nil", "session", instanceTitle)
+		}
 
 		_ = s.storage.SaveInstances([]*session.Instance{instance})
 		s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"status", "creation_progress"}))
@@ -1263,6 +1340,10 @@ func (s *SessionService) HibernateSession(
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.Id))
 	}
 
+	// Stop any running autonomous driver so it does not continue injecting prompts
+	// into a session whose process is about to be killed.
+	s.stopAndDeregisterDriver(instance.Title)
+
 	// Set reason before transitioning so the After hook can read it
 	reason := req.Msg.Reason
 	if reason == "" {
@@ -1361,6 +1442,11 @@ func (s *SessionService) DeleteSession(
 	if sessionTitle == "" {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.Id))
 	}
+
+	// Stop any running autonomous driver before destroying resources.
+	// This prevents the driver goroutine from calling inst.Preview() or SendCommandImmediate
+	// on a freed/cleaned-up instance after the session is gone (use-after-delete hazard).
+	s.stopAndDeregisterDriver(sessionTitle)
 
 	// Remove from all pollers BEFORE deleting from storage. This is atomic from the
 	// poller's perspective and closes the race window where external discovery could
@@ -3201,6 +3287,66 @@ func (s *SessionService) LogClientEvents(
 		logClientEntry(entry)
 	}
 	return connect.NewResponse(&sessionv1.LogClientEventsResponse{}), nil
+}
+
+// onAutonomousDriverComplete handles the outcome of an AutonomousDriver run.
+// Updates the linked backlog item status and fires a push notification.
+func (s *SessionService) onAutonomousDriverComplete(instanceName string, outcome session.AutonomousDriverOutcome) {
+	// Deregister the completed driver so it does not leak in the registry.
+	// The goroutine has already exited at this point; Stop() is a no-op but cleans the map.
+	s.stopAndDeregisterDriver(instanceName)
+
+	// Use Background() intentionally: we want this bookkeeping to complete even if the
+	// server is shutting down concurrently (the driver just finished; its result must persist).
+	ctx := context.Background()
+
+	// Resolve the session UUID from the instance name using the live poller.
+	inst := s.FindLiveInstance(instanceName)
+	if inst == nil {
+		log.Warn("[AutonomousDriver] onAutonomousDriverComplete: instance not found", "session", instanceName)
+		return
+	}
+	sessionUUID := inst.UUID
+
+	// Look up the backlog item linked to this session.
+	concreteStorage := s.GetStorage()
+	if concreteStorage != nil {
+		is, err := concreteStorage.GetItemSessionBySessionUUID(ctx, sessionUUID)
+		if err == nil && is != nil {
+			item, itemErr := is.Edges.BacklogItemOrErr()
+			if itemErr == nil && item != nil {
+				// Autonomous driver always transitions through review; the review gate
+				// or a human then decides to mark done. Stuck sessions also go to review.
+				toStatus := session.BacklogStatusReview
+				if _, transErr := concreteStorage.TransitionBacklogItemStatus(ctx, item.ID.String(), toStatus, nil); transErr != nil {
+					log.Warn("[AutonomousDriver] failed to transition backlog item", "item", item.ID, "to", toStatus, "err", transErr)
+				} else {
+					log.Info("[AutonomousDriver] backlog item transitioned", "item", item.ID, "to", toStatus, "done", outcome.Done)
+				}
+			}
+		}
+	}
+
+	// Fire push notification via event bus.
+	var title, body string
+	notifType := int32(10) // NotificationType_INFO
+	if outcome.Done {
+		title = "Autonomous fix complete"
+		body = fmt.Sprintf("%s: %s", instanceName, outcome.Reason)
+		if outcome.PRUrl != "" {
+			body += " — " + outcome.PRUrl
+		}
+	} else {
+		title = "Autonomous fix stuck"
+		body = fmt.Sprintf("%s: %s", instanceName, outcome.Reason)
+		notifType = int32(9) // NotificationType_FAILURE
+	}
+	s.eventBus.Publish(events.NewNotificationEvent(
+		sessionUUID, instanceName, fmt.Sprintf("autonomous-complete-%s", sessionUUID),
+		notifType,
+		int32(2), // NotificationPriority_MEDIUM
+		title, body, nil,
+	))
 }
 
 // wireStatusChangeCallback registers a ReactiveQueueManager callback on inst so that
