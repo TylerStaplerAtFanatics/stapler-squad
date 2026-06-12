@@ -49,7 +49,7 @@ export interface OmnibarFormState {
   category: string;
   autoYes: boolean;
   useTitleAsBranch: boolean;
-  sessionType: "directory" | "new_worktree" | "existing_worktree" | "one_off" | "new_project";
+  sessionType: "directory" | "new_worktree" | "existing_worktree" | "one_off" | "new_project" | "autonomous";
   existingWorktree: string;
   workingDir: string;
   // New project mode fields
@@ -110,6 +110,10 @@ export interface OmnibarSessionData {
   isNewProject?: boolean;
   // Explicit opt-in to create the directory + git repo if `path` doesn't exist.
   createIfMissing?: boolean;
+  // Autonomous mode: run without human permission prompts (LLM approves tool calls).
+  autonomousMode?: boolean;
+  // Permission mode passed to Claude Code (e.g. "auto" for autonomous sessions).
+  permissionMode?: string;
 }
 
 // Validates a project name: no path separators, null bytes, or leading/trailing spaces/dots.
@@ -669,6 +673,12 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       return !!sessionName.trim();
     }
 
+    // Autonomous mode: a session name is required; path or GitHub URL is optional
+    // (the agent will be spawned in a one-off directory if no path is given).
+    if (sessionType === "autonomous") {
+      return !!sessionName.trim();
+    }
+
     // New project mode: requires parentDir + projectName (valid), no path detection.
     if (sessionType === "new_project") {
       if (!sessionName.trim()) return false;
@@ -776,25 +786,29 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           initialPrompt: firstPromptText,
         };
       } else {
+        const isAutonomous = sessionType === "autonomous";
+        const isOneOff = sessionType === "one_off";
         sessionData = {
           title: sessionName.trim(),
-          path: sessionType === "one_off" ? "" : (detection?.localPath || ""),
-          branch: sessionType === "one_off" ? undefined : (finalBranch || undefined),
+          path: (isOneOff || isAutonomous) ? "" : (detection?.localPath || ""),
+          branch: (isOneOff || isAutonomous) ? undefined : (finalBranch || undefined),
           program,
           category: category.trim() || undefined,
           prompt: finalPrompt,
           autoYes,
-          sessionType: sessionType === "one_off" ? "directory" : sessionType,
-          existingWorktree: sessionType === "one_off" ? undefined : (existingWorktree.trim() || undefined),
-          workingDir: sessionType === "one_off" ? undefined : (workingDir.trim() || undefined),
-          oneOff: sessionType === "one_off" ? true : undefined,
+          sessionType: (isOneOff || isAutonomous) ? "directory" : sessionType,
+          existingWorktree: (isOneOff || isAutonomous) ? undefined : (existingWorktree.trim() || undefined),
+          workingDir: (isOneOff || isAutonomous) ? undefined : (workingDir.trim() || undefined),
+          oneOff: isOneOff ? true : undefined,
+          autonomousMode: isAutonomous ? true : undefined,
+          permissionMode: isAutonomous ? "auto" : undefined,
           // Only forward when relevant (non-existent path + opt-in checked).
           createIfMissing: pathDoesNotExist && createIfMissing ? true : undefined,
           initialPrompt: firstPromptText,
         };
 
         // Handle GitHub URLs - path will be resolved server-side
-        if (sessionType !== "one_off" && detection?.gitHubRef) {
+        if (!isOneOff && !isAutonomous && detection?.gitHubRef) {
           sessionData.gitHubOwner = detection.gitHubRef.owner;
           sessionData.gitHubRepo = detection.gitHubRef.repo;
           sessionData.gitHubPRNumber = detection.gitHubRef.prNumber;
@@ -824,7 +838,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       }
 
       // Persist the chosen path to history for future completions.
-      if (isPathInput && detection?.localPath && sessionType !== "one_off") {
+      if (isPathInput && detection?.localPath && sessionType !== "one_off" && sessionType !== "autonomous") {
         saveHistory(detection.localPath);
       }
       onClose();
@@ -894,7 +908,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
         {/* Main Input */}
         <div className={inputContainer}>
           <span className={typeIndicator} aria-hidden="true">
-            {sessionType === "one_off" ? "⚡" : typeInfo.icon}
+            {sessionType === "one_off" ? "⚡" : sessionType === "autonomous" ? "🤖" : typeInfo.icon}
           </span>
           <input
             ref={inputRef}
@@ -903,6 +917,8 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
             placeholder={
               sessionType === "one_off"
                 ? "Session title is the only thing needed…"
+                : sessionType === "autonomous"
+                ? "Session title (agent will run without human approval)…"
                 : isDiscoveryMode
                 ? "Jump to session or search repos..."
                 : "Enter path, GitHub URL, or owner/repo..."
@@ -990,7 +1006,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
         )}
 
         {/* Creation mode: path completion dropdown (existing, unchanged) */}
-        {!isDiscoveryMode && isDropdownVisible && sessionType !== "one_off" && (
+        {!isDiscoveryMode && isDropdownVisible && sessionType !== "one_off" && sessionType !== "autonomous" && (
           <PathCompletionDropdown
             id="path-completion-listbox"
             entries={mergedEntries}
@@ -1009,7 +1025,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
         )}
 
         {/* Detection Badge */}
-        {input.trim() && !isDiscoveryMode && sessionType !== "one_off" && (
+        {input.trim() && !isDiscoveryMode && sessionType !== "one_off" && sessionType !== "autonomous" && (
           <div className={detectionInfo}>
             <span
               className={`${detectionBadge} ${

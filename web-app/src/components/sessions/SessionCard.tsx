@@ -68,6 +68,7 @@ import {
   memoryBadgeHigh,
   cardMemoryPressure,
   taskFraction,
+  autonomousBadge,
 } from "./SessionCard.css";
 import { truncateGoal } from "@/lib/utils/string";
 
@@ -499,6 +500,17 @@ function SessionCardInner({
                 </span>
               );
             })()}
+            {session.autonomousMode && (
+              <span
+                className={autonomousBadge}
+                role="status"
+                title="Running under LLM orchestration — injects prompts automatically"
+                aria-label="Autonomous mode: session is controlled by LLM orchestration"
+                data-testid="badge-autonomous"
+              >
+                Auto
+              </span>
+            )}
           </div>
         </div>
         {session.category && (
