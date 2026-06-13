@@ -1103,6 +1103,13 @@ func (s *SessionService) CreateSession(
 			s.backlogLifecycleListener.WireToInstance(instance)
 		}
 
+		// Wire the status manager so GetDetectedStatus() returns real terminal state
+		// instead of StatusUnknown. Must happen before StartSessionDriver so the driver
+		// can detect claudeAtPrompt instead of always hitting the 30s timeout.
+		if s.statusManager != nil {
+			instance.SetStatusManager(s.statusManager)
+		}
+
 		// Start the session driver goroutine so UI-created sessions receive their
 		// initial prompt (typed into the session terminal once the session reaches Ready).
 		// StartSessionDriver is idempotent (CAS guard) — safe to call even if a driver
