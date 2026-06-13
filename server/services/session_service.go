@@ -3774,3 +3774,22 @@ func (s *SessionService) maybeAutoArchive(inst *session.Instance) {
 			"session", inst.Title, "workflow_id", inst.WorkflowID, "err", err)
 	}
 }
+
+// ReapPausedTmuxSessions kills any tmux session that is still running for a paused
+// Instance. This is a safety net for sessions paused before the kill-on-pause change,
+// or for cases where the initial kill attempt fell back to detach.
+func (s *SessionService) ReapPausedTmuxSessions() {
+	if s.reviewQueuePoller == nil {
+		return
+	}
+	instances := s.reviewQueuePoller.GetInstances()
+	for _, inst := range instances {
+		if !inst.IsPaused() {
+			continue
+		}
+		if err := inst.KillSession(); err != nil {
+			log.Warn("[TmuxReaper] failed to kill tmux for paused session",
+				"session", inst.Title, "err", err)
+		}
+	}
+}
