@@ -577,6 +577,8 @@ var (
 		{Name: "last_prompt_signature", Type: field.TypeString, Nullable: true},
 		{Name: "hidden", Type: field.TypeBool, Default: false},
 		{Name: "pause_reason", Type: field.TypeString, Nullable: true},
+		{Name: "workflow_id", Type: field.TypeString, Nullable: true},
+		{Name: "archived_at", Type: field.TypeTime, Nullable: true},
 		{Name: "project_sessions", Type: field.TypeInt, Nullable: true},
 	}
 	// SessionsTable holds the schema information for the "sessions" table.
@@ -587,7 +589,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "sessions_projects_sessions",
-				Columns:    []*schema.Column{SessionsColumns[34]},
+				Columns:    []*schema.Column{SessionsColumns[36]},
 				RefColumns: []*schema.Column{ProjectsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -622,6 +624,16 @@ var (
 				Name:    "session_created_at",
 				Unique:  false,
 				Columns: []*schema.Column{SessionsColumns[9]},
+			},
+			{
+				Name:    "session_workflow_id",
+				Unique:  false,
+				Columns: []*schema.Column{SessionsColumns[34]},
+			},
+			{
+				Name:    "session_archived_at",
+				Unique:  false,
+				Columns: []*schema.Column{SessionsColumns[35]},
 			},
 		},
 	}

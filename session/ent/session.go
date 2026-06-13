@@ -87,6 +87,10 @@ type Session struct {
 	Hidden bool `json:"hidden,omitempty"`
 	// Reason the session was paused: manual, auto:inactivity, auto:session_limit, auto:resource. Empty when never paused.
 	PauseReason string `json:"pause_reason,omitempty"`
+	// UUID of the Workflow that spawned this session, if any.
+	WorkflowID string `json:"workflow_id,omitempty"`
+	// Set when the session is archived; nil = not archived.
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the SessionQuery when eager-loading is set.
 	Edges            SessionEdges `json:"edges"`
@@ -195,9 +199,9 @@ func (*Session) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case session.FieldID, session.FieldStatus, session.FieldHeight, session.FieldWidth:
 			values[i] = new(sql.NullInt64)
-		case session.FieldTitle, session.FieldUUID, session.FieldPath, session.FieldWorkingDir, session.FieldBranch, session.FieldPrompt, session.FieldProgram, session.FieldExistingWorktree, session.FieldCategory, session.FieldSessionType, session.FieldTmuxPrefix, session.FieldLastOutputSignature, session.FieldMcpServerURL, session.FieldInitialPrompt, session.FieldLastPromptSignature, session.FieldPauseReason:
+		case session.FieldTitle, session.FieldUUID, session.FieldPath, session.FieldWorkingDir, session.FieldBranch, session.FieldPrompt, session.FieldProgram, session.FieldExistingWorktree, session.FieldCategory, session.FieldSessionType, session.FieldTmuxPrefix, session.FieldLastOutputSignature, session.FieldMcpServerURL, session.FieldInitialPrompt, session.FieldLastPromptSignature, session.FieldPauseReason, session.FieldWorkflowID:
 			values[i] = new(sql.NullString)
-		case session.FieldCreatedAt, session.FieldUpdatedAt, session.FieldLastTerminalUpdate, session.FieldLastMeaningfulOutput, session.FieldLastAddedToQueue, session.FieldLastViewed, session.FieldLastAcknowledged, session.FieldLastUserResponse, session.FieldProcessingGraceUntil, session.FieldLastPromptDetected:
+		case session.FieldCreatedAt, session.FieldUpdatedAt, session.FieldLastTerminalUpdate, session.FieldLastMeaningfulOutput, session.FieldLastAddedToQueue, session.FieldLastViewed, session.FieldLastAcknowledged, session.FieldLastUserResponse, session.FieldProcessingGraceUntil, session.FieldLastPromptDetected, session.FieldArchivedAt:
 			values[i] = new(sql.NullTime)
 		case session.ForeignKeys[0]: // project_sessions
 			values[i] = new(sql.NullInt64)
@@ -428,6 +432,19 @@ func (_m *Session) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.PauseReason = value.String
 			}
+		case session.FieldWorkflowID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field workflow_id", values[i])
+			} else if value.Valid {
+				_m.WorkflowID = value.String
+			}
+		case session.FieldArchivedAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field archived_at", values[i])
+			} else if value.Valid {
+				_m.ArchivedAt = new(time.Time)
+				*_m.ArchivedAt = value.Time
+			}
 		case session.ForeignKeys[0]:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
 				return fmt.Errorf("unexpected type %T for edge-field project_sessions", value)
@@ -620,6 +637,14 @@ func (_m *Session) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("pause_reason=")
 	builder.WriteString(_m.PauseReason)
+	builder.WriteString(", ")
+	builder.WriteString("workflow_id=")
+	builder.WriteString(_m.WorkflowID)
+	builder.WriteString(", ")
+	if v := _m.ArchivedAt; v != nil {
+		builder.WriteString("archived_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
 	builder.WriteByte(')')
 	return builder.String()
 }

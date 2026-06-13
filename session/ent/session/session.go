@@ -80,6 +80,10 @@ const (
 	FieldHidden = "hidden"
 	// FieldPauseReason holds the string denoting the pause_reason field in the database.
 	FieldPauseReason = "pause_reason"
+	// FieldWorkflowID holds the string denoting the workflow_id field in the database.
+	FieldWorkflowID = "workflow_id"
+	// FieldArchivedAt holds the string denoting the archived_at field in the database.
+	FieldArchivedAt = "archived_at"
 	// EdgeWorktree holds the string denoting the worktree edge name in mutations.
 	EdgeWorktree = "worktree"
 	// EdgeDiffStats holds the string denoting the diff_stats edge name in mutations.
@@ -179,6 +183,8 @@ var Columns = []string{
 	FieldLastPromptSignature,
 	FieldHidden,
 	FieldPauseReason,
+	FieldWorkflowID,
+	FieldArchivedAt,
 }
 
 // ForeignKeys holds the SQL foreign-keys that are owned by the "sessions"
@@ -407,6 +413,16 @@ func ByHidden(opts ...sql.OrderTermOption) OrderOption {
 // ByPauseReason orders the results by the pause_reason field.
 func ByPauseReason(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldPauseReason, opts...).ToFunc()
+}
+
+// ByWorkflowID orders the results by the workflow_id field.
+func ByWorkflowID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldWorkflowID, opts...).ToFunc()
+}
+
+// ByArchivedAt orders the results by the archived_at field.
+func ByArchivedAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldArchivedAt, opts...).ToFunc()
 }
 
 // ByWorktreeField orders the results by worktree field.

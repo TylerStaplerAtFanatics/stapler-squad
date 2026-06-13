@@ -137,6 +137,12 @@ func InstanceToProto(inst *session.Instance) *sessionv1.Session {
 	// Hidden flag — system/background sessions excluded from default list/review queue.
 	protoSession.Hidden = inst.Hidden
 
+	// Workflow linkage and archive state.
+	protoSession.WorkflowId = inst.WorkflowID
+	if inst.ArchivedAt != nil {
+		protoSession.ArchivedAt = timestamppb.New(*inst.ArchivedAt)
+	}
+
 	// Session goal summary — populated when a goal has been set via set_session_goal MCP tool.
 	if g := inst.GetSessionGoal(); g != nil {
 		tasksJSON, _ := session.EncodeTasks(g.Tasks) // empty string on error is safe

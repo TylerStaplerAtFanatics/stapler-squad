@@ -460,6 +460,34 @@ func (_c *SessionCreate) SetNillablePauseReason(v *string) *SessionCreate {
 	return _c
 }
 
+// SetWorkflowID sets the "workflow_id" field.
+func (_c *SessionCreate) SetWorkflowID(v string) *SessionCreate {
+	_c.mutation.SetWorkflowID(v)
+	return _c
+}
+
+// SetNillableWorkflowID sets the "workflow_id" field if the given value is not nil.
+func (_c *SessionCreate) SetNillableWorkflowID(v *string) *SessionCreate {
+	if v != nil {
+		_c.SetWorkflowID(*v)
+	}
+	return _c
+}
+
+// SetArchivedAt sets the "archived_at" field.
+func (_c *SessionCreate) SetArchivedAt(v time.Time) *SessionCreate {
+	_c.mutation.SetArchivedAt(v)
+	return _c
+}
+
+// SetNillableArchivedAt sets the "archived_at" field if the given value is not nil.
+func (_c *SessionCreate) SetNillableArchivedAt(v *time.Time) *SessionCreate {
+	if v != nil {
+		_c.SetArchivedAt(*v)
+	}
+	return _c
+}
+
 // SetWorktreeID sets the "worktree" edge to the Worktree entity by ID.
 func (_c *SessionCreate) SetWorktreeID(id int) *SessionCreate {
 	_c.mutation.SetWorktreeID(id)
@@ -851,6 +879,14 @@ func (_c *SessionCreate) createSpec() (*Session, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.PauseReason(); ok {
 		_spec.SetField(session.FieldPauseReason, field.TypeString, value)
 		_node.PauseReason = value
+	}
+	if value, ok := _c.mutation.WorkflowID(); ok {
+		_spec.SetField(session.FieldWorkflowID, field.TypeString, value)
+		_node.WorkflowID = value
+	}
+	if value, ok := _c.mutation.ArchivedAt(); ok {
+		_spec.SetField(session.FieldArchivedAt, field.TypeTime, value)
+		_node.ArchivedAt = &value
 	}
 	if nodes := _c.mutation.WorktreeIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -1557,6 +1593,42 @@ func (u *SessionUpsert) ClearPauseReason() *SessionUpsert {
 	return u
 }
 
+// SetWorkflowID sets the "workflow_id" field.
+func (u *SessionUpsert) SetWorkflowID(v string) *SessionUpsert {
+	u.Set(session.FieldWorkflowID, v)
+	return u
+}
+
+// UpdateWorkflowID sets the "workflow_id" field to the value that was provided on create.
+func (u *SessionUpsert) UpdateWorkflowID() *SessionUpsert {
+	u.SetExcluded(session.FieldWorkflowID)
+	return u
+}
+
+// ClearWorkflowID clears the value of the "workflow_id" field.
+func (u *SessionUpsert) ClearWorkflowID() *SessionUpsert {
+	u.SetNull(session.FieldWorkflowID)
+	return u
+}
+
+// SetArchivedAt sets the "archived_at" field.
+func (u *SessionUpsert) SetArchivedAt(v time.Time) *SessionUpsert {
+	u.Set(session.FieldArchivedAt, v)
+	return u
+}
+
+// UpdateArchivedAt sets the "archived_at" field to the value that was provided on create.
+func (u *SessionUpsert) UpdateArchivedAt() *SessionUpsert {
+	u.SetExcluded(session.FieldArchivedAt)
+	return u
+}
+
+// ClearArchivedAt clears the value of the "archived_at" field.
+func (u *SessionUpsert) ClearArchivedAt() *SessionUpsert {
+	u.SetNull(session.FieldArchivedAt)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -2229,6 +2301,48 @@ func (u *SessionUpsertOne) UpdatePauseReason() *SessionUpsertOne {
 func (u *SessionUpsertOne) ClearPauseReason() *SessionUpsertOne {
 	return u.Update(func(s *SessionUpsert) {
 		s.ClearPauseReason()
+	})
+}
+
+// SetWorkflowID sets the "workflow_id" field.
+func (u *SessionUpsertOne) SetWorkflowID(v string) *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetWorkflowID(v)
+	})
+}
+
+// UpdateWorkflowID sets the "workflow_id" field to the value that was provided on create.
+func (u *SessionUpsertOne) UpdateWorkflowID() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateWorkflowID()
+	})
+}
+
+// ClearWorkflowID clears the value of the "workflow_id" field.
+func (u *SessionUpsertOne) ClearWorkflowID() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.ClearWorkflowID()
+	})
+}
+
+// SetArchivedAt sets the "archived_at" field.
+func (u *SessionUpsertOne) SetArchivedAt(v time.Time) *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetArchivedAt(v)
+	})
+}
+
+// UpdateArchivedAt sets the "archived_at" field to the value that was provided on create.
+func (u *SessionUpsertOne) UpdateArchivedAt() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateArchivedAt()
+	})
+}
+
+// ClearArchivedAt clears the value of the "archived_at" field.
+func (u *SessionUpsertOne) ClearArchivedAt() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.ClearArchivedAt()
 	})
 }
 
@@ -3070,6 +3184,48 @@ func (u *SessionUpsertBulk) UpdatePauseReason() *SessionUpsertBulk {
 func (u *SessionUpsertBulk) ClearPauseReason() *SessionUpsertBulk {
 	return u.Update(func(s *SessionUpsert) {
 		s.ClearPauseReason()
+	})
+}
+
+// SetWorkflowID sets the "workflow_id" field.
+func (u *SessionUpsertBulk) SetWorkflowID(v string) *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetWorkflowID(v)
+	})
+}
+
+// UpdateWorkflowID sets the "workflow_id" field to the value that was provided on create.
+func (u *SessionUpsertBulk) UpdateWorkflowID() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateWorkflowID()
+	})
+}
+
+// ClearWorkflowID clears the value of the "workflow_id" field.
+func (u *SessionUpsertBulk) ClearWorkflowID() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.ClearWorkflowID()
+	})
+}
+
+// SetArchivedAt sets the "archived_at" field.
+func (u *SessionUpsertBulk) SetArchivedAt(v time.Time) *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetArchivedAt(v)
+	})
+}
+
+// UpdateArchivedAt sets the "archived_at" field to the value that was provided on create.
+func (u *SessionUpsertBulk) UpdateArchivedAt() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateArchivedAt()
+	})
+}
+
+// ClearArchivedAt clears the value of the "archived_at" field.
+func (u *SessionUpsertBulk) ClearArchivedAt() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.ClearArchivedAt()
 	})
 }
 

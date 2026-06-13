@@ -635,6 +635,46 @@ func (_u *SessionUpdate) ClearPauseReason() *SessionUpdate {
 	return _u
 }
 
+// SetWorkflowID sets the "workflow_id" field.
+func (_u *SessionUpdate) SetWorkflowID(v string) *SessionUpdate {
+	_u.mutation.SetWorkflowID(v)
+	return _u
+}
+
+// SetNillableWorkflowID sets the "workflow_id" field if the given value is not nil.
+func (_u *SessionUpdate) SetNillableWorkflowID(v *string) *SessionUpdate {
+	if v != nil {
+		_u.SetWorkflowID(*v)
+	}
+	return _u
+}
+
+// ClearWorkflowID clears the value of the "workflow_id" field.
+func (_u *SessionUpdate) ClearWorkflowID() *SessionUpdate {
+	_u.mutation.ClearWorkflowID()
+	return _u
+}
+
+// SetArchivedAt sets the "archived_at" field.
+func (_u *SessionUpdate) SetArchivedAt(v time.Time) *SessionUpdate {
+	_u.mutation.SetArchivedAt(v)
+	return _u
+}
+
+// SetNillableArchivedAt sets the "archived_at" field if the given value is not nil.
+func (_u *SessionUpdate) SetNillableArchivedAt(v *time.Time) *SessionUpdate {
+	if v != nil {
+		_u.SetArchivedAt(*v)
+	}
+	return _u
+}
+
+// ClearArchivedAt clears the value of the "archived_at" field.
+func (_u *SessionUpdate) ClearArchivedAt() *SessionUpdate {
+	_u.mutation.ClearArchivedAt()
+	return _u
+}
+
 // SetWorktreeID sets the "worktree" edge to the Worktree entity by ID.
 func (_u *SessionUpdate) SetWorktreeID(id int) *SessionUpdate {
 	_u.mutation.SetWorktreeID(id)
@@ -1089,6 +1129,18 @@ func (_u *SessionUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.PauseReasonCleared() {
 		_spec.ClearField(session.FieldPauseReason, field.TypeString)
+	}
+	if value, ok := _u.mutation.WorkflowID(); ok {
+		_spec.SetField(session.FieldWorkflowID, field.TypeString, value)
+	}
+	if _u.mutation.WorkflowIDCleared() {
+		_spec.ClearField(session.FieldWorkflowID, field.TypeString)
+	}
+	if value, ok := _u.mutation.ArchivedAt(); ok {
+		_spec.SetField(session.FieldArchivedAt, field.TypeTime, value)
+	}
+	if _u.mutation.ArchivedAtCleared() {
+		_spec.ClearField(session.FieldArchivedAt, field.TypeTime)
 	}
 	if _u.mutation.WorktreeCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -1960,6 +2012,46 @@ func (_u *SessionUpdateOne) ClearPauseReason() *SessionUpdateOne {
 	return _u
 }
 
+// SetWorkflowID sets the "workflow_id" field.
+func (_u *SessionUpdateOne) SetWorkflowID(v string) *SessionUpdateOne {
+	_u.mutation.SetWorkflowID(v)
+	return _u
+}
+
+// SetNillableWorkflowID sets the "workflow_id" field if the given value is not nil.
+func (_u *SessionUpdateOne) SetNillableWorkflowID(v *string) *SessionUpdateOne {
+	if v != nil {
+		_u.SetWorkflowID(*v)
+	}
+	return _u
+}
+
+// ClearWorkflowID clears the value of the "workflow_id" field.
+func (_u *SessionUpdateOne) ClearWorkflowID() *SessionUpdateOne {
+	_u.mutation.ClearWorkflowID()
+	return _u
+}
+
+// SetArchivedAt sets the "archived_at" field.
+func (_u *SessionUpdateOne) SetArchivedAt(v time.Time) *SessionUpdateOne {
+	_u.mutation.SetArchivedAt(v)
+	return _u
+}
+
+// SetNillableArchivedAt sets the "archived_at" field if the given value is not nil.
+func (_u *SessionUpdateOne) SetNillableArchivedAt(v *time.Time) *SessionUpdateOne {
+	if v != nil {
+		_u.SetArchivedAt(*v)
+	}
+	return _u
+}
+
+// ClearArchivedAt clears the value of the "archived_at" field.
+func (_u *SessionUpdateOne) ClearArchivedAt() *SessionUpdateOne {
+	_u.mutation.ClearArchivedAt()
+	return _u
+}
+
 // SetWorktreeID sets the "worktree" edge to the Worktree entity by ID.
 func (_u *SessionUpdateOne) SetWorktreeID(id int) *SessionUpdateOne {
 	_u.mutation.SetWorktreeID(id)
@@ -2444,6 +2536,18 @@ func (_u *SessionUpdateOne) sqlSave(ctx context.Context) (_node *Session, err er
 	}
 	if _u.mutation.PauseReasonCleared() {
 		_spec.ClearField(session.FieldPauseReason, field.TypeString)
+	}
+	if value, ok := _u.mutation.WorkflowID(); ok {
+		_spec.SetField(session.FieldWorkflowID, field.TypeString, value)
+	}
+	if _u.mutation.WorkflowIDCleared() {
+		_spec.ClearField(session.FieldWorkflowID, field.TypeString)
+	}
+	if value, ok := _u.mutation.ArchivedAt(); ok {
+		_spec.SetField(session.FieldArchivedAt, field.TypeTime, value)
+	}
+	if _u.mutation.ArchivedAtCleared() {
+		_spec.ClearField(session.FieldArchivedAt, field.TypeTime)
 	}
 	if _u.mutation.WorktreeCleared() {
 		edge := &sqlgraph.EdgeSpec{
