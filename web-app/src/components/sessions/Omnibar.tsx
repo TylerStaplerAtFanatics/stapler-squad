@@ -17,6 +17,9 @@ import { useAppSelector } from "@/lib/store";
 import { selectActiveSessionsSortedByUpdatedAt } from "@/lib/store/sessionsSlice";
 import { Session } from "@/gen/session/v1/types_pb";
 import { PathCompletionDropdown, type CompletionEntry } from "@/components/ui/PathCompletionDropdown";
+import { AtCommandDropdown } from "@/components/ui/AtCommandDropdown";
+import { useAtCommandSuggestions } from "@/lib/hooks/useAtCommandSuggestions";
+import type { WorkflowEntry } from "@/lib/omnibar/detectors/WorkflowDetector";
 import { OmnibarResultList, getResultListItemCount, getHighlightedItemId } from "./OmnibarResultList";
 import { OmnibarModeBadge } from "./OmnibarModeBadge";
 import { OmnibarCreationPanel, SESSION_TYPES } from "./OmnibarCreationPanel";
@@ -39,6 +42,8 @@ interface OmnibarProps {
   onRunWorkflow?: (slug: string, arg: string) => Promise<void>;
   initialMode?: "discovery" | "creation";
   initialInput?: string;
+  /** Available workflows for @slug autocomplete. */
+  workflows?: WorkflowEntry[];
 }
 
 // Consolidated form state
@@ -86,6 +91,7 @@ interface OmnibarUIState {
   dropdownIndex: number;
   dropdownDismissed: boolean;
   resultHighlightIndex: number;
+  atSuggestIndex: number;
 }
 
 export interface OmnibarSessionData {
@@ -124,7 +130,7 @@ function isValidProjectName(name: string): boolean {
 
 const RESULT_LISTBOX_ID = "omnibar-result-listbox";
 
-export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession, onNavigateToSessionInNewPane, onSpawnShell, onRunWorkflow, initialMode, initialInput }: OmnibarProps) {
+export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession, onNavigateToSessionInNewPane, onSpawnShell, onRunWorkflow, initialMode, initialInput, workflows = [] }: OmnibarProps) {
   const router = useRouter();
   const { setTheme } = useTheme();
 
@@ -155,6 +161,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
     dropdownIndex: -1,
     dropdownDismissed: false,
     resultHighlightIndex: -1,
+    atSuggestIndex: -1,
   });
   const setUIField = useCallback(
     <K extends keyof OmnibarUIState>(key: K, value: OmnibarUIState[K]) =>
@@ -177,7 +184,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
   // Destructure only fields needed for validation/submission logic in Omnibar.tsx
   const { sessionName, program, category, autoYes, sessionType, branch, useTitleAsBranch, existingWorktree, workingDir, parentDir, projectName, newProjectSessionType, createIfMissing } = formState;
   const { showAdvanced } = uiState;
-  const { dropdownIndex, dropdownDismissed, resultHighlightIndex } = uiState;
+  const { dropdownIndex, dropdownDismissed, resultHighlightIndex, atSuggestIndex } = uiState;
   // Used in detection auto-fill effects
   const setSessionName = useCallback((v: string) => setFormField("sessionName", v), [setFormField]);
   const setBranch = useCallback((v: string) => setFormField("branch", v), [setFormField]);
@@ -289,6 +296,11 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
 
   // Discovery mode derived from modeState
   const isDiscoveryMode = modeState.type === "discovery";
+
+  // @command autocomplete — active while user is typing "@slug" (no space yet)
+  const { isAtCommand, suggestions: atSuggestions, complete: completeAtCommand } =
+    useAtCommandSuggestions(input, workflows);
+  const isAtDropdownVisible = isDiscoveryMode && isAtCommand;
 
   // Session search query uses the debounced input so Fuse only runs after typing pauses.
   const sessionSearchQuery = useMemo(() => {
@@ -437,13 +449,20 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       setInput("");
       setDetection(null);
       setFormState(INITIAL_FORM_STATE);
-      setUIState({ showAdvanced: false, dropdownIndex: -1, dropdownDismissed: false, resultHighlightIndex: -1 });
+      setUIState({ showAdvanced: false, dropdownIndex: -1, dropdownDismissed: false, resultHighlightIndex: -1, atSuggestIndex: -1 });
       setError(null);
       lastSuggestedNameRef.current = "";
       prevDetectionTypeRef.current = null;
       dispatchMode({ kind: "reset_to_discovery" });
     }
   }, [isOpen, dispatchMode]);
+
+  // Reset atSuggestIndex when leaving @ mode (user added space or cleared the @).
+  useEffect(() => {
+    if (!isAtCommand) {
+      setUIField("atSuggestIndex", -1);
+    }
+  }, [isAtCommand, setUIField]);
 
   // On open: apply initialMode if provided
   useEffect(() => {
@@ -521,6 +540,40 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // @command autocomplete (highest priority when visible)
+      if (isAtDropdownVisible) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setUIField("atSuggestIndex", Math.min(atSuggestIndex + 1, atSuggestions.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setUIField("atSuggestIndex", Math.max(atSuggestIndex - 1, -1));
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          const idx = atSuggestIndex >= 0 ? atSuggestIndex : 0;
+          if (atSuggestions[idx]) {
+            setInput(completeAtCommand(atSuggestions[idx]));
+            setUIField("atSuggestIndex", -1);
+          }
+          return;
+        }
+        if (e.key === "Enter" && atSuggestIndex >= 0 && atSuggestions[atSuggestIndex]) {
+          e.preventDefault();
+          setInput(completeAtCommand(atSuggestions[atSuggestIndex]));
+          setUIField("atSuggestIndex", -1);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.nativeEvent.stopImmediatePropagation();
+          setUIField("atSuggestIndex", -1);
+          return;
+        }
+      }
+
       // Discovery mode navigation (before dropdown check)
       if (isDiscoveryMode && (resultHighlightIndex >= 0 || e.key === "ArrowDown")) {
         if (e.key === "ArrowDown") {
@@ -638,6 +691,11 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       setDropdownDismissed,
       setDropdownIndex,
       setResultHighlightIndex,
+      isAtDropdownVisible,
+      atSuggestIndex,
+      atSuggestions,
+      completeAtCommand,
+      setUIField,
     ]
   );
 
@@ -987,8 +1045,22 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           )}
         </div>
 
+        {/* @command autocomplete — shown in discovery mode while typing @slug */}
+        {isAtDropdownVisible && (
+          <AtCommandDropdown
+            id="at-command-listbox"
+            suggestions={atSuggestions}
+            selectedIndex={atSuggestIndex}
+            onSelect={(wf) => {
+              setInput(completeAtCommand(wf));
+              setUIField("atSuggestIndex", -1);
+              inputRef.current?.focus();
+            }}
+          />
+        )}
+
         {/* Discovery mode: session results + recent repos */}
-        {isDiscoveryMode && (
+        {isDiscoveryMode && !isAtDropdownVisible && (
           <OmnibarResultList
             id={RESULT_LISTBOX_ID}
             sessionResults={displayedSessionResults}

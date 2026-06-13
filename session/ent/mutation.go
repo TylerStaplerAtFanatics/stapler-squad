@@ -14909,6 +14909,8 @@ type SessionMutation struct {
 	last_prompt_signature  *string
 	hidden                 *bool
 	pause_reason           *string
+	workflow_id            *string
+	archived_at            *time.Time
 	clearedFields          map[string]struct{}
 	worktree               *int
 	clearedworktree        bool
@@ -16579,6 +16581,104 @@ func (m *SessionMutation) ResetPauseReason() {
 	delete(m.clearedFields, session.FieldPauseReason)
 }
 
+// SetWorkflowID sets the "workflow_id" field.
+func (m *SessionMutation) SetWorkflowID(s string) {
+	m.workflow_id = &s
+}
+
+// WorkflowID returns the value of the "workflow_id" field in the mutation.
+func (m *SessionMutation) WorkflowID() (r string, exists bool) {
+	v := m.workflow_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldWorkflowID returns the old "workflow_id" field's value of the Session entity.
+// If the Session object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *SessionMutation) OldWorkflowID(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldWorkflowID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldWorkflowID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldWorkflowID: %w", err)
+	}
+	return oldValue.WorkflowID, nil
+}
+
+// ClearWorkflowID clears the value of the "workflow_id" field.
+func (m *SessionMutation) ClearWorkflowID() {
+	m.workflow_id = nil
+	m.clearedFields[session.FieldWorkflowID] = struct{}{}
+}
+
+// WorkflowIDCleared returns if the "workflow_id" field was cleared in this mutation.
+func (m *SessionMutation) WorkflowIDCleared() bool {
+	_, ok := m.clearedFields[session.FieldWorkflowID]
+	return ok
+}
+
+// ResetWorkflowID resets all changes to the "workflow_id" field.
+func (m *SessionMutation) ResetWorkflowID() {
+	m.workflow_id = nil
+	delete(m.clearedFields, session.FieldWorkflowID)
+}
+
+// SetArchivedAt sets the "archived_at" field.
+func (m *SessionMutation) SetArchivedAt(t time.Time) {
+	m.archived_at = &t
+}
+
+// ArchivedAt returns the value of the "archived_at" field in the mutation.
+func (m *SessionMutation) ArchivedAt() (r time.Time, exists bool) {
+	v := m.archived_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldArchivedAt returns the old "archived_at" field's value of the Session entity.
+// If the Session object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *SessionMutation) OldArchivedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldArchivedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldArchivedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldArchivedAt: %w", err)
+	}
+	return oldValue.ArchivedAt, nil
+}
+
+// ClearArchivedAt clears the value of the "archived_at" field.
+func (m *SessionMutation) ClearArchivedAt() {
+	m.archived_at = nil
+	m.clearedFields[session.FieldArchivedAt] = struct{}{}
+}
+
+// ArchivedAtCleared returns if the "archived_at" field was cleared in this mutation.
+func (m *SessionMutation) ArchivedAtCleared() bool {
+	_, ok := m.clearedFields[session.FieldArchivedAt]
+	return ok
+}
+
+// ResetArchivedAt resets all changes to the "archived_at" field.
+func (m *SessionMutation) ResetArchivedAt() {
+	m.archived_at = nil
+	delete(m.clearedFields, session.FieldArchivedAt)
+}
+
 // SetWorktreeID sets the "worktree" edge to the Worktree entity by id.
 func (m *SessionMutation) SetWorktreeID(id int) {
 	m.worktree = &id
@@ -16931,7 +17031,7 @@ func (m *SessionMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *SessionMutation) Fields() []string {
-	fields := make([]string, 0, 33)
+	fields := make([]string, 0, 35)
 	if m.title != nil {
 		fields = append(fields, session.FieldTitle)
 	}
@@ -17031,6 +17131,12 @@ func (m *SessionMutation) Fields() []string {
 	if m.pause_reason != nil {
 		fields = append(fields, session.FieldPauseReason)
 	}
+	if m.workflow_id != nil {
+		fields = append(fields, session.FieldWorkflowID)
+	}
+	if m.archived_at != nil {
+		fields = append(fields, session.FieldArchivedAt)
+	}
 	return fields
 }
 
@@ -17105,6 +17211,10 @@ func (m *SessionMutation) Field(name string) (ent.Value, bool) {
 		return m.Hidden()
 	case session.FieldPauseReason:
 		return m.PauseReason()
+	case session.FieldWorkflowID:
+		return m.WorkflowID()
+	case session.FieldArchivedAt:
+		return m.ArchivedAt()
 	}
 	return nil, false
 }
@@ -17180,6 +17290,10 @@ func (m *SessionMutation) OldField(ctx context.Context, name string) (ent.Value,
 		return m.OldHidden(ctx)
 	case session.FieldPauseReason:
 		return m.OldPauseReason(ctx)
+	case session.FieldWorkflowID:
+		return m.OldWorkflowID(ctx)
+	case session.FieldArchivedAt:
+		return m.OldArchivedAt(ctx)
 	}
 	return nil, fmt.Errorf("unknown Session field %s", name)
 }
@@ -17420,6 +17534,20 @@ func (m *SessionMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetPauseReason(v)
 		return nil
+	case session.FieldWorkflowID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetWorkflowID(v)
+		return nil
+	case session.FieldArchivedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetArchivedAt(v)
+		return nil
 	}
 	return fmt.Errorf("unknown Session field %s", name)
 }
@@ -17558,6 +17686,12 @@ func (m *SessionMutation) ClearedFields() []string {
 	if m.FieldCleared(session.FieldPauseReason) {
 		fields = append(fields, session.FieldPauseReason)
 	}
+	if m.FieldCleared(session.FieldWorkflowID) {
+		fields = append(fields, session.FieldWorkflowID)
+	}
+	if m.FieldCleared(session.FieldArchivedAt) {
+		fields = append(fields, session.FieldArchivedAt)
+	}
 	return fields
 }
 
@@ -17640,6 +17774,12 @@ func (m *SessionMutation) ClearField(name string) error {
 		return nil
 	case session.FieldPauseReason:
 		m.ClearPauseReason()
+		return nil
+	case session.FieldWorkflowID:
+		m.ClearWorkflowID()
+		return nil
+	case session.FieldArchivedAt:
+		m.ClearArchivedAt()
 		return nil
 	}
 	return fmt.Errorf("unknown Session nullable field %s", name)
@@ -17747,6 +17887,12 @@ func (m *SessionMutation) ResetField(name string) error {
 		return nil
 	case session.FieldPauseReason:
 		m.ResetPauseReason()
+		return nil
+	case session.FieldWorkflowID:
+		m.ResetWorkflowID()
+		return nil
+	case session.FieldArchivedAt:
+		m.ResetArchivedAt()
 		return nil
 	}
 	return fmt.Errorf("unknown Session field %s", name)

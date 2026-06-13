@@ -91,6 +91,9 @@ type SessionService struct {
 	// pathCompletionSvc handles filesystem path completion RPCs.
 	pathCompletionSvc *PathCompletionService
 
+	// slashCommandSvc resolves slash commands from disk and built-ins.
+	slashCommandSvc *SlashCommandService
+
 	// defaultsSvc handles session defaults configuration RPCs.
 	defaultsSvc *DefaultsService
 
@@ -252,6 +255,7 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 		databaseSvc:       NewDatabaseService(),
 		fileSvc:           NewFileService(workspaceSvc),
 		pathCompletionSvc: NewPathCompletionService(),
+		slashCommandSvc:   NewSlashCommandService(),
 		defaultsSvc:       NewDefaultsService(),
 		projectSvc:        NewProjectService(concStorage),
 		promptStore:       newPromptStore(),
@@ -292,6 +296,7 @@ func (s *SessionService) loadInstancesWithWiring() ([]*session.Instance, error) 
 		s.wireRateLimitCallbacks(inst)
 		s.wireStatusChangeCallback(inst)
 		s.wireClaudeSessionIDCallback(inst)
+		s.wireAutoArchiveCallback(inst)
 	}
 
 	return instances, nil
@@ -580,6 +585,7 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 	s.wireRateLimitCallbacks(instance)
 	s.wireStatusChangeCallback(instance)
 	s.wireClaudeSessionIDCallback(instance)
+	s.wireAutoArchiveCallback(instance)
 	if err := s.storage.AddInstance(instance); err != nil {
 		_ = instance.Destroy()
 		return nil, fmt.Errorf("CreateDirectorySession save: %w", err)
@@ -752,6 +758,16 @@ func (s *SessionService) ListSessions(
 
 		// Exclude hidden (system/background) sessions unless explicitly requested
 		if inst.Hidden && !req.Msg.IncludeHidden {
+			continue
+		}
+
+		// Exclude archived sessions unless explicitly requested
+		if inst.ArchivedAt != nil && !req.Msg.IncludeArchived {
+			continue
+		}
+
+		// Filter by workflow_id when specified
+		if req.Msg.WorkflowId != nil && *req.Msg.WorkflowId != "" && inst.WorkflowID != *req.Msg.WorkflowId {
 			continue
 		}
 
@@ -1003,6 +1019,7 @@ func (s *SessionService) CreateSession(
 		AllowedTools:     req.Msg.AllowedTools,
 		PermissionMode:   req.Msg.PermissionMode,
 		AutonomousMode:   req.Msg.AutonomousMode,
+		WorkflowID:       req.Msg.WorkflowId,
 	}
 
 	// Add GitHub metadata if this was a GitHub URL
@@ -1057,6 +1074,7 @@ func (s *SessionService) CreateSession(
 		s.wireRateLimitCallbacks(instance)
 		s.wireStatusChangeCallback(instance)
 		s.wireClaudeSessionIDCallback(instance)
+		s.wireAutoArchiveCallback(instance)
 
 		instance.CreationProgress = "Starting session..."
 		s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"creation_progress"}))
@@ -2595,6 +2613,13 @@ func (s *SessionService) ListPathCompletions(
 	return s.pathCompletionSvc.ListPathCompletions(ctx, req)
 }
 
+func (s *SessionService) ListSlashCommands(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ListSlashCommandsRequest],
+) (*connect.Response[sessionv1.ListSlashCommandsResponse], error) {
+	return s.slashCommandSvc.ListSlashCommands(ctx, req)
+}
+
 // ListWorktrees returns the git worktrees for a given repository path.
 func (s *SessionService) ListWorktrees(
 	ctx context.Context,
@@ -3349,6 +3374,28 @@ func (s *SessionService) onAutonomousDriverComplete(instanceName string, outcome
 	))
 }
 
+// wireAutoArchiveCallback registers a lifecycle listener that auto-archives a
+// workflow-spawned session when it exits.
+func (s *SessionService) wireAutoArchiveCallback(inst *session.Instance) {
+	if inst == nil || inst.WorkflowID == "" {
+		return
+	}
+	inst.RegisterLifecycleListener(&autoArchiveListener{svc: s, inst: inst})
+}
+
+// autoArchiveListener implements session.LifecycleListener to archive workflow sessions on exit.
+type autoArchiveListener struct {
+	svc  *SessionService
+	inst *session.Instance
+}
+
+func (l *autoArchiveListener) OnLifecycleEvent(event session.LifecycleEvent, _ string) {
+	if event == session.EventExited {
+		go l.svc.maybeAutoArchive(l.inst)
+	}
+}
+
+
 // wireStatusChangeCallback registers a ReactiveQueueManager callback on inst so that
 // ClaudeController status transitions immediately trigger a CheckSession call, bypassing
 // the poll cycle. Safe to call before or after the controller is started.
@@ -3666,4 +3713,64 @@ func (s *SessionService) RunWorkflow(ctx context.Context, req *connect.Request[s
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("workflow service not available"))
 	}
 	return s.workflowSvc.RunWorkflow(ctx, req)
+}
+
+// +api: session:archive
+// ArchiveSession soft-archives a session by setting archived_at.
+// Archived sessions are excluded from the default ListSessions response.
+func (s *SessionService) ArchiveSession(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ArchiveSessionRequest],
+) (*connect.Response[sessionv1.ArchiveSessionResponse], error) {
+	if req.Msg.SessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+	inst := s.FindLiveInstance(req.Msg.SessionId)
+	if inst == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
+	}
+	now := time.Now()
+	inst.ArchivedAt = &now
+	if err := s.storage.SaveInstances([]*session.Instance{inst}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save session: %w", err))
+	}
+	return connect.NewResponse(&sessionv1.ArchiveSessionResponse{}), nil
+}
+
+// +api: session:unarchive
+// UnarchiveSession clears archived_at, restoring the session to the default list.
+func (s *SessionService) UnarchiveSession(
+	ctx context.Context,
+	req *connect.Request[sessionv1.UnarchiveSessionRequest],
+) (*connect.Response[sessionv1.UnarchiveSessionResponse], error) {
+	if req.Msg.SessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+	inst := s.FindLiveInstance(req.Msg.SessionId)
+	if inst == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
+	}
+	inst.ArchivedAt = nil
+	if err := s.storage.SaveInstances([]*session.Instance{inst}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save session: %w", err))
+	}
+	return connect.NewResponse(&sessionv1.UnarchiveSessionResponse{}), nil
+}
+
+// maybeAutoArchive archives a workflow session that has just stopped.
+// Called in the status-update path whenever a session transitions to Stopped.
+// Only archives sessions spawned by a workflow (WorkflowID != "").
+func (s *SessionService) maybeAutoArchive(inst *session.Instance) {
+	if inst == nil || inst.WorkflowID == "" {
+		return
+	}
+	now := time.Now()
+	// CAS: set ArchivedAt only if still nil. Prevents double-archive from concurrent EventExited fires.
+	if !inst.SetArchivedAtIfNil(now) {
+		return
+	}
+	if err := s.storage.SaveInstances([]*session.Instance{inst}); err != nil {
+		log.Warn("[SessionService] failed to auto-archive workflow session",
+			"session", inst.Title, "workflow_id", inst.WorkflowID, "err", err)
+	}
 }
