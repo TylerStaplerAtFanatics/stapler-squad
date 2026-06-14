@@ -21,7 +21,7 @@ func (i *Instance) StartController() error {
 	i.stateMutex.Lock()
 
 	// Only start if we have a status manager
-	if i.controllerManager.statusManager == nil {
+	if i.controllerManager.GetStatusManager() == nil {
 		i.stateMutex.Unlock()
 		log.Debug("no status manager set for instance, skipping controller", "session", i.Title)
 		return nil
@@ -81,6 +81,12 @@ func (i *Instance) StartController() error {
 		return fmt.Errorf("failed to start controller: %w", err)
 	}
 
+	// Wire rate limit callbacks BEFORE re-acquiring stateMutex.
+	// controller.Start() can launch goroutines that hold ctrl.mu and call back into
+	// Instance methods (which acquire stateMutex). wireRateLimitCallbacks acquires
+	// ctrl.mu.RLock(). Calling it inside stateMutex would create a lock-order cycle.
+	i.wireRateLimitCallbacks(controller)
+
 	// Re-acquire lock to update instance state
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
@@ -93,9 +99,6 @@ func (i *Instance) StartController() error {
 
 	// Register with status manager and store controller
 	i.controllerManager.RegisterController(i.Title, controller)
-
-	// Wire rate limit callbacks from the server layer (if already set).
-	i.wireRateLimitCallbacks(controller)
 
 	log.Info("started claudecontroller for instance", "session", i.Title)
 	return nil

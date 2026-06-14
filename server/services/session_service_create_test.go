@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -277,12 +278,80 @@ func TestCreateSession_OneOff_BadBaseDir_ReturnsInternalError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Status manager wiring regression
+// ---------------------------------------------------------------------------
+
+// TestCreateSession_StatusManagerWiredBeforeDriver is a regression test for the bug
+// where CreateSession's async goroutine never called instance.SetStatusManager before
+// StartSessionDriver, so GetDetectedStatus() always returned StatusUnknown on newly
+// created sessions (rather than e.g. StatusNeedsApproval when a "Do you want to
+// proceed?" permission prompt was displayed).
+//
+// The fix (server/services/session_service.go) wires the status manager inside the
+// goroutine before the driver starts. This test verifies that wiring happens within
+// a reasonable time after the RPC returns.
+//
+// Requires tmux to be installed; skipped automatically otherwise.
+func TestCreateSession_StatusManagerWiredBeforeDriver(t *testing.T) {
+	storage := createTestStorage(t)
+	bus := events.NewEventBus(16)
+	t.Cleanup(bus.Close)
+	svc := NewSessionService(storage, bus)
+
+	// Wire a status manager AND a poller so FindLiveInstance resolves the live pointer.
+	statusMgr := session.NewInstanceStatusManager()
+	queue := session.NewReviewQueue()
+	poller := session.NewReviewQueuePoller(queue, statusMgr, nil)
+	svc.SetReviewQueuePoller(poller)
+	svc.SetStatusManager(statusMgr)
+
+	// CreateSession returns no error when tmux is absent — the async goroutine
+	// handles the failure and sets Status=Stopped. A sync error here means a
+	// pre-goroutine validation failure (storage, config) which should never be silently skipped.
+	resp, err := svc.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
+		Title: "status-wiring-regression",
+		Path:  t.TempDir(),
+	}))
+	require.NoError(t, err)
+	t.Cleanup(func() { destroyCreatedSession(t, svc, resp.Msg.Session.Id) })
+
+	// The instance is added to the live poller synchronously (before the goroutine fires),
+	// so FindLiveInstance is available immediately after CreateSession returns.
+	inst := svc.FindLiveInstance(resp.Msg.Session.Id)
+	require.NotNil(t, inst, "instance must appear in live poller immediately after CreateSession")
+
+	// Poll until the status manager is wired (tmux-available path) or the ceiling is hit.
+	// GetStatusManager uses atomic.Pointer.Load(), so polling is race-free.
+	// We avoid testify's Eventually here because its condition runs in a goroutine,
+	// which prevents t.Skip from working correctly.
+	var managerWired bool
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if inst.GetStatusManager() != nil {
+			managerWired = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !managerWired {
+		// When tmux is absent the goroutine sets Status=Stopped and returns early,
+		// never reaching SetStatusManager. By 30 s the goroutine is long finished.
+		if session.Status(inst.GetStatus()) == session.Stopped {
+			t.Skip("tmux not available; skipping status-manager wiring assertion")
+		}
+		t.Error("status manager was never wired within 30 s — regression in CreateSession goroutine")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 func newCreateTestService(t *testing.T, storage *session.Storage) *SessionService {
 	t.Helper()
 	bus := events.NewEventBus(16)
+	t.Cleanup(bus.Close)
 	svc := NewSessionService(storage, bus)
 	return svc
 }
