@@ -320,11 +320,9 @@ type Instance struct {
 	// Guarded by CompareAndSwap — see StartSessionDriver.
 	driverRunning atomic.Bool
 
-	// SessionGoal is the cached goal state for this session.
-	// Protected by goalMu — always use GetSessionGoal/SetSessionGoalCached accessors.
-	SessionGoal *SessionGoalData
-	// goalMu protects SessionGoal for concurrent read/write access.
-	goalMu sync.RWMutex
+	// sessionGoal is the cached goal state for this session.
+	// Always use GetSessionGoal/SetSessionGoalCached accessors.
+	sessionGoal Locked[*SessionGoalData]
 
 	// restartCount and recentRestartTimes track rapid restarts for storm detection.
 	restartCount       int64
@@ -344,11 +342,9 @@ type Instance struct {
 	// success=true means recovery input was sent; false means it failed.
 	onRateLimitRecovery func(sessionID string, success bool, errMsg string)
 
-	// onStatusChangeMu protects onStatusChange.
-	onStatusChangeMu sync.RWMutex
 	// onStatusChange is called when the ClaudeController detects a status transition.
 	// Wired by the server layer to trigger reactive queue checks.
-	onStatusChange func(detection.DetectedStatus, string)
+	onStatusChange Locked[func(detection.DetectedStatus, string)]
 
 	// claudeSessionIDSavedCallback is called when SetClaudeConversationUUID stores a
 	// newly discovered session_id. Used by the service layer to trigger a storage save.
@@ -616,22 +612,23 @@ func (i *Instance) SetShellRepository(repo ShellRepository) {
 }
 
 // GetSessionGoal returns a thread-safe shallow copy of the current SessionGoalData (nil if not set).
-// A copy is returned so callers cannot mutate the shared struct without holding goalMu.
+// A copy is returned so callers cannot mutate the shared struct.
 func (i *Instance) GetSessionGoal() *SessionGoalData {
-	i.goalMu.RLock()
-	defer i.goalMu.RUnlock()
-	if i.SessionGoal == nil {
-		return nil
-	}
-	copy := *i.SessionGoal // shallow copy — Tasks slice is immutable after set
-	return &copy
+	var result *SessionGoalData
+	i.sessionGoal.Read(func(g *SessionGoalData) {
+		if g != nil {
+			copy := *g // shallow copy — Tasks slice is immutable after set
+			result = &copy
+		}
+	})
+	return result
 }
 
-// SetSessionGoalCached atomically updates the in-memory SessionGoal cache.
+// SetSessionGoalCached atomically updates the in-memory sessionGoal cache.
 func (i *Instance) SetSessionGoalCached(g *SessionGoalData) {
-	i.goalMu.Lock()
-	defer i.goalMu.Unlock()
-	i.SessionGoal = g
+	i.sessionGoal.Write(func(sg **SessionGoalData) {
+		*sg = g
+	})
 }
 
 // NewInstanceWithCleanup creates a new Instance and returns it along with a cleanup function.

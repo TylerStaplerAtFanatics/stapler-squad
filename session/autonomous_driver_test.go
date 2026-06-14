@@ -122,10 +122,11 @@ func pumpIdleSignals(ctx context.Context, cc *ClaudeController) {
 		case <-ctx.Done():
 			return
 		case <-time.After(60 * time.Millisecond):
-			cc.listenersMu.RLock()
-			listeners := make([]StatusChangeListener, len(cc.statusChangeListeners))
-			copy(listeners, cc.statusChangeListeners)
-			cc.listenersMu.RUnlock()
+			var listeners []StatusChangeListener
+			cc.listeners.Read(func(ls []StatusChangeListener) {
+				listeners = make([]StatusChangeListener, len(ls))
+				copy(listeners, ls)
+			})
 			for _, fn := range listeners {
 				fn(detection.StatusIdle, cc.sessionName)
 			}
