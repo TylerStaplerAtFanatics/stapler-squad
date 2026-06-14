@@ -814,3 +814,40 @@ func TestEventRing_ConcurrentPushRecent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestDetectForProgram_should_useRegisteredPatterns_When_binaryKnown(t *testing.T) {
+	sd := NewStatusDetector()
+
+	// "aider" binary: only has aider_permission in NeedsApproval.
+	// The pattern "(Y)es/(N)o/(D)on't ask again" should match NeedsApproval.
+	got := sd.DetectForProgram([]byte("(Y)es/(N)o/(D)on't ask again"), "aider")
+	if got != StatusNeedsApproval {
+		t.Errorf("DetectForProgram(aider permission) = %v, want StatusNeedsApproval", got)
+	}
+}
+
+func TestDetectForProgram_should_fallBack_When_binaryUnknown(t *testing.T) {
+	sd := NewStatusDetector()
+
+	// An unregistered binary falls back to sd.Detect() which uses getDefaultPatterns().
+	// "esc to interrupt" is an Active pattern in the default set.
+	got := sd.DetectForProgram([]byte("esc to interrupt"), "unknownbinary")
+	if got != StatusActive {
+		t.Errorf("DetectForProgram(unknown binary) = %v, want StatusActive", got)
+	}
+}
+
+func TestEventRingCap_should_be2000(t *testing.T) {
+	if EventRingCap != 2000 {
+		t.Errorf("EventRingCap = %d, want 2000", EventRingCap)
+	}
+	// Also verify the ring holds 2000 events without losing the 1001st
+	sd := NewStatusDetector()
+	for i := 0; i < 1001; i++ {
+		sd.Detect([]byte("Thinking..."))
+	}
+	events := sd.RecentEvents(1001)
+	if len(events) != 1001 {
+		t.Errorf("expected 1001 events accessible, got %d", len(events))
+	}
+}

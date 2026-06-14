@@ -208,8 +208,8 @@ func (cc *ClaudeController) Start(ctx context.Context) error {
 		sd := detection.NewStatusDetector()
 		sd.SetSessionID(cc.sessionName)
 
-		// Create idle detector
-		id := detection.NewIdleDetector(cc.sessionName, pa)
+		// Create idle detector — inject sd so both components share one ring buffer.
+		id := detection.NewIdleDetectorWithDetector(cc.sessionName, pa, detection.DefaultIdleDetectorConfig(), sd)
 
 		// CRITICAL FIX: Restore idle detector state from persisted timestamps
 		// This prevents false "timeout" detection after server restarts by maintaining
@@ -967,7 +967,7 @@ func (cc *ClaudeController) IsRateLimitEnabled() bool {
 
 // GetStatusDetector returns the status detector used by this controller.
 // Used by GetDetectionEvents RPC to retrieve recent detection events for debugging.
-func (cc *ClaudeController) GetStatusDetector() *detection.StatusDetector {
+func (cc *ClaudeController) GetStatusDetector() detection.TerminalDetector {
 	return cc.statusDetector.Load()
 }
 
