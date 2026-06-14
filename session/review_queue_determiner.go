@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tstapler/stapler-squad/log"
@@ -175,8 +176,12 @@ func (d *DefaultStatusDeterminer) Determine(
 		// No active controller (either none wired or not yet started) — detect status
 		// from terminal content.
 		if content != "" {
-			// Detect status from terminal content using the shared status detector
-			detectedStatus, statusContext := detector.DetectWithContext([]byte(content))
+			// Use line-by-line detection (bottom-up scan) so recent terminal state wins
+			// over stale scrollback content. DetectWithContext (full-block) fires error
+			// patterns on old "Error: Exit code 1" output before reaching a current
+			// approval dialog at the bottom of the pane.
+			lines := strings.Split(content, "\n")
+			detectedStatus, statusContext := detector.DetectWithContextFromLines(lines)
 			claudeStatus = detectedStatus
 
 			// Map terminal-detected status to queue action.
