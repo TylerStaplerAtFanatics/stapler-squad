@@ -213,9 +213,9 @@ func (i *Instance) SetRateLimitEnabled(enabled bool) {
 // detected by the ClaudeController. Safe to call before or after the controller is
 // started; the callback is wired at controller start time via wireStatusChangeCallback.
 func (i *Instance) SetStatusChangeCallback(fn func(detection.DetectedStatus, string)) {
-	i.onStatusChangeMu.Lock()
-	i.onStatusChange = fn
-	i.onStatusChangeMu.Unlock()
+	i.onStatusChange.Write(func(f *func(detection.DetectedStatus, string)) {
+		*f = fn
+	})
 
 	// If a controller is already running, wire immediately.
 	i.wireStatusChangeCallback(i.GetController())
@@ -228,9 +228,10 @@ func (i *Instance) wireStatusChangeCallback(ctrl *ClaudeController) {
 	if ctrl == nil {
 		return
 	}
-	i.onStatusChangeMu.RLock()
-	fn := i.onStatusChange
-	i.onStatusChangeMu.RUnlock()
+	var fn func(detection.DetectedStatus, string)
+	i.onStatusChange.Read(func(f func(detection.DetectedStatus, string)) {
+		fn = f
+	})
 	if fn == nil {
 		return
 	}

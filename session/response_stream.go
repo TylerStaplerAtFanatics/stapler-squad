@@ -38,6 +38,7 @@ type ResponseStream struct {
 	ptyAccess    *PTYAccess
 	subscribers  map[string]*Subscriber
 	mu           deadlock.RWMutex
+	exitTailMu   sync.Mutex // protects exitTail independently of subscriber state
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
@@ -144,12 +145,14 @@ func (rs *ResponseStream) Start(ctx context.Context) error {
 		return fmt.Errorf("PTY access not initialized for session '%s'", rs.sessionName)
 	}
 
-	rs.ctx, rs.cancel = context.WithCancel(ctx)
+	innerCtx, cancel := context.WithCancel(ctx)
+	rs.ctx = innerCtx
+	rs.cancel = cancel
 	rs.started = true
 
 	// Start the streaming goroutine
 	rs.wg.Add(1)
-	go rs.streamLoop()
+	go rs.streamLoop(innerCtx)
 
 	log.Info("response stream started", "session", rs.sessionName)
 	return nil
@@ -169,7 +172,7 @@ func (rs *ResponseStream) logEscapeAnalyticsSummary() {
 }
 
 // streamLoop is the main streaming loop that reads from PTY and broadcasts to subscribers.
-func (rs *ResponseStream) streamLoop() {
+func (rs *ResponseStream) streamLoop(ctx context.Context) {
 	defer rs.wg.Done()
 	defer rs.logEscapeAnalyticsSummary()
 	defer log.Info("response stream stopped", "session", rs.sessionName)
@@ -179,16 +182,13 @@ func (rs *ResponseStream) streamLoop() {
 
 	for {
 		select {
-		case <-rs.ctx.Done():
+		case <-ctx.Done():
 			// Stream was cancelled
 			rs.closeAllSubscribers()
 			return
 		default:
 			// Try to read from PTY with timeout
-			rs.ptyAccess.mu.RLock()
-			pty := rs.ptyAccess.pty
-			closed := rs.ptyAccess.closed
-			rs.ptyAccess.mu.RUnlock()
+			pty, closed := rs.ptyAccess.GetFile()
 
 			if closed {
 				// PTY is closed, stop streaming
@@ -247,13 +247,13 @@ func (rs *ResponseStream) streamLoop() {
 
 			if n > 0 {
 				// Update rolling pre-exit tail buffer (keeps last exitTailSize bytes).
-				rs.mu.Lock()
+				rs.exitTailMu.Lock()
 				combined := append(rs.exitTail, readBuf[:n]...)
 				if len(combined) > exitTailSize {
 					combined = combined[len(combined)-exitTailSize:]
 				}
 				rs.exitTail = combined
-				rs.mu.Unlock()
+				rs.exitTailMu.Unlock()
 
 				// Got some data, broadcast to subscribers
 				chunk := ResponseChunk{
@@ -457,8 +457,8 @@ func (rs *ResponseStream) GetTotalBytesWritten() int64 {
 // GetExitTail returns a copy of the last bytes seen before the PTY exited.
 // Returns nil if the stream has not yet exited or no output was captured.
 func (rs *ResponseStream) GetExitTail() []byte {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
+	rs.exitTailMu.Lock()
+	defer rs.exitTailMu.Unlock()
 	if len(rs.exitTail) == 0 {
 		return nil
 	}

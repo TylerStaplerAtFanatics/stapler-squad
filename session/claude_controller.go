@@ -1,14 +1,12 @@
 package session
 
-import "github.com/linkdata/deadlock"
-
 import (
 	"context"
 	"fmt"
 	"hash/fnv"
 	"os"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tstapler/stapler-squad/log"
@@ -18,8 +16,7 @@ import (
 )
 
 // StatusChangeListener is called when the controller detects a terminal status transition.
-// Always invoked outside cc.mu and from the controller's own background goroutine.
-// Must not call back into any ClaudeController method that acquires cc.mu.
+// Always invoked from the controller's own background goroutine, outside any lock.
 type StatusChangeListener func(newStatus detection.DetectedStatus, sessionName string)
 
 // InstanceContext is the narrow interface ClaudeController needs from its owning Instance.
@@ -63,32 +60,74 @@ const statusDetectionTailBytes = 4096
 // prompt on the last line.
 const statusDetectionLinesWindow = 15
 
+// controllerLifecycle holds the running context for the controller.
+// Protected by lifecycle; write-locked only during Start/Stop transitions.
+type controllerLifecycle struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// cacheState groups the status and idle tail-hash caches.
+// Protected by cache; updated by GetCurrentStatus, GetIdleState, and runStatusChangeLoop.
+type cacheState struct {
+	status statusCacheEntry
+	idle   idleCacheEntry
+}
+
 // ClaudeController provides a high-level API for controlling Claude instances.
 // It orchestrates all the underlying components (queue, executor, history, streams).
+//
+// Locking discipline:
+//   - lifecycle (Locked[controllerLifecycle]): write-locked briefly at the boundary of
+//     Start/Stop transitions. Slow cleanup in Stop() runs OUTSIDE this lock so that
+//     status reads are never blocked by goroutine joins or disk I/O.
+//   - Sub-components (atomic.Pointer[T]): set once in Start(), cleared in Stop().
+//     Readers call .Load() — a nil result means not yet initialized. Atomic access
+//     means GetCurrentStatus, GetRecentOutput, Subscribe, etc. never contend with Stop().
+//   - listeners (Locked[[]StatusChangeListener]): fan-out callbacks.
+//   - cache (Locked[cacheState]): tail-hash result cache for status/idle detection.
+//
+// Cache-line layout: lifecycle.mu (a sync.RWMutex) and the atomic.Pointer fields are
+// separated by [64]byte padding so that write operations on the mutex do not invalidate
+// the cache line read by atomic.Load() calls (Go issue #67764).
 type ClaudeController struct {
-	sessionName      string
-	instance         InstanceContext
-	ptyAccess        *PTYAccess
-	responseStream   *ResponseStream
-	statusDetector   *detection.StatusDetector
-	idleDetector     *detection.IdleDetector // NEW: Idle state detection
-	rateLimitHandler *ratelimit.PTYConsumer  // Rate limit detection
-	queue            *CommandQueue
-	executor         *CommandExecutor
-	history          *CommandHistory
-	onEOFCallback    func() // Fired when the ResponseStream PTY exits unexpectedly
-	statusCache      statusCacheEntry
-	idleCache        idleCacheEntry
-	cacheMu          sync.Mutex // protects statusCache and idleCache writes
-	mu               deadlock.RWMutex
-	ctx              context.Context
-	cancel           context.CancelFunc
+	// Immutable after construction.
+	sessionName   string
+	instance      InstanceContext
+	onEOFCallback func()
+	statusCheckCh chan struct{}
 
-	// Status-change notification fields.
-	statusChangeListeners []StatusChangeListener
-	listenersMu           sync.RWMutex
-	lastEmittedStatus     detection.DetectedStatus
-	statusCheckCh         chan struct{} // capacity 1; non-blocking send from onOutput
+	// lifecycle guards Start/Stop transitions. Write lock is held only for the
+	// brief check-and-set at the beginning of each transition; all slow cleanup
+	// in Stop() (goroutine joins, disk I/O) runs outside the lock.
+	lifecycle Locked[controllerLifecycle]
+	_         [64]byte // cache-line padding: prevents lifecycle.mu invalidating adjacent atomic slots (Go #67764)
+
+	// Sub-components initialized atomically in Start(), cleared atomically in Stop().
+	// Callers load via .Load(); nil means the controller is not running.
+	// Using atomic.Pointer lets read-only operations (GetCurrentStatus, GetRecentOutput,
+	// Subscribe, GetIdleState, …) proceed without holding any lifecycle lock, so they
+	// are never blocked when Stop() runs its slow cleanup.
+	ptyAccess        atomic.Pointer[PTYAccess]
+	responseStream   atomic.Pointer[ResponseStream]
+	rateLimitHandler atomic.Pointer[ratelimit.PTYConsumer]
+	statusDetector   atomic.Pointer[detection.StatusDetector]
+	idleDetector     atomic.Pointer[detection.IdleDetector]
+	queue            atomic.Pointer[CommandQueue]
+	executor         atomic.Pointer[CommandExecutor]
+	history          atomic.Pointer[CommandHistory]
+
+	_ [64]byte // cache-line padding: separates hot atomic slots from Locked fields below (Go #67764)
+
+	// listeners is the fan-out set of status-change callbacks.
+	listeners Locked[[]StatusChangeListener]
+
+	// lastEmittedStatus tracks the status most recently broadcast to listeners.
+	// Written only by the single runStatusChangeLoop goroutine; atomic so no lock needed.
+	lastEmittedStatus atomic.Int64
+
+	// cache holds the tail-hash and result of the last status/idle detection run.
+	cache Locked[cacheState]
 }
 
 // SetOnEOFCallback registers a function called when the PTY backing this controller
@@ -100,19 +139,19 @@ func (cc *ClaudeController) SetOnEOFCallback(fn func()) {
 
 // AddStatusChangeListener appends fn to the fan-out set of status-change listeners.
 // All registered listeners fire on every status transition.
-// Safe to call before or after Start(). Listeners are invoked outside cc.mu.
+// Safe to call before or after Start().
 func (cc *ClaudeController) AddStatusChangeListener(fn StatusChangeListener) {
-	cc.listenersMu.Lock()
-	cc.statusChangeListeners = append(cc.statusChangeListeners, fn)
-	cc.listenersMu.Unlock()
+	cc.listeners.Write(func(ls *[]StatusChangeListener) {
+		*ls = append(*ls, fn)
+	})
 }
 
 // SetStatusChangeListener registers fn as the sole status-change listener, replacing any
 // previously registered listeners. Kept for backward compatibility; prefer AddStatusChangeListener.
 func (cc *ClaudeController) SetStatusChangeListener(fn StatusChangeListener) {
-	cc.listenersMu.Lock()
-	cc.statusChangeListeners = []StatusChangeListener{fn}
-	cc.listenersMu.Unlock()
+	cc.listeners.Write(func(ls *[]StatusChangeListener) {
+		*ls = []StatusChangeListener{fn}
+	})
 }
 
 // NewClaudeController creates a new controller for the given instance.
@@ -134,160 +173,185 @@ func NewClaudeController(instance InstanceContext) (*ClaudeController, error) {
 }
 
 // Start initializes all components and begins background operations (streaming, command execution).
-// This is the single entry point for starting the controller - no separate Initialize() call needed.
+// This is the single entry point for starting the controller — no separate Initialize() call needed.
+//
+// The lifecycle write lock is held for the duration of initialization to prevent concurrent
+// Start() calls. Read-only operations (GetCurrentStatus, etc.) do not use this lock and
+// are therefore unblocked — they simply see nil atomic pointers until initialization completes.
 func (cc *ClaudeController) Start(ctx context.Context) error {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-
-	if cc.ctx != nil {
-		return fmt.Errorf("controller already started for session '%s'", cc.sessionName)
-	}
-
-	// Get PTY reader from instance
-	ptyReader, err := cc.instance.GetPTYReader()
-	if err != nil {
-		return fmt.Errorf("failed to get PTY reader: %w", err)
-	}
-
-	// Create circular buffer for PTY output
-	buffer := NewCircularBuffer(256 * 1024) // 256KB: detection needs ≤4KB; scrollback owns long-term history
-	cc.ptyAccess = NewPTYAccess(cc.sessionName, ptyReader, buffer)
-
-	// Create rate limit detection handler
-	rateLimitManager := ratelimit.NewManager(cc.sessionName, cc.instance)
-	cc.rateLimitHandler = ratelimit.NewPTYConsumer(cc.ptyAccess, rateLimitManager)
-
-	// Create response stream
-	cc.responseStream = NewResponseStream(cc.sessionName, cc.ptyAccess)
-
-	// Create status detector and tag it with the session name for detection event attribution.
-	cc.statusDetector = detection.NewStatusDetector()
-	cc.statusDetector.SetSessionID(cc.sessionName)
-
-	// Create idle detector
-	cc.idleDetector = detection.NewIdleDetector(cc.sessionName, cc.ptyAccess)
-
-	// CRITICAL FIX: Restore idle detector state from persisted timestamps
-	// This prevents false "timeout" detection after server restarts by maintaining
-	// temporal continuity between historical activity and idle detection.
-	//
-	// We use LastMeaningfulOutput as the source of truth because:
-	// 1. It excludes tmux status banners (more accurate activity signal)
-	// 2. It's already used by review queue for staleness detection
-	// 3. It's persisted to storage and restored on startup
-	//
-	// This restoration happens BEFORE the detector starts analyzing PTY output,
-	// so the first DetectState() call will have accurate historical context.
-	if cc.instance != nil && !cc.instance.LastMeaningfulOutputTime().IsZero() {
-		cc.idleDetector.InitializeFromTimestamp(cc.instance.LastMeaningfulOutputTime())
-	}
-
-	// MIGRATION: Handle old sessions without LastMeaningfulOutput timestamp.
-	// These sessions were created before this tracking was implemented and show
-	// "20412d ago" (epoch: 1970-01-01) in the review queue.
-	//
-	// Migration strategy (in order of preference):
-	// 1. Use CreatedAt if available (best approximation of session age)
-	// 2. Use time.Now() as last resort (for transient tmux-only sessions)
-	//
-	// This timestamp will be persisted the next time the session state is saved,
-	// completing the migration.
-	if cc.instance != nil && cc.instance.LastMeaningfulOutputTime().IsZero() {
-		var migrationTime time.Time
-		var migrationSource string
-
-		if !cc.instance.GetCreatedAt().IsZero() {
-			// Prefer CreatedAt: gives accurate age for persistent sessions
-			migrationTime = cc.instance.GetCreatedAt()
-			migrationSource = "CreatedAt"
-		} else {
-			// Fallback for transient sessions: use current time
-			// Better to show "idle for 0s" than "20412d ago"
-			migrationTime = time.Now()
-			migrationSource = "time.Now()"
+	var startErr error
+	cc.lifecycle.Write(func(l *controllerLifecycle) {
+		if l.ctx != nil {
+			startErr = fmt.Errorf("controller already started for session '%s'", cc.sessionName)
+			return
 		}
 
-		log.Info("migrating old session: initializing lastmeaningfuloutput", "session", cc.sessionName, "from", migrationSource, "time", migrationTime)
-		cc.instance.SetLastMeaningfulOutput(migrationTime)
-		cc.idleDetector.InitializeFromTimestamp(migrationTime)
-	}
-
-	// Create command queue with persistence
-	queue, err := NewCommandQueueWithPersistence(cc.sessionName, getQueuePersistDir())
-	if err != nil {
-		return fmt.Errorf("failed to create command queue: %w", err)
-	}
-	cc.queue = queue
-
-	// Create command history with persistence
-	history, err := NewCommandHistoryWithPersistence(cc.sessionName, getHistoryPersistDir())
-	if err != nil {
-		return fmt.Errorf("failed to create command history: %w", err)
-	}
-	cc.history = history
-
-	// Create command executor
-	cc.executor = NewCommandExecutor(
-		cc.sessionName,
-		cc.ptyAccess,
-		cc.responseStream,
-		cc.statusDetector,
-		cc.queue,
-	)
-
-	// Set up result callback to automatically add to history
-	cc.executor.SetResultCallback(func(result *ExecutionResult) {
-		if err := cc.history.AddFromResult(result); err != nil {
-			log.Error("failed to add execution result to history", "err", err)
+		// Get PTY reader from instance
+		ptyReader, err := cc.instance.GetPTYReader()
+		if err != nil {
+			startErr = fmt.Errorf("failed to get PTY reader: %w", err)
+			return
 		}
+
+		// Create circular buffer for PTY output
+		buffer := NewCircularBuffer(256 * 1024) // 256KB: detection needs ≤4KB; scrollback owns long-term history
+		pa := NewPTYAccess(cc.sessionName, ptyReader, buffer)
+
+		// Create rate limit detection handler
+		rateLimitManager := ratelimit.NewManager(cc.sessionName, cc.instance)
+		rlh := ratelimit.NewPTYConsumer(pa, rateLimitManager)
+
+		// Create response stream
+		rs := NewResponseStream(cc.sessionName, pa)
+
+		// Create status detector and tag it with the session name for detection event attribution.
+		sd := detection.NewStatusDetector()
+		sd.SetSessionID(cc.sessionName)
+
+		// Create idle detector
+		id := detection.NewIdleDetector(cc.sessionName, pa)
+
+		// CRITICAL FIX: Restore idle detector state from persisted timestamps
+		// This prevents false "timeout" detection after server restarts by maintaining
+		// temporal continuity between historical activity and idle detection.
+		//
+		// We use LastMeaningfulOutput as the source of truth because:
+		// 1. It excludes tmux status banners (more accurate activity signal)
+		// 2. It's already used by review queue for staleness detection
+		// 3. It's persisted to storage and restored on startup
+		//
+		// This restoration happens BEFORE the detector starts analyzing PTY output,
+		// so the first DetectState() call will have accurate historical context.
+		if cc.instance != nil && !cc.instance.LastMeaningfulOutputTime().IsZero() {
+			id.InitializeFromTimestamp(cc.instance.LastMeaningfulOutputTime())
+		}
+
+		// MIGRATION: Handle old sessions without LastMeaningfulOutput timestamp.
+		// These sessions were created before this tracking was implemented and show
+		// "20412d ago" (epoch: 1970-01-01) in the review queue.
+		//
+		// Migration strategy (in order of preference):
+		// 1. Use CreatedAt if available (best approximation of session age)
+		// 2. Use time.Now() as last resort (for transient tmux-only sessions)
+		//
+		// This timestamp will be persisted the next time the session state is saved,
+		// completing the migration.
+		if cc.instance != nil && cc.instance.LastMeaningfulOutputTime().IsZero() {
+			var migrationTime time.Time
+			var migrationSource string
+
+			if !cc.instance.GetCreatedAt().IsZero() {
+				// Prefer CreatedAt: gives accurate age for persistent sessions
+				migrationTime = cc.instance.GetCreatedAt()
+				migrationSource = "CreatedAt"
+			} else {
+				// Fallback for transient sessions: use current time
+				// Better to show "idle for 0s" than "20412d ago"
+				migrationTime = time.Now()
+				migrationSource = "time.Now()"
+			}
+
+			log.Info("migrating old session: initializing lastmeaningfuloutput", "session", cc.sessionName, "from", migrationSource, "time", migrationTime)
+			cc.instance.SetLastMeaningfulOutput(migrationTime)
+			id.InitializeFromTimestamp(migrationTime)
+		}
+
+		// Create command queue with persistence
+		q, err := NewCommandQueueWithPersistence(cc.sessionName, getQueuePersistDir())
+		if err != nil {
+			startErr = fmt.Errorf("failed to create command queue: %w", err)
+			return
+		}
+
+		// Create command history with persistence
+		h, err := NewCommandHistoryWithPersistence(cc.sessionName, getHistoryPersistDir())
+		if err != nil {
+			startErr = fmt.Errorf("failed to create command history: %w", err)
+			return
+		}
+
+		// Create command executor
+		exec := NewCommandExecutor(cc.sessionName, pa, rs, sd, q)
+
+		// Set up result callback to automatically add to history.
+		// Captures h directly — safe since h is never replaced after Start().
+		exec.SetResultCallback(func(result *ExecutionResult) {
+			if err := h.AddFromResult(result); err != nil {
+				log.Error("failed to add execution result to history", "err", err)
+			}
+		})
+
+		// Set up context for lifecycle management
+		innerCtx, cancel := context.WithCancel(ctx)
+
+		// Drive idle detector from PTY events so lastActivity reflects actual output time.
+		// This replaces polling-only updates: lastActivity now resets on every PTY read,
+		// giving accurate idle duration even when active patterns persist in old scrollback.
+		// Also notify the rate limit handler so it processes output immediately rather than
+		// waiting for the 500ms polling interval.
+		//
+		// The closures load from atomic pointers so they always see the current handler
+		// even if wired before cc.rateLimitHandler is stored.
+		rs.SetOnOutput(func() {
+			if detector := cc.idleDetector.Load(); detector != nil {
+				detector.RecordActivity()
+			}
+			if handler := cc.rateLimitHandler.Load(); handler != nil {
+				handler.NotifyOutput()
+			}
+			// Signal status-check goroutine; non-blocking drop if already pending.
+			select {
+			case cc.statusCheckCh <- struct{}{}:
+			default:
+			}
+		})
+
+		// Wire PTY-EOF callback so the owning Instance can transition state when the
+		// program exits unexpectedly (not via an explicit Stop() call).
+		if cc.onEOFCallback != nil {
+			rs.OnEOF = cc.onEOFCallback
+		}
+
+		// Start response stream
+		if err := rs.Start(innerCtx); err != nil {
+			cancel()
+			startErr = fmt.Errorf("failed to start response stream: %w", err)
+			return
+		}
+
+		// Publish all sub-components atomically so read paths see a consistent view.
+		cc.ptyAccess.Store(pa)
+		cc.responseStream.Store(rs)
+		cc.rateLimitHandler.Store(rlh)
+		cc.statusDetector.Store(sd)
+		cc.idleDetector.Store(id)
+		cc.queue.Store(q)
+		cc.executor.Store(exec)
+		cc.history.Store(h)
+
+		// Start status-change background goroutine (exits via ctx cancellation).
+		// Always start unconditionally: for sessions loaded from the database,
+		// wireStatusChangeCallback is called AFTER Start(), so the listener may be
+		// nil here but will be wired later. runStatusChangeLoop handles nil listeners.
+		go cc.runStatusChangeLoop(innerCtx)
+
+		// Start command executor
+		if err := exec.Start(innerCtx); err != nil {
+			cancel()
+			rs.Stop()
+			startErr = fmt.Errorf("failed to start command executor: %w", err)
+			return
+		}
+
+		// Start rate limit detection
+		rlh.Start()
+
+		l.ctx = innerCtx
+		l.cancel = cancel
 	})
 
-	// Set up context for lifecycle management
-	cc.ctx, cc.cancel = context.WithCancel(ctx)
-
-	// Drive idle detector from PTY events so lastActivity reflects actual output time.
-	// This replaces polling-only updates: lastActivity now resets on every PTY read,
-	// giving accurate idle duration even when active patterns persist in old scrollback.
-	// Also notify the rate limit handler so it processes output immediately rather than
-	// waiting for the 500ms polling interval.
-	cc.responseStream.SetOnOutput(func() {
-		cc.idleDetector.RecordActivity()
-		if cc.rateLimitHandler != nil {
-			cc.rateLimitHandler.NotifyOutput()
-		}
-		// Signal status-check goroutine; non-blocking drop if already pending.
-		select {
-		case cc.statusCheckCh <- struct{}{}:
-		default:
-		}
-	})
-
-	// Wire PTY-EOF callback so the owning Instance can transition state when the
-	// program exits unexpectedly (not via an explicit Stop() call).
-	if cc.onEOFCallback != nil {
-		cc.responseStream.OnEOF = cc.onEOFCallback
-	}
-
-	// Start response stream
-	if err := cc.responseStream.Start(cc.ctx); err != nil {
-		return fmt.Errorf("failed to start response stream: %w", err)
-	}
-
-	// Start status-change background goroutine (exits via ctx cancellation).
-	// Always start unconditionally: for sessions loaded from the database,
-	// wireStatusChangeCallback is called AFTER Start(), so the listener may be
-	// nil here but will be wired later. runStatusChangeLoop handles nil listeners.
-	go cc.runStatusChangeLoop(cc.ctx)
-
-	// Start command executor
-	if err := cc.executor.Start(cc.ctx); err != nil {
-		cc.responseStream.Stop()
-		return fmt.Errorf("failed to start command executor: %w", err)
-	}
-
-	// Start rate limit detection
-	if cc.rateLimitHandler != nil {
-		cc.rateLimitHandler.Start()
+	if startErr != nil {
+		return startErr
 	}
 
 	log.Info("claude controller started", "session", cc.sessionName)
@@ -295,48 +359,68 @@ func (cc *ClaudeController) Start(ctx context.Context) error {
 }
 
 // Stop stops all background operations and cleans up resources.
+//
+// The lifecycle write lock is held only to cancel the context and clear the lifecycle
+// fields. All slow cleanup (goroutine joins via executor.Stop/responseStream.Stop, disk
+// I/O via queue.Save/history.Save) runs OUTSIDE the lock, so concurrent callers of
+// GetCurrentStatus, GetRecentOutput, Subscribe, etc. are never blocked.
 func (cc *ClaudeController) Stop() error {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-
-	if cc.ctx == nil {
+	// Phase 1: grab the cancel function and mark as stopped (brief write lock).
+	var cancelFn context.CancelFunc
+	cc.lifecycle.Write(func(l *controllerLifecycle) {
+		if l.cancel == nil {
+			return
+		}
+		cancelFn = l.cancel
+		l.ctx = nil
+		l.cancel = nil
+	})
+	if cancelFn == nil {
 		return fmt.Errorf("controller not started")
 	}
+	cancelFn() // Signal all background goroutines to stop.
 
-	// Cancel context
-	if cc.cancel != nil {
-		cc.cancel()
-	}
+	// Phase 2: swap out sub-components atomically. New callers see nil immediately;
+	// in-flight callers already hold local references and finish normally.
+	exec := cc.executor.Swap(nil)
+	rs := cc.responseStream.Swap(nil)
+	rlh := cc.rateLimitHandler.Swap(nil)
+	q := cc.queue.Swap(nil)
+	h := cc.history.Swap(nil)
+	cc.ptyAccess.Store(nil)
+	cc.statusDetector.Store(nil)
+	cc.idleDetector.Store(nil)
 
+	// Phase 3: slow cleanup — outside any lock.
 	var errs []error
 
-	// Stop executor
-	if err := cc.executor.Stop(); err != nil {
-		errs = append(errs, fmt.Errorf("executor stop error: %w", err))
+	if exec != nil {
+		if err := exec.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("executor stop error: %w", err))
+		}
 	}
 
-	// Stop response stream
-	if err := cc.responseStream.Stop(); err != nil {
-		errs = append(errs, fmt.Errorf("response stream stop error: %w", err))
+	if rs != nil {
+		if err := rs.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("response stream stop error: %w", err))
+		}
 	}
 
-	// Stop rate limit detection
-	if cc.rateLimitHandler != nil {
-		cc.rateLimitHandler.Stop()
+	if rlh != nil {
+		rlh.Stop()
 	}
 
-	// Save queue state
-	if err := cc.queue.Save(); err != nil {
-		errs = append(errs, fmt.Errorf("queue save error: %w", err))
+	if q != nil {
+		if err := q.Save(); err != nil {
+			errs = append(errs, fmt.Errorf("queue save error: %w", err))
+		}
 	}
 
-	// Save history
-	if err := cc.history.Save(); err != nil {
-		errs = append(errs, fmt.Errorf("history save error: %w", err))
+	if h != nil {
+		if err := h.Save(); err != nil {
+			errs = append(errs, fmt.Errorf("history save error: %w", err))
+		}
 	}
-
-	cc.ctx = nil
-	cc.cancel = nil
 
 	if len(errs) > 0 {
 		return fmt.Errorf("stop errors: %v", errs)
@@ -348,12 +432,18 @@ func (cc *ClaudeController) Stop() error {
 
 // SendCommand sends a command to the Claude instance (queued execution).
 func (cc *ClaudeController) SendCommand(text string, priority int) (string, error) {
-	cc.mu.RLock()
-	if cc.ctx == nil {
-		cc.mu.RUnlock()
+	var running bool
+	cc.lifecycle.Read(func(l controllerLifecycle) {
+		running = l.ctx != nil
+	})
+	if !running {
 		return "", fmt.Errorf("controller not started")
 	}
-	cc.mu.RUnlock()
+
+	q := cc.queue.Load()
+	if q == nil {
+		return "", fmt.Errorf("controller not started")
+	}
 
 	cmd := &Command{
 		ID:        generateCommandID(),
@@ -363,7 +453,7 @@ func (cc *ClaudeController) SendCommand(text string, priority int) (string, erro
 		Status:    CommandPending,
 	}
 
-	if err := cc.queue.Enqueue(cmd); err != nil {
+	if err := q.Enqueue(cmd); err != nil {
 		return "", fmt.Errorf("failed to enqueue command: %w", err)
 	}
 
@@ -374,12 +464,18 @@ func (cc *ClaudeController) SendCommand(text string, priority int) (string, erro
 
 // SendCommandImmediate sends a command for immediate execution (bypasses queue).
 func (cc *ClaudeController) SendCommandImmediate(text string) (*ExecutionResult, error) {
-	cc.mu.RLock()
-	if cc.ctx == nil {
-		cc.mu.RUnlock()
+	var running bool
+	cc.lifecycle.Read(func(l controllerLifecycle) {
+		running = l.ctx != nil
+	})
+	if !running {
 		return nil, fmt.Errorf("controller not started")
 	}
-	cc.mu.RUnlock()
+
+	exec := cc.executor.Load()
+	if exec == nil {
+		return nil, fmt.Errorf("controller not started")
+	}
 
 	cmd := &Command{
 		ID:        generateCommandID(),
@@ -389,14 +485,15 @@ func (cc *ClaudeController) SendCommandImmediate(text string) (*ExecutionResult,
 		Status:    CommandPending,
 	}
 
-	result, err := cc.executor.ExecuteImmediate(cmd)
+	result, err := exec.ExecuteImmediate(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute immediate command: %w", err)
 	}
 
-	// Add to history
-	if err := cc.history.AddFromResult(result); err != nil {
-		log.Error("failed to add immediate execution to history", "err", err)
+	if h := cc.history.Load(); h != nil {
+		if err := h.AddFromResult(result); err != nil {
+			log.Error("failed to add immediate execution to history", "err", err)
+		}
 	}
 
 	log.Info("immediate command executed", "session", cc.sessionName, "text", text, "id", cmd.ID)
@@ -406,26 +503,20 @@ func (cc *ClaudeController) SendCommandImmediate(text string) (*ExecutionResult,
 
 // GetCommandStatus retrieves the current status of a command.
 func (cc *ClaudeController) GetCommandStatus(commandID string) (*Command, error) {
-	// Check if currently executing
-	if cc.executor != nil {
-		currentCmd := cc.executor.GetCurrentCommand()
-		if currentCmd != nil && currentCmd.ID == commandID {
+	if exec := cc.executor.Load(); exec != nil {
+		if currentCmd := exec.GetCurrentCommand(); currentCmd != nil && currentCmd.ID == commandID {
 			return currentCmd, nil
 		}
 	}
 
-	// Check queue
-	if cc.queue != nil {
-		cmd, err := cc.queue.Get(commandID)
-		if err == nil {
+	if q := cc.queue.Load(); q != nil {
+		if cmd, err := q.Get(commandID); err == nil {
 			return cmd, nil
 		}
 	}
 
-	// Check history
-	if cc.history != nil {
-		entries := cc.history.GetByCommandID(commandID)
-		if len(entries) > 0 {
+	if h := cc.history.Load(); h != nil {
+		if entries := h.GetByCommandID(commandID); len(entries) > 0 {
 			return &entries[0].Command, nil
 		}
 	}
@@ -435,77 +526,73 @@ func (cc *ClaudeController) GetCommandStatus(commandID string) (*Command, error)
 
 // CancelCommand cancels a pending command in the queue.
 func (cc *ClaudeController) CancelCommand(commandID string) error {
-	if cc.queue == nil {
+	q := cc.queue.Load()
+	if q == nil {
 		return fmt.Errorf("queue not initialized")
 	}
-	return cc.queue.Cancel(commandID)
+	return q.Cancel(commandID)
 }
 
 // GetCurrentCommand returns the currently executing command, if any.
 func (cc *ClaudeController) GetCurrentCommand() *Command {
-	if cc.executor == nil {
-		return nil
+	if exec := cc.executor.Load(); exec != nil {
+		return exec.GetCurrentCommand()
 	}
-	return cc.executor.GetCurrentCommand()
+	return nil
 }
 
 // GetQueuedCommands returns all commands currently in the queue.
 func (cc *ClaudeController) GetQueuedCommands() []*Command {
-	if cc.queue == nil {
-		return nil
+	if q := cc.queue.Load(); q != nil {
+		return q.List()
 	}
-	return cc.queue.List()
+	return nil
 }
 
 // GetCommandHistory returns recent command history.
 func (cc *ClaudeController) GetCommandHistory(limit int) []*HistoryEntry {
-	if cc.history == nil {
+	h := cc.history.Load()
+	if h == nil {
 		return nil
 	}
 	if limit <= 0 {
-		return cc.history.GetAll()
+		return h.GetAll()
 	}
-	return cc.history.GetRecent(limit)
+	return h.GetRecent(limit)
 }
 
 // SearchHistory searches command history by text.
 func (cc *ClaudeController) SearchHistory(query string) []*HistoryEntry {
-	if cc.history == nil {
-		return nil
+	if h := cc.history.Load(); h != nil {
+		return h.Search(query)
 	}
-	return cc.history.Search(query)
+	return nil
 }
 
 // GetHistoryStatistics returns statistics about command execution.
 func (cc *ClaudeController) GetHistoryStatistics() HistoryStatistics {
-	if cc.history == nil {
-		return HistoryStatistics{}
+	if h := cc.history.Load(); h != nil {
+		return h.GetStatistics()
 	}
-	return cc.history.GetStatistics()
+	return HistoryStatistics{}
 }
 
 // Subscribe creates a new subscription to the response stream.
 func (cc *ClaudeController) Subscribe(subscriberID string) (<-chan ResponseChunk, error) {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.responseStream == nil {
+	rs := cc.responseStream.Load()
+	if rs == nil {
 		return nil, fmt.Errorf("response stream not initialized")
 	}
-
-	return cc.responseStream.Subscribe(subscriberID)
+	return rs.Subscribe(subscriberID)
 }
 
 // Unsubscribe removes a subscription from the response stream.
 func (cc *ClaudeController) Unsubscribe(subscriberID string) error {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.responseStream == nil {
+	rs := cc.responseStream.Load()
+	if rs == nil {
 		return fmt.Errorf("response stream not initialized")
 	}
-
-	return cc.responseStream.Unsubscribe(subscriberID)
+	return rs.Unsubscribe(subscriberID)
 }
 
 // GetCurrentStatus detects the current status of the Claude instance.
@@ -518,39 +605,39 @@ func (cc *ClaudeController) Unsubscribe(subscriberID string) error {
 //  2. Content hash cache — a FNV-64a hash of the tail is compared against the
 //     previous call. If the tail is unchanged the cached result is returned
 //     immediately with zero allocations.
+//
+// This function holds no lifecycle lock — it reads ptyAccess and statusDetector
+// via atomic.Pointer, and the cache via Locked[cacheState]. It therefore never
+// blocks when Stop() is running its slow cleanup.
 func (cc *ClaudeController) GetCurrentStatus() (detection.DetectedStatus, string) {
-	// Read cc.instance under the lock, then release before calling Preview().
-	// Preview() calls GetRecentOutput() which also acquires mu.RLock(); holding mu
-	// across the Preview() call would cause a recursive RLock on the same goroutine.
-	cc.mu.RLock()
-	inst := cc.instance
-	cc.mu.RUnlock()
-
-	if inst == nil {
-		return detection.StatusUnknown, "Instance not initialized"
+	pa := cc.ptyAccess.Load()
+	if pa == nil {
+		return detection.StatusUnknown, "PTY not initialized"
 	}
 
-	content, err := inst.Preview()
-	if err != nil {
-		log.Debug("getcurrentstatus: preview error", "session", cc.sessionName, "err", err)
-		return detection.StatusUnknown, "Failed to get terminal content"
-	}
-
-	if content == "" {
+	// pa.GetBuffer() uses its own p.mu — safe without any lifecycle lock.
+	raw := pa.GetBuffer()
+	if len(raw) == 0 {
 		return detection.StatusUnknown, "No terminal content"
 	}
+	content := string(raw)
 
 	tail := tailContent(content, statusDetectionTailBytes)
 	h := hashString(tail)
 
-	cc.cacheMu.Lock()
-	if h == cc.statusCache.tailHash {
-		cachedStatus := cc.statusCache.status
-		cachedDesc := cc.statusCache.desc
-		cc.cacheMu.Unlock()
+	var hit bool
+	var cachedStatus detection.DetectedStatus
+	var cachedDesc string
+	cc.cache.Read(func(c cacheState) {
+		if h == c.status.tailHash {
+			hit = true
+			cachedStatus = c.status.status
+			cachedDesc = c.status.desc
+		}
+	})
+	if hit {
 		return cachedStatus, cachedDesc
 	}
-	cc.cacheMu.Unlock()
 
 	filtered, _ := filterTmuxMetadata(tail)
 
@@ -559,11 +646,16 @@ func (cc *ClaudeController) GetCurrentStatus() (detection.DetectedStatus, string
 	// "> ") beats a stale "esc to interrupt" that is still within the window
 	// from an earlier turn.
 	lines := lastNLines(filtered, statusDetectionLinesWindow)
-	status, desc := cc.statusDetector.DetectWithContextFromLines(lines)
 
-	cc.cacheMu.Lock()
-	cc.statusCache = statusCacheEntry{tailHash: h, status: status, desc: desc}
-	cc.cacheMu.Unlock()
+	sd := cc.statusDetector.Load()
+	if sd == nil {
+		return detection.StatusUnknown, "status detector not initialized"
+	}
+	status, desc := sd.DetectWithContextFromLines(lines)
+
+	cc.cache.Write(func(c *cacheState) {
+		c.status = statusCacheEntry{tailHash: h, status: status, desc: desc}
+	})
 	return status, desc
 }
 
@@ -640,19 +732,18 @@ func hashString(s string) uint64 {
 }
 
 // GetRecentOutput returns recent output from the PTY buffer.
+// Holds no lifecycle lock; returns nil if the controller is not started.
 func (cc *ClaudeController) GetRecentOutput(bytes int) []byte {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.ptyAccess == nil {
+	pa := cc.ptyAccess.Load()
+	if pa == nil {
 		return nil
 	}
 
 	if bytes <= 0 {
-		return cc.ptyAccess.GetBuffer()
+		return pa.GetBuffer()
 	}
 
-	buffer := cc.ptyAccess.GetBuffer()
+	buffer := pa.GetBuffer()
 	if len(buffer) <= bytes {
 		return buffer
 	}
@@ -662,9 +753,11 @@ func (cc *ClaudeController) GetRecentOutput(bytes int) []byte {
 
 // IsStarted returns whether the controller is currently started.
 func (cc *ClaudeController) IsStarted() bool {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-	return cc.ctx != nil
+	var started bool
+	cc.lifecycle.Read(func(l controllerLifecycle) {
+		started = l.ctx != nil
+	})
+	return started
 }
 
 // GetSessionName returns the session name for this controller.
@@ -679,51 +772,36 @@ func (cc *ClaudeController) GetInstance() InstanceContext {
 
 // SetExecutionOptions updates command execution options.
 func (cc *ClaudeController) SetExecutionOptions(options ExecutionOptions) {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.executor != nil {
-		cc.executor.SetOptions(options)
+	if exec := cc.executor.Load(); exec != nil {
+		exec.SetOptions(options)
 	}
 }
 
 // GetExecutionOptions returns current execution options.
 func (cc *ClaudeController) GetExecutionOptions() ExecutionOptions {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.executor == nil {
-		return DefaultExecutionOptions()
+	if exec := cc.executor.Load(); exec != nil {
+		return exec.GetOptions()
 	}
-
-	return cc.executor.GetOptions()
+	return DefaultExecutionOptions()
 }
 
 // ClearHistory removes all command history entries.
 func (cc *ClaudeController) ClearHistory() error {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.history == nil {
+	h := cc.history.Load()
+	if h == nil {
 		return fmt.Errorf("history not initialized")
 	}
-
-	return cc.history.Clear()
+	return h.Clear()
 }
 
 // ClearQueue removes all pending commands from the queue.
 func (cc *ClaudeController) ClearQueue() error {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.queue == nil {
+	q := cc.queue.Load()
+	if q == nil {
 		return fmt.Errorf("queue not initialized")
 	}
-
-	return cc.queue.Clear()
+	return q.Clear()
 }
-
-// Helper functions
 
 // IsIdle returns whether the Claude instance is currently idle (waiting for input).
 // This uses pattern-based detection on terminal content.
@@ -743,56 +821,58 @@ func (cc *ClaudeController) IsActive() bool {
 //
 // Applies the same tail-slice + hash-cache optimisations as GetCurrentStatus
 // so that polling the idle state on an unchanged terminal is essentially free.
+//
+// Holds no lifecycle lock — reads ptyAccess and idleDetector via atomic.Pointer.
+// This also fixes the re-entrant RWMutex bug that existed when calling
+// cc.instance.Preview() → GetRecentOutput() → cc.mu.RLock() while already
+// holding cc.mu.RLock(); with atomic pointers there is no lock to re-enter.
 func (cc *ClaudeController) GetIdleState() (detection.IdleState, time.Time) {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.idleDetector == nil {
+	id := cc.idleDetector.Load()
+	if id == nil {
 		return detection.IdleStateUnknown, time.Time{}
 	}
 
+	pa := cc.ptyAccess.Load()
+
 	var state detection.IdleState
-	if cc.instance != nil {
-		content, err := cc.instance.Preview()
-		if err != nil {
-			log.Debug("getidlestate: preview error, using fallback", "session", cc.sessionName, "err", err)
-			state = cc.idleDetector.DetectState()
-		} else if content != "" {
+	if pa != nil {
+		raw := pa.GetBuffer()
+		if len(raw) > 0 {
+			content := string(raw)
 			tail := tailContent(content, statusDetectionTailBytes)
 			h := hashString(tail)
 
-			cc.cacheMu.Lock()
-			if h == cc.idleCache.tailHash {
-				state = cc.idleCache.state
-				cc.cacheMu.Unlock()
-			} else {
-				cc.cacheMu.Unlock()
+			var hit bool
+			cc.cache.Read(func(c cacheState) {
+				if h == c.idle.tailHash {
+					state = c.idle.state
+					hit = true
+				}
+			})
+			if !hit {
 				filtered, _ := filterTmuxMetadata(tail)
-				state = cc.idleDetector.DetectStateFromContent(filtered)
-				cc.cacheMu.Lock()
-				cc.idleCache = idleCacheEntry{tailHash: h, state: state}
-				cc.cacheMu.Unlock()
+				state = id.DetectStateFromContent(filtered)
+				cc.cache.Write(func(c *cacheState) {
+					c.idle = idleCacheEntry{tailHash: h, state: state}
+				})
 			}
 		} else {
-			state = cc.idleDetector.GetState()
+			state = id.GetState()
 		}
 	} else {
-		state = cc.idleDetector.DetectState()
+		state = id.DetectState()
 	}
 
-	lastActivity := cc.idleDetector.GetLastActivity()
+	lastActivity := id.GetLastActivity()
 	return state, lastActivity
 }
 
 // GetIdleStateInfo returns comprehensive idle state information.
 func (cc *ClaudeController) GetIdleStateInfo() detection.IdleStateInfo {
-	// Get the current state using the reliable detection method
 	state, lastActivity := cc.GetIdleState()
 
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.idleDetector == nil {
+	id := cc.idleDetector.Load()
+	if id == nil {
 		return detection.IdleStateInfo{
 			State:        detection.IdleStateUnknown,
 			SessionName:  cc.sessionName,
@@ -800,35 +880,27 @@ func (cc *ClaudeController) GetIdleStateInfo() detection.IdleStateInfo {
 		}
 	}
 
-	// Build the info using the reliably-detected state
 	return detection.IdleStateInfo{
 		State:           state,
 		LastActivity:    lastActivity,
 		IdleDuration:    time.Since(lastActivity),
-		LastStateChange: cc.idleDetector.GetStateInfo().LastStateChange,
+		LastStateChange: id.GetStateInfo().LastStateChange,
 		SessionName:     cc.sessionName,
 	}
 }
 
 // GetIdleDuration returns how long the session has been idle.
 func (cc *ClaudeController) GetIdleDuration() time.Duration {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.idleDetector == nil {
-		return 0
+	if id := cc.idleDetector.Load(); id != nil {
+		return id.GetIdleDuration()
 	}
-
-	return cc.idleDetector.GetIdleDuration()
+	return 0
 }
 
 // GetRateLimitState returns the current rate limit detection state.
 func (cc *ClaudeController) GetRateLimitState() ratelimit.RateLimitState {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.rateLimitHandler != nil {
-		return cc.rateLimitHandler.GetRateLimitState()
+	if rlh := cc.rateLimitHandler.Load(); rlh != nil {
+		return rlh.GetRateLimitState()
 	}
 	return ratelimit.StateNone
 }
@@ -836,45 +908,36 @@ func (cc *ClaudeController) GetRateLimitState() ratelimit.RateLimitState {
 // GetExitContent returns the last bytes captured before the PTY exited.
 // Returns nil if the controller has no response stream or no exit content was recorded.
 func (cc *ClaudeController) GetExitContent() []byte {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-	if cc.responseStream == nil {
-		return nil
+	if rs := cc.responseStream.Load(); rs != nil {
+		return rs.GetExitTail()
 	}
-	return cc.responseStream.GetExitTail()
+	return nil
 }
 
 // GetEscapeParser returns the escape code parser from the response stream.
 // Returns nil if the controller is not started or has no response stream.
 func (cc *ClaudeController) GetEscapeParser() *analytics.EscapeCodeParser {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-	if cc.responseStream == nil {
-		return nil
+	if rs := cc.responseStream.Load(); rs != nil {
+		return rs.GetEscapeParser()
 	}
-	return cc.responseStream.GetEscapeParser()
+	return nil
 }
 
 // GetTotalBytesWritten returns the monotonic PTY byte offset from the response
 // stream's circular buffer. Returns 0 if the controller is not started or has
 // no response stream.
 func (cc *ClaudeController) GetTotalBytesWritten() int64 {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-	if cc.responseStream == nil {
-		return 0
+	if rs := cc.responseStream.Load(); rs != nil {
+		return rs.GetTotalBytesWritten()
 	}
-	return cc.responseStream.GetTotalBytesWritten()
+	return 0
 }
 
 // GetRateLimitResetTime returns the reset time from the rate limit handler.
 // Returns zero time if no handler is active or no reset time is known.
 func (cc *ClaudeController) GetRateLimitResetTime() time.Time {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.rateLimitHandler != nil {
-		return cc.rateLimitHandler.GetResetTime()
+	if rlh := cc.rateLimitHandler.Load(); rlh != nil {
+		return rlh.GetResetTime()
 	}
 	return time.Time{}
 }
@@ -882,28 +945,20 @@ func (cc *ClaudeController) GetRateLimitResetTime() time.Time {
 // GetRateLimitHandler returns the rate limit PTY consumer (for callback wiring).
 // Returns nil if the controller has not been started yet.
 func (cc *ClaudeController) GetRateLimitHandler() *ratelimit.PTYConsumer {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-	return cc.rateLimitHandler
+	return cc.rateLimitHandler.Load()
 }
 
 // SetRateLimitEnabled enables or disables rate limit detection.
 func (cc *ClaudeController) SetRateLimitEnabled(enabled bool) {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.rateLimitHandler != nil {
-		cc.rateLimitHandler.SetEnabled(enabled)
+	if rlh := cc.rateLimitHandler.Load(); rlh != nil {
+		rlh.SetEnabled(enabled)
 	}
 }
 
 // IsRateLimitEnabled returns whether rate limit detection is enabled.
 func (cc *ClaudeController) IsRateLimitEnabled() bool {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	if cc.rateLimitHandler != nil {
-		return cc.rateLimitHandler.IsEnabled()
+	if rlh := cc.rateLimitHandler.Load(); rlh != nil {
+		return rlh.IsEnabled()
 	}
 	return false
 }
@@ -911,12 +966,12 @@ func (cc *ClaudeController) IsRateLimitEnabled() bool {
 // GetStatusDetector returns the status detector used by this controller.
 // Used by GetDetectionEvents RPC to retrieve recent detection events for debugging.
 func (cc *ClaudeController) GetStatusDetector() *detection.StatusDetector {
-	return cc.statusDetector
+	return cc.statusDetector.Load()
 }
 
 // runStatusChangeLoop waits for output signals on statusCheckCh, checks the current
-// status, and calls statusChangeListener whenever the status transitions to a new value.
-// Exits when ctx is cancelled (i.e., when Stop() calls cc.cancel()).
+// status, and calls registered listeners whenever the status transitions to a new value.
+// Exits when ctx is cancelled (i.e., when Stop() calls cancel()).
 func (cc *ClaudeController) runStatusChangeLoop(ctx context.Context) {
 	for {
 		select {
@@ -924,21 +979,20 @@ func (cc *ClaudeController) runStatusChangeLoop(ctx context.Context) {
 			return
 		case <-cc.statusCheckCh:
 			newStatus, _ := cc.GetCurrentStatus()
-			cc.mu.Lock()
-			if newStatus == cc.lastEmittedStatus {
-				cc.mu.Unlock()
+
+			last := detection.DetectedStatus(cc.lastEmittedStatus.Load())
+			if newStatus == last {
 				continue
 			}
-			cc.lastEmittedStatus = newStatus
-			cc.mu.Unlock()
+			cc.lastEmittedStatus.Store(int64(newStatus))
 
-			cc.listenersMu.RLock()
-			listeners := make([]StatusChangeListener, len(cc.statusChangeListeners))
-			copy(listeners, cc.statusChangeListeners)
-			cc.listenersMu.RUnlock()
+			var ls []StatusChangeListener
+			cc.listeners.Read(func(listeners []StatusChangeListener) {
+				ls = make([]StatusChangeListener, len(listeners))
+				copy(ls, listeners)
+			})
 
-			// Call all listeners outside cc.mu (avoids re-entrancy deadlock)
-			for _, fn := range listeners {
+			for _, fn := range ls {
 				fn(newStatus, cc.sessionName)
 			}
 		}
@@ -950,18 +1004,14 @@ func generateCommandID() string {
 }
 
 func getQueuePersistDir() string {
-	// Use the same directory structure as the main app
 	return getPersistDir()
 }
 
 func getHistoryPersistDir() string {
-	// Use the same directory structure as the main app
 	return getPersistDir()
 }
 
 func getPersistDir() string {
-	// This should ideally be configurable, but for now use a default
-	// In production, this would be injected or configured
 	homeDir := os.Getenv("HOME")
 	if homeDir == "" {
 		homeDir = "/tmp"
