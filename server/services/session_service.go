@@ -1362,6 +1362,7 @@ func (s *SessionService) UpdateSession(
 		}
 	}
 
+
 	// Handle status change (pause/resume) LAST - after all metadata updates.
 	// This ensures that if Resume() fails, no partial metadata changes are persisted
 	// (save only happens after all changes succeed).
