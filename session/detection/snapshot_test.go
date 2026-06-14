@@ -107,6 +107,26 @@ var snapshotTests = []snapshotTest{
 		description: "Aider actively editing or applying changes",
 	},
 
+	// ── Claude Code dialogs ──────────────────────────────────────────────────
+	{
+		fixture:     "claude_workflow_approval.txt",
+		expected:    StatusInputRequired,
+		program:     "claude",
+		description: "Claude Code workflow confirmation dialog (❯ 1. Yes, run it / 2. View raw script / 3. No) — must trigger InputRequired",
+	},
+	{
+		fixture:     "claude_workflow_with_readline_cursor.txt",
+		expected:    StatusInputRequired,
+		program:     "claude",
+		description: "Workflow dialog plus readline cursor (❯ ▌ at col 0) — readline cursor must NOT override the InputRequired dialog",
+	},
+	{
+		fixture:     "claude_idle_typing.txt",
+		expected:    StatusIdle,
+		program:     "claude",
+		description: "Claude idle with user actively typing at readline (❯ push it) — ✻ completion marker in scrollback must NOT override to Success",
+	},
+
 	// ── False-positive guards ─────────────────────────────────────────────────
 	// These fixtures contain numbered lists that SHOULD NOT trigger InputRequired.
 	// They guard against regressions in the numbered_option_selector pattern.
