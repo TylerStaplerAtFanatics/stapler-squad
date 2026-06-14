@@ -270,6 +270,7 @@ function HomeContent() {
     await updateSession(sessionId, { steerMessage: message });
   }, [updateSession, track]);
 
+
   const handleRunOneShot = useCallback(async (sessionId: string): Promise<void> => {
     await runOneShot(sessionId, "Create a pull request for the changes in this session.", 0);
   }, [runOneShot]);
