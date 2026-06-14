@@ -348,6 +348,59 @@ func TestBug_ToolPermissionDialog_DetectedAsInputRequired(t *testing.T) {
 	}
 }
 
+// TestBug_ToolPermissionDialog_WithConcurrentWaiting guards against a regression where
+// a Claude Code tool permission dialog was NOT detected as StatusInputRequired when the
+// pane also showed a concurrent "⎿  Waiting…" tool call and "❯ /github:pr-ship 149"
+// readline input above the dialog.
+//
+// Root cause candidates:
+//   - readlineTypingRegex (`^❯[ \t]+[^0-9\s]`) matches "❯ /github:pr-ship 149" and
+//     returns StatusIdle if the scan somehow reaches that line before ❯ 1. Yes.
+//   - The dialog's option-2 description is 4 wrapped lines (longer than earlier tests),
+//     pushing the total dialog height above the statusDetectionLinesWindow if window is tight.
+//
+// DetectFromLines (bottom-up) must return StatusInputRequired from "❯ 1. Yes" without
+// being intercepted by the readline cursor line higher in the pane.
+func TestBug_ToolPermissionDialog_WithConcurrentWaiting(t *testing.T) {
+	sd := NewStatusDetector()
+
+	lines := []string{
+		// Earlier output in the pane
+		"❯ /github:pr-ship 149",
+		`      "import json,sys; runs=json.load(sys.stdin); [p…)`,
+		"  ⎿  Waiting…",
+		"",
+		// Tool permission dialog
+		"──────────────────────────────────────────────────────────────────────────────",
+		" Bash command",
+		"   gh run list --branch stelekit-bazel --json",
+		"   databaseId,name,status,conclusion,headSha --limit 8 2>&1 | python3 -c",
+		`   "import json,sys; runs=json.load(sys.stdin); [print(r['databaseId'],`,
+		`   r['status'][:12], r['conclusion'] or 'pending', r['headSha'][:8],`,
+		`   r['name'][:35]) for r in runs]"`,
+		"   List all CI runs on stelekit-bazel with commit SHAs",
+		"",
+		" Do you want to proceed?",
+		" ❯ 1. Yes",
+		`  2.Yes, and don't ask  : python3 -c "import json,sys;`,
+		`    again for           runs=json.load(sys.stdin); [print(r['databaseId'],`,
+		`                        r['status'][:12], r['conclusion'] or 'pending',`,
+		`                        r['headSha'][:8], r['name'][:35]) for r in runs]"`,
+		"   3. No",
+		"",
+		" Esc to cancel · Tab to amend · ctrl+e to explain",
+	}
+
+	got := sd.DetectFromLines(lines)
+	if got != StatusInputRequired {
+		t.Errorf("DetectFromLines with tool permission dialog + concurrent Waiting: got %s, want StatusInputRequired\n"+
+			"  Session was waiting at '❯ 1. Yes' tool dialog.\n"+
+			"  '❯ /github:pr-ship 149' readline line above dialog must NOT intercept the scan.\n"+
+			"  '⎿  Waiting…' concurrent tool line must NOT override the dialog detection.",
+			got)
+	}
+}
+
 // TestBug_ThinkingWithStillThinkingSuffix documents that a Claude Code spinner line
 // with a "· still thinking" suffix in the duration annotation is still detected as
 // StatusActive, not silently dropped.
