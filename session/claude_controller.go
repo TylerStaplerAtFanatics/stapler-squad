@@ -50,7 +50,7 @@ type idleCacheEntry struct {
 // statusDetectionTailBytes is the number of bytes taken from the tail of the
 // terminal content before line-based detection. This bounds the scope passed to
 // filterTmuxMetadata and the line splitter.
-const statusDetectionTailBytes = 4096
+const statusDetectionTailBytes = detection.StatusDetectionTailBytes
 
 // statusDetectionLinesWindow is the number of trailing lines examined by
 // DetectWithContextFromLines. Status indicators (◇ Ready, esc to interrupt,
@@ -860,7 +860,9 @@ func (cc *ClaudeController) GetIdleState() (detection.IdleState, time.Time) {
 			state = id.GetState()
 		}
 	} else {
-		state = id.DetectState()
+		// No PTY access available — return the last cached state without
+		// triggering the deprecated PTY-buffer detection path.
+		state = id.GetState()
 	}
 
 	lastActivity := id.GetLastActivity()
