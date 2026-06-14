@@ -300,3 +300,78 @@ func TestMapStatusToIdleState_ExplicitCoverage(t *testing.T) {
 		})
 	}
 }
+
+// TestBug_ToolPermissionDialog_DetectedAsInputRequired guards against a regression where
+// a Claude Code tool permission dialog ("Do you want to proceed? / ❯ 1. Yes") was not
+// detected as StatusInputRequired when earlier scrollback contained "Error: Exit code 1"
+// from a failed command.
+//
+// Root cause: Detect() (full-block) fires error_message on the earlier "Error:" line
+// before reaching the dialog patterns.  DetectFromLines (bottom-up scan) must reach
+// ❯ 1. Yes first and return StatusInputRequired without being blocked by the stale error.
+//
+// Observed: session running /github:pr-ship showed "Error: Exit code 1" from
+// `gh pr checks 149 --watch=false`, then hit the python3 tool permission dialog.
+// The session list displayed the wrong status instead of needs-input.
+func TestBug_ToolPermissionDialog_DetectedAsInputRequired(t *testing.T) {
+	sd := NewStatusDetector()
+
+	// Scrollback: a prior failed command ("Error: Exit code 1"), then the tool dialog.
+	lines := []string{
+		"● Bash(gh pr checks 149 --watch=false 2>&1)",
+		"  ⎿  Error: Exit code 1",
+		"     no checks reported on the 'stelekit-bazel' branch",
+		"",
+		"──────────────────────────────────────────────────────────────────────────────",
+		" Bash command",
+		"   gh run list --branch stelekit-bazel --json",
+		`   databaseId,name,status,conclusion,createdAt --limit 10 2>&1 | python3 -c`,
+		`   "import json,sys; runs=json.load(sys.stdin); [print(r['databaseId'],`,
+		`   r['status'], r['conclusion'], r['name'][:30]) for r in runs]"`,
+		"   List all recent CI runs with status for stelekit-bazel",
+		" Do you want to proceed?",
+		" ❯ 1. Yes",
+		`  2.Yes, and don't ask  : python3 -c "import json,sys;`,
+		`    again for           runs=json.load(sys.stdin); [print(r['databaseId'],`,
+		`    r['status'], r['conclusion'], r['name'][:30]) for r in runs]"`,
+		"   3. No",
+		" Esc to cancel · Tab to amend · ctrl+e to explain",
+	}
+
+	got := sd.DetectFromLines(lines)
+	if got != StatusInputRequired {
+		t.Errorf("DetectFromLines with tool permission dialog after error scrollback: got %s, want StatusInputRequired\n"+
+			"  The session was waiting at '❯ 1. Yes' dialog — must be detected as InputRequired.\n"+
+			"  Earlier 'Error: Exit code 1' in scrollback must NOT override the current dialog state.\n"+
+			"  Use DetectFromLines (bottom-up scan) so the dialog is found before the stale error.",
+			got)
+	}
+}
+
+// TestBug_ThinkingWithStillThinkingSuffix documents that a Claude Code spinner line
+// with a "· still thinking" suffix in the duration annotation is still detected as
+// StatusActive, not silently dropped.
+//
+// Observed: Claude Code appends "· still thinking" to the duration when a turn has been
+// running unusually long (e.g. "✻ Imagining… (7m 5s · ↓ 21.4k tokens · still thinking)").
+// The surrounding terminal content also contains a bare ❯ cursor line and a
+// "esc to interrupt" status bar, so DetectFromLines must pick up Active from one of them.
+func TestBug_ThinkingWithStillThinkingSuffix(t *testing.T) {
+	sd := NewStatusDetector()
+
+	lines := []string{
+		"✻ Imagining… (7m 5s · ↓ 21.4k tokens · still thinking)",
+		"──────────────────────────────────────────────────────────────────────────────",
+		"❯ ",
+		"──────────────────────────────────────────────────────────────────────────────",
+		"  2 shells · esc to interrupt · ↓ to manage",
+	}
+
+	got := sd.DetectFromLines(lines)
+	if got != StatusActive {
+		t.Errorf("DetectFromLines with '✻ Imagining… · still thinking' spinner: got %s, want StatusActive\n"+
+			"  The session is actively thinking — spinner line and 'esc to interrupt' both indicate Active.\n"+
+			"  The '· still thinking' suffix on the spinner must not prevent Active detection.",
+			got)
+	}
+}
