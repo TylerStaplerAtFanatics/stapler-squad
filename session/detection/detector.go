@@ -205,6 +205,13 @@ func (sd *StatusDetector) compilePatterns() error {
 // ansiStripRegex matches ANSI escape sequences for stripping
 var ansiStripRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07`)
 
+// readlineTypingRegex matches the Claude Code readline prompt when the user has
+// started composing a message (❯ at column 0 followed by non-digit text).
+// This distinguishes active user input from numbered selection menus, which
+// use an indented ❯. Checked before Success so a stale ✻ completion marker
+// in scrollback does not override the current "user is typing" state.
+var readlineTypingRegex = regexp.MustCompile(`(?m)^❯[ \t]+[^0-9\s]`)
+
 // stripANSI removes ANSI escape codes from text for cleaner pattern matching
 func stripANSI(text string) string {
 	return ansiStripRegex.ReplaceAllString(text, "")
@@ -278,12 +285,6 @@ func (sd *StatusDetector) detectFromText(text string, rawPTY []byte) (DetectedSt
 			return StatusTestsFailing, sd.patterns.TestsFailing[i].Name, sd.patterns.TestsFailing[i].Description
 		}
 	}
-	// Success / task completion
-	for i, regex := range sd.successRegexes {
-		if regex.MatchString(text) {
-			return StatusSuccess, sd.patterns.Success[i].Name, sd.patterns.Success[i].Description
-		}
-	}
 	// Needs approval
 	for i, regex := range sd.needsApprovalRegexes {
 		if regex.MatchString(text) {
@@ -294,6 +295,21 @@ func (sd *StatusDetector) detectFromText(text string, rawPTY []byte) (DetectedSt
 	for i, regex := range sd.inputRequiredRegexes {
 		if regex.MatchString(text) {
 			return StatusInputRequired, sd.patterns.InputRequired[i].Name, sd.patterns.InputRequired[i].Description
+		}
+	}
+	// Readline typing — user has started composing at the Claude readline
+	// (❯ at column 0 with non-digit text, e.g. "❯ push it"). Checked AFTER
+	// NeedsApproval and InputRequired so approval/input dialogs (e.g. the
+	// workflow confirmation "❯ 1. Yes, run it") are never masked by a
+	// simultaneous readline cursor. Checked BEFORE Success so a stale
+	// ✻ completion marker in scrollback doesn't hide the "user is typing" state.
+	if readlineTypingRegex.MatchString(text) {
+		return StatusIdle, "readline_typing", "User composing at Claude readline — overrides stale completion marker in scrollback"
+	}
+	// Success / task completion
+	for i, regex := range sd.successRegexes {
+		if regex.MatchString(text) {
+			return StatusSuccess, sd.patterns.Success[i].Name, sd.patterns.Success[i].Description
 		}
 	}
 	// Active (e.g. "esc to interrupt", thinking verb)
