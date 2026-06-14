@@ -673,3 +673,33 @@ func TestIdleDetector_InitializeFromTimestamp_ThreadSafety(t *testing.T) {
 			lastActivity, time.Since(lastActivity))
 	}
 }
+
+func TestNewIdleDetectorWithDetector_should_acceptInjectedDetector(t *testing.T) {
+	sd := NewStatusDetector()
+	sd.SetSessionID("test-session")
+	pa := &mockPTYReader{data: []byte("? for shortcuts")}
+	id := NewIdleDetectorWithDetector("test", pa, DefaultIdleDetectorConfig(), sd)
+	state := id.DetectState()
+	// Just verifying it doesn't panic and returns a valid state
+	_ = state
+}
+
+func TestNewIdleDetectorWithDetector_should_useInjected_When_nonNil(t *testing.T) {
+	sd := NewStatusDetector()
+	sd.SetSessionID("test-session")
+	pa := &mockPTYReader{data: []byte("? for shortcuts")}
+	id := NewIdleDetectorWithDetector("test", pa, DefaultIdleDetectorConfig(), sd)
+	_ = id.DetectState()
+	// Verify events were recorded on the shared detector
+	events := sd.RecentEvents(10)
+	if len(events) == 0 {
+		t.Error("expected detection events on shared StatusDetector, got none")
+	}
+}
+
+func TestNewIdleDetectorWithDetector_should_createOwn_When_nilInjected(t *testing.T) {
+	pa := &mockPTYReader{data: []byte("? for shortcuts")}
+	id := NewIdleDetectorWithDetector("test", pa, DefaultIdleDetectorConfig(), nil)
+	state := id.DetectState()
+	_ = state // Should not panic, returns valid state
+}

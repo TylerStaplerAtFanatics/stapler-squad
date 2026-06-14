@@ -75,7 +75,7 @@ type ReviewQueuePoller struct {
 	storage          *Storage
 	instances        []*Instance
 	config           ReviewQueuePollerConfig
-	statusDetector   *detection.StatusDetector // For detecting status in sessions without ClaudeController
+	statusDetector   detection.TerminalDetector // For detecting status in sessions without ClaudeController
 	approvalProvider ApprovalMetadataProvider  // Optional: enriches approval items with hook metadata
 	contentProvider  ContentProvider           // Fetches and caches terminal content
 	statusDeterminer StatusDeterminer          // Evaluates whether session should be in queue

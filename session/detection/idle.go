@@ -46,7 +46,7 @@ type PTYReader interface {
 // It uses pattern matching on recent output and tracks state transitions with debouncing.
 type IdleDetector struct {
 	sessionName    string
-	statusDetector *StatusDetector
+	statusDetector TerminalDetector
 	ptyAccess      PTYReader
 	config         IdleDetectorConfig
 	now            func() time.Time // injectable for testing; defaults to time.Now
@@ -78,6 +78,26 @@ func NewIdleDetectorWithConfig(sessionName string, ptyAccess PTYReader, config I
 	return &IdleDetector{
 		sessionName:     sessionName,
 		statusDetector:  NewStatusDetector(),
+		ptyAccess:       ptyAccess,
+		config:          config,
+		currentState:    IdleStateUnknown,
+		lastStateChange: now,
+		lastActivity:    now,
+	}
+}
+
+// NewIdleDetectorWithDetector creates a new idle detector that uses the provided
+// TerminalDetector instead of creating its own. When detector is nil, falls back
+// to creating a new StatusDetector (same as NewIdleDetectorWithConfig).
+func NewIdleDetectorWithDetector(sessionName string, ptyAccess PTYReader, config IdleDetectorConfig, detector TerminalDetector) *IdleDetector {
+	now := time.Now()
+	sd := detector
+	if sd == nil {
+		sd = NewStatusDetector()
+	}
+	return &IdleDetector{
+		sessionName:     sessionName,
+		statusDetector:  sd,
 		ptyAccess:       ptyAccess,
 		config:          config,
 		currentState:    IdleStateUnknown,

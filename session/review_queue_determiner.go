@@ -42,7 +42,7 @@ type StatusDeterminer interface {
 		inst *Instance,
 		content string,
 		statusInfo InstanceStatusInfo,
-		detector *detection.StatusDetector,
+		detector detection.TerminalDetector,
 	) DetectionResult
 }
 
@@ -98,7 +98,7 @@ func (d *DefaultStatusDeterminer) Determine(
 	inst *Instance,
 	content string,
 	statusInfo InstanceStatusInfo,
-	detector *detection.StatusDetector,
+	detector detection.TerminalDetector,
 ) DetectionResult {
 	// claudeStatus captures the raw DetectedStatus from whichever detection path ran.
 	// For controller sessions this is statusInfo.ClaudeStatus; for no-controller sessions

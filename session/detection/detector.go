@@ -5,8 +5,9 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"time"
+	"sync"
 
+	"github.com/tstapler/stapler-squad/session/detection/dtypes"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,52 +29,33 @@ const (
 )
 
 // StatusPattern represents a regex pattern for detecting a specific status.
-type StatusPattern struct {
-	Name        string `yaml:"name"`
-	Pattern     string `yaml:"pattern"`
-	Description string `yaml:"description"`
-	Priority    int    `yaml:"priority"` // Higher priority patterns checked first
-}
+// This is a type alias for dtypes.StatusPattern to avoid import cycles while
+// keeping the type accessible from this package without qualification.
+type StatusPattern = dtypes.StatusPattern
 
 // StatusPatterns contains all patterns for status detection.
-type StatusPatterns struct {
-	Ready         []StatusPattern `yaml:"ready"`
-	Processing    []StatusPattern `yaml:"processing"`
-	NeedsApproval []StatusPattern `yaml:"needs_approval"`
-	InputRequired []StatusPattern `yaml:"input_required"` // Explicit input prompts
-	Error         []StatusPattern `yaml:"error"`
-	TestsFailing  []StatusPattern `yaml:"tests_failing"` // Tests are failing
-	Idle          []StatusPattern `yaml:"idle"`          // Waiting for user input
-	Active        []StatusPattern `yaml:"active"`        // Actively executing commands
-	Success       []StatusPattern `yaml:"success"`       // Task completed successfully
-}
+// This is a type alias for dtypes.StatusPatterns.
+type StatusPatterns = dtypes.StatusPatterns
+
+// BinaryDetector provides per-binary pattern sets and optional content filtering.
+// This is a type alias for dtypes.BinaryDetector.
+type BinaryDetector = dtypes.BinaryDetector
 
 // StatusDetector analyzes PTY output to determine the current status of a Claude instance.
 type StatusDetector struct {
-	patterns StatusPatterns
-	// Cache compiled regexes for performance
-	readyRegexes         []*regexp.Regexp
-	processingRegexes    []*regexp.Regexp
-	needsApprovalRegexes []*regexp.Regexp
-	inputRequiredRegexes []*regexp.Regexp
-	errorRegexes         []*regexp.Regexp
-	testsFailingRegexes  []*regexp.Regexp
-	idleRegexes          []*regexp.Regexp
-	activeRegexes        []*regexp.Regexp
-	successRegexes       []*regexp.Regexp
-	// sessionID is set by SetSessionID() so detection events carry the owning session ID.
-	sessionID string
-	// ring is the per-detector in-memory detection event ring buffer.
-	ring eventRing
+	patternSet   *PatternSet
+	patternSetMu sync.RWMutex
+	sink         DetectionEventSink
+	normalizer   PTYNormalizer
 }
 
 // NewStatusDetector creates a new status detector with default patterns.
 func NewStatusDetector() *StatusDetector {
-	sd := &StatusDetector{
-		patterns: getDefaultPatterns(),
+	ps, _ := NewPatternSet(getDefaultPatterns())
+	return &StatusDetector{
+		patternSet: ps,
+		normalizer: PTYNormalizer{},
 	}
-	sd.compilePatterns()
-	return sd
 }
 
 // validatePatternFilePath rejects paths containing ".." to prevent path traversal.
@@ -99,11 +81,13 @@ func NewStatusDetectorFromFile(path string) (*StatusDetector, error) {
 		return nil, fmt.Errorf("failed to parse status patterns YAML: %w", err)
 	}
 
-	sd := &StatusDetector{
-		patterns: patterns,
-	}
-	if err := sd.compilePatterns(); err != nil {
+	ps, err := NewPatternSet(patterns)
+	if err != nil {
 		return nil, err
+	}
+	sd := &StatusDetector{
+		patternSet: ps,
+		normalizer: PTYNormalizer{},
 	}
 
 	return sd, nil
@@ -124,39 +108,13 @@ func (sd *StatusDetector) LoadPatterns(path string) error {
 		return fmt.Errorf("failed to parse status patterns YAML: %w", err)
 	}
 
-	sd.patterns = patterns
-	return sd.compilePatterns()
-}
-
-// compilePatterns compiles all regex patterns for efficient matching.
-func (sd *StatusDetector) compilePatterns() error {
-	type patternGroup struct {
-		label    string
-		patterns []StatusPattern
-		out      *[]*regexp.Regexp
+	newSet, err := NewPatternSet(patterns)
+	if err != nil {
+		return err
 	}
-	groups := []patternGroup{
-		{"ready", sd.patterns.Ready, &sd.readyRegexes},
-		{"processing", sd.patterns.Processing, &sd.processingRegexes},
-		{"needs_approval", sd.patterns.NeedsApproval, &sd.needsApprovalRegexes},
-		{"input_required", sd.patterns.InputRequired, &sd.inputRequiredRegexes},
-		{"error", sd.patterns.Error, &sd.errorRegexes},
-		{"tests_failing", sd.patterns.TestsFailing, &sd.testsFailingRegexes},
-		{"idle", sd.patterns.Idle, &sd.idleRegexes},
-		{"active", sd.patterns.Active, &sd.activeRegexes},
-		{"success", sd.patterns.Success, &sd.successRegexes},
-	}
-	for _, g := range groups {
-		compiled := make([]*regexp.Regexp, len(g.patterns))
-		for i, p := range g.patterns {
-			rx, err := regexp.Compile(p.Pattern)
-			if err != nil {
-				return fmt.Errorf("failed to compile %s pattern %q: %w", g.label, p.Name, err)
-			}
-			compiled[i] = rx
-		}
-		*g.out = compiled
-	}
+	sd.patternSetMu.Lock()
+	sd.patternSet = newSet
+	sd.patternSetMu.Unlock()
 	return nil
 }
 
@@ -231,116 +189,33 @@ const StatusDetectionTailBytes = 4096
 //
 // rawPTY must be the original PTY bytes before collapseCarriageReturns is applied.
 func (sd *StatusDetector) detectFromText(text string, rawPTY []byte) (DetectedStatus, string, string) {
-	// Error patterns (highest priority)
-	for i, regex := range sd.errorRegexes {
-		if regex.MatchString(text) {
-			return StatusError, sd.patterns.Error[i].Name, sd.patterns.Error[i].Description
-		}
-	}
-	// Tests failing
-	for i, regex := range sd.testsFailingRegexes {
-		if regex.MatchString(text) {
-			return StatusTestsFailing, sd.patterns.TestsFailing[i].Name, sd.patterns.TestsFailing[i].Description
-		}
-	}
-	// Needs approval
-	for i, regex := range sd.needsApprovalRegexes {
-		if regex.MatchString(text) {
-			return StatusNeedsApproval, sd.patterns.NeedsApproval[i].Name, sd.patterns.NeedsApproval[i].Description
-		}
-	}
-	// Input required (explicit prompts)
-	for i, regex := range sd.inputRequiredRegexes {
-		if regex.MatchString(text) {
-			return StatusInputRequired, sd.patterns.InputRequired[i].Name, sd.patterns.InputRequired[i].Description
-		}
-	}
-	// Readline typing — user has started composing at the Claude readline
-	// (❯ at column 0 with non-digit text, e.g. "❯ push it"). Checked AFTER
-	// NeedsApproval and InputRequired so approval/input dialogs (e.g. the
-	// workflow confirmation "❯ 1. Yes, run it") are never masked by a
-	// simultaneous readline cursor. Checked BEFORE Success so a stale
-	// ✻ completion marker in scrollback doesn't hide the "user is typing" state.
-	if readlineTypingRegex.MatchString(text) {
-		return StatusIdle, "readline_typing", "User composing at Claude readline — overrides stale completion marker in scrollback"
-	}
-	// Success / task completion
-	for i, regex := range sd.successRegexes {
-		if regex.MatchString(text) {
-			return StatusSuccess, sd.patterns.Success[i].Name, sd.patterns.Success[i].Description
-		}
-	}
-	// Active (e.g. "esc to interrupt", thinking verb)
-	for i, regex := range sd.activeRegexes {
-		if regex.MatchString(text) {
-			return StatusActive, sd.patterns.Active[i].Name, sd.patterns.Active[i].Description
-		}
-	}
-	// Processing
-	for i, regex := range sd.processingRegexes {
-		if regex.MatchString(text) {
-			return StatusProcessing, sd.patterns.Processing[i].Name, sd.patterns.Processing[i].Description
-		}
-	}
-	// Screen-overwrite fallback: bare \r or ANSI cursor-up signals a spinner animating
-	// in-place. Placed AFTER Active/Processing (visible text beats heuristic) but BEFORE
-	// Idle/Ready catch-alls so a spinning session isn't misclassified as waiting.
-	if hasScreenOverwrite(rawPTY) {
-		return StatusActive, "screen_overwrite", "Screen overwrite — spinner actively redrawing"
-	}
-	// Idle (e.g. "— INSERT —", readline prompt)
-	for i, regex := range sd.idleRegexes {
-		if regex.MatchString(text) {
-			return StatusIdle, sd.patterns.Idle[i].Name, sd.patterns.Idle[i].Description
-		}
-	}
-	// Ready (includes ".*" catch-all — must be last)
-	for i, regex := range sd.readyRegexes {
-		if regex.MatchString(text) {
-			return StatusReady, sd.patterns.Ready[i].Name, sd.patterns.Ready[i].Description
-		}
-	}
-	return StatusUnknown, "<none>", ""
+	sd.patternSetMu.RLock()
+	ps := sd.patternSet
+	sd.patternSetMu.RUnlock()
+	return ps.MatchLines(text, rawPTY)
 }
 
 // appendDetectionEvent records the outcome of a detection call to the ring buffer.
-// It acquires sd.ring.mu so that the sessionID read and the ring insert are atomic
-// with respect to SetSessionID, eliminating the data race between the two.
 func (sd *StatusDetector) appendDetectionEvent(status DetectedStatus, patternName, cleanedText string) {
-	snippet := cleanedText
-	if len(snippet) > TailSnippetBytes {
-		snippet = snippet[len(snippet)-TailSnippetBytes:]
-	}
-	sd.ring.mu.Lock()
-	defer sd.ring.mu.Unlock()
-	sd.ring.pushLocked(DetectionEvent{
-		SessionID:       sd.sessionID,
-		Timestamp:       time.Now(),
-		MatchedPattern:  patternName,
-		MatchedCategory: categoryName(status),
-		ResultStatus:    status,
-		TailSnippet:     snippet,
-	})
+	sd.sink.Record(status, patternName, cleanedText)
 }
 
 // SetSessionID sets the session identifier embedded in all future DetectionEvents.
 // Call this once after creating the detector, before any detections run.
 func (sd *StatusDetector) SetSessionID(id string) {
-	sd.ring.mu.Lock()
-	sd.sessionID = id
-	sd.ring.mu.Unlock()
+	sd.sink.SetSessionID(id)
 }
 
 // RecentEvents returns up to n most-recent DetectionEvents, newest-first.
 func (sd *StatusDetector) RecentEvents(n int) []DetectionEvent {
-	return sd.ring.recent(n)
+	return sd.sink.Recent(n)
 }
 
 // Detect analyzes the provided PTY output and returns the detected status.
 // Patterns are checked in priority order: Error > TestsFailing > Success > NeedsApproval > InputRequired > Active > Processing > Idle > Ready.
 // Returns StatusUnknown if no patterns match.
 func (sd *StatusDetector) Detect(output []byte) DetectedStatus {
-	text := stripANSI(collapseCarriageReturns(string(output)))
+	text := sd.normalizer.Normalize(string(output))
 	status, patternName, _ := sd.detectFromText(text, output)
 	sd.appendDetectionEvent(status, patternName, text)
 	return status
@@ -349,7 +224,7 @@ func (sd *StatusDetector) Detect(output []byte) DetectedStatus {
 // DetectWithContext returns the detected status along with a user-friendly context message.
 // Uses the pattern's Description field for human-readable messages instead of raw matched text.
 func (sd *StatusDetector) DetectWithContext(output []byte) (DetectedStatus, string) {
-	text := stripANSI(collapseCarriageReturns(string(output)))
+	text := sd.normalizer.Normalize(string(output))
 	status, patternName, context := sd.detectFromText(text, output)
 	sd.appendDetectionEvent(status, patternName, text)
 	return status, context
@@ -683,7 +558,8 @@ func (sd *StatusDetector) ExportPatterns(path string) error {
 	if err := validatePatternFilePath(path); err != nil {
 		return err
 	}
-	data, err := yaml.Marshal(&sd.patterns)
+	p := sd.patternSet.Patterns()
+	data, err := yaml.Marshal(&p)
 	if err != nil {
 		return fmt.Errorf("failed to marshal status patterns: %w", err)
 	}
@@ -697,33 +573,34 @@ func (sd *StatusDetector) ExportPatterns(path string) error {
 
 // GetPatternNames returns the names of all loaded patterns for a given status.
 func (sd *StatusDetector) GetPatternNames(status DetectedStatus) []string {
+	p := sd.patternSet.Patterns()
 	var patterns []StatusPattern
 	switch status {
 	case StatusReady:
-		patterns = sd.patterns.Ready
+		patterns = p.Ready
 	case StatusProcessing:
-		patterns = sd.patterns.Processing
+		patterns = p.Processing
 	case StatusNeedsApproval:
-		patterns = sd.patterns.NeedsApproval
+		patterns = p.NeedsApproval
 	case StatusInputRequired:
-		patterns = sd.patterns.InputRequired
+		patterns = p.InputRequired
 	case StatusError:
-		patterns = sd.patterns.Error
+		patterns = p.Error
 	case StatusTestsFailing:
-		patterns = sd.patterns.TestsFailing
+		patterns = p.TestsFailing
 	case StatusIdle:
-		patterns = sd.patterns.Idle
+		patterns = p.Idle
 	case StatusActive:
-		patterns = sd.patterns.Active
+		patterns = p.Active
 	case StatusSuccess:
-		patterns = sd.patterns.Success
+		patterns = p.Success
 	default:
 		return nil
 	}
 
 	names := make([]string, len(patterns))
-	for i, p := range patterns {
-		names[i] = p.Name
+	for i, pat := range patterns {
+		names[i] = pat.Name
 	}
 	return names
 }
@@ -733,12 +610,33 @@ func (sd *StatusDetector) DetectFromString(output string) DetectedStatus {
 	return sd.Detect([]byte(output))
 }
 
+// builtBinaryDetectors is a package-level cache of per-binary StatusDetectors,
+// keyed by binary name. Initialized once at startup from DefaultRegistry().
+var builtBinaryDetectors = func() map[string]*StatusDetector {
+	m := make(map[string]*StatusDetector)
+	reg := DefaultRegistry()
+	for _, name := range reg.Names() {
+		bd, _ := reg.Lookup(name)
+		ps, _ := NewPatternSet(bd.Patterns()) // patterns are from code, always valid
+		m[name] = &StatusDetector{patternSet: ps}
+	}
+	return m
+}()
+
 // DetectForProgram detects the status for output from a named program.
-// DEPRECATED: the program parameter is currently ignored — all binaries share the same
-// pattern set. For per-binary dispatch, implement the BinaryDetector interface and
-// register it with a DetectorRegistry. This method will be removed once that interface
-// is in place.
+// When the program has a registered BinaryDetector, its per-binary pattern set
+// is consulted first. If the per-binary detector returns StatusUnknown (no match),
+// the generic Detect() is called as a fallback. For unregistered programs, only
+// the generic Detect() is used.
 func (sd *StatusDetector) DetectForProgram(output []byte, program string) DetectedStatus {
+	if bsd, ok := builtBinaryDetectors[program]; ok {
+		text := stripANSI(collapseCarriageReturns(string(output)))
+		status, patternName, _ := bsd.detectFromText(text, output)
+		if status != StatusUnknown {
+			sd.appendDetectionEvent(status, patternName, text)
+			return status
+		}
+	}
 	return sd.Detect(output)
 }
 
