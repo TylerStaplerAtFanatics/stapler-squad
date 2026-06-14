@@ -327,6 +327,9 @@ const (
 	// SessionServiceRunWorkflowProcedure is the fully-qualified name of the SessionService's
 	// RunWorkflow RPC.
 	SessionServiceRunWorkflowProcedure = "/session.v1.SessionService/RunWorkflow"
+	// SessionServiceGetDetectionEventsProcedure is the fully-qualified name of the SessionService's
+	// GetDetectionEvents RPC.
+	SessionServiceGetDetectionEventsProcedure = "/session.v1.SessionService/GetDetectionEvents"
 	// SessionServiceListSlashCommandsProcedure is the fully-qualified name of the SessionService's
 	// ListSlashCommands RPC.
 	SessionServiceListSlashCommandsProcedure = "/session.v1.SessionService/ListSlashCommands"
@@ -598,6 +601,9 @@ type SessionServiceClient interface {
 	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
 	// RunWorkflow immediately fires a workflow (outside of cron schedule).
 	RunWorkflow(context.Context, *connect.Request[v1.RunWorkflowRequest]) (*connect.Response[v1.RunWorkflowResponse], error)
+	// GetDetectionEvents returns recent status-detection events for a session.
+	// Intended for debugging — surfaces which patterns matched (or didn't) per detection cycle.
+	GetDetectionEvents(context.Context, *connect.Request[v1.GetDetectionEventsRequest]) (*connect.Response[v1.GetDetectionEventsResponse], error)
 	// ListSlashCommands returns slash commands available in the given directory.
 	// Walks target_directory/.claude/commands/ (project) and ~/.claude/commands/ (user),
 	// merging both with a small set of built-in Claude Code commands.
@@ -1222,6 +1228,12 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("RunWorkflow")),
 			connect.WithClientOptions(opts...),
 		),
+		getDetectionEvents: connect.NewClient[v1.GetDetectionEventsRequest, v1.GetDetectionEventsResponse](
+			httpClient,
+			baseURL+SessionServiceGetDetectionEventsProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("GetDetectionEvents")),
+			connect.WithClientOptions(opts...),
+		),
 		listSlashCommands: connect.NewClient[v1.ListSlashCommandsRequest, v1.ListSlashCommandsResponse](
 			httpClient,
 			baseURL+SessionServiceListSlashCommandsProcedure,
@@ -1356,6 +1368,7 @@ type sessionServiceClient struct {
 	deleteWorkflow               *connect.Client[v1.DeleteWorkflowRequest, v1.DeleteWorkflowResponse]
 	listWorkflows                *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
 	runWorkflow                  *connect.Client[v1.RunWorkflowRequest, v1.RunWorkflowResponse]
+	getDetectionEvents           *connect.Client[v1.GetDetectionEventsRequest, v1.GetDetectionEventsResponse]
 	listSlashCommands            *connect.Client[v1.ListSlashCommandsRequest, v1.ListSlashCommandsResponse]
 	archiveSession               *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
 	unarchiveSession             *connect.Client[v1.UnarchiveSessionRequest, v1.UnarchiveSessionResponse]
@@ -1858,6 +1871,11 @@ func (c *sessionServiceClient) RunWorkflow(ctx context.Context, req *connect.Req
 	return c.runWorkflow.CallUnary(ctx, req)
 }
 
+// GetDetectionEvents calls session.v1.SessionService.GetDetectionEvents.
+func (c *sessionServiceClient) GetDetectionEvents(ctx context.Context, req *connect.Request[v1.GetDetectionEventsRequest]) (*connect.Response[v1.GetDetectionEventsResponse], error) {
+	return c.getDetectionEvents.CallUnary(ctx, req)
+}
+
 // ListSlashCommands calls session.v1.SessionService.ListSlashCommands.
 func (c *sessionServiceClient) ListSlashCommands(ctx context.Context, req *connect.Request[v1.ListSlashCommandsRequest]) (*connect.Response[v1.ListSlashCommandsResponse], error) {
 	return c.listSlashCommands.CallUnary(ctx, req)
@@ -2137,6 +2155,9 @@ type SessionServiceHandler interface {
 	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
 	// RunWorkflow immediately fires a workflow (outside of cron schedule).
 	RunWorkflow(context.Context, *connect.Request[v1.RunWorkflowRequest]) (*connect.Response[v1.RunWorkflowResponse], error)
+	// GetDetectionEvents returns recent status-detection events for a session.
+	// Intended for debugging — surfaces which patterns matched (or didn't) per detection cycle.
+	GetDetectionEvents(context.Context, *connect.Request[v1.GetDetectionEventsRequest]) (*connect.Response[v1.GetDetectionEventsResponse], error)
 	// ListSlashCommands returns slash commands available in the given directory.
 	// Walks target_directory/.claude/commands/ (project) and ~/.claude/commands/ (user),
 	// merging both with a small set of built-in Claude Code commands.
@@ -2757,6 +2778,12 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("RunWorkflow")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionServiceGetDetectionEventsHandler := connect.NewUnaryHandler(
+		SessionServiceGetDetectionEventsProcedure,
+		svc.GetDetectionEvents,
+		connect.WithSchema(sessionServiceMethods.ByName("GetDetectionEvents")),
+		connect.WithHandlerOptions(opts...),
+	)
 	sessionServiceListSlashCommandsHandler := connect.NewUnaryHandler(
 		SessionServiceListSlashCommandsProcedure,
 		svc.ListSlashCommands,
@@ -2987,6 +3014,8 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceListWorkflowsHandler.ServeHTTP(w, r)
 		case SessionServiceRunWorkflowProcedure:
 			sessionServiceRunWorkflowHandler.ServeHTTP(w, r)
+		case SessionServiceGetDetectionEventsProcedure:
+			sessionServiceGetDetectionEventsHandler.ServeHTTP(w, r)
 		case SessionServiceListSlashCommandsProcedure:
 			sessionServiceListSlashCommandsHandler.ServeHTTP(w, r)
 		case SessionServiceArchiveSessionProcedure:
@@ -3400,6 +3429,10 @@ func (UnimplementedSessionServiceHandler) ListWorkflows(context.Context, *connec
 
 func (UnimplementedSessionServiceHandler) RunWorkflow(context.Context, *connect.Request[v1.RunWorkflowRequest]) (*connect.Response[v1.RunWorkflowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.RunWorkflow is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) GetDetectionEvents(context.Context, *connect.Request[v1.GetDetectionEventsRequest]) (*connect.Response[v1.GetDetectionEventsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetDetectionEvents is not implemented"))
 }
 
 func (UnimplementedSessionServiceHandler) ListSlashCommands(context.Context, *connect.Request[v1.ListSlashCommandsRequest]) (*connect.Response[v1.ListSlashCommandsResponse], error) {
