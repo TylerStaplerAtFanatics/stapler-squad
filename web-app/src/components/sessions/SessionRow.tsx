@@ -8,6 +8,7 @@ import { SubStatusChip } from "./SubStatusChip";
 import {
   row,
   rowPaused,
+  rowActive,
   statusDot,
   nameCell as nameCellStyle,
   name as nameStyle,
@@ -143,6 +144,7 @@ export function SessionRow({
         row,
         memMB > 500 ? rowMemoryPressure : "",
         isPaused ? rowPaused : "",
+        session.status === SessionStatus.ACTIVE && session.subStatus === SubStatus.PROCESSING ? rowActive : "",
       ].filter(Boolean).join(" ")}
       style={{ gridTemplateColumns: buildRowGridTemplate(visibleColumns) }}
       data-testid="session-row"
@@ -171,7 +173,6 @@ export function SessionRow({
           </span>
           {session.status === SessionStatus.ACTIVE &&
             session.subStatus !== SubStatus.UNSPECIFIED &&
-            session.subStatus !== SubStatus.IDLE &&
             !(suppressApprovalSubStatus && session.subStatus === SubStatus.NEEDS_APPROVAL) && (
               <SubStatusChip subStatus={session.subStatus} />
             )}
@@ -216,7 +217,8 @@ export function SessionRow({
         <span
           className={[memoryBadge, memorySeverityClass].filter(Boolean).join(" ")}
           title={memMB > 0 ? `Process RSS: ${memMB} MB` : undefined}
-          aria-label={memMB > 0 ? `${memMB} MB RAM` : "Memory not measured"}
+          aria-label={memMB > 0 ? `${memMB} MB RAM` : undefined}
+          aria-hidden={memMB === 0 ? "true" : undefined}
         >
           {memMB > 0
             ? memMB >= 1024

@@ -9,6 +9,7 @@ import { SubStatusChip } from "./SubStatusChip";
 import { GitHubBadge } from "./GitHubBadge";
 import { TagEditor } from "./TagEditor";
 import { useTerminalSnapshot } from "@/lib/hooks/useTerminalSnapshot";
+import { DetectionEventsPanel } from "./DetectionEventsPanel";
 import { SessionActionsOverflow } from "./SessionActionsOverflow";
 import { formatPauseReason } from "@/lib/sessions/formatPauseReason";
 import {
@@ -72,6 +73,10 @@ import {
   workflowBadge,
 } from "./SessionCard.css";
 import { truncateGoal } from "@/lib/utils/string";
+
+const IS_DEBUG_MODE =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("debug") === "1";
 
 interface SessionCardProps {
   session: Session;
@@ -712,6 +717,10 @@ function SessionCardInner({
           </div>
         )}
       </div>
+
+      {IS_DEBUG_MODE && (
+        <DetectionEventsPanel sessionId={session.id} />
+      )}
 
       <div className={footer}>
         <div className={timestamps}>
