@@ -179,6 +179,24 @@ export const navButton = style({
   },
 });
 
+export const navButtonWithLabel = style({
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: "1px",
+});
+
+export const navSessionLabel = style({
+  fontSize: "0.6rem",
+  color: vars.color.textMuted,
+  maxWidth: "72px",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  lineHeight: 1,
+  userSelect: "none",
+});
+
 export const closeButton = style({
   background: "transparent",
   border: "none",

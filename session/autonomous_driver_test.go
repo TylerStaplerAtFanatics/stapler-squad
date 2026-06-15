@@ -441,6 +441,27 @@ func TestBuildOrchestrationPrompt_GoalWrappedInDelimiters(t *testing.T) {
 	}
 }
 
+// TestNewAutonomousDriver_ConfigurableStartupTimeout verifies T-GO-18:
+// WithStartupTimeout sets the field; the default is 60s when no option is passed.
+func TestNewAutonomousDriver_ConfigurableStartupTimeout(t *testing.T) {
+	pool := &fakeHeadlessPool{}
+	inst := &Instance{Title: "test-timeout", UUID: "abcdefgh-tout"}
+	cc, _ := NewClaudeController(inst)
+	inst.controllerManager.controller = cc
+
+	// Custom timeout
+	d := NewAutonomousDriver(inst, pool, "goal", 0, WithStartupTimeout(5*time.Minute))
+	if d.startupTimeout != 5*time.Minute {
+		t.Errorf("expected startupTimeout=5m, got %v", d.startupTimeout)
+	}
+
+	// Default timeout
+	d2 := NewAutonomousDriver(inst, pool, "goal", 0)
+	if d2.startupTimeout != 60*time.Second {
+		t.Errorf("expected default startupTimeout=60s, got %v", d2.startupTimeout)
+	}
+}
+
 // strContains2 returns the index of the first occurrence of substr in s, or -1.
 func strContains2(s, substr string) int {
 	for i := 0; i <= len(s)-len(substr); i++ {

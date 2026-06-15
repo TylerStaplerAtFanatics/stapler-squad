@@ -599,6 +599,9 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 	}
 	if s.statusManager != nil {
 		instance.SetStatusManager(s.statusManager)
+		if ctrlErr := instance.StartController(); ctrlErr != nil {
+			log.Warn("[CreateDirectorySession] failed to start controller after wiring", "session", title, "err", ctrlErr)
+		}
 	}
 	session.StartSessionDriver(instance, path)
 	s.wireRateLimitCallbacks(instance)
@@ -668,16 +671,18 @@ func (s *SessionService) stopAndDeregisterDriver(sessionTitle string) {
 	}
 }
 
-// StartAutonomousDriverForInstance satisfies the AutonomousDriverStarter interface.
-// Starts an AutonomousDriver on inst if headlessPool is available.
-func (s *SessionService) StartAutonomousDriverForInstance(inst *session.Instance) {
-	if s.headlessPool == nil {
-		log.Warn("[SessionService] StartAutonomousDriverForInstance: headlessPool is nil", "session", inst.Title)
-		return
-	}
-	driver := session.NewAutonomousDriver(inst, s.headlessPool, inst.Prompt, 0)
-	driver.RegisterCompletionCallback(s.onAutonomousDriverComplete)
-	driver.RegisterTurnCallback(func(turn, maxTurns int, prompt string) {
+// StopDriverForSession stops the AutonomousDriver registered under sessionTitle.
+// Used by MCP handlers as a belt-and-suspenders stop after task completion.
+// Satisfies mcp.ReviewCompletionSignaler.
+func (s *SessionService) StopDriverForSession(sessionTitle string) {
+	s.stopAndDeregisterDriver(sessionTitle)
+}
+
+// buildTurnCallback returns the TurnCallback wired for inst.
+// Shared by StartAutonomousDriverForInstance and StartAutonomousDriverWithTimeout
+// to prevent divergence over time.
+func (s *SessionService) buildTurnCallback(inst *session.Instance) session.TurnCallback {
+	return func(turn, maxTurns int, prompt string) {
 		if liveInst := s.FindLiveInstance(inst.Title); liveInst != nil {
 			liveInst.AutonomousTurn = int32(turn)
 			liveInst.AutonomousMaxTurns = int32(maxTurns)
@@ -695,13 +700,46 @@ func (s *SessionService) StartAutonomousDriverForInstance(inst *session.Instance
 			fmt.Sprintf("%s: %s", inst.Title, truncated),
 			nil,
 		))
-	})
+	}
+}
+
+// StartAutonomousDriverForInstance satisfies the AutonomousDriverStarter interface.
+// Starts an AutonomousDriver on inst if headlessPool is available.
+func (s *SessionService) StartAutonomousDriverForInstance(inst *session.Instance) {
+	if s.headlessPool == nil {
+		log.Warn("[SessionService] StartAutonomousDriverForInstance: headlessPool is nil", "session", inst.Title)
+		return
+	}
+	driver := session.NewAutonomousDriver(inst, s.headlessPool, inst.Prompt, 0)
+	driver.RegisterCompletionCallback(s.onAutonomousDriverComplete)
+	driver.RegisterTurnCallback(s.buildTurnCallback(inst))
 	if err := driver.Start(s.driverCtx()); err != nil {
 		log.Warn("[SessionService] failed to start autonomous driver for backlog session", "session", inst.Title, "err", err)
 		return
 	}
 	s.registerDriver(inst.Title, driver)
 }
+
+// StartAutonomousDriverWithTimeout is like StartAutonomousDriverForInstance but
+// uses a configurable startup timeout for sessions that need a longer warm-up
+// (e.g. triage sessions that spawn parallel subagents).
+func (s *SessionService) StartAutonomousDriverWithTimeout(inst *session.Instance, startupTimeout time.Duration) {
+	if s.headlessPool == nil {
+		log.Warn("[SessionService] StartAutonomousDriverWithTimeout: headlessPool is nil", "session", inst.Title)
+		return
+	}
+	driver := session.NewAutonomousDriver(inst, s.headlessPool, inst.Prompt, 0, session.WithStartupTimeout(startupTimeout))
+	driver.RegisterCompletionCallback(s.onAutonomousDriverComplete)
+	driver.RegisterTurnCallback(s.buildTurnCallback(inst))
+	if err := driver.Start(s.driverCtx()); err != nil {
+		log.Warn("[SessionService] failed to start autonomous driver", "session", inst.Title, "err", err)
+		return
+	}
+	s.registerDriver(inst.Title, driver)
+}
+
+// Compile-time assertion: SessionService must implement AutonomousDriverStarter.
+var _ AutonomousDriverStarter = (*SessionService)(nil)
 
 // SetReviewQueuePoller wires the ReviewQueuePoller so new/deleted sessions are
 // added/removed from the poller and AcknowledgeSession updates poller references.
@@ -1466,6 +1504,10 @@ func (s *SessionService) HibernateSession(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 
+	// Remove from the live poller and review queue immediately so the hibernated
+	// session does not linger with a stale queue entry until reconcileSessions fires.
+	s.removeFromAllPollers(instance.Title)
+
 	instances[instanceIndex] = instance
 	if err := s.storage.SaveInstances(instances); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
@@ -1631,6 +1673,9 @@ func (s *SessionService) WatchSessions(
 		// Reconnecting client: replay events missed since last disconnect.
 		// This covers the period between disconnect and the new subscription above.
 		for _, event := range s.eventBus.EventsSince(req.Msg.AfterSeq) {
+			if event.Session != nil && event.Session.Hidden {
+				continue
+			}
 			if err := stream.Send(convertEventToProto(event)); err != nil {
 				return fmt.Errorf("failed to send replayed event: %w", err)
 			}
@@ -1659,6 +1704,9 @@ func (s *SessionService) WatchSessions(
 				if adapters.StatusToProto(inst.Status) != *req.Msg.StatusFilter {
 					continue
 				}
+			}
+			if inst.Hidden {
+				continue
 			}
 			if err := stream.Send(createInitialSnapshotEvent(inst)); err != nil {
 				return fmt.Errorf("failed to send initial snapshot: %w", err)
@@ -1689,6 +1737,10 @@ func (s *SessionService) WatchSessions(
 				if event.Session != nil && adapters.StatusToProto(event.Session.Status) != *req.Msg.StatusFilter {
 					continue
 				}
+			}
+
+			if event.Session != nil && event.Session.Hidden {
+				continue
 			}
 
 			// Convert internal event to protobuf and send
@@ -3444,10 +3496,39 @@ func (s *SessionService) onAutonomousDriverComplete(instanceName string, outcome
 		if err == nil && is != nil {
 			item, itemErr := is.Edges.BacklogItemOrErr()
 			if itemErr == nil && item != nil {
-				// Autonomous driver always transitions through review; the review gate
-				// or a human then decides to mark done. Stuck sessions also go to review.
-				toStatus := session.BacklogStatusReview
-				if _, transErr := concreteStorage.TransitionBacklogItemStatus(ctx, item.ID.String(), toStatus, nil); transErr != nil {
+				var toStatus session.BacklogStatus
+				var expectedStatus string
+				switch is.SessionRole {
+				case session.SessionRoleTriage:
+					if !outcome.Done {
+						// Triage was interrupted/stuck — notify operator but do not advance the item.
+						// The item stays at 'idea' so the operator can re-trigger triage.
+						s.eventBus.Publish(events.NewNotificationEvent(
+							item.ID.String(),
+							"Triage stuck",
+							fmt.Sprintf("stuck-triage-%s", item.ID),
+							int32(9), // NotificationType_FAILURE (warning)
+							int32(2), // NotificationPriority_MEDIUM
+							"Triage did not complete",
+							fmt.Sprintf("%s: autonomous triage session got stuck", item.Title),
+							nil,
+						))
+						log.Info("[AutonomousDriver] triage stuck, notified operator", "item", item.ID, "reason", outcome.Reason)
+						return
+					}
+					toStatus = session.BacklogStatusReady
+					expectedStatus = string(session.BacklogStatusIdea)
+				case session.SessionRoleWork:
+					toStatus = session.BacklogStatusReview
+					expectedStatus = string(session.BacklogStatusInProgress)
+				default:
+					// SessionRoleReview and unknown roles: no transition from AutonomousDriver.
+					// Review outcomes are managed by submit_review_verdict.
+					log.Info("[AutonomousDriver] skipping status transition for role", "role", is.SessionRole, "item", item.ID)
+					return
+				}
+				precondition := &session.BacklogItemPrecondition{ExpectedStatus: expectedStatus}
+				if _, transErr := concreteStorage.TransitionBacklogItemStatus(ctx, item.ID.String(), toStatus, precondition); transErr != nil {
 					log.Warn("[AutonomousDriver] failed to transition backlog item", "item", item.ID, "to", toStatus, "err", transErr)
 				} else {
 					log.Info("[AutonomousDriver] backlog item transitioned", "item", item.ID, "to", toStatus, "done", outcome.Done)
@@ -3498,7 +3579,6 @@ func (l *autoArchiveListener) OnLifecycleEvent(event session.LifecycleEvent, _ s
 		go l.svc.maybeAutoArchive(l.inst)
 	}
 }
-
 
 // wireStatusChangeCallback registers a ReactiveQueueManager callback on inst so that
 // ClaudeController status transitions immediately trigger a CheckSession call, bypassing
