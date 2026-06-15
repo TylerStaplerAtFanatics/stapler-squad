@@ -530,14 +530,7 @@ export function SessionList({
     setSelectMode(false);
   };
 
-  const handleStopSelected = () => {
-    if (!onPauseSession) return;
-    const ids = Array.from(selectedSessions);
-    ids.forEach(id => onPauseSession(id));
-    showFeedback(`${ids.length} session${ids.length !== 1 ? 's' : ''} stopped`);
-    setSelectedSessions(new Set());
-    setSelectMode(false);
-  };
+  const handleStopSelected = handlePauseSelected;
 
   const handleDeleteSelected = () => {
     if (!onDeleteSession) return;
@@ -583,7 +576,7 @@ export function SessionList({
     <div ref={containerRef} className={container} data-context="session-list">
       <div className={header}>
         <div className={headerTop}>
-          <h2 className={title}>Sessions ({filteredSessions.length})</h2>
+          <h2 className={title}>Sessions ({filteredSessions.length !== sessions.length ? `${filteredSessions.length} of ${sessions.length}` : filteredSessions.length})</h2>
           <div className={headerActions}>
             {extraHeaderActions}
             {viewMode === "row" && (
@@ -598,7 +591,6 @@ export function SessionList({
               onClick={() => onNewSession?.()}
               className={newSessionHeaderButton}
               aria-label="Create new session (Ctrl+K)"
-              title="Create new session (Ctrl+K)"
             >
               +
             </button>

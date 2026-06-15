@@ -1,7 +1,7 @@
 "use client";
 // +feature: review-queue session-approval session-triage
 
-import { useState, useEffect, useRef, useCallback, useMemo, Suspense } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { usePageView } from "@/lib/analytics/usePageView";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Session, SessionSchema, ReviewItem } from "@/gen/session/v1/types_pb";
@@ -38,11 +38,11 @@ function ReviewQueueContent() {
   const [isSessionFullscreen, setIsSessionFullscreen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
 
-  // Auto-advance preference (default: off), persisted to localStorage
+  // Auto-advance preference (default: on), persisted to localStorage
   const [autoAdvance, setAutoAdvance] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
+    if (typeof window === "undefined") return true;
     const stored = localStorage.getItem("review-queue-auto-advance");
-    return stored === null ? false : stored === "true";
+    return stored === null ? true : stored === "true";
   });
   const autoAdvanceRef = useRef(autoAdvance);
   useEffect(() => { autoAdvanceRef.current = autoAdvance; }, [autoAdvance]);
@@ -70,13 +70,6 @@ function ReviewQueueContent() {
   const [reviewQueueItems, setReviewQueueItems] = useState<Session[]>([]);
   // Full ReviewItem data for fallback session construction before sessions load
   const [queueItems, setQueueItems] = useState<ReviewItem[]>([]);
-
-  // Navigation history: tracks every session the user has opened in this queue session.
-  // historyIndex points to the currently visible entry. Going back decrements; navigating
-  // to a new session truncates forward history and appends.
-  const navHistoryRef = useRef<string[]>([]);
-  const historyIndexRef = useRef(-1);
-  const [canGoBack, setCanGoBack] = useState(false);
 
   // Refs to avoid stale closures inside setTimeout callbacks
   const reviewQueueItemsRef = useRef<Session[]>([]);
@@ -114,7 +107,9 @@ function ReviewQueueContent() {
     }
   }, [searchParams, sessions, queueItems]);
 
-  const openSession = useCallback((sessionId: string, addToHistory = true) => {
+  const handleSessionClick = (sessionId: string) => {
+    // Try full session data first; fall back to queue item data so the modal
+    // always opens immediately regardless of whether the session list has loaded.
     const fromSessions = sessions.find((s) => s.id === sessionId);
     const fromQueue = queueItems.find((i) => i.sessionId === sessionId);
     const session = fromSessions ?? (fromQueue ? sessionFromReviewItem(fromQueue) : undefined);
@@ -123,43 +118,31 @@ function ReviewQueueContent() {
       setSelectedTab("terminal");
     }
     router.push(`/review-queue?session=${sessionId}`);
-
-    if (addToHistory) {
-      // Truncate any forward history then append the new entry.
-      navHistoryRef.current = navHistoryRef.current.slice(0, historyIndexRef.current + 1);
-      navHistoryRef.current.push(sessionId);
-      historyIndexRef.current = navHistoryRef.current.length - 1;
-      setCanGoBack(historyIndexRef.current > 0);
-    }
-  }, [sessions, queueItems, router]);
-
-  const handleSessionClick = useCallback((sessionId: string) => {
-    openSession(sessionId, true);
-  }, [openSession]);
-
-  const handleGoBack = useCallback(() => {
-    if (historyIndexRef.current <= 0) return;
-    historyIndexRef.current--;
-    const prevId = navHistoryRef.current[historyIndexRef.current];
-    setCanGoBack(historyIndexRef.current > 0);
-    openSession(prevId, false);
-  }, [openSession]);
+  };
 
   // Navigate to next session in review queue
-  const handleNextSession = useCallback(() => {
+  const handleNextSession = () => {
     if (!selectedSession || reviewQueueItems.length === 0) return;
+
     const currentIndex = reviewQueueItems.findIndex((s) => s.id === selectedSession.id);
     const nextIndex = (currentIndex + 1) % reviewQueueItems.length;
-    openSession(reviewQueueItems[nextIndex].id, true);
-  }, [selectedSession, reviewQueueItems, openSession]);
+    const nextSession = reviewQueueItems[nextIndex];
+
+    setSelectedSession(nextSession);
+    router.push(`/review-queue?session=${nextSession.id}`);
+  };
 
   // Navigate to previous session in review queue
-  const handlePreviousSession = useCallback(() => {
+  const handlePreviousSession = () => {
     if (!selectedSession || reviewQueueItems.length === 0) return;
+
     const currentIndex = reviewQueueItems.findIndex((s) => s.id === selectedSession.id);
     const previousIndex = currentIndex === 0 ? reviewQueueItems.length - 1 : currentIndex - 1;
-    openSession(reviewQueueItems[previousIndex].id, true);
-  }, [selectedSession, reviewQueueItems, openSession]);
+    const previousSession = reviewQueueItems[previousIndex];
+
+    setSelectedSession(previousSession);
+    router.push(`/review-queue?session=${previousSession.id}`);
+  };
 
   const handleCloseSessionDetail = () => {
     // Clear the session query parameter from the URL
@@ -265,22 +248,11 @@ function ReviewQueueContent() {
     : 0;
   const queueTotal = reviewQueueItems.length;
 
-  // Names of adjacent sessions for nav button labels in the session detail header.
-  const { nextSessionName, previousSessionName } = useMemo(() => {
-    if (!selectedSession || reviewQueueItems.length <= 1) return {};
-    const idx = reviewQueueItems.findIndex((s) => s.id === selectedSession.id);
-    if (idx === -1) return {};
-    const prevIdx = idx === 0 ? reviewQueueItems.length - 1 : idx - 1;
-    const nextIdx = (idx + 1) % reviewQueueItems.length;
-    return {
-      previousSessionName: reviewQueueItems[prevIdx]?.title,
-      nextSessionName: reviewQueueItems[nextIdx]?.title,
-    };
-  }, [selectedSession, reviewQueueItems]);
+  const [savedMsg, setSavedMsg] = useState("");
 
   return (
     <div className={styles.page}>
-      <main id="main-content" className={styles.main}>
+      <div id="main-content" className={styles.main}>
         {/* Auto-advance preference toolbar */}
         <div className={styles.toolbar}>
           <label className={styles.autoAdvanceLabel}>
@@ -290,10 +262,13 @@ function ReviewQueueContent() {
               onChange={(e) => {
                 setAutoAdvance(e.target.checked);
                 localStorage.setItem("review-queue-auto-advance", String(e.target.checked));
+                setSavedMsg("Saved");
+                setTimeout(() => setSavedMsg(""), 2000);
               }}
             />
             Auto-advance after action
           </label>
+          {savedMsg && <span aria-live="polite" style={{ fontSize: "0.75rem", color: "var(--success)", marginLeft: "0.5rem" }}>{savedMsg}</span>}
         </div>
         <ReviewQueuePanel
           onSessionClick={handleSessionClick}
@@ -301,7 +276,7 @@ function ReviewQueueContent() {
           onAcknowledged={handleAcknowledged}
           onRunOneShot={handleRunOneShot}
         />
-      </main>
+      </div>
 
       {/* Session detail modal with terminal view */}
       {selectedSession && (
@@ -327,10 +302,6 @@ function ReviewQueueContent() {
               onDismissFromQueue={handleDismissFromQueue}
               queuePosition={queuePosition}
               queueTotal={queueTotal}
-              nextSessionName={nextSessionName}
-              previousSessionName={previousSessionName}
-              onBack={handleGoBack}
-              canGoBack={canGoBack}
             />
           </div>
         </div>
@@ -388,14 +359,14 @@ function ReviewQueueContent() {
 function ReviewQueueSkeleton() {
   return (
     <div className={styles.page}>
-      <main id="main-content" className={styles.main} aria-busy="true" aria-label="Loading review queue">
+      <div id="main-content" className={styles.main} aria-busy="true" aria-label="Loading review queue">
         <div className={styles.skeletonHeader} />
         <div className={styles.skeletonList}>
           {[1, 2, 3].map((i) => (
             <div key={i} className={styles.skeletonCard} aria-hidden="true" />
           ))}
         </div>
-      </main>
+      </div>
     </div>
   );
 }

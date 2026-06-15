@@ -2,6 +2,7 @@
 // +feature: session-list session-search session-filter session-groupby
 
 import React, { useState, useEffect, useRef, Suspense, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Session } from "@/gen/session/v1/types_pb";
 import { SessionListSkeleton } from "@/components/sessions/SessionListSkeleton";
@@ -14,6 +15,7 @@ function isValidTab(tab: string | null): tab is SessionDetailTab {
 import { ResumeSessionModal } from "@/components/sessions/ResumeSessionModal";
 import { useSessionServiceContext } from "@/lib/contexts/SessionServiceContext";
 import { useKeyboard } from "@/lib/hooks/useKeyboard";
+import { useFocusTrap } from "@/lib/hooks/useFocusTrap";
 import { useOmnibar } from "@/lib/contexts/OmnibarContext";
 import { PaneTilingContainer } from "@/components/pane/PaneTilingContainer";
 import { CockpitActionsProvider } from "@/lib/contexts/CockpitActionsContext";
@@ -46,6 +48,8 @@ function HomeContent() {
   // Focus management: modal containers (tabIndex={-1}) and trigger element refs
   const sessionDetailRef = useRef<HTMLDivElement>(null);
   const sessionTriggerRef = useRef<HTMLElement | null>(null);
+  const deleteDialogRef = useRef<HTMLDivElement>(null);
+  const lastFocusBeforeDelete = useRef<HTMLElement | null>(null);
 
   // Tracks the last URL params that were routed to a pane. Prevents the URL-watching
   // effect from re-triggering pane assignment on every sessions stream update (which
@@ -61,6 +65,15 @@ function HomeContent() {
       sessionTriggerRef.current = null;
     }
   }, [selectedSession]);
+
+  // Trap focus inside delete confirmation dialog; return focus on close
+  useFocusTrap(deleteDialogRef, !!deleteConfirmTarget);
+  useEffect(() => {
+    if (!deleteConfirmTarget && lastFocusBeforeDelete.current) {
+      lastFocusBeforeDelete.current.focus();
+      lastFocusBeforeDelete.current = null;
+    }
+  }, [deleteConfirmTarget]);
 
 
   const {
@@ -270,7 +283,6 @@ function HomeContent() {
     await updateSession(sessionId, { steerMessage: message });
   }, [updateSession, track]);
 
-
   const handleRunOneShot = useCallback(async (sessionId: string): Promise<void> => {
     await runOneShot(sessionId, "Create a pull request for the changes in this session.", 0);
   }, [runOneShot]);
@@ -380,6 +392,7 @@ function HomeContent() {
     },
     "d": () => {
       if (selectedSession && !deleteConfirmTarget) {
+        lastFocusBeforeDelete.current = document.activeElement as HTMLElement;
         setDeleteConfirmTarget(selectedSession);
       }
     },
@@ -454,9 +467,10 @@ function HomeContent() {
       )}
 
       {/* Delete confirmation modal (triggered by 'd' keyboard shortcut) */}
-      {deleteConfirmTarget && (
+      {deleteConfirmTarget && createPortal(
         <div className={styles.modal} onClick={() => setDeleteConfirmTarget(null)}>
           <div
+            ref={deleteDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="deleteConfirmTitle"
@@ -473,7 +487,7 @@ function HomeContent() {
               <p>Delete &quot;{deleteConfirmTarget.title}&quot;?</p>
               <p style={{ color: "var(--error, #ef4444)", fontSize: "0.875rem", marginTop: "0.5rem" }}>This action cannot be undone.</p>
               <div className={styles.deleteConfirmActions}>
-                <button className={styles.cancelButton} onClick={() => setDeleteConfirmTarget(null)}>Cancel</button>
+                <button autoFocus className={styles.cancelButton} onClick={() => setDeleteConfirmTarget(null)}>Cancel</button>
                 <button
                   className={styles.dangerButton}
                   onClick={async () => {
@@ -487,7 +501,8 @@ function HomeContent() {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
