@@ -76,9 +76,9 @@ type ReviewQueuePoller struct {
 	instances        []*Instance
 	config           ReviewQueuePollerConfig
 	statusDetector   detection.TerminalDetector // For detecting status in sessions without ClaudeController
-	approvalProvider ApprovalMetadataProvider  // Optional: enriches approval items with hook metadata
-	contentProvider  ContentProvider           // Fetches and caches terminal content
-	statusDeterminer StatusDeterminer          // Evaluates whether session should be in queue
+	approvalProvider ApprovalMetadataProvider   // Optional: enriches approval items with hook metadata
+	contentProvider  ContentProvider            // Fetches and caches terminal content
+	statusDeterminer StatusDeterminer           // Evaluates whether session should be in queue
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -447,6 +447,7 @@ func (rqp *ReviewQueuePoller) reconcileSessions() {
 					}
 				}
 				inst.stateMutex.Unlock()
+				rqp.queue.Remove(inst.Title)
 				inst.fireLifecycleEvent(EventExited, "reconcile-session-missing")
 			}
 		case Stopped:
@@ -653,11 +654,14 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 	// when new terminal content is detected. The persisted content-signature dedup prevents
 	// false positives: sessions stay snoozed after acknowledgment unless output genuinely changes.
 
-	// Acknowledgment snooze: applies to ALL sessions regardless of priority or controller state.
-	// Sessions are snoozed when LastAcknowledged is newer than LastMeaningfulOutput.
-	// When a live process generates a new prompt, LastMeaningfulOutput is updated, so
-	// IsAcknowledgedAfterOutput() returns false and the session correctly resurfaces.
-	if inst.IsAcknowledgedAfterOutput() {
+	// Acknowledgment snooze: removes sessions where LastAcknowledged is newer than
+	// LastMeaningfulOutput (i.e., no new output since the user last dismissed it).
+	// Bypass for active high-priority conditions (approval, error, input): the
+	// content-signature dedup in UpdateTimestamps() does not update LastMeaningfulOutput
+	// when an identical prompt reappears, so IsAcknowledgedAfterOutput() would be a false
+	// positive and silently suppress a live blocking prompt.
+	isActiveHighPriority := shouldAdd && priority <= PriorityHigh
+	if !isActiveHighPriority && inst.IsAcknowledgedAfterOutput() {
 		rqp.queue.Remove(inst.Title)
 		return
 	}

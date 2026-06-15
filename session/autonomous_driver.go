@@ -36,33 +36,51 @@ type CompletionCallback func(instanceName string, outcome AutonomousDriverOutcom
 // TurnCallback is called after each successful turn injection.
 type TurnCallback func(turn, maxTurns int, prompt string)
 
+// DriverOption is a functional option for configuring an AutonomousDriver.
+type DriverOption func(*AutonomousDriver)
+
+// WithStartupTimeout overrides the default 60s startup idle-wait timeout.
+// Use a longer timeout for sessions that spawn parallel subagents (e.g. triage).
+func WithStartupTimeout(d time.Duration) DriverOption {
+	return func(a *AutonomousDriver) { a.startupTimeout = d }
+}
+
 // AutonomousDriver monitors a session and injects orchestrator prompts when idle.
 type AutonomousDriver struct {
-	inst          *Instance
-	controller    *ClaudeController
-	headlessPool  HeadlessPoolClient
-	goal          string
-	maxTurns      int
-	completionCb  CompletionCallback
-	turnCb        TurnCallback
-	driverRunning atomic.Bool
-	cancel        context.CancelFunc
-	mu            sync.Mutex
+	inst           *Instance
+	controller     *ClaudeController
+	headlessPool   HeadlessPoolClient
+	goal           string
+	maxTurns       int
+	startupTimeout time.Duration
+	completionCb   CompletionCallback
+	turnCb         TurnCallback
+	driverRunning  atomic.Bool
+	cancel         context.CancelFunc
+	mu             sync.Mutex
 }
 
 // NewAutonomousDriver creates an AutonomousDriver for inst.
 // pool must not be nil; maxTurns ≤ 0 defaults to 20.
-func NewAutonomousDriver(inst *Instance, pool HeadlessPoolClient, goal string, maxTurns int) *AutonomousDriver {
+// Use functional options (e.g. WithStartupTimeout) to override defaults.
+func NewAutonomousDriver(inst *Instance, pool HeadlessPoolClient, goal string, maxTurns int, opts ...DriverOption) *AutonomousDriver {
 	if maxTurns <= 0 {
 		maxTurns = 20
 	}
-	return &AutonomousDriver{
+	d := &AutonomousDriver{
 		inst:         inst,
 		controller:   inst.GetController(),
 		headlessPool: pool,
 		goal:         goal,
 		maxTurns:     maxTurns,
 	}
+	for _, o := range opts {
+		o(d)
+	}
+	if d.startupTimeout == 0 {
+		d.startupTimeout = 60 * time.Second
+	}
+	return d
 }
 
 // RegisterCompletionCallback sets the function called when the driver exits.
@@ -154,8 +172,12 @@ func (d *AutonomousDriver) run(ctx context.Context) {
 		}
 	})
 
-	// Wait for the first idle signal (up to 60s) before beginning the loop.
-	startupCtx, startupCancel := context.WithTimeout(ctx, 60*time.Second)
+	// Wait for the first idle signal before beginning the loop.
+	startupTimeout := d.startupTimeout
+	if startupTimeout == 0 {
+		startupTimeout = 60 * time.Second
+	}
+	startupCtx, startupCancel := context.WithTimeout(ctx, startupTimeout)
 	if !waitForIdle(startupCtx, statusCh, d.controller) {
 		startupCancel()
 		log.Warn("AutonomousDriver: timed out waiting for initial idle state", "session", sessionName)

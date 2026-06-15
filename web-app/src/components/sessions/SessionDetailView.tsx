@@ -70,6 +70,10 @@ export interface SessionDetailViewProps {
   onDismissFromQueue?: () => void;
   queuePosition?: number;
   queueTotal?: number;
+  nextSessionName?: string;
+  previousSessionName?: string;
+  onBack?: () => void;
+  canGoBack?: boolean;
   /** Backlog item ID to display in right-side panel. If provided, shows BacklogItemPanel. */
   backlogItemId?: string;
 }
@@ -117,6 +121,10 @@ export function SessionDetailView({
   onDismissFromQueue,
   queuePosition,
   queueTotal,
+  nextSessionName,
+  previousSessionName,
+  onBack,
+  canGoBack,
   backlogItemId,
 }: SessionDetailViewProps) {
   // activeTabId is either a static SessionDetailTab or a shell tab id "shell:<shellId>"
@@ -432,30 +440,51 @@ export function SessionDetailView({
               {isFullscreen ? "⊗" : "⛶"}
             </button>
           )}
+          {/* Back in history */}
+          {canGoBack && onBack && (
+            <button
+              className={styles.navButton}
+              onClick={onBack}
+              aria-label="Go back to previous session"
+              title="Back (previously visited)"
+            >
+              ↩
+            </button>
+          )}
           {/* Queue navigation — most used in review queue mode */}
           {showNavigation && (
             <>
-              <button
-                className={styles.navButton}
-                onClick={onPrevious}
-                aria-label="Previous session"
-                title="Previous session (Shift+←)"
-              >
-                ←
-              </button>
-              <button
-                className={styles.navButton}
-                onClick={onNext}
-                aria-label="Next session"
-                title="Next session (Shift+→)"
-              >
-                →
-              </button>
+              <div className={styles.navButtonWithLabel}>
+                <button
+                  className={styles.navButton}
+                  onClick={onPrevious}
+                  aria-label={previousSessionName ? `Previous session: ${previousSessionName}` : "Previous session"}
+                  title={previousSessionName ? `Previous: ${previousSessionName} (Shift+←)` : "Previous session (Shift+←)"}
+                >
+                  ←
+                </button>
+                {previousSessionName && (
+                  <span className={styles.navSessionLabel} aria-hidden="true">{previousSessionName}</span>
+                )}
+              </div>
               {queuePosition !== undefined && queuePosition > 0 && queueTotal !== undefined && queueTotal > 0 && (
                 <span className={styles.queuePosition} aria-live="polite">
                   {queuePosition} of {queueTotal}
                 </span>
               )}
+              <div className={styles.navButtonWithLabel}>
+                <button
+                  className={styles.navButton}
+                  onClick={onNext}
+                  aria-label={nextSessionName ? `Next session: ${nextSessionName}` : "Next session"}
+                  title={nextSessionName ? `Next: ${nextSessionName} (Shift+→)` : "Next session (Shift+→)"}
+                >
+                  →
+                </button>
+                {nextSessionName && (
+                  <span className={styles.navSessionLabel} aria-hidden="true">{nextSessionName}</span>
+                )}
+              </div>
             </>
           )}
           {/* Dismiss from queue */}

@@ -2,6 +2,7 @@
 .aider*
 .claude/settings.local.json
 stapler-squad
+stapler-squad.prev
 claude-squad
 claude-mux
 ssq-hooks
