@@ -10,10 +10,9 @@ runs:
         go-version: '1.25.0'
 
     - name: Set up pnpm
-      uses: pnpm/action-setup@v4
+      uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
       with:
-        version: 10
-        run_install: false
+        version: 10.27.0
 
     - name: Set up Node.js
       uses: actions/setup-node@v4
