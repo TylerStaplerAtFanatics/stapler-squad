@@ -66,6 +66,6 @@ type stubBinaryDetector struct {
 	name string
 }
 
-func (s *stubBinaryDetector) Name() string                     { return s.name }
-func (s *stubBinaryDetector) Patterns() StatusPatterns         { return StatusPatterns{} }
-func (s *stubBinaryDetector) FilterContent(c string) string    { return c }
+func (s *stubBinaryDetector) Name() string                  { return s.name }
+func (s *stubBinaryDetector) Patterns() StatusPatterns      { return StatusPatterns{} }
+func (s *stubBinaryDetector) FilterContent(c string) string { return c }

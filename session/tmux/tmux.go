@@ -60,7 +60,7 @@ type TmuxSession struct {
 	ptmx *os.File
 	// attachCmd is the tmux attach-session process that owns the PTY
 	// CRITICAL: Must be killed when closing PTY to prevent orphaned processes
-	attachCmd         *exec.Cmd
+	attachCmd *exec.Cmd
 	// attachCmdWaitOnce guards attachCmd.Wait() so it is called exactly once
 	// across closePTYAndAttachCmd and the diagnostic goroutine in RestoreWithWorkDir.
 	// Reset to a new *sync.Once each time a new attachCmd is assigned.

@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	// Side-effect import: triggers all init() registrations in server/features
-	_ "github.com/tstapler/stapler-squad/server/features"
 	"github.com/tstapler/stapler-squad/server/featureregistry"
+	_ "github.com/tstapler/stapler-squad/server/features"
 )
 
 func TestMain(m *testing.M) {
