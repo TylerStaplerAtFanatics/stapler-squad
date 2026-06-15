@@ -17,6 +17,7 @@ export const chip = style({
   fontWeight: vars.fontWeight.semibold,
   whiteSpace: "nowrap",
   lineHeight: 1.4,
+  flexShrink: 0,
 });
 
 export const chipNeedsApproval = style([

@@ -94,6 +94,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
   const isRunning = session.status === SessionStatus.ACTIVE;  // ACTIVE covers legacy RUNNING (same wire value via allow_alias)
   const isHibernated = session.status === SessionStatus.HIBERNATED;
   const isCreating = session.status === SessionStatus.CREATING;
+  const isStopped = session.status === SessionStatus.STOPPED;
 
   const [showOverflow, setShowOverflow] = useState(false);
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 });
@@ -113,6 +114,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
   const [isAutonomousConfirmOpen, setIsAutonomousConfirmOpen] = useState(false);
   const [isSteerOpen, setIsSteerOpen] = useState(false);
   const [steerMessage, setSteerMessage] = useState("");
+  const [isClearConversationConfirmOpen, setIsClearConversationConfirmOpen] = useState(false);
 
   const overflowContainerRef = useRef<HTMLDivElement>(null);
   const overflowButtonRef = useRef<HTMLButtonElement>(null);
@@ -122,8 +124,10 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
   const checkpointDialogRef = useRef<HTMLDivElement>(null);
   const autonomousConfirmDialogRef = useRef<HTMLDivElement>(null);
   const steerDialogRef = useRef<HTMLDivElement>(null);
+  const clearConversationDialogRef = useRef<HTMLDivElement>(null);
   const restartTriggerRef = useRef<HTMLButtonElement>(null);
   const checkpointTriggerRef = useRef<HTMLButtonElement>(null);
+  const clearConversationTriggerRef = useRef<HTMLButtonElement>(null);
 
   useFocusTrap(overflowMenuRef, showOverflow);
   useFocusTrap(restartDialogRef, isRestartConfirmOpen, restartTriggerRef);
@@ -131,6 +135,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
   useFocusTrap(checkpointDialogRef, isCheckpointOpen, checkpointTriggerRef);
   useFocusTrap(autonomousConfirmDialogRef, isAutonomousConfirmOpen);
   useFocusTrap(steerDialogRef, isSteerOpen);
+  useFocusTrap(clearConversationDialogRef, isClearConversationConfirmOpen, clearConversationTriggerRef);
 
   useEffect(() => {
     if (showOverflow && overflowMenuRef.current) {
@@ -223,15 +228,15 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
 
   // Group visibility booleans — used to decide whether to render separators.
   const hasGroup1 = !!(
-    (!(isPaused || isReady) && onResume) ||
-    (!isRunning && !isCreating && onPause) ||
+    (!(isPaused || isReady) && !isStopped && onResume) ||
+    (isRunning && !isCreating && onPause) ||
     (isRunning && onHibernate) ||
     (isHibernated && onResumeFromHibernation)
   );
-  const hasGroup2 = !!(onRunOneShot || onCreateCheckpoint || (onRestart && !isCreating));
+  const hasGroup2 = !!(onRunOneShot || onCreateCheckpoint);
   const hasGroup3 = !!(onRenameRequest || onClone || onOpenInNewPane || onUpdateTags || onNewWorkspace || onWorkspaceSwitchRequest);
   const hasGroup4 = !!(onSetRateLimitEnabled || onToggleAutonomousMode);
-  const hasGroup5 = !!(onClearConversationState || onDelete);
+  const hasGroup5 = !!(onClearConversationState || (onRestart && !isCreating) || onDelete);
 
   return (
     <>
@@ -441,6 +446,36 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
         document.body
       )}
 
+      {/* UX-003: Clear Conversation confirmation dialog */}
+      {isClearConversationConfirmOpen && createPortal(
+        <div className={confirmDialog} onClick={(e) => { e.stopPropagation(); setIsClearConversationConfirmOpen(false); }}>
+          <div
+            ref={clearConversationDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="clearConversationDialogTitle"
+            className={dialogContent}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === "Escape") setIsClearConversationConfirmOpen(false); }}
+          >
+            <h3 id="clearConversationDialogTitle">Clear Conversation</h3>
+            <p className={warningText}>Clear conversation history? This will erase the AI&apos;s memory of this session and cannot be undone.</p>
+            <div className={dialogActions}>
+              <button
+                onClick={(e) => { e.stopPropagation(); void onClearConversationState?.(session.id); setIsClearConversationConfirmOpen(false); }}
+                className={dangerButton}
+              >
+                Clear Conversation
+              </button>
+              <button autoFocus onClick={(e) => { e.stopPropagation(); setIsClearConversationConfirmOpen(false); }} className={cancelButton}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
       <div className={desktopActions}>
         {showPrimaryAction && (isPaused || isReady) && (
           <button
@@ -460,6 +495,17 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
             title="Pause this session"
           >
             <span aria-hidden="true">⏸️</span> Pause
+          </button>
+        )}
+        {/* BUG-001 Fix 4a: Primary Restart button for STOPPED sessions */}
+        {showPrimaryAction && isStopped && onRestart && (
+          <button
+            className={actionButton}
+            onClick={(e) => { e.stopPropagation(); setIsRestartConfirmOpen(true); }}
+            aria-label={`Restart stopped session ${session.title}`}
+            title="Session stopped — restart to resume working"
+          >
+            <span aria-hidden="true">🔄</span> Restart
           </button>
         )}
 
@@ -488,7 +534,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
               onKeyDown={(e) => { if (e.key === "Escape") setShowOverflow(false); }}
             >
               {/* Group 1: Session control */}
-              {!(isPaused || isReady) && onResume && (
+              {!(isPaused || isReady) && !isStopped && onResume && (
                 <button role="menuitem" className={overflowMenuItem}
                   onClick={(e) => { e.stopPropagation(); close(); onResume(); }}
                   aria-label={`Resume session ${session.title}`}
@@ -496,7 +542,8 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
                   <span aria-hidden="true">▶️</span> Resume
                 </button>
               )}
-              {!isRunning && !isCreating && onPause && (
+              {/* BUG-001 Fix 4b: Only show Pause when session is running */}
+              {isRunning && !isCreating && onPause && (
                 <button role="menuitem" className={overflowMenuItem}
                   onClick={(e) => { e.stopPropagation(); close(); onPause(); }}
                   aria-label={`Pause session ${session.title}`}
@@ -542,17 +589,6 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
                   aria-label={`Create checkpoint for session ${session.title}`}
                 >
                   <span aria-hidden="true">📍</span> Checkpoint
-                </button>
-              )}
-              {onRestart && !isCreating && (
-                <button
-                  ref={restartTriggerRef}
-                  role="menuitem"
-                  className={`${overflowMenuItem} ${overflowMenuItemDanger}`}
-                  onClick={(e) => { e.stopPropagation(); close(); setIsRestartConfirmOpen(true); }}
-                  aria-label={`Restart session ${session.title}`}
-                >
-                  <span aria-hidden="true">🔄</span> Restart
                 </button>
               )}
 
@@ -651,12 +687,28 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
 
               {/* Group 5: Destructive */}
               {(hasGroup1 || hasGroup2 || hasGroup3 || hasGroup4) && hasGroup5 && menuSeparator}
+              {/* UX-003: Clear Conversation with danger style + confirmation */}
               {onClearConversationState && (
-                <button role="menuitem" className={overflowMenuItem}
-                  onClick={(e) => { e.stopPropagation(); close(); void onClearConversationState(session.id); }}
+                <button
+                  ref={clearConversationTriggerRef}
+                  role="menuitem"
+                  className={`${overflowMenuItem} ${overflowMenuItemDanger}`}
+                  onClick={(e) => { e.stopPropagation(); close(); setIsClearConversationConfirmOpen(true); }}
                   aria-label={`Clear conversation state for session ${session.title}`}
                 >
                   <span aria-hidden="true">🗑️</span> Clear Conversation
+                </button>
+              )}
+              {/* UX-009: Restart moved to Group 5 (destructive group), before Delete */}
+              {onRestart && !isCreating && (
+                <button
+                  ref={restartTriggerRef}
+                  role="menuitem"
+                  className={overflowMenuItem}
+                  onClick={(e) => { e.stopPropagation(); close(); setIsRestartConfirmOpen(true); }}
+                  aria-label={`Restart session ${session.title}`}
+                >
+                  <span aria-hidden="true">🔄</span> Restart
                 </button>
               )}
               {onDelete && (

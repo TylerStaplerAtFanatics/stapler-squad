@@ -105,16 +105,18 @@ func (ps *PatternSet) matchLocked(text string, rawPTY []byte) (DetectedStatus, s
 	if readlineTypingRegex.MatchString(text) {
 		return StatusIdle, "readline_typing", "User composing at Claude readline — overrides stale completion marker in scrollback"
 	}
+	// Waiting for background agent/shells — checked BEFORE Success so that a line like
+	// "✻ Churned for 52s · 1 shell still running" is classified as WaitingForAgent
+	// rather than Success (the verb-duration pattern in Success would otherwise win).
+	for i, regex := range ps.waitingForAgentRegexes {
+		if regex.MatchString(text) {
+			return StatusWaitingForAgent, ps.patterns.WaitingForAgent[i].Name, ps.patterns.WaitingForAgent[i].Description
+		}
+	}
 	// Success
 	for i, regex := range ps.successRegexes {
 		if regex.MatchString(text) {
 			return StatusSuccess, ps.patterns.Success[i].Name, ps.patterns.Success[i].Description
-		}
-	}
-	// Waiting for background agent (before generic Active — more specific)
-	for i, regex := range ps.waitingForAgentRegexes {
-		if regex.MatchString(text) {
-			return StatusWaitingForAgent, ps.patterns.WaitingForAgent[i].Name, ps.patterns.WaitingForAgent[i].Description
 		}
 	}
 	// Active

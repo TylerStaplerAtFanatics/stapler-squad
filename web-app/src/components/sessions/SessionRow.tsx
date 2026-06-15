@@ -14,8 +14,12 @@ import {
   name as nameStyle,
   agentIcon as agentIconStyle,
   path as pathStyle,
+  pathLine as pathLineStyle,
   elapsed as elapsedStyle,
   actions as actionsStyle,
+  primaryActionWrapper,
+  inlineActionButton,
+  rowOverflowButton,
   memoryBadge,
   memoryBadgeWarning,
   memoryBadgeHigh,
@@ -96,6 +100,10 @@ function getAgentEmoji(program: string): string {
   return "◇";
 }
 
+function abbreviatePath(p: string): string {
+  return p.replace(/^\/home\/[^/]+\//, "~/").replace(/^\/Users\/[^/]+\//, "~/");
+}
+
 function getLastActivity(session: Session): { seconds: bigint; nanos: number } | undefined {
   const moSecs = session.lastMeaningfulOutput?.seconds ?? BigInt(0);
   const tuSecs = session.lastTerminalUpdate?.seconds ?? BigInt(0);
@@ -117,6 +125,12 @@ export function SessionRow({
 
   const dotStatus = getStatusDotValue(session.status);
   const isPaused = session.status === SessionStatus.PAUSED;
+  const isReady = session.status === SessionStatus.NEEDS_APPROVAL;
+  const isHibernated = session.status === SessionStatus.HIBERNATED;
+  const isRunning = session.status === SessionStatus.ACTIVE;
+  const isCreating = session.status === SessionStatus.CREATING;
+  // Sessions needing user attention always show their primary action
+  const actionsAlwaysVisible = isPaused || isReady || isHibernated;
   const lastActivity = getLastActivity(session);
   const elapsedText = formatElapsed(lastActivity ?? session.updatedAt);
   // Show branch separately if the branch column is visible; otherwise fold into displayName.
@@ -151,6 +165,7 @@ export function SessionRow({
       style={{ gridTemplateColumns: buildRowGridTemplate(visibleColumns) }}
       data-testid="session-row"
       data-paused={isPaused ? "true" : undefined}
+      data-actions-visible={actionsAlwaysVisible ? "true" : undefined}
       onClick={onClick}
       onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
@@ -169,23 +184,23 @@ export function SessionRow({
 
       {/* Name + path stacked — always visible */}
       <span className={nameCellStyle}>
-        <span style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
-          <span className={nameStyle} aria-label={displayName} title={displayName}>
-            {displayName}
-          </span>
+        <span className={nameStyle} aria-label={displayName} title={displayName}>
+          {displayName}
+        </span>
+        <span className={pathLineStyle}>
+          {session.path && (
+            <Tooltip label={session.path} side="bottom">
+              <span className={pathStyle} aria-label={`Path: ${session.path}`}>
+                {abbreviatePath(session.path)}
+              </span>
+            </Tooltip>
+          )}
           {session.status === SessionStatus.ACTIVE &&
             session.subStatus !== SubStatus.UNSPECIFIED &&
             !(suppressApprovalSubStatus && (session.subStatus === SubStatus.NEEDS_APPROVAL || session.subStatus === SubStatus.INPUT_REQUIRED)) && (
               <SubStatusChip subStatus={session.subStatus} />
             )}
         </span>
-        {session.path && (
-          <Tooltip label={session.path} side="bottom">
-            <span className={pathStyle} aria-label={`Path: ${session.path}`}>
-              {session.path}
-            </span>
-          </Tooltip>
-        )}
       </span>
 
       {/* Agent icon — optional column */}
@@ -252,12 +267,42 @@ export function SessionRow({
         </time>
       )}
 
-      {/* Actions — always visible */}
+      {/* Actions: primary (hover-only unless needs attention) + overflow (always visible) */}
       <span className={actionsStyle} aria-label="Session actions">
+        <span className={primaryActionWrapper}>
+          {(isPaused || isReady) && onResume && (
+            <button
+              className={inlineActionButton}
+              onClick={(e) => { e.stopPropagation(); onResume(); }}
+              aria-label={`Resume session ${session.title}`}
+            >
+              ▶️ Resume
+            </button>
+          )}
+          {isHibernated && onResumeFromHibernation && (
+            <button
+              className={inlineActionButton}
+              onClick={(e) => { e.stopPropagation(); onResumeFromHibernation(); }}
+              aria-label={`Resume session ${session.title}`}
+            >
+              ▶️ Resume
+            </button>
+          )}
+          {isRunning && !isCreating && onPause && (
+            <button
+              className={inlineActionButton}
+              onClick={(e) => { e.stopPropagation(); onPause(); }}
+              aria-label={`Pause session ${session.title}`}
+            >
+              ⏸️ Pause
+            </button>
+          )}
+        </span>
         <SessionActionsOverflow
           ref={overflowRef}
           session={session}
-          showPrimaryAction
+          showPrimaryAction={false}
+          buttonClassName={rowOverflowButton}
           onPause={onPause}
           onResume={onResume}
           onHibernate={onHibernate}

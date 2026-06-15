@@ -489,6 +489,90 @@ func TestBug3_BoxDrawingSeparator_ReadlineTypingStillWorks(t *testing.T) {
 	}
 }
 
+// TestBug_CursorBlockReplacingEsc verifies that "esc to interrupt" is detected as
+// StatusActive even when the terminal cursor sits at column 0, replacing the 'e'
+// with a half-block glyph in the tmux capture-pane output.
+//
+// Observed: tmux capture-pane renders the cursor position as a block character
+// (▊ U+258A or ▌ U+258C) when the cursor is at the first character of a line.
+// A Claude Code status bar of "esc to interrupt" captured mid-display appears as
+// "▊sc to interrupt", which the old pattern (starting with literal 'e') did not match.
+func TestBug_CursorBlockReplacingEsc(t *testing.T) {
+	sd := NewStatusDetector()
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"half-block U+258A replacing e", "▊sc to interrupt"},
+		{"half-block U+258C replacing e", "▌sc to interrupt"},
+		{"full-block U+2588 replacing e", "█sc to interrupt"},
+		{"normal esc (regression guard)", "esc to interrupt"},
+		{"esc to interrupt with context", "esc to interrupt · ↓ to manage  ● main"},
+		{"block char with context", "▊sc to interrupt · ↓ to manage  ● main"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sd.Detect([]byte(tc.input))
+			if got != StatusActive {
+				t.Errorf("Detect(%q) = %s, want StatusActive\n"+
+					"  'esc to interrupt' must be detected even when the 'e' is replaced\n"+
+					"  by a terminal cursor block character in the tmux capture output.",
+					tc.input, got)
+			}
+		})
+	}
+}
+
+// TestBug_ShellsStillRunning verifies that "N shell(s) still running" is detected
+// as StatusWaitingForAgent, not StatusSuccess.
+//
+// Observed: Claude Code appends "· N shell still running" to the turn-completion
+// line when background shells are active (e.g. "✻ Churned for 52s · 1 shell still
+// running"). The verb_duration_completion Success pattern previously matched this
+// line and returned StatusSuccess even though the session had pending background
+// work. The shells_still_running WaitingForAgent pattern must fire first.
+func TestBug_ShellsStillRunning(t *testing.T) {
+	sd := NewStatusDetector()
+
+	cases := []struct {
+		name  string
+		input string
+		want  DetectedStatus
+	}{
+		{
+			name:  "turn complete with 1 shell still running",
+			input: "✻ Churned for 52s · 1 shell still running",
+			want:  StatusWaitingForAgent,
+		},
+		{
+			name:  "turn complete with 2 shells still running",
+			input: "✻ Baked for 3m 12s · 2 shells still running",
+			want:  StatusWaitingForAgent,
+		},
+		{
+			name:  "N shells running (no 'still')",
+			input: "✻ Pondered for 1m · 3 shells running",
+			want:  StatusWaitingForAgent,
+		},
+		{
+			name:  "bare shell count in status bar",
+			input: "1 shell still running",
+			want:  StatusWaitingForAgent,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sd.Detect([]byte(tc.input))
+			if got != tc.want {
+				t.Errorf("Detect(%q) = %s, want %s\n"+
+					"  'N shell(s) still running' must NOT be classified as Success.\n"+
+					"  Background shells indicate the session is still active.",
+					tc.input, got, tc.want)
+			}
+		})
+	}
+}
 // TestBug_ThinkingWithStillThinkingSuffix documents that a Claude Code spinner line
 // with a "· still thinking" suffix in the duration annotation is still detected as
 // StatusActive, not silently dropped.

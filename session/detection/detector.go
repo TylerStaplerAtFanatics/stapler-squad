@@ -413,8 +413,12 @@ func getDefaultPatterns() StatusPatterns {
 		},
 		Active: []StatusPattern{
 			{
-				Name:        "esc_to_interrupt",
-				Pattern:     `esc\s+(to\s+)?(interrupt|cancel)`,
+				Name: "esc_to_interrupt",
+				// Matches "esc to interrupt" and "esc to cancel". Also matches when the
+				// terminal cursor sits at column 0 of the line, replacing the 'e' with a
+				// half-block glyph (▊ U+258A, ▌ U+258C, etc.) — a tmux capture-pane
+				// rendering artifact seen as "[▊]sc to interrupt" in real captures.
+				Pattern:     `[e▊▌▍▋▎▏█]sc\s+(to\s+)?(interrupt|cancel)`,
 				Description: "Active operation that can be interrupted or cancelled",
 				Priority:    25,
 			},
@@ -510,6 +514,18 @@ func getDefaultPatterns() StatusPatterns {
 				// The asterism ✻ (U+273B) is Claude's turn-marker; ◉ is an alternate.
 				Pattern:     `[✻◉]\s+Waiting for \d+ background agent`,
 				Description: "Claude is waiting for one or more background agents to finish",
+				Priority:    27,
+			},
+			{
+				Name: "shells_still_running",
+				// Matches "✻ Churned for 52s · 1 shell still running" and similar lines that
+				// appear when Claude finishes a turn but background shell processes are still
+				// active. The "N shell(s) still running" suffix overrides the turn-completion
+				// verb-duration marker — the session is not done yet.
+				// Also matches bare "N shell(s) running" / "N shells still running" variants
+				// found in the Claude Code bottom status bar.
+				Pattern:     `\d+\s+shells?\s+(?:still\s+)?running`,
+				Description: "Background shell processes still running — session not yet idle",
 				Priority:    27,
 			},
 		},

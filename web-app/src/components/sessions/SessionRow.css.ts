@@ -39,6 +39,15 @@ export const nameCell = style({
   gap: "2px",
 });
 
+/** Second row inside nameCell: path + substatus chip inline */
+export const pathLine = style({
+  display: "flex",
+  alignItems: "center",
+  gap: "4px",
+  minWidth: 0,
+  overflow: "hidden",
+});
+
 export const statusDot = style({
   width: "8px",
   height: "8px",
@@ -118,6 +127,12 @@ export const elapsed = style({
 export const actions = style({
   display: "flex",
   gap: vars.space["1"],
+  alignItems: "center",
+});
+
+/** Primary action button (Resume/Pause) — hidden unless hovering or session needs attention */
+export const primaryActionWrapper = style({
+  display: "flex",
   opacity: 0,
   "@media": {
     "(prefers-reduced-motion: no-preference)": {
@@ -128,9 +143,45 @@ export const actions = style({
     [`${row}:hover &`]: {
       opacity: 1,
     },
-    [`${row}[data-paused="true"] &`]: {
+    [`${row}[data-actions-visible="true"] &`]: {
       opacity: 1,
     },
+  },
+});
+
+/** Inline action button (Resume/Pause text button) used in row context */
+export const inlineActionButton = style({
+  padding: "2px 8px",
+  border: `1px solid ${vars.color.borderColor}`,
+  borderRadius: vars.radii.sm,
+  background: vars.color.surfaceSubtle,
+  color: vars.color.textPrimary,
+  fontSize: vars.fontSize.xs,
+  fontWeight: vars.fontWeight.medium,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+  lineHeight: 1.5,
+  ":hover": {
+    background: vars.color.hoverBackground,
+    borderColor: vars.color.borderHover,
+  },
+});
+
+/** Compact overflow (···) button for inline row use — no border, icon-sized */
+export const rowOverflowButton = style({
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  color: vars.color.textMuted,
+  padding: "2px 5px",
+  borderRadius: vars.radii.sm,
+  lineHeight: 1,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  ":hover": {
+    color: vars.color.textPrimary,
+    background: vars.color.hoverBackground,
   },
 });
 

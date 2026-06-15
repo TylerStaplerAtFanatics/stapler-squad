@@ -24,10 +24,10 @@ import { useSlashCommandSuggestions } from "@/lib/hooks/useSlashCommandSuggestio
 // ─── Session Type Radio Group ────────────────────────────────────────────────
 
 export const SESSION_TYPES = [
-  { value: "new_worktree", label: "New Worktree" },
-  { value: "directory", label: "Directory" },
-  { value: "existing_worktree", label: "Use Worktree" },
-  { value: "one_off", label: "One-off" },
+  { value: "new_worktree", label: "New branch (isolated)" },
+  { value: "directory", label: "Existing folder" },
+  { value: "existing_worktree", label: "Existing branch" },
+  { value: "one_off", label: "Temporary (no git)" },
   { value: "new_project", label: "New Project" },
   { value: "autonomous", label: "Fix Autonomously (Beta)" },
 ] as const;
@@ -47,15 +47,17 @@ interface SessionTypeRadioGroupProps {
 
 function SessionTypeRadioGroup({ value, onChange }: SessionTypeRadioGroupProps) {
   const currentIndex = SESSION_TYPES.findIndex((t) => t.value === value);
+  const hasSelection = currentIndex !== -1;
 
   function handleKeyDown(e: KeyboardEvent) {
+    const fromIndex = hasSelection ? currentIndex : 0;
     if (e.key === "ArrowRight" || e.key === "ArrowDown") {
       e.preventDefault();
-      const next = (currentIndex + 1) % SESSION_TYPES.length;
+      const next = (fromIndex + 1) % SESSION_TYPES.length;
       onChange(SESSION_TYPES[next].value);
     } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
       e.preventDefault();
-      const prev = (currentIndex - 1 + SESSION_TYPES.length) % SESSION_TYPES.length;
+      const prev = (fromIndex - 1 + SESSION_TYPES.length) % SESSION_TYPES.length;
       onChange(SESSION_TYPES[prev].value);
     }
   }
@@ -67,12 +69,12 @@ function SessionTypeRadioGroup({ value, onChange }: SessionTypeRadioGroupProps) 
       className={styles.radioGroup}
       onKeyDown={handleKeyDown}
     >
-      {SESSION_TYPES.map((type) => (
+      {SESSION_TYPES.map((type, idx) => (
         <button
           key={type.value}
           role="radio"
           aria-checked={value === type.value}
-          tabIndex={value === type.value ? 0 : -1}
+          tabIndex={value === type.value ? 0 : (!hasSelection && idx === 0 ? 0 : -1)}
           type="button"
           onClick={() => onChange(type.value)}
           className={[styles.radioBtn, value === type.value ? styles.radioBtnActive : ""]
@@ -379,8 +381,8 @@ export function OmnibarCreationPanel({
                 Repository path doesn&rsquo;t exist
               </div>
               <div className={styles.createRepoNoticeDesc}>
-                &ldquo;Use Worktree&rdquo; needs a real parent repository.
-                Switch to &ldquo;Directory&rdquo; or &ldquo;New Worktree&rdquo;
+                &ldquo;Existing branch&rdquo; needs a real parent repository.
+                Switch to &ldquo;Existing folder&rdquo; or &ldquo;New branch (isolated)&rdquo;
                 if you want to create a new repo here.
               </div>
             </div>
@@ -424,10 +426,10 @@ export function OmnibarCreationPanel({
             onChange={(v) => setFormField("sessionType", v)}
           />
           <span className={hint}>
-            {sessionType === "new_worktree" && "Creates an isolated git worktree for this session"}
-            {sessionType === "existing_worktree" && "Uses an existing worktree at a specific path"}
-            {sessionType === "directory" && "Works directly in the repository without worktree isolation"}
-            {sessionType === "one_off" && "A fresh directory will be created automatically — no path needed"}
+            {sessionType === "new_worktree" && "Creates an isolated branch and working directory for this session"}
+            {sessionType === "existing_worktree" && "Opens a session in an existing checked-out branch"}
+            {sessionType === "directory" && "Works directly in a folder without branch isolation"}
+            {sessionType === "one_off" && "A fresh temporary directory will be created automatically — no path needed"}
             {sessionType === "new_project" && "Creates a new directory, runs git init, makes an initial commit, then opens a session"}
             {sessionType === "autonomous" && "The agent runs fully autonomously — risky tool calls are approved by an LLM reviewer rather than queued for you. You will be notified on completion. To stop it, delete or hibernate the session."}
           </span>
