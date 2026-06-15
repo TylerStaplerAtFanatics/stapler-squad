@@ -37,14 +37,14 @@ func (p *instantDonePool) CallBlockingWithOptions(
 func addPausedAutonomousInstance(t *testing.T, storage *session.Storage, title string) *session.Instance {
 	t.Helper()
 	inst := &session.Instance{
-		Title:         title,
-		UUID:          title + "-uuid-1234",
-		Path:          "/tmp/test",
-		Status:        session.Paused,
-		Program:       "claude",
+		Title:          title,
+		UUID:           title + "-uuid-1234",
+		Path:           "/tmp/test",
+		Status:         session.Paused,
+		Program:        "claude",
 		AutonomousMode: true,
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
 	require.NoError(t, storage.AddInstance(inst))
 	return inst

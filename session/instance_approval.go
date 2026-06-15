@@ -97,4 +97,3 @@ func (i *Instance) GetTimeSinceLastTerminalUpdate() time.Duration {
 	defer i.stateMutex.RUnlock()
 	return i.TimeSinceLastTerminalUpdate(i.CreatedAt)
 }
-

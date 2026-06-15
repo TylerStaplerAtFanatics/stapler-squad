@@ -41,9 +41,9 @@ func TestBug1_IndentedSpinner_NoRegression(t *testing.T) {
 		name  string
 		input string
 	}{
-		{"lowercase verb", "  ✽ roosting…"},         // rejected by [A-Z] (requires capital first letter)
-		{"no ellipsis", "  ✽ Roosting"},             // rejected by (?:…|\.{1,3}) (requires trailing ellipsis)
-		{"markdown bullet", "  * Item one"},          // rejected by (?:…|\.{1,3}) (no ellipsis after "one")
+		{"lowercase verb", "  ✽ roosting…"},             // rejected by [A-Z] (requires capital first letter)
+		{"no ellipsis", "  ✽ Roosting"},                 // rejected by (?:…|\.{1,3}) (requires trailing ellipsis)
+		{"markdown bullet", "  * Item one"},             // rejected by (?:…|\.{1,3}) (no ellipsis after "one")
 		{"timing separator", "(8m 39s · ↓ 834 tokens)"}, // · not at start of meaningful pattern; no [A-Z]verb… follows
 	}
 	for _, tc := range cases {

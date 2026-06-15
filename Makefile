@@ -577,7 +577,7 @@ format: ensure-tools ## Format code with gofmt
 	go fmt ./...
 
 fmt-check: ## Verify all Go files are gofmt-formatted (non-destructive; exits 1 if any are not)
-	@UNFORMATTED=$$(gofmt -l . | grep -v vendor); \
+	@UNFORMATTED=$$(gofmt -l . | grep -v vendor | grep -v "^\.claude/"); \
 	if [ -n "$$UNFORMATTED" ]; then \
 		echo "The following files are not gofmt formatted:"; \
 		echo "$$UNFORMATTED"; \

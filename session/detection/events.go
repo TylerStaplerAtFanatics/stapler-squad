@@ -9,8 +9,8 @@ import (
 type DetectionEvent struct {
 	SessionID       string
 	Timestamp       time.Time
-	MatchedPattern  string         // Pattern Name field, or "<none>" if StatusUnknown
-	MatchedCategory string         // "active", "processing", "idle", etc., or "unknown"
+	MatchedPattern  string // Pattern Name field, or "<none>" if StatusUnknown
+	MatchedCategory string // "active", "processing", "idle", etc., or "unknown"
 	ResultStatus    DetectedStatus
 	TailSnippet     string // Last TailSnippetBytes of cleaned terminal output
 }
