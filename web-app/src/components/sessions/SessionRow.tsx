@@ -171,7 +171,6 @@ export function SessionRow({
 
   return (
     <div
-      role="listitem"
       className={[
         row,
         memMB > 500 ? rowMemoryPressure : "",
@@ -298,7 +297,7 @@ export function SessionRow({
 
       {/* Actions: primary (hover-only unless needs attention) + overflow (always visible) */}
       <span className={actionsStyle} role="group" aria-label="Session actions">
-        <span className={primaryActionWrapper}>
+        <span className={primaryActionWrapper} role="presentation">
           {(isPaused || isNeedsApproval) && onResume && (
             <button
               className={inlineActionButton}

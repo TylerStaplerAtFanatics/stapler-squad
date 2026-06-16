@@ -838,7 +838,6 @@ export function SessionList({
       ) : viewMode === "row" ? (
         // Row mode: virtualized — only renders visible items (~20 rows at a time).
         <div
-          role="list"
           aria-label={`Sessions, ${flatItems.filter(i => i && i.kind === "session").length} items`}
           style={{
             height: rowVirtualizer.getTotalSize(),
@@ -865,6 +864,7 @@ export function SessionList({
                 }}
               >
                 {item.kind === "header" ? (
+                  <div role="listitem">
                   <div
                     role="heading"
                     aria-level={3}
@@ -969,6 +969,7 @@ export function SessionList({
                         )}
                       </>
                     )}
+                  </div>
                   </div>
                 ) : (
                   <SessionRow
@@ -1168,6 +1169,7 @@ export function SessionList({
             <button
               style={{ padding: '0.5rem 1rem', border: 'none', borderRadius: '6px', background: 'var(--error)', color: 'white', cursor: 'pointer', fontSize: '0.875rem', fontWeight: 600 }}
               aria-describedby="bulk-delete-warning"
+              aria-label={`Confirm permanent deletion of ${selectedSessions.size} session${selectedSessions.size !== 1 ? 's' : ''}`}
               onClick={() => { setShowBulkDeleteConfirm(false); handleConfirmBulkDelete(); }}
             >
               Delete {selectedSessions.size} session{selectedSessions.size !== 1 ? 's' : ''}
