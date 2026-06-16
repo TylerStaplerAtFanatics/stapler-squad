@@ -161,15 +161,9 @@ var readlineTypingRegex = regexp.MustCompile(`(?m)^❯[ \t\x{00a0}]+[^\s\x{00a0}
 // cursorUpRegex matches ANSI cursor-up escape sequences (\x1b[A or \x1b[NA).
 var cursorUpRegex = regexp.MustCompile(`\x1b\[\d*A`)
 
-// cursorAbsoluteRegex matches ANSI absolute cursor-position sequences (\x1b[ROW;COLH).
-// Modern Claude Code redraws the in-progress status area using absolute cursor moves
-// rather than bare \r rewrites, so detecting these is necessary for the screen-overwrite
-// fallback to catch actively-running long sessions.
-var cursorAbsoluteRegex = regexp.MustCompile(`\x1b\[\d+;\d+H`)
-
 // HasActiveScreenRedraw reports whether raw PTY bytes contain evidence that the
 // terminal screen is actively being redrawn: a bare carriage return (not part of
-// \r\n), a cursor-up sequence, or an absolute cursor-position sequence (\x1b[R;CH).
+// \r\n) or a cursor-up sequence (\x1b[NA).
 func HasActiveScreenRedraw(raw []byte) bool {
 	return hasScreenOverwrite(raw)
 }
@@ -200,8 +194,8 @@ func HasClaudeSpinnerActivity(tail string) bool {
 }
 
 // hasScreenOverwrite reports whether raw PTY bytes contain evidence of an in-progress
-// spinner: a bare carriage return (not part of \r\n, which is a Windows newline),
-// an ANSI cursor-up escape sequence, or an absolute cursor-position sequence (\x1b[R;CH).
+// spinner: a bare carriage return (not part of \r\n, which is a Windows newline)
+// or an ANSI cursor-up escape sequence.
 // Must be called on the raw output before collapseCarriageReturns() discards this information.
 func hasScreenOverwrite(raw []byte) bool {
 	s := string(raw)
@@ -214,7 +208,7 @@ func hasScreenOverwrite(raw []byte) bool {
 			return true
 		}
 	}
-	return cursorUpRegex.Match(raw) || cursorAbsoluteRegex.Match(raw)
+	return cursorUpRegex.Match(raw)
 }
 
 // collapseCarriageReturns collapses CR-overwritten segments within each line,
@@ -770,12 +764,32 @@ func (sd *StatusDetector) detectFromLines(lines []string) (DetectedStatus, strin
 		if s == StatusUnknown {
 			continue
 		}
-		if s != StatusReady {
-			return s, desc // specific match wins immediately
+		if s == StatusReady {
+			if bestStatus == StatusUnknown {
+				bestStatus, bestDesc = StatusReady, desc
+			}
+			continue
 		}
-		if bestStatus == StatusUnknown {
-			bestStatus, bestDesc = StatusReady, desc // note we saw Ready but keep looking
+		// StatusActive: store as candidate and keep scanning upward.
+		// WaitingForAgent is more specific (higher priority in single-line matching)
+		// and often appears on the spinner line above the "esc to interrupt" status bar.
+		// High-urgency statuses (Error, NeedsApproval, InputRequired) also override Active.
+		if s == StatusActive {
+			if bestStatus == StatusUnknown || bestStatus == StatusReady {
+				bestStatus, bestDesc = StatusActive, desc
+			}
+			continue
 		}
+		// If we already have Active stored, only accept higher-urgency statuses from
+		// earlier (higher) lines. Success/Processing/Idle on earlier lines are stale.
+		if bestStatus == StatusActive {
+			switch s {
+			case StatusWaitingForAgent, StatusError, StatusNeedsApproval, StatusInputRequired:
+				return s, desc
+			}
+			continue
+		}
+		return s, desc // specific match wins immediately
 	}
 	return bestStatus, bestDesc
 }

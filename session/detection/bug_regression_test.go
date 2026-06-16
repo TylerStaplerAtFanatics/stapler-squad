@@ -196,22 +196,24 @@ func TestBug2_CursorForwardStripping_ThinkingVerb(t *testing.T) {
 	}
 }
 
-// TestBug2_AbsoluteCursorPositioning_DetectedAsActive guards against the regression
-// where an actively-running session whose 4096-byte PTY tail consists entirely of
-// absolute cursor-position updates (\x1b[ROW;COLH) with no \n separators is wrongly
-// classified as Ready. The hasScreenOverwrite fallback must detect these sequences.
-func TestBug2_AbsoluteCursorPositioning_DetectedAsActive(t *testing.T) {
+// TestBug2_AbsoluteCursorPositioning_NotFalsePositive guards against the regression
+// where idle sessions whose raw PTY tail contains tmux cursor-position sequences
+// (\x1b[ROW;COLH) — e.g. from the status bar time update — were falsely detected as
+// StatusActive via hasScreenOverwrite. Absolute cursor moves are NOT sufficient evidence
+// of an active spinner; real active sessions are distinguished by spinner verbs handled
+// by HasClaudeSpinnerActivity in GetCurrentStatus Cases A and B.
+func TestBug2_AbsoluteCursorPositioning_NotFalsePositive(t *testing.T) {
 	sd := NewStatusDetector()
 
-	// Simulate the single-line raw PTY content seen in long-running sessions:
-	// the entire tail is cursor-position updates painting box-drawing characters.
-	// This matches what GetCurrentStatus sees when lines_count == 1.
+	// Pure cursor-position updates with no spinner verbs must NOT be detected as Active.
+	// Without a spinner verb, this content is ambiguous — StatusUnknown is correct.
 	rawAbsCursor := "·······\x1b[33;107H│·····\x1b[34;107H│·····\x1b[35;107H│·····"
 	got := sd.Detect([]byte(rawAbsCursor))
-	if got != StatusActive && got != StatusProcessing {
-		t.Errorf("Detect(%q) = %s, want StatusActive or StatusProcessing\n"+
-			"  An active long-running session tail may consist entirely of \\x1b[ROW;COLH cursor-position\n"+
-			"  updates (no \\n separators). hasScreenOverwrite must detect these as active screen drawing.",
+	if got == StatusActive || got == StatusProcessing {
+		t.Errorf("Detect(%q) = %s, want anything except StatusActive/StatusProcessing\n"+
+			"  Bare \\x1b[ROW;COLH cursor-position sequences (no spinner verb) must not trigger\n"+
+			"  false-positive Active detection; idle sessions with tmux status bar updates would\n"+
+			"  be permanently stuck as Active and never enter the review queue.",
 			rawAbsCursor, got)
 	}
 }
@@ -325,6 +327,7 @@ func TestMapStatusToIdleState_ExplicitCoverage(t *testing.T) {
 	}{
 		{StatusActive, []IdleState{IdleStateActive}, IdleStateWaiting, false, "Active → IdleStateActive"},
 		{StatusProcessing, []IdleState{IdleStateActive}, IdleStateWaiting, false, "Processing → IdleStateActive"},
+		{StatusWaitingForAgent, []IdleState{IdleStateActive}, IdleStateWaiting, false, "WaitingForAgent → IdleStateActive"},
 		{StatusInputRequired, []IdleState{IdleStateWaiting}, 0, true, "InputRequired → IdleStateWaiting"},
 		{StatusSuccess, []IdleState{IdleStateWaiting}, 0, true, "Success → IdleStateWaiting"},
 		{StatusNeedsApproval, []IdleState{IdleStateWaiting}, 0, true, "NeedsApproval → IdleStateWaiting"},
@@ -703,6 +706,106 @@ func TestBug5_SpinnerVerbFallback_FilteredEmpty(t *testing.T) {
 		t.Errorf("HasClaudeSpinnerActivity(%q) = true, want false\n"+
 			"  Idle session tail (only tmux status bar) must not trigger the spinner fallback.",
 			idleTail)
+	}
+}
+
+// TestBug_WaitingForAgent_AboveEscToInterrupt guards against the regression where
+// "✻ Waiting for N background agents to finish" was not detected as StatusWaitingForAgent
+// when the "esc to interrupt" status bar appeared on a line BELOW it in the terminal.
+//
+// Root cause: detectFromLines (bottom-up scan) found "esc to interrupt" → StatusActive on
+// the last line and returned immediately, never reaching the WaitingForAgent spinner line
+// further up. Fix: when StatusActive is found, store it as a candidate and keep scanning
+// upward so StatusWaitingForAgent (higher priority) can override it.
+//
+// Observed in the stelekit session: Claude Code had spawned 2 background research agents
+// and was showing "✻ Waiting for 2 background agents to finish" above the normal
+// "esc to interrupt · ↓ to manage" status bar, but the session list displayed the generic
+// Active chip instead of the ⌛ WaitingForAgent chip.
+func TestBug_WaitingForAgent_AboveEscToInterrupt(t *testing.T) {
+	sd := NewStatusDetector()
+
+	lines := []string{
+		"● Spawned 2 background research agents",
+		"",
+		"✻ Waiting for 2 background agents to finish",
+		"──────────────────────────────────────────────────────────────────────────────",
+		"❯ ",
+		"──────────────────────────────────────────────────────────────────────────────",
+		"  esc to interrupt · ↓ to manage  ● main",
+		"  ↑/↓ to select · Enter to view  ◯ background-research (+2)",
+	}
+
+	got := sd.DetectFromLines(lines)
+	if got != StatusWaitingForAgent {
+		t.Errorf("DetectFromLines with WaitingForAgent above esc-to-interrupt: got %s, want StatusWaitingForAgent\n"+
+			"  '✻ Waiting for 2 background agents...' must be detected even when\n"+
+			"  'esc to interrupt' status bar appears below it. The bottom-up scan must\n"+
+			"  continue past Active to find the more specific WaitingForAgent status.",
+			got)
+	}
+}
+
+// TestBug_WaitingForAgent_WithContextFromLines mirrors the above for the GetCurrentStatus path.
+func TestBug_WaitingForAgent_WithContextFromLines(t *testing.T) {
+	sd := NewStatusDetector()
+
+	lines := []string{
+		"✻ Waiting for 1 background agent to finish",
+		"──────────────────────────────────────────────────────────────────────────────",
+		"❯ ",
+		"──────────────────────────────────────────────────────────────────────────────",
+		"  esc to interrupt · ↓ to manage  ● main",
+	}
+
+	got, _ := sd.DetectWithContextFromLines(lines)
+	if got != StatusWaitingForAgent {
+		t.Errorf("DetectWithContextFromLines with WaitingForAgent above esc-to-interrupt: got %s, want StatusWaitingForAgent",
+			got)
+	}
+}
+
+// TestBug_WaitingForAgent_ActiveStillWinsWhenNoWaitingLine ensures the fix does not
+// regress the normal Active case: when there is NO WaitingForAgent line and only
+// "esc to interrupt" is visible, the result must still be StatusActive.
+func TestBug_WaitingForAgent_ActiveStillWinsWhenNoWaitingLine(t *testing.T) {
+	sd := NewStatusDetector()
+
+	lines := []string{
+		"● Running some task",
+		"✻ Cooking… (5m 12s · ↓ 45.6k tokens)",
+		"──────────────────────────────────────────────────────────────────────────────",
+		"❯ ",
+		"──────────────────────────────────────────────────────────────────────────────",
+		"  esc to interrupt · ↓ to manage  ● main",
+	}
+
+	got := sd.DetectFromLines(lines)
+	if got != StatusActive {
+		t.Errorf("DetectFromLines with active spinner + esc-to-interrupt (no WaitingForAgent line): got %s, want StatusActive",
+			got)
+	}
+}
+
+// TestBug_WaitingForAgent_SuccessDoesNotOverrideActive verifies that a stale completion
+// line above the "esc to interrupt" status bar does NOT override the Active status.
+// This guards against a regression where the new Active-continues-scanning logic could
+// allow a stale "✻ Baked for 5s" to win over "esc to interrupt".
+func TestBug_WaitingForAgent_SuccessDoesNotOverrideActive(t *testing.T) {
+	sd := NewStatusDetector()
+
+	lines := []string{
+		"✻ Baked for 5s",          // stale completion from a prior turn
+		"",
+		"● Running new task...",
+		"  esc to interrupt · ↓ to manage  ● main",
+	}
+
+	got := sd.DetectFromLines(lines)
+	if got == StatusSuccess {
+		t.Errorf("DetectFromLines: stale '✻ Baked for 5s' above 'esc to interrupt' returned StatusSuccess\n"+
+			"  Once Active is found on a later line, earlier Success lines must be ignored.\n"+
+			"  The session is actively running — 'esc to interrupt' is authoritative.")
 	}
 }
 
