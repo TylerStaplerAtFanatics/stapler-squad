@@ -16,6 +16,7 @@ import {
   path as pathStyle,
   pathLine as pathLineStyle,
   elapsed as elapsedStyle,
+  elapsedIcon as elapsedIconStyle,
   actions as actionsStyle,
   primaryActionWrapper,
   inlineActionButton,
@@ -236,14 +237,13 @@ export function SessionRow({
         <span
           className={[memoryBadge, memorySeverityClass].filter(Boolean).join(" ")}
           title={memMB > 0 ? `Process RSS: ${memMB} MB` : undefined}
-          aria-label={memMB > 0 ? `${memMB} MB RAM` : undefined}
-          aria-hidden={memMB === 0 ? "true" : undefined}
+          aria-label={memMB > 0 ? `${memMB} MB RAM` : "No memory data"}
         >
           {memMB > 0
             ? memMB >= 1024
               ? `${(memMB / 1024).toFixed(1)} GB`
               : `${memMB} MB`
-            : ""}
+            : <span style={{ opacity: 0.3 }}>—</span>}
         </span>
       )}
 
@@ -265,7 +265,9 @@ export function SessionRow({
           dateTime={lastActivity ? new Date(Number(lastActivity.seconds) * 1000).toISOString() : undefined}
           title={lastActivity ? new Date(Number(lastActivity.seconds) * 1000).toLocaleString() : undefined}
         >
-          {elapsedText}
+          {elapsedText
+            ? <><span className={elapsedIconStyle} aria-hidden="true">⏱</span>{elapsedText}</>
+            : <span style={{ opacity: 0.3 }}>—</span>}
         </time>
       )}
 

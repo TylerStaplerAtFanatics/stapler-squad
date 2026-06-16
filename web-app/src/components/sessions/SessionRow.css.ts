@@ -67,7 +67,7 @@ export const statusDot = style({
       background: vars.color.statusDot.idle,
     },
     '&[data-status="needs-approval"]': {
-      background: vars.color.statusDot.paused,
+      background: vars.color.primary,
     },
     '&[data-status="paused-session"]': {
       background: vars.color.warningText,
@@ -82,6 +82,12 @@ export const statusDot = style({
         '&[data-status="running"]': {
           animationName: pulseOpacity,
           animationDuration: "2s",
+          animationIterationCount: "infinite",
+          animationTimingFunction: "ease-in-out",
+        },
+        '&[data-status="needs-approval"]': {
+          animationName: pulseOpacity,
+          animationDuration: "1.2s",
           animationIterationCount: "infinite",
           animationTimingFunction: "ease-in-out",
         },
@@ -141,6 +147,9 @@ export const primaryActionWrapper = style({
   },
   selectors: {
     [`${row}:hover &`]: {
+      opacity: 1,
+    },
+    [`${row}:focus-within &`]: {
       opacity: 1,
     },
     [`${row}[data-actions-visible="true"] &`]: {
@@ -241,15 +250,17 @@ export const branchCell = style({
   maxWidth: "120px",
 });
 
-// Only applied when RSS > 500 MB.
+// Only applied when RSS > 500 MB — uses a background tint rather than a
+// border-inline-start so it doesn't collide with the active/paused left accents.
 export const rowMemoryPressure = style({
-  borderLeft: `3px solid ${vars.color.warning}`,
+  background: `color-mix(in srgb, ${vars.color.warningBg} 40%, transparent)`,
 });
 
-/** Applied to <li> when session is paused — left-border accent distinguishes paused rows
- *  without reducing opacity, which would drop the elapsed-time text below WCAG AA contrast. */
+/** Applied to <li> when session is paused — inline-start border distinguishes paused rows
+ *  without reducing opacity, which would drop the elapsed-time text below WCAG AA contrast.
+ *  Uses border-inline-start so it flips correctly in RTL layouts. */
 export const rowPaused = style({
-  borderLeft: `2px solid ${vars.color.warningText}`,
+  borderInlineStart: `2px solid ${vars.color.warningText}`,
   "@media": {
     "(prefers-reduced-motion: no-preference)": {
       transition: vars.transition.base,
@@ -263,10 +274,11 @@ const rowActivePulse = keyframes({
   "100%": { borderLeftColor: vars.color.primary },
 });
 
-/** Applied to <li> when subStatus === PROCESSING — pulsing left-border makes active
- *  sessions scannable at a glance. Pulse is disabled for reduced-motion users. */
+/** Applied to <li> when subStatus === PROCESSING — pulsing inline-start border makes active
+ *  sessions scannable at a glance. Pulse is disabled for reduced-motion users.
+ *  Uses border-inline-start so it flips correctly in RTL layouts. */
 export const rowActive = style({
-  borderLeft: `3px solid ${vars.color.primary}`,
+  borderInlineStart: `3px solid ${vars.color.primary}`,
   "@media": {
     "(prefers-reduced-motion: no-preference)": {
       animationName: rowActivePulse,
@@ -275,6 +287,22 @@ export const rowActive = style({
       animationTimingFunction: "ease-in-out",
     },
   },
+});
+
+/** Name + chip row inside nameCell — extracted from inline style in SessionRow.tsx */
+export const nameRow = style({
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  minWidth: 0,
+});
+
+/** Muted clock icon prefix for the elapsed column — makes the column self-labeling */
+export const elapsedIcon = style({
+  marginInlineEnd: "3px",
+  opacity: 0.45,
+  fontSize: "9px",
+  fontStyle: "normal",
 });
 
 export const groupHeader = style({

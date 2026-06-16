@@ -20,8 +20,11 @@ interface SubStatusChipProps {
 
 /**
  * SubStatusChip renders a small inline chip showing fine-grained session activity.
- * Returns null for UNSPECIFIED only — IDLE renders a muted "Waiting…" chip.
- * Only intended for sessions with lifecycle status ACTIVE.
+ * Returns null for UNSPECIFIED only.
+ *
+ * Note: SessionRow filters out IDLE and READY before rendering this component —
+ * those states are intentionally suppressed in the list view as low-signal noise.
+ * Direct callers (e.g. detail headers) may still render IDLE/READY chips.
  */
 export function SubStatusChip({ subStatus }: SubStatusChipProps) {
   switch (subStatus) {
@@ -46,7 +49,7 @@ export function SubStatusChip({ subStatus }: SubStatusChipProps) {
           aria-label="Needs approval"
           title="Waiting for your approval on a tool request"
         >
-          ● Approve Tool Use
+          ⚠ Approve Tool Use
         </span>
       );
 

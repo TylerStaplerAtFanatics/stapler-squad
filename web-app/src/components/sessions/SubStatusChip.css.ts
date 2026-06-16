@@ -47,21 +47,25 @@ export const chipError = style([
   },
 ]);
 
+// Softer than chipNeedsApproval — informational warning, not user-blocking.
+// Same amber bg but border matches background and weight is normal to reduce urgency.
 export const chipTestsFailing = style([
   chip,
   {
     background: vars.color.warningBg,
     color: vars.color.warningText,
-    border: `1px solid ${vars.color.warning}`,
+    border: `1px solid ${vars.color.warningBg}`,
+    fontWeight: vars.fontWeight.normal,
   },
 ]);
 
+// Neutral/transient — not urgent, just an API constraint.
 export const chipRateLimited = style([
   chip,
   {
-    background: vars.color.warningBg,
-    color: vars.color.warningText,
-    border: `1px solid ${vars.color.warning}`,
+    background: vars.color.surfaceSubtle,
+    color: vars.color.textSecondary,
+    border: `1px solid ${vars.color.borderColor}`,
   },
 ]);
 
@@ -117,6 +121,12 @@ export const spinner = style({
       animationDuration: "0.8s",
       animationIterationCount: "infinite",
       animationTimingFunction: "linear",
+    },
+    // For reduced-motion users show a static filled dot rather than a partial arc.
+    "(prefers-reduced-motion: reduce)": {
+      border: "none",
+      background: "currentColor",
+      opacity: 0.6,
     },
   },
 });
