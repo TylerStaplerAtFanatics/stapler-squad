@@ -294,9 +294,8 @@ endif
 
 _codesign-binary: ## Sign the binary with StaplerSquadDev cert (called by install-service on macOS)
 	@if ! ./scripts/check-codesign.sh; then \
-		echo "  StaplerSquadDev signing cert not found."; \
-		echo "   Run 'make setup-codesign' once to create it, then retry."; \
-		exit 1; \
+		echo "  StaplerSquadDev signing cert not found — running setup-codesign..."; \
+		OPENSSL_BIN=$$(brew --prefix openssl 2>/dev/null)/bin/openssl $(MAKE) setup-codesign; \
 	fi
 	@echo "Signing binary..."
 	codesign --force \
