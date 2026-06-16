@@ -1,5 +1,89 @@
 # Changelog
 
+## [1.31.1](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.31.0...v1.31.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **lint:** gofmt rules_service_test.go ([cd3c4b1](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/cd3c4b1628e9b8ffa6daf487f31695573b7bf8ec))
+
+## [1.31.0](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.30.0...v1.31.0) (2026-06-02)
+
+
+### Features
+
+* add support for Antigravity (agy) CLI ([a981bcb](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/a981bcb16db6ee557c9a487b48703951c48d2cdd))
+* **agy:** full Antigravity CLI support — hooks, install, UI, detection ([e66d058](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/e66d05839789737cabad6d8b9401c3b431aff9e8))
+* **analytics:** program detail panel with subcommand drill-down ([#85](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/85)) ([9d43582](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/9d4358272d7293457c6f6474480d66f4bd4b2341))
+* **backlog:** automated triage pipeline with review panel ([fcafaed](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/fcafaedd9bdb2a01e8765d44d9d7324df0a80ec8))
+* **backlog:** session monitor panel and backlog detail improvements ([80d3f3b](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/80d3f3bf60fbb949c549265055a9855e43a631b6))
+* **backlog:** triage re-trigger fix, detail UI polish, backlog in mobile nav ([6a174c3](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/6a174c3a0e1298bec2cc387b31de51f5c0eb7ecd))
+* **backlog:** workflow engine and status event audit log ([7458bcb](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/7458bcb33d42d98fa2602c8caaab44cd402b5106))
+* **headless:** session/headless pool — cache-optimized background LLM calls via claude -p ([fba787e](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/fba787e5c843848fceb76eb93654bf03ab8748a0))
+* **headless:** session/headless pool — cache-optimized background LLM calls via claude -p ([0a4e10e](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/0a4e10e7714c495375468a46c5da7bc44d712b87))
+* **mcp:** tag MCP-created sessions with source:mcp ([e3191bc](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/e3191bc271dbac302c944ee95e6c7f2ef5aaf36d))
+* **memory:** surface memory pressure and fix hibernation sweeper ([f455f3b](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/f455f3bf655eea20690c3a5cdfdcb8ce5c132d5f))
+* **memory:** surface memory pressure and fix hibernation sweeper ([5632d7e](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/5632d7eacfcc47742b300b7b8ad097d7f0e0ed83))
+* **memory:** surface memory pressure and fix hibernation sweeper ([2927de7](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/2927de74739889a092d796e11b19190d7516ba2f))
+* **rules:** modal dialog, scrollable table, analytics deep-link pre-fill ([6f654e3](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/6f654e30e9b721c8ab1f36dc6522a38093bc56dc))
+* **rules:** UX improvements — toast z-index, mobile layout, form sections, table clarity ([17b2a6f](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/17b2a6f20d4ef2e110c11d2356bc60d42c46eb14))
+* **rules:** YAML import/export and UX improvements for ApprovalRulesPanel ([#123](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/123)) ([ea92de7](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/ea92de7fc83f8b060eabb2d5425c9f13233bc1cd))
+* **session:** immortal migration — ProcessManager interface + TmuxBackend + NativeProcessManager ([#113](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/113)) ([66b4c65](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/66b4c65179ce444bcedb14f97af87d1cb90020fb))
+* **session:** session steering — supervised driver for all automated sessions ([874c1e6](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/874c1e63409953706378430326570fc2491112d4))
+* **session:** WriteToSession RPC for sending raw input to a PTY ([5b528f1](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/5b528f1a015d202412b10084d0c41553f42d9c19))
+* **shell-tabs:** complete UX discovery, error states, and full test coverage ([#93](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/93)) ([c380068](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/c380068e34ff3e6772d9e1b9a4ee8bf5c092f9ca))
+* **shells:** custom shell tabs — interactive PTY shells attached to sessions ([#109](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/109)) ([fb5a6d1](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/fb5a6d15d0e29b7e52cadf89412fac3f74ffc1c2))
+* **upload:** multi-file + Android camera/gallery/file picker in terminal toolbar ([b4b43e4](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/b4b43e4d04d3f9bc2281ae95765304873338e2ba))
+* **upload:** multi-file + Android camera/gallery/file picker in terminal toolbar ([417ac0a](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/417ac0a2c8821c18aa09f11cd7dcde0d021b5922))
+* **ux:** paused session clarity — overlay, visual distinction, pause reason ([#90](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/90)) ([d07584c](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/d07584cd95b6fb7a5f630a9db019de8d457b1ec3))
+
+
+### Bug Fixes
+
+* address code review findings from history-linker and workspace-service ([e80cb2a](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/e80cb2aea4bd9369b68ca52b83bd856b462002a9))
+* **backlog:** repair triage pipeline — prompt injection, session exit, and oneshot flag ([cbc938b](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/cbc938bd4927ba6c6145148a85ad8cf948be08ab))
+* **ci:** add ent ORM generation step before lint and build ([81e7ebf](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/81e7ebfb627186e5e3feaf89ec317594df2a351c))
+* **ci:** allow ESLint warnings in full-scan path (push/workflow_dispatch) ([94b273c](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/94b273ceb21252dd87ee451ebc747b4ac08fcf0e))
+* **ci:** include session/ent/ in build artifact for test and cross-compile jobs ([3d823f1](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/3d823f1169182cb82204649505610d67c77c668f))
+* **detection:** detect ✻ asterism prefix as Claude active state ([#114](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/114)) ([a339b29](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/a339b29c64117e3ec647f7a901a727562b79646a))
+* **headless:** resolve all review findings — atomicity, security, concurrency, test coverage ([6f2cb76](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/6f2cb76fb287820f34f38b9a5113eb89326c523d))
+* **lint:** remove embedded ReviewState selector in sweeper test (QF1008) ([3fbcac9](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/3fbcac9f25cee49d421a9be8e2332acc501f94a8))
+* **lint:** remove redundant embedded field selector in sweeper test ([7b437d8](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/7b437d8037d873a8b2fe411cda950df9a50efc9f))
+* **lint:** resolve prealloc violations and remove unused shellWgWait ([29c52c5](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/29c52c5809efa20d0b830c3211850a61be95e161))
+* **lint:** use LiveInstancesProvider and Active instead of deprecated LoadInstances/Running ([a99d967](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/a99d967fdb023888e9d1fba4efb560a6fb82e597))
+* **log:** prevent panic on service restart; fix ESLint violations ([38f666f](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/38f666f0665ba7bc042deb6f9d9a66c97a02e735))
+* **macos:** stable TCC permission grants via self-signed codesigning ([#112](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/112)) ([3cc037f](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/3cc037fb0eaa3f151d2acfdc6ca04b72e5d7e113))
+* **memory:** address code review findings — cache I/O, RSS coverage, error UX ([8cc95ba](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/8cc95ba0f6b5e93296af2549d0e84126619397f8))
+* **memory:** fix cache population, pause guard, and error UX for hibernate/pause ([27b5584](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/27b5584bd421acdc03cbf0de811aa333f149eff6))
+* **notifications:** condition-change gating for health alerts + native notification lifecycle ([#92](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/92)) ([c9b08c5](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/c9b08c5241bf6c48059df3f1fbd2beaa2db51228))
+* **notifications:** fix type mapping, approval guard, and test enum values ([#110](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/110)) ([c4b2ee3](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/c4b2ee346b76c74cf38db3bb52ae273b74b0ee48))
+* post-merge build repairs for sync/upstream-20260528 ([dea6a86](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/dea6a869ca86668d147914fcd27b8c9a96899046))
+* **session:** fix two data races and semaphore ordering from upstream merge ([5f3208a](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/5f3208a82425aa0323794faae1c968b4e60039f4))
+* **session:** re-detect conversation UUID after /clear ([3ec93c4](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/3ec93c43ae0a307099b1f99c7592c02965d41bde))
+* **session:** replace inst.tmuxManager.GetTmuxSessionName() with inst.GetTmuxSessionName() ([3651044](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/3651044a4783502d1c17e664e57b0264653df4e7))
+* **session:** replace time.Sleep with os.Chtimes in HistoryLinker tests to fix mtime race ([b731b6a](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/b731b6a560bb74580d7d5841ea95eea7010277e1))
+* **session:** replace undefined NeedsApproval with detection layer check ([df56305](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/df563054c15be35f1983a7fc2b1baf969019e170))
+* **sessions:** cascade session deletion to review queue, notifications, and modal auto-advance ([ce14e75](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/ce14e7586aa48a1e3789a42d3adfb194575f8e10))
+* **test:** use Stopped status in seedInstance to avoid tmux spawn in LoadInstances ([6b2f9d9](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/6b2f9d92ba2d9a9b7204ab54e17e6abae38a909b))
+* **tokens:** use UTC in IsStale() to avoid timezone boundary false-positives ([b0cb29d](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/b0cb29d294271e7cbe1bceb7db300111a7d66b0c))
+* **ui:** rename Gallery button to Images in terminal upload toolbar ([a23a124](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/a23a124cbce4507c13001f7ffdf2e9df23b889d4))
+* **ui:** show pane header tab strip on mobile (remove display:none at ≤768px) ([0eae9e6](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/0eae9e61b392cc6b96bb533e5cf6e5c2382bdb64))
+* **upload:** extract FileList to array before input reset to fix Android upload ([c2ba4aa](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/c2ba4aa156036a38143a0a029ff3c5845a635466))
+* **upload:** fix stale upload tests and add disconnected-state UX fallback ([ebb8a1b](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/ebb8a1b3080babb41ef995c861d9386690f1ba02))
+
+
+### Performance Improvements
+
+* debounce omnibar Fuse searches and pre-sort sessions selector ([3231d75](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/3231d75a5942fe77cc3bdf7d8cef99c90b125d15))
+* eliminate hot-path allocs and reduce JS bundle size ([#107](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/107)) ([7e14c40](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/7e14c407435b01f312038fac1b7b3a933e595a84))
+* eliminate LoadInstances per-request in WorkspaceService and stagger git-status bursts ([dc99f6d](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/dc99f6d79823bdc2c7c7ea56f52bcdd92b4c38dc))
+* hot-path alloc elimination, go-git low-alloc index scan, JS bundle reduction ([#111](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/111)) ([14cc562](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/14cc562140030c42635d2071af0c61e3fd011dcf))
+* reduce goroutine wakeups, lazy-load xterm.js, memoize SessionCard, direct SQL updates ([#122](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/122)) ([4104b01](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/4104b01dec64aeecc91d7a49e2b09437b32b3204))
+* remaining enforcement tests + CI coverage ([e8c150f](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/e8c150f5dee4a3b1928a401dde48165998203a03))
+* **session:** lock-free GetTimeSinceLastMeaningfulOutput via atomic shadow ([22d1de5](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/22d1de574786e04f038a38b0f11c103a4070b9fe))
+* **session:** lock-free shell registry + allocation hot-path fixes ([8b883f3](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/8b883f37052af83299ef4f3752f2e487813a2f59))
+* TTL cache for DiffShortstat + zero-alloc enforcement tests ([98d503c](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/98d503c756cb2b71f0e5e374fc2af869ef1d1df6))
+
 ## [1.30.0](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.29.0...v1.30.0) (2026-05-18)
 
 
