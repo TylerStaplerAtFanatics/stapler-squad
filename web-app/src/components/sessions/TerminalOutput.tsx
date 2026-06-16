@@ -31,6 +31,7 @@ const ALT_KEY_MAP: Record<string, string> = {
 import { useTerminalStream } from "@/lib/hooks/useTerminalStream";
 import { useBrowserLogStream } from "@/lib/hooks/useBrowserLogStream";
 import { useHandedness } from "@/lib/hooks/useHandedness";
+import { useSplitContainerSize } from "@/lib/hooks/useSplitContainerSize";
 import type { XtermTerminalHandle, XtermTerminalProps } from "./XtermTerminal";
 import type { ForwardRefExoticComponent, RefAttributes } from "react";
 const XtermTerminal = lazy(() => import("./XtermTerminal").then((m) => ({ default: m.XtermTerminal }))) as ForwardRefExoticComponent<XtermTerminalProps & RefAttributes<XtermTerminalHandle>>;
@@ -38,6 +39,7 @@ import { TerminalStreamManager } from "@/lib/terminal/TerminalStreamManager";
 import { getCachedDimensions, saveDimensions, validateCellDimensions } from "@/lib/terminal/TerminalDimensionCache";
 import { DEFAULT_TERMINAL_CONFIG } from "@/lib/config/terminalConfig";
 import { useAnalytics } from "@/lib/contexts/AnalyticsContext";
+import { useApprovalsContext } from "@/lib/contexts/ApprovalsContext";
 import { useViewport } from "@/components/providers/ViewportProvider";
 import * as styles from "./TerminalOutput.css";
 
@@ -68,9 +70,14 @@ const XTERM_DEFAULT_ROWS = 24;
 
 export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSessionName, isVisible, shellId, onShellStatusChange }: TerminalOutputProps) {
   const { track } = useAnalytics();
+  const { clearForSession, refresh: refreshApprovals, pendingCount } = useApprovalsContext();
   const { leftHanded, toggleHandedness } = useHandedness();
   const xtermRef = useRef<XtermTerminalHandle | null>(null);
   const terminalContainerRef = useRef<HTMLDivElement>(null);
+  // Track actual rendered pane dimensions via ResizeObserver. Fires after CSS layout
+  // has constrained the container to its real pane width (not the full browser window).
+  // Used to guard connect() and pre-sizing so we never send wrong dimensions in the handshake.
+  const containerSize = useSplitContainerSize(terminalContainerRef);
   const [connectionAttempts, setConnectionAttempts] = useState(0);
   const [showReconnectButton, setShowReconnectButton] = useState(false);
   const [isWaitingForStableSize, setIsWaitingForStableSize] = useState(true);
@@ -86,6 +93,9 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
   const hasCachedDimensionsRef = useRef(false);
   // Set to true when we switch sessions while connected; triggers connect() once disconnect completes
   const pendingConnectAfterDisconnectRef = useRef(false);
+
+  // Debounce timer for the approval re-fetch triggered by any keystroke (ADR-4)
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // TerminalStreamManager ref -- lazily initialized when terminal is available
   const streamManagerRef = useRef<TerminalStreamManager | null>(null);
@@ -507,6 +517,13 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     };
   }, [disconnect]);
 
+  // Cancel the debounced approval refresh timer on unmount to prevent post-unmount calls
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    };
+  }, []);
+
   // Handle terminal data input
   const handleTerminalData = useCallback((data: string) => {
     if (sspNegotiated && sendInputWithEcho) {
@@ -517,7 +534,21 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     } else {
       sendInput(data);
     }
-  }, [sendInput, sendInputWithEcho, sspNegotiated]);
+
+    // Optimistic clear on Enter only — reduces false-positive flicker
+    if (data === "\r") {
+      clearForSession(sessionId);
+      // clearForSession fires an eager refetch — skip the debounce timer for Enter
+      // to avoid a second refetch 300ms later that would cause a flicker window
+    } else {
+      // Only debounce-refetch when there are pending approvals to update —
+      // prevents RPC storm when holding keys across N open terminals
+      if (pendingCount > 0) {
+        if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = setTimeout(() => void refreshApprovals(), 300);
+      }
+    }
+  }, [sendInput, sendInputWithEcho, sspNegotiated, clearForSession, sessionId, refreshApprovals, pendingCount]);
 
   // Send a key sequence, applying any active sticky modifier (CTRL or ALT) first.
   // Modifier sequences follow xterm's parameter convention:
@@ -772,27 +803,46 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
       console.log(`[TerminalOutput] Initialized with cached dimensions: ${cached.cols}x${cached.rows}`);
 
       if (cached.cellWidth && cached.cellHeight && terminalContainerRef.current) {
-        const rect = terminalContainerRef.current.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          const preCols = Math.floor(rect.width / cached.cellWidth);
-          const preRows = Math.floor(rect.height / cached.cellHeight);
-          if (preCols >= MIN_COLS && preRows >= MIN_ROWS) {
-            console.log(
-              `[TerminalOutput] Pre-sizing: ${rect.width}×${rect.height}px / ` +
-              `${cached.cellWidth.toFixed(2)}×${cached.cellHeight.toFixed(2)}px/cell → ${preCols}×${preRows}`
-            );
-            lastResizeRef.current = { cols: preCols, rows: preRows };
+        // Guard: only use getBoundingClientRect after the ResizeObserver has confirmed
+        // the container has a real constrained width (not the full pre-layout browser width).
+        // containerSize.width > 0 means layout is complete and the pane has its actual dimensions.
+        if (containerSize.width > 0) {
+          const rect = terminalContainerRef.current.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            const preCols = Math.floor(rect.width / cached.cellWidth);
+            const preRows = Math.floor(rect.height / cached.cellHeight);
+            if (preCols >= MIN_COLS && preRows >= MIN_ROWS) {
+              console.log(
+                `[TerminalOutput] Pre-sizing: ${rect.width}×${rect.height}px / ` +
+                `${cached.cellWidth.toFixed(2)}×${cached.cellHeight.toFixed(2)}px/cell → ${preCols}×${preRows}`
+              );
+              lastResizeRef.current = { cols: preCols, rows: preRows };
+              // If this effect fired because containerSize became non-zero (i.e. ResizeObserver
+              // fired after the initial render), the session-switch effect won't re-run because
+              // sessionId didn't change. We must initiate the connection here in that case.
+              // On a sessionId-triggered render, session-switch runs after this and connects,
+              // so we only act when no connection has been initiated yet.
+              const isXtermDefault = preCols === XTERM_DEFAULT_COLS && preRows === XTERM_DEFAULT_ROWS;
+              if (!hasInitiatedConnectionRef.current && !isConnected && isMountedRef.current && !isXtermDefault) {
+                hasInitiatedConnectionRef.current = true;
+                setIsWaitingForStableSize(false);
+                connect(preCols, preRows);
+              }
+            } else {
+              console.log(`[TerminalOutput] Pre-sizing skipped: calculated ${preCols}x${preRows} below minimum`);
+            }
           } else {
-            console.log(`[TerminalOutput] Pre-sizing skipped: calculated ${preCols}x${preRows} below minimum`);
+            console.log(`[TerminalOutput] Pre-sizing skipped: container has zero size`);
           }
         } else {
-          console.log(`[TerminalOutput] Pre-sizing skipped: container has zero size`);
+          console.log(`[TerminalOutput] Pre-sizing deferred: container layout not yet resolved (containerSize.width=0)`);
         }
       }
     } else if (cached) {
       console.log(`[TerminalOutput] Ignoring stale cached dimensions ${cached.cols}x${cached.rows} (below ${MIN_COLS}x${MIN_ROWS})`);
     }
-  }, [sessionId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, containerSize.width]);
 
   // When terminal becomes visible (e.g. session switch in pool), trigger fit+focus
   useEffect(() => {

@@ -248,9 +248,11 @@ function ReviewQueueContent() {
     : 0;
   const queueTotal = reviewQueueItems.length;
 
+  const [savedMsg, setSavedMsg] = useState("");
+
   return (
     <div className={styles.page}>
-      <main id="main-content" className={styles.main}>
+      <div id="main-content" className={styles.main}>
         {/* Auto-advance preference toolbar */}
         <div className={styles.toolbar}>
           <label className={styles.autoAdvanceLabel}>
@@ -260,10 +262,13 @@ function ReviewQueueContent() {
               onChange={(e) => {
                 setAutoAdvance(e.target.checked);
                 localStorage.setItem("review-queue-auto-advance", String(e.target.checked));
+                setSavedMsg("Saved");
+                setTimeout(() => setSavedMsg(""), 2000);
               }}
             />
             Auto-advance after action
           </label>
+          {savedMsg && <span aria-live="polite" style={{ fontSize: "0.75rem", color: "var(--success)", marginLeft: "0.5rem" }}>{savedMsg}</span>}
         </div>
         <ReviewQueuePanel
           onSessionClick={handleSessionClick}
@@ -271,7 +276,7 @@ function ReviewQueueContent() {
           onAcknowledged={handleAcknowledged}
           onRunOneShot={handleRunOneShot}
         />
-      </main>
+      </div>
 
       {/* Session detail modal with terminal view */}
       {selectedSession && (
@@ -354,14 +359,14 @@ function ReviewQueueContent() {
 function ReviewQueueSkeleton() {
   return (
     <div className={styles.page}>
-      <main id="main-content" className={styles.main} aria-busy="true" aria-label="Loading review queue">
+      <div id="main-content" className={styles.main} aria-busy="true" aria-label="Loading review queue">
         <div className={styles.skeletonHeader} />
         <div className={styles.skeletonList}>
           {[1, 2, 3].map((i) => (
             <div key={i} className={styles.skeletonCard} aria-hidden="true" />
           ))}
         </div>
-      </main>
+      </div>
     </div>
   );
 }

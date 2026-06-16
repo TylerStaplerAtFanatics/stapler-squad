@@ -16,6 +16,7 @@ import (
 	"github.com/tstapler/stapler-squad/pkg/classifier"
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/headless"
 
 	"github.com/google/uuid"
 )
@@ -46,12 +47,18 @@ type ReviewQueueChecker interface {
 // on notification records after the approval is resolved (or times out).
 type approvalNotificationStamper interface {
 	SetMetadata(id, key, value string) error
+	MarkRead(ids []string) (int, error)
 }
 
 // autoApprovalLogger is a narrow interface for writing silent auto-approval records
 // directly to notification history without triggering toasts or push notifications.
 type autoApprovalLogger interface {
 	AppendAutoApproved(sessionID, sessionName, toolName, filePath, ruleID, ruleName, ruleSource, decision string) error
+}
+
+// headlessPoolApprover is the narrow interface ApprovalHandler needs from the headless pool.
+type headlessPoolApprover interface {
+	CallBlockingWithOptions(ctx context.Context, key headless.FeatureKey, systemPrompt string, userPrompt string, opts headless.CallOptions) (string, error)
 }
 
 // ApprovalHandler handles Claude Code HTTP hooks for PermissionRequest events.
@@ -68,6 +75,8 @@ type ApprovalHandler struct {
 	notificationStamper approvalNotificationStamper // optional: stamps approval outcomes on notification records
 	autoApprovalLog     autoApprovalLogger          // optional: writes silent records for auto-approved/denied ops
 	timeout             time.Duration               // default 4m; overridable in tests
+	headlessPool        headlessPoolApprover        // optional: LLM approval for autonomous sessions
+	autonomousChecker   func(string) bool           // optional: returns true if sessionID is an autonomous session
 }
 
 // NewApprovalHandler creates a new ApprovalHandler.
@@ -81,6 +90,23 @@ func (h *ApprovalHandler) approvalTimeout() time.Duration {
 		return h.timeout
 	}
 	return 4 * time.Minute
+}
+
+// stampResolved stamps an approval decision on the notification record,
+// marks it read, and broadcasts a resolution event to connected clients.
+// Called for the timeout and cancel arms where no HTTP response decision is sent.
+func (h *ApprovalHandler) stampResolved(approvalID, sessionID, reason string) {
+	if h.notificationStamper != nil {
+		if err := h.notificationStamper.SetMetadata(approvalID, "approval_decision", reason); err != nil {
+			log.Warn("[ApprovalHandler] could not stamp "+reason+" on notification", "approval_id", approvalID, "err", err)
+		}
+		if _, err := h.notificationStamper.MarkRead([]string{approvalID}); err != nil {
+			log.Warn("[ApprovalHandler] could not mark "+reason+" approval read", "approval_id", approvalID, "err", err)
+		}
+	}
+	if h.eventBus != nil && sessionID != "" && sessionID != "unknown" {
+		h.eventBus.Publish(events.NewApprovalResponseEvent(sessionID, false, approvalID))
+	}
 }
 
 // SetQueueChecker injects a ReviewQueueChecker for triggering immediate review queue updates
@@ -118,6 +144,34 @@ func (h *ApprovalHandler) SetNotificationStamper(s approvalNotificationStamper) 
 // push notifications, giving users a reviewable log of what the classifier handled automatically.
 func (h *ApprovalHandler) SetAutoApprovalLogger(l autoApprovalLogger) {
 	h.autoApprovalLog = l
+}
+
+// SetHeadlessPool injects a headless LLM pool for autonomous session approval.
+// When set and autonomousChecker returns true for a session, risky tool calls are sent to the
+// LLM for approval instead of the human review queue.
+func (h *ApprovalHandler) SetHeadlessPool(pool headlessPoolApprover) {
+	h.headlessPool = pool
+}
+
+// SetAutonomousChecker injects a function that returns true when the given session ID is an
+// autonomous session. Injected from server.go to avoid a construction-time circular dependency.
+func (h *ApprovalHandler) SetAutonomousChecker(fn func(string) bool) {
+	h.autonomousChecker = fn
+}
+
+// buildApprovalQuery constructs the LLM prompt for an autonomous approval decision.
+// Tool arguments are JSON-encoded to prevent values containing "APPROVE:" or "DENY:"
+// from influencing the LLM's decision (prompt injection via tool input).
+func buildApprovalQuery(toolName string, toolInput map[string]interface{}, sessionTail string) string {
+	argsJSON, err := json.Marshal(toolInput)
+	argsStr := string(argsJSON)
+	if err != nil {
+		argsStr = "(encoding error)"
+	}
+	return fmt.Sprintf(
+		"Requested tool: %s\nArguments (JSON): %s\nRecent session output:\n---\n%s\n---\nReply APPROVE: <reason> or DENY: <reason>",
+		toolName, argsStr, sessionTail,
+	)
 }
 
 // HandlePermissionRequest handles POST /api/hooks/permission-request.
@@ -259,6 +313,45 @@ func (h *ApprovalHandler) HandlePermissionRequest(w http.ResponseWriter, r *http
 
 createApproval:
 
+	// Autonomous LLM approval: if the session is autonomous and a headless pool is configured,
+	// ask the LLM to approve or deny instead of queuing for human review.
+	if h.headlessPool != nil && h.autonomousChecker != nil && h.autonomousChecker(sessionID) {
+		var sessionTail string
+		if h.queueChecker != nil && sessionID != "unknown" {
+			if inst := h.queueChecker.FindInstance(sessionID); inst != nil {
+				sessionTail, _ = inst.Preview()
+			}
+		}
+		query := buildApprovalQuery(payload.ToolName, payload.ToolInput, sessionTail)
+		const approvalSystemPrompt = `You are a security reviewer for an autonomous coding session.
+Evaluate the requested tool call and decide if it is safe to approve.
+Reply with APPROVE: <reason> if safe, or DENY: <reason> if risky.`
+		resp, llmErr := h.headlessPool.CallBlockingWithOptions(
+			r.Context(),
+			headless.FeatureKeyAutonomousApproval,
+			approvalSystemPrompt,
+			query,
+			headless.CallOptions{WorkDir: payload.Cwd},
+		)
+		if llmErr == nil {
+			resp = strings.TrimSpace(resp)
+			if strings.HasPrefix(resp, "APPROVE:") {
+				reason := strings.TrimSpace(strings.TrimPrefix(resp, "APPROVE:"))
+				log.ForSession(sessionID).Info("[ApprovalHandler] autonomous LLM approved", "tool", payload.ToolName, "reason", reason)
+				h.writeDecision(w, "allow", "")
+				return
+			} else if strings.HasPrefix(resp, "DENY:") {
+				reason := strings.TrimSpace(strings.TrimPrefix(resp, "DENY:"))
+				log.ForSession(sessionID).Info("[ApprovalHandler] autonomous LLM denied", "tool", payload.ToolName, "reason", reason)
+				h.writeDecision(w, "deny", reason)
+				return
+			}
+			log.ForSession(sessionID).Warn("[ApprovalHandler] autonomous LLM gave unexpected response, falling through to human queue", "tool", payload.ToolName, "resp", resp)
+		} else {
+			log.ForSession(sessionID).Warn("[ApprovalHandler] autonomous LLM call failed, falling through to human queue", "tool", payload.ToolName, "err", llmErr)
+		}
+	}
+
 	// Create a pending approval record
 	approvalID := uuid.New().String()
 	approval := &PendingApproval{
@@ -308,13 +401,7 @@ createApproval:
 		// This lets the user still approve/deny in the terminal rather than being
 		// silently allowed or denied.
 		h.store.Remove(approvalID)
-		// Stamp the notification so the panel shows a "timed out" badge instead of
-		// live Approve/Deny buttons after page refresh.
-		if h.notificationStamper != nil {
-			if err := h.notificationStamper.SetMetadata(approvalID, "approval_decision", "timeout"); err != nil {
-				log.Warn("[ApprovalHandler] could not stamp timeout on notification", "approval_id", approvalID, "err", err)
-			}
-		}
+		h.stampResolved(approvalID, sessionID, "timeout")
 		log.ForSession(sessionID).Info("[ApprovalHandler] approval timed out — returning empty response (native dialog fallback)", "approval_id", approvalID)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -322,6 +409,7 @@ createApproval:
 		// Claude Code disconnected (e.g., stapler-squad restarted, network issue)
 		h.store.Remove(approvalID)
 		decision = ApprovalDecision{Behavior: "allow", Message: ""}
+		h.stampResolved(approvalID, sessionID, "canceled")
 		log.ForSession(sessionID).Info("[ApprovalHandler] approval context canceled", "approval_id", approvalID)
 		return // Don't write to disconnected client
 	}

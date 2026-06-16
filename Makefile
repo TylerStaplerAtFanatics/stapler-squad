@@ -33,20 +33,21 @@ ifneq ($(wildcard .tool-versions),)
 		asdf install; \
 	fi
 endif
-	@if which go >/dev/null 2>&1 && which buf >/dev/null 2>&1 && which npm >/dev/null 2>&1; then \
+	@if which go >/dev/null 2>&1 && which buf >/dev/null 2>&1 && which pnpm >/dev/null 2>&1; then \
 		touch $(ASDF_STAMP); \
 	else \
 		if which brew >/dev/null 2>&1; then \
 			echo "🔍 Missing tools, installing via Homebrew..."; \
 			brew install go buf nodejs; \
+			brew install pnpm; \
 		else \
-			echo "❌ Error: go/buf/npm not found. Install asdf or Homebrew."; \
+			echo "❌ Error: go/buf/pnpm not found. Install asdf or Homebrew."; \
 			exit 1; \
 		fi; \
 		touch $(ASDF_STAMP); \
 	fi
 
-.PHONY: help build test benchmark install-tools lint lint-custom analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service uninstall-service setup-codesign _codesign-binary verify-codesign tcc-reset preview coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules test-with-pinned-tmux vet-architecture vet-rpc-markers coverage-integration
+.PHONY: help build test benchmark install-tools lint lint-custom analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service rollback backup-binary uninstall-service setup-codesign _codesign-binary verify-codesign tcc-reset preview coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules test-with-pinned-tmux vet-architecture vet-rpc-markers coverage-integration
 
 # Default target
 help: ## Show this help message
@@ -75,9 +76,9 @@ registry-generate-backend: ## Scan proto+markers → write per-feature files und
 
 registry-generate-frontend: ## Generate frontend feature registry from React component markers
 	@echo "Installing frontend scanner dependencies..."
-	@cd tools/scanner/frontend && npm install --silent
+	@cd tools/scanner/frontend && pnpm install --silent
 	@echo "Scanning frontend features..."
-	@node tools/scanner/frontend/node_modules/.bin/ts-node \
+	@tools/scanner/frontend/node_modules/.bin/ts-node \
 		tools/scanner/frontend/src/main.ts \
 		web-app/src \
 		$(REGISTRY_OUTPUT_DIR)/frontend-features.json \
@@ -95,6 +96,14 @@ registry-generate: registry-generate-backend registry-generate-frontend registry
 registry-diff: ## Show what would change in registry without writing files (dry run)
 	@echo "Comparing current code against committed registries..."
 	@./tools/scanner/validate-registry.sh
+
+docs-features: ## Generate per-feature Markdown docs from the typed catalog
+	@echo "Generating feature docs..."
+	@mkdir -p docs/api/features
+	@cd tools/docs-gen && npm install --silent && npx ts-node --project tsconfig.json generate.ts
+
+changelog-since: ## Print features introduced since a version: make changelog-since VERSION=1.4.0
+	@cd tools/docs-gen && npx ts-node --project tsconfig.json changelog.ts $(VERSION)
 
 e2e-report: ## Generate Allure HTML report from last test run
 	@cd tests/e2e && npx allure generate allure-results --clean -o allure-report
@@ -119,16 +128,20 @@ else
 endif
 	@echo "✅ stapler-squad built successfully"
 
-# Install web-app npm dependencies when package-lock.json changes
-web-app/node_modules/.package-lock.json: web-app/package.json web-app/package-lock.json
-	@echo "Installing web-app npm dependencies..."
-	@cd web-app && npm install
-	@touch web-app/node_modules/.package-lock.json
+# Install web-app pnpm dependencies when pnpm-lock.yaml changes
+web-app/node_modules/.modules.yaml: web-app/package.json web-app/pnpm-lock.yaml
+	@echo "Installing web-app pnpm dependencies..."
+	@cd web-app && pnpm install --frozen-lockfile
 
 # Build Next.js app to web-app/out
-web-app/out: ensure-tools web-app/node_modules/.package-lock.json $(WEB_FILES) web-app/next.config.ts
+web-app/out: ensure-tools web-app/node_modules/.modules.yaml $(WEB_FILES) web-app/next.config.ts
+	@# Guard: re-install if node_modules was wiped by external tools without touching pnpm-lock.yaml
+	@test -d web-app/node_modules/next || { \
+		echo "⚠️  node_modules incomplete, re-installing..."; \
+		cd web-app && pnpm install --frozen-lockfile; \
+	}
 	@echo "Building Next.js web UI (development mode for better error messages)..."
-	@cd web-app && NEXT_BUILD_MODE=development npm run build
+	@cd web-app && NEXT_BUILD_MODE=development pnpm run build
 	@touch web-app/out # Update timestamp to mark completion
 
 # Copy web-app/out to server/web/dist (used by Go embed)
@@ -254,7 +267,26 @@ clean-tmux: ## Remove the built tmux binary and submodule build artifacts
 	@rm -f session/tmux/embed/tmux
 	@echo "✅ tmux artifacts cleaned"
 
-install-service: build ## Install stapler-squad as a system service (systemd on Linux, LaunchAgent on macOS)
+backup-binary: ## Snapshot the current binary to stapler-squad.prev before a new build (called by install-service)
+	@if [ -f ./stapler-squad ]; then \
+		cp -f ./stapler-squad ./stapler-squad.prev; \
+		echo "==> Saved current binary to ./stapler-squad.prev"; \
+	fi
+
+install-service: backup-binary build ## Install stapler-squad as a system service (systemd on Linux, LaunchAgent on macOS)
+ifeq ($(UNAME_S),Darwin)
+	@$(MAKE) _codesign-binary
+endif
+	@STAPLER_SQUAD_BIN="$(CURDIR)/stapler-squad" ./scripts/install-service.sh $(if $(NO_PROFILE),--no-profile) $(if $(PROFILE_PORT),--profile-port $(PROFILE_PORT))
+
+rollback: ## Restore the previous build (stapler-squad.prev) and restart the service
+	@if [ ! -f ./stapler-squad.prev ]; then \
+		echo "✗ No previous build found (./stapler-squad.prev does not exist)"; \
+		exit 1; \
+	fi
+	@echo "==> Restoring previous build..."
+	@cp -f ./stapler-squad.prev ./stapler-squad
+	@echo "✓ Binary restored from stapler-squad.prev"
 ifeq ($(UNAME_S),Darwin)
 	@$(MAKE) _codesign-binary
 endif
@@ -331,7 +363,7 @@ preview: build ## Build and run an isolated preview instance (auto-picks port, b
 	  ./stapler-squad --listen localhost:$(PREVIEW_PORT) --tmux-keep-server
 
 # Protocol Buffer code generation
-proto-gen: ensure-tools web-app/node_modules/.package-lock.json ## Generate Go and TypeScript code from proto files
+proto-gen: ensure-tools web-app/node_modules/.modules.yaml ## Generate Go and TypeScript code from proto files
 	@echo "Checking if proto files need regeneration..."
 	@if [ ! -f $(PROTO_STAMP) ] \
 	   || [ "$$(find proto -name '*.proto' -newer $(PROTO_STAMP) -print -quit)" ] \
@@ -545,7 +577,7 @@ format: ensure-tools ## Format code with gofmt
 	go fmt ./...
 
 fmt-check: ## Verify all Go files are gofmt-formatted (non-destructive; exits 1 if any are not)
-	@UNFORMATTED=$$(gofmt -l . | grep -v vendor); \
+	@UNFORMATTED=$$(gofmt -l . | grep -v vendor | grep -v "^\.claude/"); \
 	if [ -n "$$UNFORMATTED" ]; then \
 		echo "The following files are not gofmt formatted:"; \
 		echo "$$UNFORMATTED"; \
@@ -623,7 +655,7 @@ dev-setup: install-tools ## Set up development environment
 ci: build test test-race vet lint lint-css-tokens test-integration fmt-check registry-generate ## Full CI pipeline: proto→web→build→tests→lint→fmt→registry
 
 # Quick development workflows
-quick-check: build test-coverage test-race lint lint-css-tokens ## Quick development validation
+quick-check: build test-coverage test-race lint lint-css-tokens registry-diff ## Quick development validation
 	@echo "✅ Quick validation complete"
 
 pre-commit: format vet test test-race lint vet-architecture ## Pre-commit validation
@@ -657,7 +689,7 @@ demo-gif: assets/demo.gif ## Alias for demo-post-process
 # Declaring it as a file target lets make skip the recording when the webm is
 # already newer than the stapler-squad binary and no source files changed.
 assets/demo.webm: stapler-squad tests/e2e/demo.spec.ts tests/demo/helpers.go
-	@cd tests/e2e && npm install --silent
+	@cd tests/e2e && pnpm install --silent
 	RECORD_DEMO=1 go test ./tests/demo/... -run TestRecordDemo -v -timeout 180s
 
 demo-video: assets/demo.gif ## Record demo video, add browser chrome, and export GIF (assets/demo.webm + assets/demo.gif)
@@ -666,7 +698,7 @@ demo-video: assets/demo.gif ## Record demo video, add browser chrome, and export
 validate-env: ensure-tools ## Validate development environment setup
 	@echo "Validating development environment..."
 	@go version
-	@npm --version
+	@pnpm --version
 	@buf --version
 	@which nilaway >/dev/null 2>&1 && echo "✅ nilaway installed" || echo "❌ nilaway missing (run 'make install-tools')"
 	@which staticcheck >/dev/null 2>&1 && echo "✅ staticcheck installed" || echo "❌ staticcheck missing (run 'make install-tools')"

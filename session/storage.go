@@ -8,23 +8,25 @@ import (
 
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/ent/sessiongoal"
 	"github.com/tstapler/stapler-squad/session/tokens"
 )
 
 // InstanceData represents the serializable data of an Instance
 type InstanceData struct {
-	Title      string    `json:"title"`
-	UUID       string    `json:"uuid,omitempty"`
-	Path       string    `json:"path"`
-	WorkingDir string    `json:"working_dir"`
-	Branch     string    `json:"branch"`
-	Status     Status    `json:"status"`
-	Height     int       `json:"height"`
-	Width      int       `json:"width"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	AutoYes    bool      `json:"auto_yes"`
-	Prompt     string    `json:"prompt"`
+	Title         string    `json:"title"`
+	UUID          string    `json:"uuid,omitempty"`
+	Path          string    `json:"path"`
+	WorkingDir    string    `json:"working_dir"`
+	Branch        string    `json:"branch"`
+	Status        Status    `json:"status"`
+	Height        int       `json:"height"`
+	Width         int       `json:"width"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	AutoYes       bool      `json:"auto_yes"`
+	Prompt        string    `json:"prompt"`
+	InitialPrompt string    `json:"initial_prompt,omitempty"`
 
 	Program          string          `json:"program"`
 	ExistingWorktree string          `json:"existing_worktree,omitempty"`
@@ -124,6 +126,13 @@ type InstanceData struct {
 	// Values: "manual", "auto:inactivity", "auto:session_limit", "auto:resource".
 	// Empty when session has never been paused.
 	PauseReason string `json:"pause_reason,omitempty"`
+
+	// WorkflowID is the UUID of the Workflow that spawned this session.
+	// Empty for manually-created sessions.
+	WorkflowID string `json:"workflow_id,omitempty"`
+
+	// ArchivedAt is set when the session is archived. Nil means not archived.
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
@@ -259,7 +268,8 @@ func (s *Storage) SaveInstancesSync(instances []*Instance) error {
 
 // LoadInstances loads the list of instances from the repository.
 func (s *Storage) LoadInstances() ([]*Instance, error) {
-	dataSlice, err := s.repo.List(context.Background())
+	ctx := context.Background()
+	dataSlice, err := s.repo.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list instances from repository: %w", err)
 	}
@@ -276,6 +286,48 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 		}
 		instances = append(instances, inst)
 	}
+
+	// Bulk-load all session goals in one query (N+1 → 1) and apply to instances.
+	if client := s.GetEntClient(); client != nil && len(instances) > 0 {
+		uuids := make([]string, 0, len(instances))
+		for _, inst := range instances {
+			if inst.UUID != "" {
+				uuids = append(uuids, inst.UUID)
+			}
+		}
+		if len(uuids) > 0 {
+			goals, goalErr := client.SessionGoal.Query().
+				Where(sessiongoal.SessionUUIDIn(uuids...)).
+				All(ctx)
+			if goalErr != nil {
+				log.Warn("LoadInstances: failed to bulk-load session goals", "err", goalErr)
+			} else {
+				goalMap := make(map[string]*SessionGoalData, len(goals))
+				for _, g := range goals {
+					tasks, decodeErr := DecodeTasks(g.Tasks)
+					if decodeErr != nil {
+						log.Warn("LoadInstances: failed to decode tasks JSON", "session_uuid", g.SessionUUID, "err", decodeErr)
+						tasks = []TaskNode{}
+					}
+					goalMap[g.SessionUUID] = &SessionGoalData{
+						UUID:        g.ID.String(),
+						SessionUUID: g.SessionUUID,
+						Goal:        g.Goal,
+						Status:      g.Status,
+						Tasks:       tasks,
+						SetBy:       g.SetBy,
+						UpdatedAt:   g.UpdatedAt,
+					}
+				}
+				for _, inst := range instances {
+					if goal, ok := goalMap[inst.UUID]; ok {
+						inst.SetSessionGoalCached(goal)
+					}
+				}
+			}
+		}
+	}
+
 	return instances, nil
 }
 
@@ -692,4 +744,146 @@ func (s *Storage) UpdateItemSessionSessionUUID(ctx context.Context, id string, s
 		return fmt.Errorf("item session updates not supported by this storage backend")
 	}
 	return er.UpdateItemSessionSessionUUID(ctx, id, sessionUUID)
+}
+
+// --- Session Goal ---
+
+// SetSessionGoal upserts the goal for a session (1:1 per session_uuid).
+// If a goal already exists for the session, it is replaced.
+func (s *Storage) SetSessionGoal(ctx context.Context, sessionUUID string, goal string, status string, tasks []TaskNode, setBy string) (*SessionGoalData, error) {
+	client := s.GetEntClient()
+	if client == nil {
+		return nil, fmt.Errorf("goal storage not supported by this backend")
+	}
+	if err := validateTasks(tasks); err != nil {
+		return nil, err
+	}
+	tasksJSON, err := EncodeTasks(tasks)
+	if err != nil {
+		return nil, err
+	}
+	create := client.SessionGoal.Create().
+		SetSessionUUID(sessionUUID).
+		SetGoal(goal).
+		SetStatus(status).
+		SetSetBy(setBy).
+		SetTasks(tasksJSON)
+	err = create.
+		OnConflictColumns("session_uuid").
+		Update(func(u *ent.SessionGoalUpsert) {
+			u.SetGoal(goal)
+			u.SetStatus(status)
+			u.SetSetBy(setBy)
+			u.SetTasks(tasksJSON)
+			u.SetUpdatedAt(time.Now())
+		}).
+		Exec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upsert session goal: %w", err)
+	}
+	return s.GetSessionGoal(ctx, sessionUUID)
+}
+
+// GetSessionGoal retrieves the goal for a session by session UUID.
+// Returns ErrNotFound if no goal has been set for the session.
+func (s *Storage) GetSessionGoal(ctx context.Context, sessionUUID string) (*SessionGoalData, error) {
+	client := s.GetEntClient()
+	if client == nil {
+		return nil, ErrNotFound
+	}
+	g, err := client.SessionGoal.Query().
+		Where(sessiongoal.SessionUUID(sessionUUID)).
+		Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to get session goal: %w", err)
+	}
+	tasks, decodeErr := DecodeTasks(g.Tasks)
+	if decodeErr != nil {
+		log.Warn("GetSessionGoal: failed to decode tasks JSON", "session_uuid", sessionUUID, "err", decodeErr)
+		tasks = []TaskNode{}
+	}
+	return &SessionGoalData{
+		UUID:        g.ID.String(),
+		SessionUUID: g.SessionUUID,
+		Goal:        g.Goal,
+		Status:      g.Status,
+		Tasks:       tasks,
+		SetBy:       g.SetBy,
+		UpdatedAt:   g.UpdatedAt,
+	}, nil
+}
+
+// UpdateSessionTaskStatus loads the goal for a session, finds the task by ID,
+// updates its status, and saves the goal back.
+// Returns ErrNotFound if no goal exists, or an error if task_id is not found in the tree.
+// The read-modify-write is wrapped in a transaction to prevent concurrent update races.
+func (s *Storage) UpdateSessionTaskStatus(ctx context.Context, sessionUUID string, taskID string, newStatus string) (*SessionGoalData, error) {
+	client := s.GetEntClient()
+	if client == nil {
+		return nil, fmt.Errorf("goal storage not supported by this backend")
+	}
+
+	tx, err := client.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	g, err := tx.SessionGoal.Query().
+		Where(sessiongoal.SessionUUID(sessionUUID)).
+		Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to get session goal: %w", err)
+	}
+
+	existingTasks, decodeErr := DecodeTasks(g.Tasks)
+	if decodeErr != nil {
+		log.Warn("UpdateSessionTaskStatus: failed to decode tasks JSON", "session_uuid", sessionUUID, "err", decodeErr)
+		existingTasks = []TaskNode{}
+	}
+
+	updated, found := findAndUpdateTask(existingTasks, taskID, newStatus)
+	if !found {
+		err = fmt.Errorf("task %q not found in goal tree", taskID)
+		return nil, err
+	}
+
+	tasksJSON, encErr := EncodeTasks(updated)
+	if encErr != nil {
+		err = encErr
+		return nil, err
+	}
+
+	if _, saveErr := tx.SessionGoal.UpdateOne(g).
+		SetTasks(tasksJSON).
+		SetUpdatedAt(time.Now()).
+		Save(ctx); saveErr != nil {
+		err = saveErr
+		return nil, fmt.Errorf("failed to save updated tasks: %w", err)
+	}
+
+	if commitErr := tx.Commit(); commitErr != nil {
+		err = commitErr
+		return nil, fmt.Errorf("failed to commit task status update: %w", err)
+	}
+
+	return &SessionGoalData{
+		UUID:        g.ID.String(),
+		SessionUUID: g.SessionUUID,
+		Goal:        g.Goal,
+		Status:      g.Status,
+		Tasks:       updated,
+		SetBy:       g.SetBy,
+		UpdatedAt:   time.Now(),
+	}, nil
 }

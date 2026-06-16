@@ -21,6 +21,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/push"
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/server/web"
+	"github.com/tstapler/stapler-squad/server/workflows"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/memory"
 	"github.com/tstapler/stapler-squad/session/tmux"
@@ -350,6 +351,22 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		log.InfoLog.Printf("Registered BacklogService handler at %s", blAPIPath)
 	}
 
+	// Start WorkflowScheduler (nil guard: disabled when workflow repo is unavailable).
+	if deps.WorkflowScheduler != nil {
+		deps.WorkflowScheduler.Start(serverCtx)
+		srv.shutdownHooks = append(srv.shutdownHooks, deps.WorkflowScheduler.Stop)
+		log.Info("WorkflowScheduler started")
+	}
+
+	// Start workflow session retention enforcer (hourly sweep).
+	// Requires both the session ent client and a workflow repository.
+	if deps.WorkflowRepo != nil && deps.Storage != nil {
+		if entClient := deps.Storage.GetEntClient(); entClient != nil {
+			workflows.StartRetentionEnforcer(serverCtx, entClient, deps.WorkflowRepo, time.Hour)
+			log.Info("WorkflowRetentionEnforcer started")
+		}
+	}
+
 	// Register HeadlessService handler (nil guard: pool may be absent if claude not found).
 	if deps.HeadlessPool != nil {
 		hlSvc := services.NewHeadlessService(deps.HeadlessPool)
@@ -392,6 +409,14 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		approvalHandler.SetNotificationStamper(notifStore)
 		approvalHandler.SetAutoApprovalLogger(notifStore)
 	}
+	// Wire LLM approval for autonomous sessions (E5)
+	if deps.HeadlessPool != nil {
+		approvalHandler.SetHeadlessPool(deps.HeadlessPool)
+	}
+	approvalHandler.SetAutonomousChecker(func(sessionID string) bool {
+		inst := deps.SessionService.FindLiveInstance(sessionID)
+		return inst != nil && inst.AutonomousMode
+	})
 	srv.mux.HandleFunc("/api/hooks/permission-request", approvalHandler.HandlePermissionRequest)
 	log.Info("Registered Claude Code hook approval handler at /api/hooks/permission-request")
 
@@ -421,6 +446,9 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	mcpURL := "http://" + srv.addr + "/mcp"
 	deps.SessionService.SetMCPServerURL(mcpURL)
 	log.Info("Registered MCP HTTP handler at /mcp", "url", mcpURL)
+
+	// Bind server lifecycle context so autonomous driver goroutines exit on shutdown.
+	deps.SessionService.SetLifecycleContext(serverCtx)
 
 	// Start background expiration cleanup for pending approvals
 	services.StartExpirationCleanup(context.Background(), deps.SessionService.GetApprovalStore())
@@ -498,6 +526,14 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	fileSvc := deps.SessionService.GetFileService()
 	srv.mux.HandleFunc("/api/files/raw", fileSvc.ServeFileRaw)
 	log.Info("Registered raw file download handler at /api/files/raw")
+
+	// Local file browser — serves arbitrary local filesystem paths.
+	// Auth is provided by the existing middleware chain:
+	// local HTTP = no auth; remote HTTPS = WebAuthn required.
+	localFileSvc := services.NewLocalFileService()
+	srv.mux.HandleFunc("/api/local/files/list", localFileSvc.ListLocalDirectory)
+	srv.mux.Handle("/api/local/serve/", http.StripPrefix("/api/local/serve", http.HandlerFunc(localFileSvc.ServeLocalFile)))
+	log.Info("Registered local file browser at /api/local/files/list and /api/local/serve/")
 
 	// Start hibernation sweeper (auto-hibernates idle sessions and prunes stale checkpoints).
 	if cfg.Hibernation.Enabled {

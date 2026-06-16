@@ -193,6 +193,46 @@ message Session {
   // Reason why the session was paused. Empty when session has never been paused.
   // Values: "manual", "auto:inactivity", "auto:session_limit", "auto:resource"
   string pause_reason = 58;
+
+  // Current session goal and task tracking state. Nil when no goal has been set.
+  SessionGoalSummary goal = 59;
+
+  // Whether this session is running under LLM orchestration (AutonomousDriver).
+  // When true, the session injects prompts automatically based on idle detection.
+  bool autonomous_mode = 60;
+
+  // UUID of the Workflow that spawned this session. Empty for manually-created sessions.
+  string workflow_id = 62;
+
+  // When the session was archived. Zero value means not archived.
+  google.protobuf.Timestamp archived_at = 63;
+
+  // Human-readable name of the workflow that spawned this session.
+  // Populated at read time from the workflow name cache; empty for manual sessions.
+  string workflow_name = 64;
+
+  // Current turn number in an ongoing autonomous run. Zero when not running.
+  int32 autonomous_turn = 65;
+  // Maximum turns configured for the current autonomous run. Zero when not running.
+  int32 autonomous_max_turns = 66;
+  // Outcome of the last completed autonomous run: "", "done", "stuck".
+  string autonomous_outcome = 67;
+}
+
+// SessionGoalSummary summarizes the current goal and task state for a session.
+// Populated by the server when a goal has been set via the set_session_goal MCP tool.
+message SessionGoalSummary {
+  // Human-readable goal description (max 2000 chars).
+  string goal_text = 1;
+  // Current goal status: idle, working, blocked, done.
+  string status = 2;
+  // Total number of tasks in the task tree (all depth levels).
+  int32 tasks_total = 3;
+  // Number of tasks with status "done" (all depth levels).
+  int32 tasks_done = 4;
+  // JSON-encoded []TaskNode; "[]" when no tasks have been set.
+  // Parse client-side to render the full recursive task tree.
+  string tasks_json = 5;
 }
 
 // VNCStatus represents the operational state of the VNC subsystem for a session.
@@ -324,6 +364,12 @@ enum SubStatus {
   SUB_STATUS_TESTS_FAILING = 5;
   // Session is experiencing API rate limiting.
   SUB_STATUS_RATE_LIMITED = 6;
+  // Session is presenting a numbered option menu or open-ended question — user must type or select.
+  SUB_STATUS_INPUT_REQUIRED = 7;
+  // Session is at the input prompt, ready for the user's next instruction.
+  SUB_STATUS_READY = 8;
+  // Task completed successfully.
+  SUB_STATUS_SUCCESS = 9;
 }
 
 // RateLimitState indicates whether the session is experiencing rate limiting.
@@ -969,9 +1015,20 @@ message ApprovalRuleProto {
   bool enabled = 12;
   string source = 13;
   google.protobuf.Timestamp created_at = 14;
-  // Structured criteria — preferred over command_pattern for program/subcommand matching.
-  repeated string criteria_programs = 15;
-  repeated string criteria_subcommands = 16;
+
+  // Structured CommandCriteria fields (field numbers 15–19 reserved; criteria start at 20).
+  // When any of these are set, they are used instead of command_pattern for Bash matching.
+  repeated string programs                = 20;
+  repeated string subcommands             = 21;
+  repeated string blocked_subcommands     = 22;
+  repeated string required_flags          = 23;
+  repeated string forbidden_flags         = 24;
+  repeated string python_modes            = 25;
+  bool            safe_python_imports_only = 26;
+  repeated string required_flag_prefixes  = 27;
+  // tool_category matches against classifier.CategorizeToolName() result.
+  // Use one of: "builtin", "builtin-agent", "mcp", "mcp-read", "mcp-write".
+  string          tool_category           = 28;
 }
 
 // AnalyticsSummaryProto aggregates classification decisions over a time window.
@@ -1006,6 +1063,9 @@ message AnalyticsSummaryProto {
 message ToolStatProto {
   string tool_name = 1;
   int32 count = 2;
+  // manual_allow / manual_deny break down how past manual reviews resolved for this tool.
+  int32 manual_allow = 3;
+  int32 manual_deny  = 4;
 }
 
 message CommandStatProto {
@@ -1027,6 +1087,9 @@ message ProgramStatProto {
   // category groups the program (e.g., "vcs", "node", "python").
   string category = 2;
   int32 count = 3;
+  // manual_allow / manual_deny break down how past manual reviews resolved for this program.
+  int32 manual_allow = 4;
+  int32 manual_deny  = 5;
 }
 
 // ImportStatProto represents a Python module imported in an inline invocation.
@@ -1043,6 +1106,9 @@ message SubcommandStatProto {
   string subcommand = 2;
   string category = 3;
   int32 count = 4;
+  // manual_allow / manual_deny break down how past manual reviews resolved for this pair.
+  int32 manual_allow = 5;
+  int32 manual_deny  = 6;
 }
 
 // DailyBucketProto aggregates classification decisions for a single calendar day.

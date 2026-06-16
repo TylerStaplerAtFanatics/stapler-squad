@@ -115,6 +115,9 @@ type Instance struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
+	// InitialPrompt is the prompt injected into the tmux pane once the session reaches Ready state.
+	// Replaces the static driverInitialPrompt when non-empty.
+	InitialPrompt string
 	// ExistingWorktree is an optional path to an existing worktree to reuse
 	ExistingWorktree string
 	// Category is used for organizing sessions into groups
@@ -141,6 +144,12 @@ type Instance struct {
 	// When true, the Fixer will inject correction prompts without user confirmation.
 	// When false (default), the session runs in supervised mode.
 	AutonomousMode bool `json:"autonomous_mode,omitempty"`
+	// AutonomousTurn is the current turn during an active autonomous run.
+	AutonomousTurn int32 `json:"autonomous_turn,omitempty"`
+	// AutonomousMaxTurns is the configured max turns for the current run.
+	AutonomousMaxTurns int32 `json:"autonomous_max_turns,omitempty"`
+	// AutonomousOutcome is the result of the last autonomous run: "", "done", or "stuck".
+	AutonomousOutcome string `json:"autonomous_outcome,omitempty"`
 
 	// GitHub integration fields for PR/URL-based session creation
 	// GitHubPRNumber is the PR number if this session was created from a PR URL
@@ -210,6 +219,15 @@ type Instance struct {
 	// without modifying any file on disk. Survives context compaction.
 	AppendSystemPrompt string `json:"append_system_prompt,omitempty"`
 
+	// AllowedTools, when non-empty, passes --allowedTools to claude to pre-approve
+	// specific tool calls without requiring interactive permission prompts.
+	// Format: "Bash,Read,Edit" or "Bash(git commit *),Read".
+	AllowedTools string `json:"allowed_tools,omitempty"`
+
+	// PermissionMode, when non-empty, passes --permission-mode to claude.
+	// Values: "default", "acceptEdits", "bypassPermissions", "auto".
+	PermissionMode string `json:"permission_mode,omitempty"`
+
 	// CreationProgress holds a human-readable progress message during Creating state.
 	// Set by the async creation goroutine; cleared once the session becomes Active.
 	// Not persisted to the database — only meaningful in-memory during startup.
@@ -244,6 +262,13 @@ type Instance struct {
 	// PauseReason records why this session was paused. Use PauseReason* constants.
 	// Empty when session has never been paused.
 	PauseReason string `json:"pause_reason,omitempty"`
+
+	// WorkflowID is the UUID of the Workflow that spawned this session.
+	// Empty for manually-created sessions.
+	WorkflowID string `json:"workflow_id,omitempty"`
+
+	// ArchivedAt is set when the session is archived. Nil means not archived.
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
 
 	// Claude Code session information for persistence and re-attachment
 	claudeSession *ClaudeSessionData
@@ -301,6 +326,10 @@ type Instance struct {
 	// Guarded by CompareAndSwap — see StartSessionDriver.
 	driverRunning atomic.Bool
 
+	// sessionGoal is the cached goal state for this session.
+	// Always use GetSessionGoal/SetSessionGoalCached accessors.
+	sessionGoal Locked[*SessionGoalData]
+
 	// restartCount and recentRestartTimes track rapid restarts for storm detection.
 	restartCount       int64
 	recentRestartTimes []time.Time
@@ -319,11 +348,13 @@ type Instance struct {
 	// success=true means recovery input was sent; false means it failed.
 	onRateLimitRecovery func(sessionID string, success bool, errMsg string)
 
-	// onStatusChangeMu protects onStatusChange.
-	onStatusChangeMu sync.RWMutex
 	// onStatusChange is called when the ClaudeController detects a status transition.
 	// Wired by the server layer to trigger reactive queue checks.
-	onStatusChange func(detection.DetectedStatus, string)
+	onStatusChange Locked[func(detection.DetectedStatus, string)]
+
+	// claudeSessionIDSavedCallback is called when SetClaudeConversationUUID stores a
+	// newly discovered session_id. Used by the service layer to trigger a storage save.
+	claudeSessionIDSavedCallback func()
 }
 
 // SessionType indicates the type of session workflow to use
@@ -348,6 +379,11 @@ const (
 	// initial commit, and opens the session. The directory need not exist beforehand.
 	SessionTypeNewProject SessionType = "new_project"
 )
+
+// SessionTypeOneOff is the workflow session_type value that requests a one-off session.
+// It is a plain string (not a SessionType constant) because workflows store it as a
+// plain string field, and the backend maps it to OneOff=true at execution time.
+const SessionTypeOneOff = "one_off"
 
 // IsValid reports whether st is a recognized session type.
 func (st SessionType) IsValid() bool {
@@ -378,6 +414,9 @@ type InstanceOptions struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
+	// InitialPrompt, when non-empty, is typed into the tmux pane once the session reaches Ready state,
+	// replacing the static "Please proceed..." fallback.
+	InitialPrompt string
 	// ExistingWorktree is an optional path to an existing worktree to reuse
 	ExistingWorktree string
 	// Category is used for organizing sessions into groups
@@ -422,9 +461,22 @@ type InstanceOptions struct {
 	// prompt without touching any file on disk.
 	AppendSystemPrompt string
 
+	// AllowedTools pre-approves specific Claude Code tool calls (--allowedTools).
+	AllowedTools string
+	// PermissionMode sets Claude Code's permission handling mode (--permission-mode).
+	PermissionMode string
+
 	// CreateIfMissing: when SessionTypeDirectory, create the directory and run git init
 	// if the path does not exist. Only set when the user has confirmed the action.
 	CreateIfMissing bool
+
+	// AutonomousMode, when true, starts an AutonomousDriver after session creation
+	// so the session runs to completion without manual steering.
+	AutonomousMode bool
+
+	// WorkflowID is the UUID of the Workflow that spawned this session.
+	// Set by the scheduler; empty for manually-created sessions.
+	WorkflowID string
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -477,6 +529,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		UpdatedAt:        t,
 		AutoYes:          opts.AutoYes,
 		Prompt:           opts.Prompt,
+		InitialPrompt:    opts.InitialPrompt,
 		ExistingWorktree: opts.ExistingWorktree,
 		Category:         opts.Category,
 		Tags:             opts.Tags, // Set tags from options
@@ -499,12 +552,16 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		GitHubRepo:      opts.GitHubRepo,
 		GitHubSourceRef: opts.GitHubSourceRef,
 		ClonedRepoPath:  opts.ClonedRepoPath,
-		// One-shot mode, hidden flag, and project
+		// One-shot mode, hidden flag, project, and workflow linkage
 		OneShot:            opts.OneShot,
 		Hidden:             opts.Hidden,
 		ProjectID:          opts.ProjectID,
+		WorkflowID:         opts.WorkflowID,
 		MCPServerURL:       opts.MCPServerURL,
 		AppendSystemPrompt: opts.AppendSystemPrompt,
+		AllowedTools:       opts.AllowedTools,
+		PermissionMode:     opts.PermissionMode,
+		AutonomousMode:     opts.AutonomousMode,
 		// Directory creation on missing path (R2 confirmation flow)
 		CreateIfMissing: opts.CreateIfMissing,
 	}
@@ -558,6 +615,26 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 // loading or creating an instance. Pass nil to disable persistence (e.g., in tests).
 func (i *Instance) SetShellRepository(repo ShellRepository) {
 	i.shellRepo = repo
+}
+
+// GetSessionGoal returns a thread-safe shallow copy of the current SessionGoalData (nil if not set).
+// A copy is returned so callers cannot mutate the shared struct.
+func (i *Instance) GetSessionGoal() *SessionGoalData {
+	var result *SessionGoalData
+	i.sessionGoal.Read(func(g *SessionGoalData) {
+		if g != nil {
+			copy := *g // shallow copy — Tasks slice is immutable after set
+			result = &copy
+		}
+	})
+	return result
+}
+
+// SetSessionGoalCached atomically updates the in-memory sessionGoal cache.
+func (i *Instance) SetSessionGoalCached(g *SessionGoalData) {
+	i.sessionGoal.Write(func(sg **SessionGoalData) {
+		*sg = g
+	})
 }
 
 // NewInstanceWithCleanup creates a new Instance and returns it along with a cleanup function.
@@ -810,24 +887,13 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 	i.startCDP(context.Background())
 	log.ForSession(i.Title).Info("session started", "first_time_setup", firstTimeSetup)
 
-	// Start controller for new sessions only; loaded sessions are wired later by server.go.
-	if firstTimeSetup {
-		if err := i.StartController(); err != nil {
-			// One retry: brief delay gives the tmux session time to stabilise, then
-			// re-attempt PTY attachment (RestoreWithWorkDir is idempotent — skips
-			// recreation if the session exists, only re-attaches PTY if ptmx is nil).
-			log.Warn("controller start failed, retrying after pty re-attach", "session", i.Title, "err", err)
-			time.Sleep(200 * time.Millisecond)
-			// Session already exists; workDir only matters for the fallback recreation path.
-			_ = i.pm().RestoreWithWorkDir("")
-			if retryErr := i.StartController(); retryErr != nil {
-				log.Error("controller start failed after retry, marking degraded", "session", i.Title, "err", retryErr)
-				i.fireLifecycleEvent(EventExited, "controller-start-failed")
-			}
-		}
-	} else {
-		log.Debug("skipping controller startup for loaded instance, will be started after wiring", "session", i.Title)
-	}
+	// Controller startup is always deferred to the caller after wiring (SetStatusManager).
+	// For new sessions (firstTimeSetup=true), the caller (session_service.go async goroutine)
+	// calls SetStatusManager + StartController after Start() returns.
+	// For loaded sessions (firstTimeSetup=false), loadInstancesWithWiring does the same.
+	// Starting the controller inside Start() causes immediate PTY EIO because tmux
+	// attach-session hasn't fully initialized by the time the response stream reads.
+	log.Debug("skipping controller startup, will be started after wiring", "session", i.Title, "firstTimeSetup", firstTimeSetup)
 
 	return nil
 }
@@ -898,11 +964,16 @@ func (i *Instance) Pause() error {
 		}
 	}
 
-	// Detach from tmux session instead of closing to preserve session output
-	if err := i.pm().DetachSafely(); err != nil {
-		errs = append(errs, fmt.Errorf("failed to detach tmux session: %w", err))
-		log.Error("failed to detach tmux session", "err", err)
-		// Continue with pause process even if detach fails
+	// Kill the tmux session to free memory. The Claude session UUID is already
+	// persisted by wireClaudeSessionIDSavedCallback before we reach this point.
+	// Resume() handles the dead-tmux case by reinitializing with --resume <uuid>.
+	if err := i.KillSession(); err != nil {
+		log.Warn("pause: failed to kill tmux session, falling back to detach", "session", i.Title, "err", err)
+		// Non-fatal: try a plain detach so the session is at least unreachable.
+		if detachErr := i.pm().DetachSafely(); detachErr != nil {
+			errs = append(errs, fmt.Errorf("failed to detach tmux session: %w", detachErr))
+			log.Error("failed to detach tmux session", "err", detachErr)
+		}
 	}
 
 	// Check if worktree exists before trying to remove it
@@ -998,7 +1069,34 @@ func (i *Instance) Resume() error {
 			}
 		}
 	} else {
-		// Create new tmux session
+		// Tmux session is dead (killed on pause to free memory).
+		// Rebuild the TmuxSession object with the current Claude UUID so the program
+		// is launched with the correct --resume flag, then start a fresh tmux session.
+		var claudeSessionID string
+		if i.claudeSession != nil {
+			claudeSessionID = i.claudeSession.ConversationUUID
+		}
+		program := i.buildLaunchCommand(claudeSessionID)
+		i.LaunchCommand = program
+		tmuxPrefix := i.TmuxPrefix
+		if tmuxPrefix == "" {
+			tmuxPrefix = "staplersquad_"
+		}
+		if tb, ok := i.processManager.(*TmuxBackend); ok {
+			if i.TmuxServerSocket != "" {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithServerSocket(i.Title, program, tmuxPrefix, i.TmuxServerSocket, tmux.WithRegistry(nil)))
+			} else {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithPrefix(i.Title, program, tmuxPrefix))
+			}
+			if i.UUID != "" {
+				tb.TmuxManager().Session().SetExtraEnv([]string{"STAPLER_SESSION_UUID=" + i.UUID})
+			}
+			if claudeSessionID != "" {
+				log.Info("resume: reinitializing tmux session with --resume", "session", i.Title, "uuid", claudeSessionID)
+			}
+		} else {
+			log.Warn("resume: non-TmuxBackend process manager — --resume flag not injected", "session", i.Title)
+		}
 		if err := i.pm().Start(worktreePath); err != nil {
 			log.Error("failed to start new tmux session on resume", "err", err)
 			// Cleanup git worktree if tmux session creation fails

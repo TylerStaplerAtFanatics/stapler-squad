@@ -21,7 +21,7 @@ func (i *Instance) StartController() error {
 	i.stateMutex.Lock()
 
 	// Only start if we have a status manager
-	if i.controllerManager.statusManager == nil {
+	if i.controllerManager.GetStatusManager() == nil {
 		i.stateMutex.Unlock()
 		log.Debug("no status manager set for instance, skipping controller", "session", i.Title)
 		return nil
@@ -81,6 +81,12 @@ func (i *Instance) StartController() error {
 		return fmt.Errorf("failed to start controller: %w", err)
 	}
 
+	// Wire rate limit callbacks BEFORE re-acquiring stateMutex.
+	// controller.Start() can launch goroutines that hold ctrl.mu and call back into
+	// Instance methods (which acquire stateMutex). wireRateLimitCallbacks acquires
+	// ctrl.mu.RLock(). Calling it inside stateMutex would create a lock-order cycle.
+	i.wireRateLimitCallbacks(controller)
+
 	// Re-acquire lock to update instance state
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
@@ -93,9 +99,6 @@ func (i *Instance) StartController() error {
 
 	// Register with status manager and store controller
 	i.controllerManager.RegisterController(i.Title, controller)
-
-	// Wire rate limit callbacks from the server layer (if already set).
-	i.wireRateLimitCallbacks(controller)
 
 	log.Info("started claudecontroller for instance", "session", i.Title)
 	return nil
@@ -210,28 +213,39 @@ func (i *Instance) SetRateLimitEnabled(enabled bool) {
 // detected by the ClaudeController. Safe to call before or after the controller is
 // started; the callback is wired at controller start time via wireStatusChangeCallback.
 func (i *Instance) SetStatusChangeCallback(fn func(detection.DetectedStatus, string)) {
-	i.onStatusChangeMu.Lock()
-	i.onStatusChange = fn
-	i.onStatusChangeMu.Unlock()
+	i.onStatusChange.Write(func(f *func(detection.DetectedStatus, string)) {
+		*f = fn
+	})
 
 	// If a controller is already running, wire immediately.
 	i.wireStatusChangeCallback(i.GetController())
 }
 
 // wireStatusChangeCallback wires the instance-level status-change callback to the
-// ClaudeController's listener. Called both from SetStatusChangeCallback and from
-// StartController before controller.Start().
+// ClaudeController's fan-out listener set. Called both from SetStatusChangeCallback
+// and from StartController before controller.Start().
 func (i *Instance) wireStatusChangeCallback(ctrl *ClaudeController) {
 	if ctrl == nil {
 		return
 	}
-	i.onStatusChangeMu.RLock()
-	fn := i.onStatusChange
-	i.onStatusChangeMu.RUnlock()
+	var fn func(detection.DetectedStatus, string)
+	i.onStatusChange.Read(func(f func(detection.DetectedStatus, string)) {
+		fn = f
+	})
 	if fn == nil {
 		return
 	}
-	ctrl.SetStatusChangeListener(fn)
+	ctrl.AddStatusChangeListener(fn)
+}
+
+// RegisterStatusChangeCallback appends fn to the controller's fan-out listener set.
+// Unlike SetStatusChangeCallback, it does not replace existing listeners.
+// Safe to call before or after the controller is started.
+func (i *Instance) RegisterStatusChangeCallback(fn func(detection.DetectedStatus, string)) {
+	ctrl := i.GetController()
+	if ctrl != nil {
+		ctrl.AddStatusChangeListener(fn)
+	}
 }
 
 // SetRateLimitCallbacks registers server-layer callbacks for rate limit events.

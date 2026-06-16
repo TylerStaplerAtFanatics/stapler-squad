@@ -15,9 +15,11 @@ package session
 // this driver covers everything else that requires interactive input.
 
 import (
+	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/detection"
@@ -65,11 +67,38 @@ func StartSessionDriver(inst *Instance, allowedPath string) {
 	}()
 }
 
+// sanitizeInitialPromptForTmux strips characters that would corrupt the tmux
+// send-keys call: null bytes (which tmux silently drops in unpredictable ways),
+// newlines and carriage returns (collapsed to spaces so the prompt stays on one
+// line), and hard-limits the length to 4096 characters. Returns the trimmed
+// result; an empty return value means the caller should fall back to the static
+// driverInitialPrompt.
+func sanitizeInitialPromptForTmux(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	if len(s) > 4096 {
+		s = s[:4096]
+		// Step back from the truncation point to avoid splitting a multi-byte UTF-8 rune.
+		for !utf8.ValidString(s) && len(s) > 0 {
+			s = s[:len(s)-1]
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
 // runSessionDriver is the thin wrapper that creates the retried flag and
 // delegates to runSessionDriverWithPrompt.
 func runSessionDriver(inst *Instance, allowedPath string) {
 	var retried atomic.Bool
-	runSessionDriverWithPrompt(inst, allowedPath, driverInitialPrompt, &retried)
+	var initialPrompt string
+	if inst.InitialPrompt != "" {
+		sanitized := sanitizeInitialPromptForTmux(inst.InitialPrompt)
+		if sanitized != "" {
+			initialPrompt = sanitized
+		}
+	}
+	runSessionDriverWithPrompt(inst, allowedPath, initialPrompt, &retried)
 }
 
 // runSessionDriverWithPrompt is the core driver loop. It accepts a custom initial
@@ -93,16 +122,32 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 	ticker := time.NewTicker(driverPollInterval)
 	defer ticker.Stop()
 
-	sentInitial := false
+	// No initial prompt configured — skip the send step; driver still handles
+	// startup dialogs, auto-approval, and monitoring.
+	sentInitial := initialPrompt == ""
 	var initialPromptSentAt time.Time
+	if sentInitial {
+		initialPromptSentAt = time.Now()
+	} else {
+		// Check if the prompt was already delivered in a previous service run.
+		// If a JSONL conversation file exists for this session, Claude already received
+		// the prompt and started working; re-sending would inject a duplicate command.
+		if _, err := FindConversationFilePath(inst.GetStableID()); err == nil {
+			sentInitial = true
+			initialPromptSentAt = time.Now()
+		}
+	}
+	var sendAttempts int
 
 	for range ticker.C {
 		if time.Now().After(totalDeadline) {
 			return
 		}
 
-		// Use GetEffectiveStatus (acquires stateMutex.RLock) to avoid data races on Status.
+		// GetEffectiveStatus for lifecycle decisions (Paused, Stopped).
+		// GetDetectedStatus for fine-grained terminal-content signals (Idle = readline prompt).
 		st := inst.GetEffectiveStatus()
+		detectedSt := inst.GetDetectedStatus()
 
 		// Paused is always a clean stop for the driver.
 		if st == Paused {
@@ -124,6 +169,9 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 				return
 			}
 			// Stopped after initial prompt was sent.
+			if inst.OneShot {
+				tryExtractClaudeSessionID(inst)
+			}
 			if isOneShot(inst) || retried.Load() {
 				// One-shot sessions: BacklogLifecycleListener handles this; driver exits cleanly.
 				return
@@ -136,6 +184,9 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 					"session", inst.Title,
 					"runtime", time.Since(initialPromptSentAt).Round(time.Second),
 				)
+				if inst.OneShot {
+					tryExtractClaudeSessionID(inst)
+				}
 				return
 			}
 			log.Warn("SessionDriver: unexpected session exit after initial prompt",
@@ -165,26 +216,92 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 		}
 
 		if !sentInitial {
-			ready := st == Ready
+			// Wait for StatusIdle specifically: the `^>\s*▌?\s*$` pattern confirms
+			// Claude Code's readline is showing the input prompt and is listening.
+			//
+			// Do NOT use st == Ready (which equals st == Active — a deprecated alias
+			// that fires the moment the session starts, long before readline is ready).
+			// StatusReady is a `.*` catch-all; StatusIdle is the precise signal.
+			claudeAtPrompt := detectedSt == detection.StatusIdle
 			timedOut := time.Now().After(readyDeadline)
 
-			if ready || timedOut {
-				if err := inst.SendKeys(initialPrompt + "\n"); err != nil {
+			if claudeAtPrompt || timedOut {
+				sendAttempts++
+
+				if timedOut && !claudeAtPrompt {
+					log.Warn("SessionDriver: timed out waiting for idle prompt, sending anyway",
+						"session", inst.Title,
+						"attempt", sendAttempts,
+					)
+				}
+
+				if claudeAtPrompt {
+					// Brief settling pause after the > prompt appears: the status machine
+					// detected the line, but readline's internal input handler may need a
+					// few hundred ms to be fully listening.
+					time.Sleep(300 * time.Millisecond)
+				}
+
+				// Snapshot terminal content immediately before sending so we can verify
+				// that the keystrokes were actually received (read-back confirmation).
+				contentBefore, _ := inst.Preview()
+
+				if err := inst.SendKeys(initialPrompt + "\r"); err != nil {
 					log.Warn("SessionDriver: failed to send initial prompt",
 						"session", inst.Title,
-						"ready", ready,
+						"claudeAtPrompt", claudeAtPrompt,
 						"timedOut", timedOut,
+						"attempt", sendAttempts,
 						"err", err,
 					)
+					if sendAttempts >= 3 {
+						log.Error("SessionDriver: giving up on initial prompt after 3 failed attempts",
+							"session", inst.Title,
+						)
+						sentInitial = true
+						initialPromptSentAt = time.Now()
+					}
+					// sentInitial stays false → retry next tick
 				} else {
 					log.Info("SessionDriver: sent initial prompt",
 						"session", inst.Title,
-						"ready", ready,
+						"claudeAtPrompt", claudeAtPrompt,
 						"timedOut", timedOut,
+						"attempt", sendAttempts,
+						"promptLen", len(initialPrompt),
 					)
+
+					// Read-back verification: only when we had a confirmed idle prompt
+					// and still have retries left.  After a timeout-triggered send we
+					// cannot reliably verify (Claude may not be at a prompt).
+					if claudeAtPrompt && sendAttempts < 3 {
+						// Wait for PTY echo + pane-capture latency before reading back.
+						time.Sleep(500 * time.Millisecond)
+						contentAfter, verifyErr := inst.Preview()
+						if verifyErr == nil && contentBefore != "" && contentAfter == contentBefore {
+							// Terminal content identical to before the send — the
+							// keystrokes were likely swallowed before readline consumed
+							// them.  Retry on the next tick.
+							log.Warn("SessionDriver: terminal content unchanged after send — keystrokes may have been swallowed, retrying",
+								"session", inst.Title,
+								"attempt", sendAttempts,
+							)
+							// sentInitial stays false
+						} else {
+							// Content changed (or verification read failed) — treat as success.
+							log.Info("SessionDriver: read-back confirmed initial prompt received",
+								"session", inst.Title,
+								"attempt", sendAttempts,
+							)
+							sentInitial = true
+							initialPromptSentAt = time.Now()
+						}
+					} else {
+						// Timeout-triggered send or max retries: accept without verification.
+						sentInitial = true
+						initialPromptSentAt = time.Now()
+					}
 				}
-				sentInitial = true
-				initialPromptSentAt = time.Now()
 			}
 			continue
 		}
@@ -193,10 +310,19 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 		// Use GetEffectiveStatus() (acquires stateMutex.RLock) to avoid data race on Status field.
 		if st == Ready {
 			last := inst.LastMeaningfulOutputTime()
-			if !last.IsZero() && time.Since(last) > driverInactivityTimeout {
+			// Use the later of initialPromptSentAt or LastMeaningfulOutput as the activity
+			// reference. After a service restart, LastMeaningfulOutput may be stale (loaded
+			// from DB before the ReviewQueue poller had a chance to refresh it from live
+			// terminal content). Using initialPromptSentAt as a floor prevents false inactivity
+			// fires immediately after startup.
+			activityRef := initialPromptSentAt
+			if !last.IsZero() && last.After(initialPromptSentAt) {
+				activityRef = last
+			}
+			if time.Since(activityRef) > driverInactivityTimeout {
 				log.Warn("SessionDriver: session stuck — no output for inactivity timeout",
 					"session", inst.Title,
-					"inactivity", time.Since(last).Round(time.Second),
+					"inactivity", time.Since(activityRef).Round(time.Second),
 				)
 				handleDriverFailure(inst, allowedPath, retried, "inactivity timeout")
 				return
@@ -243,14 +369,32 @@ func handleDriverFailure(inst *Instance, allowedPath string, retried *atomic.Boo
 	)
 
 	// Build continuation prompt BEFORE restart (HistoryFilePath may clear after restart).
+	// If no conversation history exists yet (early PTY exit before Claude started), use the
+	// original InitialPrompt so the workflow task is not lost on the first retry.
 	continuationPrompt := buildContinuationPrompt(inst)
+	if continuationPrompt == "Your previous session exited unexpectedly. Please continue from where you left off." &&
+		inst.InitialPrompt != "" {
+		if sanitized := sanitizeInitialPromptForTmux(inst.InitialPrompt); sanitized != "" {
+			continuationPrompt = sanitized
+		}
+	}
 
 	// Restart the session.
 	var restartErr error
 	st := inst.GetEffectiveStatus()
 	if st == Stopped {
 		inst.RecoverFromStopped()
+		// Clear the old (possibly dead) controller so StartController below creates a fresh one.
+		inst.StopController()
 		restartErr = inst.Start(false)
+		if restartErr == nil {
+			// Start(false) skips controller setup (reserved for the server wiring path).
+			// Restart it explicitly so the session driver can detect the Claude prompt.
+			if ctrlErr := inst.StartController(); ctrlErr != nil {
+				log.Warn("SessionDriver: failed to restart controller after session restart",
+					"session", inst.Title, "err", ctrlErr)
+			}
+		}
 	} else {
 		restartErr = inst.Restart(false)
 	}
@@ -360,6 +504,80 @@ func isStartupDialog(output string) bool {
 		// Must have a numbered option to select — avoids false positives on
 		// non-interactive output that merely mentions trust.
 		(strings.Contains(output, "1.") || strings.Contains(output, "❯ 1"))
+}
+
+// parseJSONField extracts a string field value from a JSON blob.
+// Works with both --output-format json (single object) and stream-json (one
+// JSON object per line). Searches recursively through nested objects, so it
+// handles both top-level fields (e.g. "result") and nested fields (e.g.
+// "session_id" inside a "data" sub-object). Returns empty string if the field
+// is not found or its value is not a string.
+func parseJSONField(output, field string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, field) {
+			continue
+		}
+		var tree interface{}
+		if err := json.Unmarshal([]byte(line), &tree); err != nil {
+			continue
+		}
+		if s := searchJSONString(tree, field); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// searchJSONString recursively searches a parsed JSON tree for the first
+// occurrence of a string-valued field with the given key.
+func searchJSONString(v interface{}, field string) string {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		if s, ok := val[field]; ok {
+			if str, ok := s.(string); ok {
+				return str
+			}
+		}
+		for _, child := range val {
+			if s := searchJSONString(child, field); s != "" {
+				return s
+			}
+		}
+	case []interface{}:
+		for _, item := range val {
+			if s := searchJSONString(item, field); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// parseClaudeSessionID extracts the "session_id" value from a JSON blob
+// (both --output-format json and --output-format stream-json).
+// Returns empty string if not found.
+func parseClaudeSessionID(output string) string {
+	return parseJSONField(output, "session_id")
+}
+
+// tryExtractClaudeSessionID reads the terminal output for a completed OneShot
+// session and stores the extracted Claude session_id on the instance so that
+// future restarts use --resume.
+func tryExtractClaudeSessionID(inst *Instance) {
+	if !inst.OneShot {
+		return
+	}
+	output, err := inst.Preview()
+	if err != nil || output == "" {
+		return
+	}
+	uuid := parseClaudeSessionID(output)
+	if uuid == "" {
+		return
+	}
+	inst.SetClaudeConversationUUID(uuid)
+	log.Info("SessionDriver: captured claude session_id", "session", inst.Title, "session_id", uuid)
 }
 
 // shouldApprovePrompt returns true when the terminal output looks like a

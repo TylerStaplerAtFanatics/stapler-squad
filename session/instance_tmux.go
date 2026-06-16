@@ -53,13 +53,19 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 	if i.AppendSystemPrompt != "" && strings.Contains(program, "claude") {
 		program = fmt.Sprintf("%s --append-system-prompt %q", program, i.AppendSystemPrompt)
 	}
+	if i.AllowedTools != "" && strings.Contains(program, "claude") {
+		program = fmt.Sprintf("%s --allowedTools %q", program, i.AllowedTools)
+	}
+	if i.PermissionMode != "" && strings.Contains(program, "claude") {
+		program = fmt.Sprintf("%s --permission-mode %q", program, i.PermissionMode)
+	}
 	if i.AutoYes && strings.Contains(program, "claude") {
 		program = program + " --dangerously-skip-permissions"
 	}
 	if i.OneShot && strings.Contains(program, "claude") {
-		program = program + " -p"
+		program = program + " -p --output-format json"
 	}
-	if i.Prompt != "" && claudeSessionID == "" && strings.Contains(program, "claude") {
+	if i.Prompt != "" && (claudeSessionID == "" || i.OneShot) && strings.Contains(program, "claude") {
 		program = fmt.Sprintf("%s %q", program, i.Prompt)
 	}
 	return program

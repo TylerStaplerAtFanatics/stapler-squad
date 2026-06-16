@@ -27,6 +27,14 @@ interface SessionDetailProps {
   onDismissFromQueue?: () => void;
   queuePosition?: number;
   queueTotal?: number;
+  /** Name of the next session in queue — shown as a label under the → button. */
+  nextSessionName?: string;
+  /** Name of the previous session in queue — shown as a label under the ← button. */
+  previousSessionName?: string;
+  /** Called when user clicks the back-in-history button. */
+  onBack?: () => void;
+  /** Whether back navigation is available. */
+  canGoBack?: boolean;
   /** Backlog item ID to display in right-side panel. If provided, shows BacklogItemPanel. */
   backlogItemId?: string;
 }
@@ -45,6 +53,10 @@ export function SessionDetail({
   onDismissFromQueue,
   queuePosition,
   queueTotal,
+  nextSessionName,
+  previousSessionName,
+  onBack,
+  canGoBack,
   backlogItemId,
 }: SessionDetailProps) {
   const actions = useSessionActions(session.id);
@@ -74,6 +86,10 @@ export function SessionDetail({
         onDismissFromQueue={onDismissFromQueue}
         queuePosition={queuePosition}
         queueTotal={queueTotal}
+        nextSessionName={nextSessionName}
+        previousSessionName={previousSessionName}
+        onBack={onBack}
+        canGoBack={canGoBack}
         backlogItemId={backlogItemId}
       />
     </SessionVcsProvider>

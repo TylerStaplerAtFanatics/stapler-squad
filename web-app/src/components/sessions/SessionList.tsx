@@ -11,11 +11,13 @@ import { SessionCard } from "./SessionCard";
 import { SessionRow } from "./SessionRow";
 import { SessionListEmptyState } from "./SessionListEmptyState";
 import { SessionListSkeleton } from "./SessionListSkeleton";
-import { groupHeader as groupHeaderStyle } from "./SessionRow.css";
 import { BulkActions } from "./BulkActions";
 import { TagEditor } from "./TagEditor";
 import { GroupingStrategy, GroupingStrategyLabels, groupSessions, cycleGroupingStrategy } from "@/lib/grouping/strategies";
+import { ColumnKey, DEFAULT_VISIBLE_COLUMNS } from "./session-columns";
+import { ColumnPicker } from "./ColumnPicker";
 import { useReviewQueueContext } from "@/lib/contexts/ReviewQueueContext";
+import { useApprovalsContext } from "@/lib/contexts/ApprovalsContext";
 import { MemoryPressureCallout } from "./MemoryPressureCallout";
 import { useAppSelector } from "@/lib/store";
 import { selectDetectedStatusMap } from "@/lib/store/sessionsSlice";
@@ -69,6 +71,8 @@ interface SessionListProps {
   onForkFromCheckpoint?: (sessionId: string, checkpointId: string, newTitle: string) => Promise<Session | null>;
   onRunOneShot?: (sessionId: string) => Promise<void>;
   onSetRateLimitEnabled?: (sessionId: string, enabled: boolean) => void;
+  onToggleAutonomousMode?: (sessionId: string, enabled: boolean) => void;
+  onSteerAutonomousSession?: (sessionId: string, message: string) => void;
   onClearConversationState?: (sessionId: string) => Promise<boolean>;
   onHibernateSession?: (sessionId: string) => void;
   onResumeHibernatedSession?: (sessionId: string) => void;
@@ -95,6 +99,7 @@ const BASE_STORAGE_KEYS = {
   GROUPING_STRATEGY: 'stapler-squad-grouping-strategy',
   SORT_FIELD: 'stapler-squad-sort-field',
   SORT_DIR: 'stapler-squad-sort-dir',
+  VISIBLE_COLUMNS: 'stapler-squad-visible-columns',
 };
 
 function makeStorageKeys(prefix = '') {
@@ -149,6 +154,8 @@ export function SessionList({
   onForkFromCheckpoint,
   onRunOneShot,
   onSetRateLimitEnabled,
+  onToggleAutonomousMode,
+  onSteerAutonomousSession,
   onClearConversationState,
   onHibernateSession,
   onResumeHibernatedSession,
@@ -168,6 +175,9 @@ export function SessionList({
 
   // Terminal-detected status data from Redux store
   const detectedStatusMap = useAppSelector(selectDetectedStatusMap);
+
+  // clearedSessions: optimistic approval suppression per session (card mode only; row mode uses SubStatusChip suppression)
+  const { clearedSessions } = useApprovalsContext();
 
   // Initialize state from local storage
   const [searchQuery, setSearchQuery] = useState(() => loadFromStorage(STORAGE_KEYS.SEARCH_QUERY, ""));
@@ -197,6 +207,10 @@ export function SessionList({
   const [sortDir, setSortDir] = useState<SortDir>(() =>
     loadFromStorage(STORAGE_KEYS.SORT_DIR, 'desc')
   );
+  const [visibleColumns, setVisibleColumns] = useState<ColumnKey[]>(() =>
+    loadFromStorage(STORAGE_KEYS.VISIBLE_COLUMNS, DEFAULT_VISIBLE_COLUMNS)
+  );
+  const [columnPickerOpen, setColumnPickerOpen] = useState(false);
 
   // Multi-select state for bulk actions
   const [selectMode, setSelectMode] = useState(false);
@@ -211,6 +225,7 @@ export function SessionList({
   // S4: Project data for grouping headers and "Group as..." functionality
   const [projects, setProjects] = useState<Project[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
+  const selectButtonRef = useRef<HTMLButtonElement>(null);
   const projectClientRef = useRef(
     createClient(SessionService, getConnectTransport())
   );
@@ -254,6 +269,7 @@ export function SessionList({
   // S4-5: Inline rename/delete state for project group headers
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
 
   const handleProjectRename = useCallback(async (projectId: string, newName: string) => {
@@ -261,6 +277,9 @@ export function SessionList({
     if (!trimmed) return;
     await projectClientRef.current.updateProject({ id: projectId, name: trimmed });
     setRenamingProjectId(null);
+    setTimeout(() => {
+      document.querySelector<HTMLElement>(`[data-rename-btn="${projectId}"]`)?.focus();
+    }, 0);
     await fetchProjects();
   }, [fetchProjects]);
 
@@ -306,6 +325,10 @@ export function SessionList({
   useEffect(() => {
     saveToStorage(STORAGE_KEYS.SORT_DIR, sortDir);
   }, [STORAGE_KEYS, sortDir]);
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.VISIBLE_COLUMNS, visibleColumns);
+  }, [STORAGE_KEYS, visibleColumns]);
 
   // Extract unique categories from sessions
   const categories = useMemo(() => {
@@ -369,7 +392,7 @@ export function SessionList({
       }
 
       // Needs-approval quick filter — show only Active sessions with subStatus === NEEDS_APPROVAL
-      if (filterNeedsApproval && session.subStatus !== SubStatus.NEEDS_APPROVAL) {
+      if (filterNeedsApproval && !(session.status === SessionStatus.ACTIVE && (session.subStatus === SubStatus.NEEDS_APPROVAL || session.subStatus === SubStatus.INPUT_REQUIRED))) {
         return false;
       }
 
@@ -406,6 +429,9 @@ export function SessionList({
     return sorted;
   }, [filteredSessions, sortField, sortDir]);
 
+  // Derived: whether any filter is active (used for empty-state messaging)
+  const hasActiveFilters = !!(searchQuery || selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused || filterNeedsApproval);
+
   // Group sessions by selected strategy
   const groupedSessions = useMemo(() => {
     return groupSessions(sortedSessions, groupingStrategy);
@@ -438,6 +464,7 @@ export function SessionList({
     getScrollElement: () => containerRef.current,
     estimateSize: (i) => (flatItems[i]?.kind === "header" ? 40 : 50),
     overscan: 8,
+    measureElement: (el) => el.getBoundingClientRect().height,
   });
 
   // Handler for cycling grouping strategy (keyboard shortcut 'G')
@@ -454,9 +481,9 @@ export function SessionList({
     }
   };
 
-  const showFeedback = (msg: string) => {
+  const showFeedback = (msg: string, isError = false) => {
     setBulkFeedback(msg);
-    setTimeout(() => setBulkFeedback(null), 3000);
+    setTimeout(() => setBulkFeedback(null), isError ? 5000 : 3000);
   };
 
   // Entering selectMode automatically when hovering a card and clicking its checkbox.
@@ -481,6 +508,8 @@ export function SessionList({
   const handleClearSelection = () => {
     setSelectedSessions(new Set());
     setSelectMode(false);
+    showFeedback("Selection cleared");
+    setTimeout(() => selectButtonRef.current?.focus(), 0);
   };
 
   const handlePauseSelected = () => {
@@ -511,14 +540,7 @@ export function SessionList({
     setSelectMode(false);
   };
 
-  const handleStopSelected = () => {
-    if (!onPauseSession) return;
-    const ids = Array.from(selectedSessions);
-    ids.forEach(id => onPauseSession(id));
-    showFeedback(`${ids.length} session${ids.length !== 1 ? 's' : ''} stopped`);
-    setSelectedSessions(new Set());
-    setSelectMode(false);
-  };
+  const handleStopSelected = handlePauseSelected;
 
   const handleDeleteSelected = () => {
     if (!onDeleteSession) return;
@@ -535,12 +557,13 @@ export function SessionList({
     const failed = results.filter(r => r.status === 'rejected').length;
     const failedIds = new Set(ids.filter((_, i) => results[i].status === 'rejected'));
     if (failed > 0) {
-      showFeedback(`${succeeded} deleted, ${failed} failed — failed sessions remain selected`);
+      showFeedback(`${succeeded} deleted, ${failed} failed — failed sessions remain selected`, true);
       setSelectedSessions(failedIds);
     } else {
       showFeedback(`${succeeded} session${succeeded !== 1 ? 's' : ''} deleted`);
       setSelectedSessions(new Set());
       setSelectMode(false);
+      setTimeout(() => selectButtonRef.current?.focus(), 0);
     }
   };
 
@@ -564,18 +587,28 @@ export function SessionList({
     <div ref={containerRef} className={container} data-context="session-list">
       <div className={header}>
         <div className={headerTop}>
-          <h2 className={title}>Sessions ({filteredSessions.length})</h2>
+          <h2 className={title} aria-live="polite" aria-atomic="true">Sessions ({filteredSessions.length !== sessions.length ? `${filteredSessions.length} of ${sessions.length}` : filteredSessions.length})</h2>
           <div className={headerActions}>
             {extraHeaderActions}
+            {viewMode === "row" && (
+              <ColumnPicker
+                visibleColumns={visibleColumns}
+                onChange={setVisibleColumns}
+                open={columnPickerOpen}
+                onOpenChange={setColumnPickerOpen}
+              />
+            )}
             <button
               onClick={() => onNewSession?.()}
               className={newSessionHeaderButton}
-              aria-label="Create new session (Ctrl+K)"
-              title="Create new session (Ctrl+K)"
+              aria-label="Create new session"
+              aria-keyshortcuts="Control+K"
+              title="New session (Ctrl+K)"
             >
               +
             </button>
             <button
+              ref={selectButtonRef}
               onClick={handleToggleSelectMode}
               className={`${selectModeButton} ${selectMode ? selectModeButtonActive : ""}`}
               aria-label={selectMode ? "Exit select mode" : "Enter select mode"}
@@ -605,6 +638,10 @@ export function SessionList({
               }`}
               aria-expanded={filtersOpen}
               aria-controls="session-filter-controls"
+              aria-label={(() => {
+                const activeCount = [selectedStatus !== "all", selectedCategory !== "all", selectedTag !== "all", hidePaused, filterNeedsApproval].filter(Boolean).length;
+                return activeCount > 0 ? `Filters (${activeCount} active)` : "Filters";
+              })()}
               onClick={() => setFiltersOpen((prev) => !prev)}
             >
               Filters
@@ -698,7 +735,7 @@ export function SessionList({
               onChange={(e) => setGroupingStrategy(e.target.value as GroupingStrategy)}
               className={select}
               title="Group by (Keyboard: G)"
-              aria-label="Group sessions by"
+              aria-label="Group sessions by (keyboard: G)"
             >
               {Object.entries(GroupingStrategyLabels).map(([value, label]) => (
                 <option key={value} value={value}>
@@ -725,9 +762,9 @@ export function SessionList({
               onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
               className={sortDirButton}
               title={sortDir === 'asc' ? 'Ascending — click to sort descending' : 'Descending — click to sort ascending'}
-              aria-label={`Sort direction: ${sortDir === 'asc' ? 'ascending' : 'descending'}`}
+              aria-label={sortDir === 'asc' ? 'Switch to descending sort' : 'Switch to ascending sort'}
             >
-              {sortDir === 'asc' ? '↑' : '↓'}
+              <span aria-hidden="true">{sortDir === 'asc' ? '↑' : '↓'}</span>
             </button>
           </ActionBar>
         </div>
@@ -740,6 +777,11 @@ export function SessionList({
         />
       )}
 
+      {/* Persistent aria-live region so bulk-action announcements survive BulkActions unmount */}
+      <div id="bulk-feedback-live" role="status" aria-live="polite" aria-atomic="true" aria-label="Action feedback" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" }}>{bulkFeedback ?? ""}</div>
+      {/* Persistent live region for empty-state — always in DOM so NVDA announces on content change */}
+      <div id="empty-state-live" role="status" aria-live="polite" aria-atomic="true" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" }}>{filteredSessions.length === 0 && hasActiveFilters ? "No sessions found" : ""}</div>
+
       {/* Bulk actions bar — BulkActions renders null when selectedCount === 0 */}
       {selectMode && (
         <BulkActions
@@ -747,7 +789,6 @@ export function SessionList({
           totalCount={filteredSessions.length}
           onPauseAll={handlePauseSelected}
           onResumeAll={handleResumeSelected}
-          onStopAll={handleStopSelected}
           onDeleteAll={handleDeleteSelected}
           onAddTagAll={handleBulkAddTag}
           onSelectAll={handleSelectAll}
@@ -772,12 +813,12 @@ export function SessionList({
         <SessionListSkeleton />
       ) : filteredSessions.length === 0 ? (
         (() => {
-          const hasActiveFilters = !!(searchQuery || selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused || filterNeedsApproval);
           return hasActiveFilters ? (
-            <div className={empty}>
-              <p>No sessions found</p>
+            <div className={empty} role="region" aria-label="No results">
+              <p id="no-sessions-msg">No sessions found</p>
               <button
                 className={clearButton}
+                aria-describedby="no-sessions-msg"
                 onClick={() => {
                   setSearchQuery("");
                   setSelectedStatus("all");
@@ -797,6 +838,7 @@ export function SessionList({
       ) : viewMode === "row" ? (
         // Row mode: virtualized — only renders visible items (~20 rows at a time).
         <div
+          aria-label={`Sessions, ${flatItems.filter(i => i && i.kind === "session").length} items`}
           style={{
             height: rowVirtualizer.getTotalSize(),
             width: "100%",
@@ -807,10 +849,11 @@ export function SessionList({
             const item = flatItems[virtualItem.index];
             if (!item) return null;
             const isSessionItem = item.kind === "session";
-            const WrapperTag = isSessionItem ? "ul" : "div";
             return (
-              <WrapperTag
+              <div
                 key={virtualItem.key}
+                role="presentation"
+                ref={rowVirtualizer.measureElement}
                 data-index={virtualItem.index}
                 style={{
                   position: "absolute",
@@ -818,25 +861,30 @@ export function SessionList({
                   left: 0,
                   width: "100%",
                   transform: `translateY(${virtualItem.start}px)`,
-                  ...(isSessionItem ? { listStyle: "none", margin: 0, padding: 0 } : {}),
                 }}
               >
                 {item.kind === "header" ? (
-                  <h3
-                    className={groupHeaderStyle}
+                  <div role="listitem">
+                  <div
+                    role="heading"
+                    aria-level={3}
+                    className={categoryTitle}
                     style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
                   >
                     {item.isProjectGrouping && item.projectData && renamingProjectId === item.projectData.id ? (
                       <form
-                        style={{ display: "flex", gap: "6px", alignItems: "center" }}
-                        onSubmit={(e) => { e.preventDefault(); handleProjectRename(item.projectData!.id, renameValue); }}
+                        aria-label={`Rename project ${item.displayName}`}
+                        style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}
+                        onSubmit={async (e) => { e.preventDefault(); setRenameError(null); try { await handleProjectRename(item.projectData!.id, renameValue); } catch { setRenameError("Failed to rename — try again"); } }}
                       >
                         <input
                           autoFocus
                           type="text"
                           value={renameValue}
                           onChange={(e) => setRenameValue(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Escape") setRenamingProjectId(null); }}
+                          onKeyDown={(e) => { if (e.key === "Escape") { const id = item.projectData!.id; setRenamingProjectId(null); setRenameError(null); setTimeout(() => { document.querySelector<HTMLElement>(`[data-rename-btn="${id}"]`)?.focus(); }, 0); } }}
+                          aria-label={`Rename project ${item.displayName}`}
+                          aria-describedby={renameError ? `row-rename-error-${item.projectData!.id}` : undefined}
                           style={{
                             padding: "2px 6px",
                             border: "1px solid var(--input-focus-border)",
@@ -847,8 +895,9 @@ export function SessionList({
                             color: "var(--text-primary)",
                           }}
                         />
-                        <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--success)", fontSize: "1rem" }} title="Save">✓</button>
-                        <button type="button" onClick={() => setRenamingProjectId(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "1rem" }} title="Cancel">✕</button>
+                        <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--success)", fontSize: "1rem" }} title="Save" aria-label="Save project name">✓</button>
+                        <button type="button" onClick={() => { const id = item.projectData!.id; setRenamingProjectId(null); setRenameError(null); setTimeout(() => { document.querySelector<HTMLElement>(`[data-rename-btn="${id}"]`)?.focus(); }, 0); }} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "1rem" }} title="Cancel" aria-label="Cancel rename">✕</button>
+                        {renameError && <span id={`row-rename-error-${item.projectData!.id}`} role="alert" style={{ color: "var(--error)", fontSize: "0.75rem", width: "100%" }}>{renameError}</span>}
                       </form>
                     ) : (
                       <>
@@ -856,45 +905,49 @@ export function SessionList({
                         {item.isProjectGrouping && item.projectData && (
                           <>
                             {item.projectData.runningCount > 0 && (
-                              <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--success-bg)", color: "var(--success)", borderRadius: "10px" }}>
+                              <span role="img" aria-label={`${item.projectData.runningCount} running`} style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--success-bg)", color: "var(--success)", borderRadius: "10px" }}>
                                 {item.projectData.runningCount} Running
                               </span>
                             )}
                             {item.projectData.completeCount > 0 && (
-                              <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--primary)", color: "white", borderRadius: "10px", opacity: 0.85 }}>
+                              <span role="img" aria-label={`${item.projectData.completeCount} complete`} style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--primary)", color: "white", borderRadius: "10px", opacity: 0.85 }}>
                                 {item.projectData.completeCount} Complete
                               </span>
                             )}
                             {item.projectData.reviewReadyCount > 0 && (
-                              <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--warning-bg)", color: "var(--warning)", borderRadius: "10px" }}>
+                              <span role="img" aria-label={`${item.projectData.reviewReadyCount} ready for review`} style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--warning-bg)", color: "var(--warning)", borderRadius: "10px" }}>
                                 {item.projectData.reviewReadyCount} Review
                               </span>
                             )}
                           </>
                         )}
                         {item.isProjectGrouping && item.projectData && !item.isUngrouped && (
-                          <span style={{ marginLeft: "auto", display: "flex", gap: "4px" }}>
+                          <span style={{ marginLeft: "auto", display: "flex", gap: "4px", flexShrink: 0 }}>
                             <button
                               type="button"
-                              onClick={() => { setRenamingProjectId(item.projectData!.id); setRenameValue(item.projectData!.name); }}
+                              data-rename-btn={item.projectData!.id}
+                              onClick={() => { setRenamingProjectId(item.projectData!.id); setRenameValue(item.projectData!.name); setRenameError(null); }}
                               title="Rename project"
                               aria-label={`Rename project ${item.displayName}`}
+                              aria-expanded={false}
                               style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
                             >
-                              ✏️
+                              <span aria-hidden="true">✏️</span>
                             </button>
                             {deletingProjectId === item.projectData.id ? (
-                              <span style={{ display: "flex", gap: "4px", alignItems: "center", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-                                Remove project? {item.groupSessions.length} session{item.groupSessions.length !== 1 ? "s" : ""} will become ungrouped.
+                              <span role="group" aria-label="Confirm project deletion" style={{ display: "flex", gap: "4px", alignItems: "center", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                                <span role="alert" aria-atomic="true">Remove project? {item.groupSessions.length} session{item.groupSessions.length !== 1 ? "s" : ""} will become ungrouped.</span>
                                 <button
                                   type="button"
                                   onClick={() => handleProjectDelete(item.projectData!.id)}
+                                  aria-label={`Confirm delete project ${item.displayName}`}
                                   style={{ background: "var(--error)", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem" }}
                                 >
                                   Delete
                                 </button>
                                 <button
                                   type="button"
+                                  autoFocus
                                   onClick={() => setDeletingProjectId(null)}
                                   style={{ background: "none", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem", color: "var(--text-secondary)" }}
                                 >
@@ -909,14 +962,15 @@ export function SessionList({
                                 aria-label={`Delete project ${item.displayName}`}
                                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
                               >
-                                🗑️
+                                <span aria-hidden="true">🗑️</span>
                               </button>
                             )}
                           </span>
                         )}
                       </>
                     )}
-                  </h3>
+                  </div>
+                  </div>
                 ) : (
                   <SessionRow
                     session={item.session}
@@ -931,11 +985,17 @@ export function SessionList({
                     onCreateCheckpoint={onCreateCheckpoint}
                     onRunOneShot={onRunOneShot}
                     onSetRateLimitEnabled={onSetRateLimitEnabled}
+                    onToggleAutonomousMode={onToggleAutonomousMode}
+                    onSteerAutonomousSession={onSteerAutonomousSession}
                     onClearConversationState={onClearConversationState}
+                    onHibernate={onHibernateSession ? () => onHibernateSession(item.session.id) : undefined}
+                    onResumeFromHibernation={onResumeHibernatedSession ? () => onResumeHibernatedSession(item.session.id) : undefined}
                     onUpdateTags={onUpdateTags}
+                    suppressApprovalSubStatus={clearedSessions.has(item.session.id)}
+                    visibleColumns={visibleColumns}
                   />
                 )}
-              </WrapperTag>
+              </div>
             );
           })}
         </div>
@@ -950,18 +1010,21 @@ export function SessionList({
             const isUngrouped = groupKey === "No Project";
             return (
               <div key={groupKey} className={categoryGroup}>
-                <h3 className={categoryTitle} style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                <div role="heading" aria-level={3} className={categoryTitle} style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
                   {isProjectGrouping && projectData && renamingProjectId === projectData.id ? (
                     <form
-                      style={{ display: "flex", gap: "6px", alignItems: "center" }}
-                      onSubmit={(e) => { e.preventDefault(); handleProjectRename(projectData.id, renameValue); }}
+                      aria-label={`Rename project ${displayName}`}
+                      style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}
+                      onSubmit={async (e) => { e.preventDefault(); setRenameError(null); try { await handleProjectRename(projectData.id, renameValue); } catch { setRenameError("Failed to rename — try again"); } }}
                     >
                       <input
                         autoFocus
                         type="text"
                         value={renameValue}
                         onChange={(e) => setRenameValue(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Escape") setRenamingProjectId(null); }}
+                        onKeyDown={(e) => { if (e.key === "Escape") { const id = projectData!.id; setRenamingProjectId(null); setRenameError(null); setTimeout(() => { document.querySelector<HTMLElement>(`[data-rename-btn="${id}"]`)?.focus(); }, 0); } }}
+                        aria-label={`Rename project ${displayName}`}
+                        aria-describedby={renameError ? `card-rename-error-${projectData!.id}` : undefined}
                         style={{
                           padding: "2px 6px",
                           border: "1px solid var(--input-focus-border)",
@@ -972,8 +1035,9 @@ export function SessionList({
                           color: "var(--text-primary)",
                         }}
                       />
-                      <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--success)", fontSize: "1rem" }} title="Save">✓</button>
-                      <button type="button" onClick={() => setRenamingProjectId(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "1rem" }} title="Cancel">✕</button>
+                      <button type="submit" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--success)", fontSize: "1rem" }} title="Save" aria-label="Save project name">✓</button>
+                      <button type="button" onClick={() => { const id = projectData!.id; setRenamingProjectId(null); setRenameError(null); setTimeout(() => { document.querySelector<HTMLElement>(`[data-rename-btn="${id}"]`)?.focus(); }, 0); }} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "1rem" }} title="Cancel" aria-label="Cancel rename">✕</button>
+                      {renameError && <span id={`card-rename-error-${projectData!.id}`} role="alert" style={{ color: "var(--error)", fontSize: "0.75rem", width: "100%" }}>{renameError}</span>}
                     </form>
                   ) : (
                     <>
@@ -981,17 +1045,17 @@ export function SessionList({
                       {isProjectGrouping && projectData && (
                         <>
                           {projectData.runningCount > 0 && (
-                            <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--success-bg)", color: "var(--success)", borderRadius: "10px" }}>
+                            <span role="img" aria-label={`${projectData.runningCount} running`} style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--success-bg)", color: "var(--success)", borderRadius: "10px" }}>
                               {projectData.runningCount} Running
                             </span>
                           )}
                           {projectData.completeCount > 0 && (
-                            <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--primary)", color: "white", borderRadius: "10px", opacity: 0.85 }}>
+                            <span role="img" aria-label={`${projectData.completeCount} complete`} style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--primary)", color: "white", borderRadius: "10px", opacity: 0.85 }}>
                               {projectData.completeCount} Complete
                             </span>
                           )}
                           {projectData.reviewReadyCount > 0 && (
-                            <span style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--warning-bg)", color: "var(--warning)", borderRadius: "10px" }}>
+                            <span role="img" aria-label={`${projectData.reviewReadyCount} ready for review`} style={{ fontSize: "0.75rem", padding: "1px 6px", background: "var(--warning-bg)", color: "var(--warning)", borderRadius: "10px" }}>
                               {projectData.reviewReadyCount} Review
                             </span>
                           )}
@@ -1001,25 +1065,29 @@ export function SessionList({
                         <span style={{ marginLeft: "auto", display: "flex", gap: "4px" }}>
                           <button
                             type="button"
-                            onClick={() => { setRenamingProjectId(projectData.id); setRenameValue(projectData.name); }}
+                            data-rename-btn={projectData.id}
+                            onClick={() => { setRenamingProjectId(projectData.id); setRenameValue(projectData.name); setRenameError(null); }}
                             title="Rename project"
                             aria-label={`Rename project ${displayName}`}
+                            aria-expanded={false}
                             style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
                           >
-                            ✏️
+                            <span aria-hidden="true">✏️</span>
                           </button>
                           {deletingProjectId === projectData.id ? (
-                            <span style={{ display: "flex", gap: "4px", alignItems: "center", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-                              Remove project? {groupSessions.length} session{groupSessions.length !== 1 ? "s" : ""} will become ungrouped.
+                            <span role="group" aria-label="Confirm project deletion" style={{ display: "flex", gap: "4px", alignItems: "center", fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                              <span role="alert" aria-atomic="true">Remove project? {groupSessions.length} session{groupSessions.length !== 1 ? "s" : ""} will become ungrouped.</span>
                               <button
                                 type="button"
                                 onClick={() => handleProjectDelete(projectData.id)}
+                                aria-label={`Confirm delete project ${displayName}`}
                                 style={{ background: "var(--error)", color: "white", border: "none", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem" }}
                               >
                                 Delete
                               </button>
                               <button
                                 type="button"
+                                autoFocus
                                 onClick={() => setDeletingProjectId(null)}
                                 style={{ background: "none", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem", color: "var(--text-secondary)" }}
                               >
@@ -1034,17 +1102,17 @@ export function SessionList({
                               aria-label={`Delete project ${displayName}`}
                               style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)", fontSize: "0.875rem", padding: "2px" }}
                             >
-                              🗑️
+                              <span aria-hidden="true">🗑️</span>
                             </button>
                           )}
                         </span>
                       )}
                     </>
                   )}
-                </h3>
-              <div className={categoryContent}>
+                </div>
+              <div className={categoryContent} role="list">
                   {groupSessions.map((session, index) => (
-                    <div key={session.id} style={{'--card-index': index} as React.CSSProperties}>
+                    <div key={session.id} role="listitem" style={{'--card-index': index} as React.CSSProperties}>
                       <SessionCard
                         session={session}
                         onClick={() => onSessionClick?.(session)}
@@ -1062,6 +1130,8 @@ export function SessionList({
                         onForkFromCheckpoint={onForkFromCheckpoint}
                         onRunOneShot={onRunOneShot}
                         onSetRateLimitEnabled={onSetRateLimitEnabled}
+                        onToggleAutonomousMode={onToggleAutonomousMode}
+                        onSteerAutonomousSession={onSteerAutonomousSession}
                         onClearConversationState={onClearConversationState}
                         onHibernate={onHibernateSession ? () => onHibernateSession(session.id) : undefined}
                         onResumeFromHibernation={onResumeHibernatedSession ? () => onResumeHibernatedSession(session.id) : undefined}
@@ -1071,6 +1141,7 @@ export function SessionList({
                         reviewItem={reviewItemBySessionId.get(session.id)}
                         detectedStatus={detectedStatusMap[session.id]?.detectedStatus}
                         detectedContext={detectedStatusMap[session.id]?.detectedContext}
+                        suppressApprovalSubStatus={clearedSessions.has(session.id)}
                       />
                     </div>
                   ))}
@@ -1084,11 +1155,12 @@ export function SessionList({
       <Modal open={showBulkDeleteConfirm} onOpenChange={setShowBulkDeleteConfirm}>
         <ModalContent fallbackTitle="Confirm delete">
           <ModalTitle>Delete {selectedSessions.size} session{selectedSessions.size !== 1 ? 's' : ''}?</ModalTitle>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.875rem' }}>
+          <p id="bulk-delete-warning" style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.875rem' }}>
             This will permanently delete {selectedSessions.size} selected session{selectedSessions.size !== 1 ? 's' : ''}. This cannot be undone.
           </p>
           <ModalFooter>
             <button
+              autoFocus
               style={{ padding: '0.5rem 1rem', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--card-background)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.875rem' }}
               onClick={() => setShowBulkDeleteConfirm(false)}
             >
@@ -1096,6 +1168,8 @@ export function SessionList({
             </button>
             <button
               style={{ padding: '0.5rem 1rem', border: 'none', borderRadius: '6px', background: 'var(--error)', color: 'white', cursor: 'pointer', fontSize: '0.875rem', fontWeight: 600 }}
+              aria-describedby="bulk-delete-warning"
+              aria-label={`Confirm permanent deletion of ${selectedSessions.size} session${selectedSessions.size !== 1 ? 's' : ''}`}
               onClick={() => { setShowBulkDeleteConfirm(false); handleConfirmBulkDelete(); }}
             >
               Delete {selectedSessions.size} session{selectedSessions.size !== 1 ? 's' : ''}

@@ -11,30 +11,36 @@ import (
 )
 
 // InstanceToProto converts a session.Instance to a proto Session message.
-func InstanceToProto(inst *session.Instance) *sessionv1.Session {
+// workflowNames is an optional map from workflow UUID to workflow name; pass nil to omit workflow_name.
+func InstanceToProto(inst *session.Instance, workflowNames map[string]string) *sessionv1.Session {
 	if inst == nil {
 		return nil
 	}
 
 	protoSession := &sessionv1.Session{
-		Id:          inst.GetStableID(),
-		Title:       inst.Title,
-		Path:        inst.Workspace().EffectivePath,
-		WorkingDir:  inst.GetWorkingDirectory(),
-		Branch:      inst.Branch,
-		Status:      statusToProto(inst.GetEffectiveStatus()),
-		Program:     inst.Program,
-		Height:      int32(inst.Height),
-		Width:       int32(inst.Width),
-		CreatedAt:   timestamppb.New(inst.CreatedAt),
-		UpdatedAt:   timestamppb.New(inst.UpdatedAt),
-		AutoYes:     inst.AutoYes,
-		Prompt:      inst.Prompt,
-		Category:    inst.Category,
-		IsExpanded:  inst.IsExpanded,
-		SessionType: sessionTypeToProto(inst.SessionType),
-		TmuxPrefix:  inst.TmuxPrefix,
-		Tags:        inst.Tags, // Tag-based organization
+		Id:                 inst.GetStableID(),
+		Title:              inst.Title,
+		Path:               inst.Workspace().EffectivePath,
+		WorkingDir:         inst.GetWorkingDirectory(),
+		Branch:             inst.Branch,
+		Status:             statusToProto(inst.GetEffectiveStatus()),
+		Program:            inst.Program,
+		Height:             int32(inst.Height),
+		Width:              int32(inst.Width),
+		CreatedAt:          timestamppb.New(inst.CreatedAt),
+		UpdatedAt:          timestamppb.New(inst.UpdatedAt),
+		AutoYes:            inst.AutoYes,
+		AutonomousMode:     inst.AutonomousMode,
+		AutonomousTurn:     inst.AutonomousTurn,
+		AutonomousMaxTurns: inst.AutonomousMaxTurns,
+		AutonomousOutcome:  inst.AutonomousOutcome,
+		Prompt:             inst.Prompt,
+		InitialPrompt:      inst.InitialPrompt,
+		Category:           inst.Category,
+		IsExpanded:         inst.IsExpanded,
+		SessionType:        sessionTypeToProto(inst.SessionType),
+		TmuxPrefix:         inst.TmuxPrefix,
+		Tags:               inst.Tags, // Tag-based organization
 		// Terminal activity timestamps for staleness detection
 		LastTerminalUpdate:   timestamppb.New(inst.LastTerminalUpdate),
 		LastMeaningfulOutput: timestamppb.New(inst.LastMeaningfulOutput),
@@ -136,6 +142,27 @@ func InstanceToProto(inst *session.Instance) *sessionv1.Session {
 	// Hidden flag — system/background sessions excluded from default list/review queue.
 	protoSession.Hidden = inst.Hidden
 
+	// Workflow linkage, name, and archive state.
+	protoSession.WorkflowId = inst.WorkflowID
+	if inst.WorkflowID != "" && workflowNames != nil {
+		protoSession.WorkflowName = workflowNames[inst.WorkflowID]
+	}
+	if inst.ArchivedAt != nil {
+		protoSession.ArchivedAt = timestamppb.New(*inst.ArchivedAt)
+	}
+
+	// Session goal summary — populated when a goal has been set via set_session_goal MCP tool.
+	if g := inst.GetSessionGoal(); g != nil {
+		tasksJSON, _ := session.EncodeTasks(g.Tasks) // empty string on error is safe
+		protoSession.Goal = &sessionv1.SessionGoalSummary{
+			GoalText:   g.Goal,
+			Status:     g.Status,
+			TasksTotal: int32(g.TasksTotal()),
+			TasksDone:  int32(g.TasksDone()),
+			TasksJson:  tasksJSON,
+		}
+	}
+
 	return protoSession
 }
 
@@ -185,16 +212,24 @@ func toProtoSubStatus(inst *session.Instance) sessionv1.SubStatus {
 		return sessionv1.SubStatus_SUB_STATUS_RATE_LIMITED
 	}
 	switch inst.GetDetectedStatus() {
-	case detection.StatusProcessing, detection.StatusActive:
+	case detection.StatusProcessing, detection.StatusActive, detection.StatusWaitingForAgent:
+		// StatusWaitingForAgent maps to PROCESSING — no distinct proto value exists yet;
+		// the UI shows the same "Thinking…" chip, which is correct while agents run.
 		return sessionv1.SubStatus_SUB_STATUS_PROCESSING
-	case detection.StatusNeedsApproval, detection.StatusInputRequired:
+	case detection.StatusNeedsApproval:
 		return sessionv1.SubStatus_SUB_STATUS_NEEDS_APPROVAL
+	case detection.StatusInputRequired:
+		return sessionv1.SubStatus_SUB_STATUS_INPUT_REQUIRED
 	case detection.StatusError:
 		return sessionv1.SubStatus_SUB_STATUS_ERROR
 	case detection.StatusTestsFailing:
 		return sessionv1.SubStatus_SUB_STATUS_TESTS_FAILING
-	case detection.StatusReady, detection.StatusIdle:
+	case detection.StatusReady:
+		return sessionv1.SubStatus_SUB_STATUS_READY
+	case detection.StatusIdle:
 		return sessionv1.SubStatus_SUB_STATUS_IDLE
+	case detection.StatusSuccess:
+		return sessionv1.SubStatus_SUB_STATUS_SUCCESS
 	default:
 		// Unknown / undetected — don't show a chip
 		return sessionv1.SubStatus_SUB_STATUS_UNSPECIFIED
@@ -350,6 +385,8 @@ func MapIdleStateToWorkingState(s detection.IdleState) sessionv1.WorkingState {
 func MapDetectedStatusToWorkingState(s detection.DetectedStatus) sessionv1.WorkingState {
 	switch s {
 	case detection.StatusActive:
+		return sessionv1.WorkingState_WORKING_STATE_ACTIVE
+	case detection.StatusWaitingForAgent:
 		return sessionv1.WorkingState_WORKING_STATE_ACTIVE
 	case detection.StatusProcessing:
 		return sessionv1.WorkingState_WORKING_STATE_PROCESSING

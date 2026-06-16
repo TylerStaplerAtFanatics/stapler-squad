@@ -13,6 +13,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/analytics"
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/server/services"
+	"github.com/tstapler/stapler-squad/server/workflows"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/cdp"
 	"github.com/tstapler/stapler-squad/session/ent"
@@ -69,6 +70,12 @@ type ServerDependencies struct {
 
 	// HeadlessPool manages headless LLM calls. Nil when the claude binary is not found.
 	HeadlessPool *headless.Pool
+
+	// WorkflowRepo persists workflow definitions.
+	WorkflowRepo session.WorkflowRepository
+
+	// WorkflowScheduler manages cron-based workflow execution.
+	WorkflowScheduler *workflows.Scheduler
 }
 
 // ToServerDeps converts RuntimeDeps to the flat ServerDependencies struct consumed
@@ -100,6 +107,8 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		VNCDeps:                 rt.VNCDeps,
 		CDPDeps:                 rt.CDPDeps,
 		HeadlessPool:            rt.HeadlessPool,
+		WorkflowRepo:            rt.WorkflowRepo,
+		WorkflowScheduler:       rt.WorkflowScheduler,
 	}
 }
 
@@ -370,6 +379,12 @@ type RuntimeDeps struct {
 
 	// HeadlessPool manages headless LLM calling. Nil when claude binary is not found.
 	HeadlessPool *headless.Pool
+
+	// WorkflowRepo persists workflow definitions.
+	WorkflowRepo session.WorkflowRepository
+
+	// WorkflowScheduler manages cron-based workflow execution.
+	WorkflowScheduler *workflows.Scheduler
 }
 
 // BuildRuntimeDeps constructs Phase 3 dependencies using Phase 2 outputs.
@@ -546,7 +561,23 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 			}
 		}
 
-		// Step 7.5: Startup scan and orphaned approval sync
+		// Step 7.5: Resume session drivers for workflow sessions with an undelivered InitialPrompt.
+		// After a service restart, drivers are not automatically restarted for loaded sessions.
+		// Sessions created by the workflow scheduler that never had their prompt injected
+		// (e.g., service restarted within 30 s of session creation) need the driver resumed.
+		// The driver itself checks for an existing JSONL conversation file and skips the send
+		// if the prompt was already delivered in a previous run.
+		for _, inst := range instances {
+			if inst.InitialPrompt == "" {
+				continue
+			}
+			if inst.Status == session.Paused || inst.Status == session.Stopped || inst.Status == session.Hibernated {
+				continue
+			}
+			session.StartSessionDriver(inst, inst.GetEffectiveRootDir())
+		}
+
+		// Step 7.6: Startup scan and orphaned approval sync
 		// Brief settling delay to allow controllers to initialize their terminal readers.
 		time.Sleep(500 * time.Millisecond)
 		contentProvider := session.NewPollerContentProvider()
@@ -723,6 +754,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 
 	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine)
 	backlogSvc.SetSessionStopper(sessionService)
+	backlogSvc.SetAutonomousDriverStarter(sessionService)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
@@ -758,6 +790,40 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Warn("could not determine home dir for InsightsService token store", "err", homeDirErr)
 	}
 
+	// Initialize WorkflowRepository using the ent client from storage.
+	// Nil-safe: when the storage is not ent-backed (e.g. tests), WorkflowRepo is nil.
+	var workflowRepo session.WorkflowRepository
+	if entClient := storage.GetEntClient(); entClient != nil {
+		workflowRepo = session.NewEntWorkflowRepository(entClient)
+		log.Info("WorkflowRepository initialized")
+	} else {
+		log.Warn("WorkflowRepository unavailable: storage has no ent client")
+	}
+
+	// Initialize WorkflowScheduler and WorkflowService with deferred injection.
+	// Order: SessionService → WorkflowScheduler → WorkflowService → SessionService.SetWorkflowService
+	var workflowScheduler *workflows.Scheduler
+	if workflowRepo != nil {
+		workflowScheduler = workflows.NewScheduler(workflowRepo, sessionService, eventBus)
+		workflowSvc := services.NewWorkflowService(workflowRepo, workflowScheduler)
+		sessionService.SetWorkflowService(workflowSvc)
+		sessionService.SetWorkflowRepository(workflowRepo)
+		log.Info("WorkflowService and WorkflowScheduler initialized")
+	} else {
+		log.Warn("WorkflowScheduler disabled: no workflow repository available")
+	}
+
+	// 30 min reaper: kill any tmux sessions still running for paused instances.
+	// Safety net for sessions paused before the kill-on-pause change, or where the
+	// initial kill attempt fell back to detach.
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			sessionService.ReapPausedTmuxSessions()
+		}
+	}()
+
 	return &RuntimeDeps{
 		HeadlessPool:            headlessPool,
 		ServiceDeps:             svc,
@@ -780,5 +846,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		AnalyticsEntClient:      analyticsClient,
 		VNCDeps:                 vncDeps,
 		CDPDeps:                 cdpDeps,
+		WorkflowRepo:            workflowRepo,
+		WorkflowScheduler:       workflowScheduler,
 	}, nil
 }
