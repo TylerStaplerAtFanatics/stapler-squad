@@ -778,7 +778,7 @@ export function SessionList({
       )}
 
       {/* Persistent aria-live region so bulk-action announcements survive BulkActions unmount */}
-      <div id="bulk-feedback-live" role="status" aria-live="polite" aria-atomic="true" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" }}>{bulkFeedback ?? ""}</div>
+      <div id="bulk-feedback-live" role="status" aria-live="polite" aria-atomic="true" aria-label="Action feedback" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" }}>{bulkFeedback ?? ""}</div>
       {/* Persistent live region for empty-state — always in DOM so NVDA announces on content change */}
       <div id="empty-state-live" role="status" aria-live="polite" aria-atomic="true" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" }}>{filteredSessions.length === 0 && hasActiveFilters ? "No sessions found" : ""}</div>
 
@@ -853,6 +853,7 @@ export function SessionList({
             return (
               <div
                 key={virtualItem.key}
+                role="presentation"
                 ref={rowVirtualizer.measureElement}
                 data-index={virtualItem.index}
                 style={{

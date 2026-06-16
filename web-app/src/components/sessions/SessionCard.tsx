@@ -146,6 +146,9 @@ function SessionCardInner({
   const [inlineEditValue, setInlineEditValue] = useState("");
   const [inlineEditError, setInlineEditError] = useState<string | null>(null);
   const inlineSavingRef = useRef(false);
+  const keyboardCommitRef = useRef(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const snapshotToggleRef = useRef<HTMLButtonElement>(null);
   const [isSnapshotOpen, setIsSnapshotOpen] = useState(false);
 
   // Only fetch snapshot for active sessions (creating/paused/loading sessions have stale output).
@@ -281,22 +284,24 @@ function SessionCardInner({
   };
 
   const handleCardKeyDown = (e: React.KeyboardEvent) => {
-    // Support keyboard navigation with Enter or Space
-    if (e.key === "Enter" || e.key === " ") {
+    if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLAnchorElement)) {
       e.preventDefault();
       if (selectMode && onToggleSelect) {
         onToggleSelect();
       } else if (onClick) {
         onClick();
       }
+    } else if (e.key === "F2" && !selectMode) {
+      e.preventDefault();
+      setInlineEditValue(session.title);
+      setInlineEditError(null);
+      setIsInlineEditing(true);
     }
   };
 
   const handleCheckboxClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (onToggleSelect) {
-      onToggleSelect();
-    }
+    onToggleSelect?.();
   };
 
   const handleEditTags = (e: React.MouseEvent) => {
@@ -314,15 +319,18 @@ function SessionCardInner({
 
   const handleInlineSave = async () => {
     if (inlineSavingRef.current) return;
-    const trimmed = inlineEditValue.trim();
-    if (!trimmed || trimmed === session.title) {
-      setIsInlineEditing(false);
-      setInlineEditError(null);
-      return;
-    }
     inlineSavingRef.current = true;
-    setIsInlineEditing(false);
+    const wasKeyboard = keyboardCommitRef.current;
+    keyboardCommitRef.current = false;
+    const trimmed = inlineEditValue.trim();
     try {
+      if (!trimmed || trimmed === session.title) {
+        setIsInlineEditing(false);
+        setInlineEditError(null);
+        if (wasKeyboard) setTimeout(() => cardRef.current?.focus(), 0);
+        return;
+      }
+      setIsInlineEditing(false);
       const success = await onRename?.(session.id, trimmed);
       if (!success) {
         // Re-open inline edit on failure so the user can correct
@@ -331,6 +339,7 @@ function SessionCardInner({
         setIsInlineEditing(true);
       } else {
         setInlineEditError(null);
+        if (wasKeyboard) setTimeout(() => cardRef.current?.focus(), 0);
       }
     } catch {
       setInlineEditValue(trimmed);
@@ -343,10 +352,13 @@ function SessionCardInner({
 
   const handleInlineKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
+      keyboardCommitRef.current = true;
       handleInlineSave();
     } else if (e.key === "Escape") {
       setInlineEditValue(session.title);
+      setInlineEditError(null);
       setIsInlineEditing(false);
+      setTimeout(() => cardRef.current?.focus(), 0);
     }
   };
 
@@ -370,6 +382,7 @@ function SessionCardInner({
         Number(session.memoryRssMb ?? 0n) > 500 ? cardMemoryPressure : "",
         isPaused ? cardPaused : "",
       ].filter(Boolean).join(" ")}
+      ref={cardRef}
       data-testid="session-card"
       data-paused={isPaused ? "true" : undefined}
       onClick={handleCardClick}
@@ -377,15 +390,16 @@ function SessionCardInner({
       role="group"
       aria-roledescription="session"
       tabIndex={0}
-      aria-label={`Session ${session.title}, status: ${getStatusText(session.status)}, program: ${session.program}`}
+      aria-label={selectMode ? `${isSelected ? "Selected" : "Not selected"}: ${session.title}` : !isInlineEditing ? `${session.title}, press F2 to rename` : session.title}
     >
       {selectMode && (
-        <div className={checkbox} onClick={handleCheckboxClick}>
+        <div className={checkbox} aria-hidden="true" onClick={handleCheckboxClick}>
           <input
             type="checkbox"
             checked={isSelected}
+            tabIndex={-1}
+            onClick={(e) => e.stopPropagation()}
             onChange={(e) => { e.stopPropagation(); onToggleSelect?.(); }}
-            aria-label={`Select ${session.title}`}
           />
         </div>
       )}
@@ -405,32 +419,33 @@ function SessionCardInner({
                 aria-describedby={inlineEditError ? `inline-error-${session.id}` : undefined}
               />
               {inlineEditError && (
-                <span id={`inline-error-${session.id}`} style={{ color: 'var(--error)', fontSize: '0.75rem', position: 'absolute', top: '100%', left: 0, whiteSpace: 'nowrap' }}>
+                <span id={`inline-error-${session.id}`} role="alert" style={{ color: 'var(--error)', fontSize: '0.75rem', position: 'absolute', top: '100%', left: 0, whiteSpace: 'nowrap', zIndex: 1 }}>
                   {inlineEditError}
                 </span>
               )}
             </span>
           ) : (
-            <h3
-              className={title}
-              onClick={handleTitleClick}
-              title={selectMode ? undefined : "Click to rename"}
-              style={selectMode ? undefined : { cursor: "text" }}
-              tabIndex={selectMode ? undefined : 0}
-              onKeyDown={selectMode ? undefined : (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); handleTitleClick(e as unknown as React.MouseEvent); } }}
-            >
-              {session.title}
-            </h3>
+            <>
+              <h3
+                className={title}
+                onClick={handleTitleClick}
+                title={selectMode ? undefined : "Click to rename"}
+                style={selectMode ? undefined : { cursor: "text" }}
+              >
+                {session.title}
+              </h3>
+            </>
           )}
           <div className={badges}>
             {isExternal && (
               <span
                 className={externalBadge}
+                role="img"
                 title={`External session from ${sourceTerminal}${muxEnabled ? " (mux-enabled)" : ""}`}
-                aria-label={`External session from ${sourceTerminal}`}
+                aria-label={`External session from ${sourceTerminal}${muxEnabled ? ", mux enabled" : ""}`}
               >
-                🔗 {sourceTerminal}
-                {muxEnabled && <span className={muxIndicator}>✓</span>}
+                <span aria-hidden="true">🔗</span> {sourceTerminal}
+                {muxEnabled && <span className={muxIndicator} aria-hidden="true">✓</span>}
               </span>
             )}
             <GitHubBadge
@@ -458,7 +473,7 @@ function SessionCardInner({
               <Tooltip label={formatPauseReason(session.pauseReason)} side="top">
                 <span
                   className={`${status} ${getStatusColor(session.status)}`}
-                  role="status"
+                  role="img"
                   aria-label={`Session status: ${getStatusText(session.status)}`}
                 >
                   {getStatusText(session.status)}
@@ -467,7 +482,7 @@ function SessionCardInner({
             ) : (
               <span
                 className={`${status} ${getStatusColor(session.status)}`}
-                role="status"
+                role="img"
                 aria-label={`Session status: ${getStatusText(session.status)}`}
               >
                 {getStatusText(session.status)}
@@ -476,7 +491,7 @@ function SessionCardInner({
             {session.rateLimitState && session.rateLimitState !== RateLimitState.NONE && (
               <span
                 className={`${status} ${getRateLimitStateColor(session.rateLimitState)}`}
-                role="status"
+                role="img"
                 aria-label={`Rate limit: ${getRateLimitStateText(session.rateLimitState)}`}
               >
                 {getRateLimitStateText(session.rateLimitState)}
@@ -511,7 +526,9 @@ function SessionCardInner({
               return (
                 <span
                   className={[memoryBadge, severityClass].filter(Boolean).join(" ")}
+                  role="img"
                   title={`Process RSS: ${mb} MB`}
+                  aria-label={label}
                 >
                   {label}
                 </span>
@@ -525,14 +542,13 @@ function SessionCardInner({
                   aria-label={`Auto-pilot active${session.autonomousMaxTurns > 0 ? ` (turn ${session.autonomousTurn}/${session.autonomousMaxTurns})` : ""} — click to disable`}
                   data-testid="badge-autonomous"
                   onClick={(e) => { e.stopPropagation(); onToggleAutonomousMode(session.id, false); }}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggleAutonomousMode(session.id, false); } }}
                 >
                   {session.autonomousMaxTurns > 0 ? `Auto-pilot ${session.autonomousTurn}/${session.autonomousMaxTurns}` : "Auto-pilot"}
                 </button>
               ) : (
                 <span
                   className={autonomousBadge}
-                  role="status"
+                  role="img"
                   title="Running under LLM orchestration — injects prompts automatically"
                   aria-label="Autonomous mode: session is controlled by LLM orchestration"
                   data-testid="badge-autonomous"
@@ -544,18 +560,18 @@ function SessionCardInner({
             {session.autonomousOutcome === "done" && (
               <span
                 className={autonomousBadge}
-                role="status"
+                role="img"
                 style={{ background: "var(--success-bg)", color: "var(--success)" }}
                 data-testid="badge-autonomous-done"
                 aria-label="Autonomous run completed"
               >
-                Done ✓
+                Done <span aria-hidden="true">✓</span>
               </span>
             )}
             {session.autonomousOutcome === "stuck" && (
               <span
                 className={autonomousBadge}
-                role="status"
+                role="img"
                 style={{ background: "var(--warning-bg)", color: "var(--warning)" }}
                 data-testid="badge-autonomous-stuck"
                 title="Autonomous run stopped — open session to review and give next instruction"
@@ -567,10 +583,12 @@ function SessionCardInner({
             {session.workflowId && (
               <span
                 className={workflowBadge}
+                role="img"
                 title={session.workflowName || session.workflowId}
+                aria-label={`Workflow: ${session.workflowName || session.workflowId}`}
                 data-testid="workflow-badge"
               >
-                ⚙ {session.workflowName || "Workflow"}
+                <span aria-hidden="true">⚙</span> {session.workflowName || "Workflow"}
               </span>
             )}
           </div>
@@ -580,9 +598,9 @@ function SessionCardInner({
         )}
         <div className={tagsContainer}>
           {session.tags && session.tags.length > 0 && (
-            <div className={tags}>
-              {session.tags.map((sessionTag, index) => (
-                <span key={index} className={tag}>
+            <div className={tags} role="group" aria-label="Session tags">
+              {session.tags.map((sessionTag) => (
+                <span key={sessionTag} className={tag}>
                   {sessionTag}
                 </span>
               ))}
@@ -593,6 +611,9 @@ function SessionCardInner({
             onClick={handleEditTags}
             title="Edit tags"
             aria-label={`${session.tags && session.tags.length > 0 ? "Edit" : "Add"} tags for ${session.title}`}
+            tabIndex={selectMode ? -1 : undefined}
+            aria-hidden={selectMode ? "true" : undefined}
+            inert={selectMode || undefined}
           >
             {session.tags && session.tags.length > 0 ? "Edit Tags" : "Add Tags"}
           </button>
@@ -717,15 +738,15 @@ function SessionCardInner({
           </div>
         )}
 
+        {/* Persistent live region for creation progress — always in DOM so NVDA announces on content change */}
+        <span role="status" aria-live="polite" id={`creation-status-${session.id}`} style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" }}>
+          {isCreating ? (session.creationProgress || "Starting session...") : ""}
+        </span>
         {/* Creation progress spinner — only for Creating sessions */}
         {isCreating && (
           <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0", color: "var(--text-secondary)", fontSize: "0.875rem" }}>
-            <span
-              role="status"
-              aria-label="Session is starting"
-              className={creationSpinner}
-            />
-            <span>{session.creationProgress || "Starting session..."}</span>
+            <span className={creationSpinner} aria-hidden="true" />
+            <span aria-hidden="true">{session.creationProgress || "Starting session..."}</span>
           </div>
         )}
 
@@ -733,10 +754,11 @@ function SessionCardInner({
         {session.status === SessionStatus.ACTIVE && (
           <div className={snapshotSection} onClick={(e) => e.stopPropagation()}>
             <button
+              ref={snapshotToggleRef}
               className={snapshotToggle}
               onClick={() => setIsSnapshotOpen((prev) => !prev)}
               aria-expanded={isSnapshotOpen}
-              aria-label="Toggle terminal preview"
+              aria-label={isSnapshotOpen ? "Collapse terminal preview" : "Expand terminal preview"}
             >
               <span>Terminal Preview</span>
               <span className={snapshotToggleIcon} aria-hidden="true">
@@ -757,8 +779,11 @@ function SessionCardInner({
                   className={snapshotPane}
                   // Safe: content is rendered by ansi-to-html with escapeXML enabled,
                   // or escaped manually in the plain-text fallback path.
+                  role="region"
                   dangerouslySetInnerHTML={{ __html: snapshotHtml }}
                   aria-label="Terminal output preview"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === "Escape") { e.currentTarget.blur(); snapshotToggleRef.current?.focus(); } }}
                 />
               )
             )}

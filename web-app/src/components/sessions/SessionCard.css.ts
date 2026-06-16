@@ -727,7 +727,7 @@ export const snapshotToggleIcon = style({
 /** Fixed-height preview pane */
 export const snapshotPane = style({
   height: 120,
-  overflowY: "hidden",
+  overflowY: "auto",
   padding: "6px 10px",
   fontFamily: '"Menlo", "Monaco", "Courier New", monospace',
   fontSize: "0.72rem",

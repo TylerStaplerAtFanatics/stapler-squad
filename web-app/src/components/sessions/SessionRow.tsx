@@ -163,7 +163,7 @@ export function SessionRow({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLAnchorElement) && !(e.target instanceof HTMLSelectElement)) {
+    if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLAnchorElement) && !(e.target instanceof HTMLSelectElement)) {
       e.preventDefault();
       onClick?.();
     }
