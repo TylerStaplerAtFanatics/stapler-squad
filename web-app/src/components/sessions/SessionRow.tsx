@@ -157,12 +157,12 @@ export function SessionRow({
     memMB > 500 ? memoryBadgeHigh :
     memMB > 300 ? memoryBadgeWarning : "";
 
-  const handleContextMenu = (e: React.MouseEvent<HTMLLIElement>) => {
+  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
     overflowRef.current?.openAt(e.clientX, e.clientY);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLLIElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLAnchorElement) && !(e.target instanceof HTMLSelectElement)) {
       e.preventDefault();
       onClick?.();
@@ -170,7 +170,8 @@ export function SessionRow({
   };
 
   return (
-    <li
+    <div
+      role="listitem"
       className={[
         row,
         memMB > 500 ? rowMemoryPressure : "",
@@ -349,6 +350,6 @@ export function SessionRow({
           onUpdateTags={onUpdateTags}
         />
       </span>
-    </li>
+    </div>
   );
 }
