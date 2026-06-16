@@ -653,6 +653,45 @@ func (cc *ClaudeController) GetCurrentStatus() (detection.DetectedStatus, string
 	}
 	status, desc := sd.DetectWithContextFromLines(lines)
 
+	// Case A: filterTmuxMetadata discarded all content because the tmux status bar
+	// (starting with "[") is the only newline-bounded segment after tailContent snaps
+	// to the first \n. For active sessions the spinner interleaves with the status bar
+	// on the same "line", so its verbs ("thinking", "analyzing", …) appear in the raw
+	// tail. Idle sessions only have the status bar text (no verbs) → no false positive.
+	if status == detection.StatusUnknown && len(filtered) == 0 &&
+		detection.HasClaudeSpinnerActivity(tail) {
+		status = detection.StatusActive
+		desc = "spinner_verb: active spinner in filtered-to-empty tail"
+	}
+	// Case B: the entire tail is a single long line (no \n after tailContent snap)
+	// because the spinner uses absolute cursor positioning instead of newlines. Pattern
+	// detection falls through to the Ready catch-all when \x1b(B charset designators
+	// (now stripped by ansiStripRegex) or other unhandled sequences break word matching.
+	// Spinner verbs in the raw tail confirm the session is still active.
+	if status == detection.StatusReady && len(lines) <= 1 &&
+		detection.HasClaudeSpinnerActivity(tail) {
+		status = detection.StatusActive
+		desc = "spinner_verb: active spinner in single-line tail"
+	}
+
+	// Debug: log unexpected non-Active results for active controllers so we can
+	// diagnose why thinking sessions don't show the Thinking chip.
+	if status == detection.StatusReady || status == detection.StatusIdle || status == detection.StatusUnknown {
+		snippet := tail
+		if len(snippet) > 512 {
+			snippet = snippet[len(snippet)-512:]
+		}
+		log.Debug("GetCurrentStatus: non-active result",
+			"session", cc.sessionName,
+			"status", status,
+			"desc", desc,
+			"tail_len", len(tail),
+			"filtered_len", len(filtered),
+			"lines_count", len(lines),
+			"tail_snippet", fmt.Sprintf("%q", snippet),
+		)
+	}
+
 	cc.cache.Write(func(c *cacheState) {
 		c.status = statusCacheEntry{tailHash: h, status: status, desc: desc}
 	})
