@@ -119,8 +119,31 @@ func (sd *StatusDetector) LoadPatterns(path string) error {
 	return nil
 }
 
-// ansiStripRegex matches ANSI escape sequences for stripping
-var ansiStripRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07`)
+// ansiStripRegex matches ANSI escape sequences for stripping.
+// The three alternatives match:
+//  1. CSI sequences:  \x1b[ + digits/semicolons + letter  (colors, cursor moves, etc.)
+//  2. OSC sequences:  \x1b] + content + BEL               (window titles, hyperlinks, etc.)
+//  3. G0/G1 charset: \x1b( or \x1b) + alphanumeric       (\x1b(B = ASCII, \x1b(0 = graphics)
+//
+// Modern Claude Code emits \x1b(B (G0 ASCII designator) between each styled character.
+// Without rule 3 these remain after stripping and break word-boundary pattern matches
+// (e.g. "t\x1b(Bh\x1b(Bi\x1b(Bn\x1b(Bk\x1b(Bi\x1b(Bn\x1b(Bg" never matches "thinking").
+var ansiStripRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Za-z0-9]`)
+
+// cursorForwardRegex matches CSI cursor-right sequences (\x1b[C or \x1b[nC).
+// Modern Claude Code uses these instead of literal spaces between words in its status
+// bar output (e.g. "esc\x1b[C to\x1b[C interrupt" rather than "esc to interrupt").
+// We replace them with a single space before stripping other escapes so that
+// word-boundary patterns like `esc\s+to\s+interrupt` continue to match.
+var cursorForwardRegex = regexp.MustCompile(`\x1b\[\d*C`)
+
+// stripANSI removes ANSI escape codes from text for cleaner pattern matching.
+// Cursor-forward (CSI C) sequences are replaced with a space so that word-separated
+// output using terminal cursor positioning still matches whitespace-requiring patterns.
+func stripANSI(text string) string {
+	text = cursorForwardRegex.ReplaceAllString(text, " ")
+	return ansiStripRegex.ReplaceAllString(text, "")
+}
 
 // readlineTypingRegex matches the Claude Code readline prompt when the user has
 // started composing a message (❯ at column 0 followed by non-digit, non-box-drawing text).
@@ -135,18 +158,45 @@ var ansiStripRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x0
 // the current "user is typing" state.
 var readlineTypingRegex = regexp.MustCompile(`(?m)^❯[ \t\x{00a0}]+[^\s\x{00a0}0-9\x{2500}-\x{257F}]`)
 
-// stripANSI removes ANSI escape codes from text for cleaner pattern matching
-func stripANSI(text string) string {
-	return ansiStripRegex.ReplaceAllString(text, "")
-}
-
 // cursorUpRegex matches ANSI cursor-up escape sequences (\x1b[A or \x1b[NA).
 var cursorUpRegex = regexp.MustCompile(`\x1b\[\d*A`)
 
+// HasActiveScreenRedraw reports whether raw PTY bytes contain evidence that the
+// terminal screen is actively being redrawn: a bare carriage return (not part of
+// \r\n) or a cursor-up sequence (\x1b[NA).
+func HasActiveScreenRedraw(raw []byte) bool {
+	return hasScreenOverwrite(raw)
+}
+
+// claudeSpinnerVerbList contains the thinking verbs that Claude Code's spinner
+// displays as plaintext bytes in the PTY stream (e.g. "✽ Thinking…", "✦ Analyzing…").
+var claudeSpinnerVerbList = []string{
+	"thinking", "processing", "analyzing", "working",
+	"transmuting", "extracting", "synthesizing", "reasoning",
+	"computing", "planning",
+}
+
+// HasClaudeSpinnerActivity reports whether tail contains Claude Code's active-thinking
+// vocabulary as plaintext. This is more targeted than HasActiveScreenRedraw: cursor-
+// positioning sequences appear in both active and idle sessions (from the tmux status
+// bar), but spinner verbs only appear when Claude Code is actively running its spinner.
+//
+// Use as fallback when filterTmuxMetadata has discarded all content (filtered_len == 0)
+// or when pattern detection falls through to the Ready catch-all on a single-line tail.
+func HasClaudeSpinnerActivity(tail string) bool {
+	stripped := strings.ToLower(stripANSI(tail))
+	for _, verb := range claudeSpinnerVerbList {
+		if strings.Contains(stripped, verb) {
+			return true
+		}
+	}
+	return false
+}
+
 // hasScreenOverwrite reports whether raw PTY bytes contain evidence of an in-progress
-// spinner: a bare carriage return (not part of \r\n, which is a Windows newline) or
-// an ANSI cursor-up escape sequence. Must be called on the raw output before
-// collapseCarriageReturns() discards this information.
+// spinner: a bare carriage return (not part of \r\n, which is a Windows newline)
+// or an ANSI cursor-up escape sequence.
+// Must be called on the raw output before collapseCarriageReturns() discards this information.
 func hasScreenOverwrite(raw []byte) bool {
 	s := string(raw)
 	for i := 0; i < len(s); i++ {
@@ -730,12 +780,32 @@ func (sd *StatusDetector) detectFromLines(lines []string) (DetectedStatus, strin
 		if s == StatusUnknown {
 			continue
 		}
-		if s != StatusReady {
-			return s, desc // specific match wins immediately
+		if s == StatusReady {
+			if bestStatus == StatusUnknown {
+				bestStatus, bestDesc = StatusReady, desc
+			}
+			continue
 		}
-		if bestStatus == StatusUnknown {
-			bestStatus, bestDesc = StatusReady, desc // note we saw Ready but keep looking
+		// StatusActive: store as candidate and keep scanning upward.
+		// WaitingForAgent is more specific (higher priority in single-line matching)
+		// and often appears on the spinner line above the "esc to interrupt" status bar.
+		// High-urgency statuses (Error, NeedsApproval, InputRequired) also override Active.
+		if s == StatusActive {
+			if bestStatus == StatusUnknown || bestStatus == StatusReady {
+				bestStatus, bestDesc = StatusActive, desc
+			}
+			continue
 		}
+		// If we already have Active stored, only accept higher-urgency statuses from
+		// earlier (higher) lines. Success/Processing/Idle on earlier lines are stale.
+		if bestStatus == StatusActive {
+			switch s {
+			case StatusWaitingForAgent, StatusError, StatusNeedsApproval, StatusInputRequired:
+				return s, desc
+			}
+			continue
+		}
+		return s, desc // specific match wins immediately
 	}
 	return bestStatus, bestDesc
 }

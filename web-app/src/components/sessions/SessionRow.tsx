@@ -197,6 +197,8 @@ export function SessionRow({
           )}
           {session.status === SessionStatus.ACTIVE &&
             session.subStatus !== SubStatus.UNSPECIFIED &&
+            session.subStatus !== SubStatus.READY &&
+            session.subStatus !== SubStatus.IDLE &&
             !(suppressApprovalSubStatus && (session.subStatus === SubStatus.NEEDS_APPROVAL || session.subStatus === SubStatus.INPUT_REQUIRED)) && (
               <SubStatusChip subStatus={session.subStatus} />
             )}
@@ -217,7 +219,7 @@ export function SessionRow({
       {/* Diff stats — optional column */}
       {visibleColumns.includes("diff") && (
         <span className={diffBadge} aria-label="Diff stats">
-          {session.diffStats ? (
+          {session.diffStats && (session.diffStats.added > 0 || session.diffStats.removed > 0) ? (
             <>
               <span style={{ color: "var(--success)" }}>+{session.diffStats.added}</span>
               {" "}
