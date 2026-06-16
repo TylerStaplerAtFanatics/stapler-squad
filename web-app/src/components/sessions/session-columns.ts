@@ -16,7 +16,7 @@ export interface ColumnDef {
 export const COLUMN_DEFS: ColumnDef[] = [
   { key: "agent",   label: "Agent",       gridWidth: "20px", defaultVisible: true  },
   { key: "memory",  label: "Memory",      gridWidth: "auto", defaultVisible: true  },
-  { key: "elapsed", label: "Last active", gridWidth: "32px", defaultVisible: true  },
+  { key: "elapsed", label: "Last active", gridWidth: "auto", defaultVisible: true  },
   { key: "diff",    label: "Diff",        gridWidth: "auto", defaultVisible: false },
   { key: "branch",  label: "Branch",      gridWidth: "auto", defaultVisible: false },
 ];

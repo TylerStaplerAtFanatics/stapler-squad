@@ -16,6 +16,7 @@ import {
   path as pathStyle,
   pathLine as pathLineStyle,
   elapsed as elapsedStyle,
+  elapsedIcon as elapsedIconStyle,
   actions as actionsStyle,
   primaryActionWrapper,
   inlineActionButton,
@@ -76,6 +77,20 @@ function getStatusDotValue(status: SessionStatus): string {
   }
 }
 
+const STATUS_DOT_LABELS: Record<string, string> = {
+  "running": "Running",
+  "idle": "Idle",
+  "paused-session": "Paused",
+  "paused": "Stopped",
+  "loading": "Loading",
+  "needs-approval": "Needs Approval",
+  "hibernated": "Hibernated",
+};
+
+function getStatusDotLabel(dotValue: string): string {
+  return STATUS_DOT_LABELS[dotValue] ?? dotValue;
+}
+
 function formatElapsed(ts?: { seconds: bigint; nanos: number }): string {
   if (!ts || ts.seconds === BigInt(0)) return "";
   const now = Date.now();
@@ -125,12 +140,12 @@ export function SessionRow({
 
   const dotStatus = getStatusDotValue(session.status);
   const isPaused = session.status === SessionStatus.PAUSED;
-  const isReady = session.status === SessionStatus.NEEDS_APPROVAL;
+  const isNeedsApproval = session.status === SessionStatus.NEEDS_APPROVAL;
   const isHibernated = session.status === SessionStatus.HIBERNATED;
   const isRunning = session.status === SessionStatus.ACTIVE;
   const isCreating = session.status === SessionStatus.CREATING;
   // Sessions needing user attention always show their primary action
-  const actionsAlwaysVisible = isPaused || isReady || isHibernated;
+  const actionsAlwaysVisible = isPaused || isNeedsApproval || isHibernated;
   const lastActivity = getLastActivity(session);
   const elapsedText = formatElapsed(lastActivity ?? session.updatedAt);
   // Show branch separately if the branch column is visible; otherwise fold into displayName.
@@ -142,20 +157,20 @@ export function SessionRow({
     memMB > 500 ? memoryBadgeHigh :
     memMB > 300 ? memoryBadgeWarning : "";
 
-  const handleContextMenu = (e: React.MouseEvent<HTMLLIElement>) => {
+  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
     overflowRef.current?.openAt(e.clientX, e.clientY);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLLIElement>) => {
-    if (e.key === "Enter" || e.key === " ") {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLAnchorElement) && !(e.target instanceof HTMLSelectElement)) {
       e.preventDefault();
       onClick?.();
     }
   };
 
   return (
-    <li
+    <div
       className={[
         row,
         memMB > 500 ? rowMemoryPressure : "",
@@ -170,27 +185,26 @@ export function SessionRow({
       onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
       tabIndex={0}
-      aria-label={`Session ${session.title}, status: ${isPaused ? "paused" : dotStatus}, program: ${session.program}`}
+      aria-label={`Session ${session.title}, status: ${getStatusDotLabel(dotStatus)}, program: ${session.program}`}
     >
       {/* Status dot — always visible */}
-      <Tooltip label={`Status: ${dotStatus}`}>
+      <Tooltip label={`Status: ${getStatusDotLabel(dotStatus)}`}>
         <span
           className={statusDot}
           data-status={dotStatus}
-          role="img"
-          aria-label={`Status: ${dotStatus}`}
+          aria-hidden="true"
         />
       </Tooltip>
 
       {/* Name + path stacked — always visible */}
       <span className={nameCellStyle}>
-        <span className={nameStyle} aria-label={displayName} title={displayName}>
+        <span className={nameStyle} title={displayName}>
           {displayName}
         </span>
         <span className={pathLineStyle}>
           {session.path && (
             <Tooltip label={session.path} side="bottom">
-              <span className={pathStyle} aria-label={`Path: ${session.path}`}>
+              <span className={pathStyle} role="img" aria-label={`Path: ${session.path}`}>
                 {abbreviatePath(session.path)}
               </span>
             </Tooltip>
@@ -209,6 +223,7 @@ export function SessionRow({
       {visibleColumns.includes("agent") && (
         <span
           className={agentIconStyle}
+          role="img"
           title={session.program}
           aria-label={`Agent: ${session.program}`}
         >
@@ -218,7 +233,14 @@ export function SessionRow({
 
       {/* Diff stats — optional column */}
       {visibleColumns.includes("diff") && (
-        <span className={diffBadge} aria-label="Diff stats">
+        <span
+          className={diffBadge}
+          role={session.diffStats && (session.diffStats.added > 0 || session.diffStats.removed > 0) ? "img" : undefined}
+          aria-label={session.diffStats && (session.diffStats.added > 0 || session.diffStats.removed > 0)
+            ? `Diff: +${session.diffStats.added} -${session.diffStats.removed}`
+            : undefined}
+          aria-hidden={session.diffStats && (session.diffStats.added > 0 || session.diffStats.removed > 0) ? undefined : "true"}
+        >
           {session.diffStats && (session.diffStats.added > 0 || session.diffStats.removed > 0) ? (
             <>
               <span style={{ color: "var(--success)" }}>+{session.diffStats.added}</span>
@@ -235,15 +257,15 @@ export function SessionRow({
       {visibleColumns.includes("memory") && (
         <span
           className={[memoryBadge, memorySeverityClass].filter(Boolean).join(" ")}
+          role="img"
           title={memMB > 0 ? `Process RSS: ${memMB} MB` : undefined}
-          aria-label={memMB > 0 ? `${memMB} MB RAM` : undefined}
-          aria-hidden={memMB === 0 ? "true" : undefined}
+          aria-label={memMB > 0 ? `${memMB} MB RAM` : "No memory data"}
         >
           {memMB > 0
             ? memMB >= 1024
               ? `${(memMB / 1024).toFixed(1)} GB`
               : `${memMB} MB`
-            : ""}
+            : <span style={{ opacity: 0.3 }}>—</span>}
         </span>
       )}
 
@@ -251,6 +273,7 @@ export function SessionRow({
       {visibleColumns.includes("branch") && (
         <span
           className={branchCell}
+          role="img"
           title={session.branch || undefined}
           aria-label={session.branch ? `Branch: ${session.branch}` : "No branch"}
         >
@@ -264,30 +287,33 @@ export function SessionRow({
           className={elapsedStyle}
           dateTime={lastActivity ? new Date(Number(lastActivity.seconds) * 1000).toISOString() : undefined}
           title={lastActivity ? new Date(Number(lastActivity.seconds) * 1000).toLocaleString() : undefined}
+          aria-label={elapsedText ? `Last active: ${elapsedText}` : "No recent activity"}
         >
-          {elapsedText}
+          {elapsedText
+            ? <><span className={elapsedIconStyle} aria-hidden="true">⏱</span>{elapsedText}</>
+            : <span style={{ opacity: 0.3 }}>—</span>}
         </time>
       )}
 
       {/* Actions: primary (hover-only unless needs attention) + overflow (always visible) */}
-      <span className={actionsStyle} aria-label="Session actions">
-        <span className={primaryActionWrapper}>
-          {(isPaused || isReady) && onResume && (
+      <span className={actionsStyle} role="group" aria-label="Session actions">
+        <span className={primaryActionWrapper} role="presentation">
+          {(isPaused || isNeedsApproval) && onResume && (
             <button
               className={inlineActionButton}
               onClick={(e) => { e.stopPropagation(); onResume(); }}
               aria-label={`Resume session ${session.title}`}
             >
-              ▶️ Resume
+              <span aria-hidden="true">▶️</span> Resume
             </button>
           )}
           {isHibernated && onResumeFromHibernation && (
             <button
               className={inlineActionButton}
               onClick={(e) => { e.stopPropagation(); onResumeFromHibernation(); }}
-              aria-label={`Resume session ${session.title}`}
+              aria-label={`Wake session ${session.title} from hibernation`}
             >
-              ▶️ Resume
+              <span aria-hidden="true">▶️</span> Resume
             </button>
           )}
           {isRunning && !isCreating && onPause && (
@@ -296,7 +322,7 @@ export function SessionRow({
               onClick={(e) => { e.stopPropagation(); onPause(); }}
               aria-label={`Pause session ${session.title}`}
             >
-              ⏸️ Pause
+              <span aria-hidden="true">⏸️</span> Pause
             </button>
           )}
         </span>
@@ -323,6 +349,6 @@ export function SessionRow({
           onUpdateTags={onUpdateTags}
         />
       </span>
-    </li>
+    </div>
   );
 }
