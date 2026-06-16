@@ -5,9 +5,12 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
 )
 
@@ -349,11 +352,93 @@ func (i *Instance) tryExtractConversationUUID() {
 }
 
 // GetConversationUUID returns the Claude conversation UUID, or "" if not linked.
+// Thread-safe: acquires stateMutex read lock.
 func (i *Instance) GetConversationUUID() string {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
 	if i.claudeSession == nil {
 		return ""
 	}
 	return i.claudeSession.ConversationUUID
+}
+
+// GetClaudeConversationUUID returns the stored Claude conversation UUID, empty if none.
+// Thread-safe: acquires stateMutex read lock.
+func (i *Instance) GetClaudeConversationUUID() string {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
+	if i.claudeSession == nil {
+		return ""
+	}
+	return i.claudeSession.ConversationUUID
+}
+
+// RunWithResume spawns a new claude subprocess using --resume <uuid> and -p <message>,
+// waits for completion, and returns the result text. Updates ConversationUUID on success.
+func (i *Instance) RunWithResume(ctx context.Context, message string) (string, error) {
+	uuid := i.GetClaudeConversationUUID()
+	if uuid == "" {
+		return "", fmt.Errorf("no conversation UUID: session has no stored session_id")
+	}
+
+	// Extract binary path from Program field (may include flags — take first word).
+	claudePath := i.Program
+	if claudePath == "" {
+		claudePath = "claude"
+	}
+	if idx := strings.IndexByte(claudePath, ' '); idx >= 0 {
+		claudePath = claudePath[:idx]
+	}
+
+	cmd := safeexec.CommandContext(ctx, claudePath, "-p", "--resume", uuid, "--output-format", "json", message)
+	cmd.Dir = i.GetEffectiveRootDir()
+
+	out, runErr := cmd.Output()
+	output := string(out)
+
+	result := parseJSONField(output, "result")
+
+	// Update UUID in case it changed (fires save callback).
+	if newUUID := parseClaudeSessionID(output); newUUID != "" && newUUID != uuid {
+		i.SetClaudeConversationUUID(newUUID)
+	}
+
+	if runErr != nil {
+		if result != "" {
+			return result, nil
+		}
+		return "", fmt.Errorf("claude subprocess error: %w", runErr)
+	}
+	return result, nil
+}
+
+// SetClaudeConversationUUID stores the Claude conversation UUID so it is used
+// in subsequent --resume flags. Fires the claudeSessionIDSavedCallback if set.
+// No-op (including callback) if uuid is unchanged.
+func (i *Instance) SetClaudeConversationUUID(uuid string) {
+	i.stateMutex.Lock()
+	if i.claudeSession == nil {
+		i.claudeSession = &ClaudeSessionData{}
+	}
+	if i.claudeSession.ConversationUUID == uuid {
+		i.stateMutex.Unlock()
+		return // no change, skip callback
+	}
+	i.claudeSession.ConversationUUID = uuid
+	cb := i.claudeSessionIDSavedCallback
+	i.stateMutex.Unlock()
+	if cb != nil {
+		cb()
+	}
+}
+
+// SetClaudeSessionIDSavedCallback registers a callback that fires when
+// SetClaudeConversationUUID is called. Used by the service layer to trigger
+// a storage save when the session_id is discovered.
+func (i *Instance) SetClaudeSessionIDSavedCallback(fn func()) {
+	i.stateMutex.Lock()
+	defer i.stateMutex.Unlock()
+	i.claudeSessionIDSavedCallback = fn
 }
 
 // SetHistoryInfo updates the conversation UUID and history file path.

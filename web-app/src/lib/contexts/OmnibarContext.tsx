@@ -1,11 +1,14 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo, ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Omnibar, OmnibarSessionData } from "@/components/sessions/Omnibar";
 import { useSessionService } from "@/lib/hooks/useSessionService";
+import { useWorkflows } from "@/lib/hooks/useWorkflows";
 import { useAuth } from "@/lib/contexts/AuthContext";
 import { SessionType } from "@/gen/session/v1/types_pb";
+import { getDefaultRegistry } from "@/lib/omnibar/detector";
+import { WorkflowDetector, type WorkflowEntry } from "@/lib/omnibar/detectors/WorkflowDetector";
 
 const sessionTypeMap: Record<string, SessionType> = {
   directory: SessionType.DIRECTORY,
@@ -13,6 +16,7 @@ const sessionTypeMap: Record<string, SessionType> = {
   existing_worktree: SessionType.EXISTING_WORKTREE,
   one_off: SessionType.DIRECTORY, // one-off is a directory session; type overridden server-side
   new_project: SessionType.NEW_PROJECT, // new-project mode: backend initializes git repo
+  autonomous: SessionType.DIRECTORY, // autonomous reuses DIRECTORY; server handles autonomous flag
 };
 
 interface OmnibarContextValue {
@@ -44,9 +48,42 @@ export function OmnibarProvider({ children }: OmnibarProviderProps) {
   const [initialInput, setInitialInput] = useState<string | undefined>(undefined);
   const router = useRouter();
   const { authEnabled, authenticated, loading: authLoading } = useAuth();
-  const { createSession, spawnShell } = useSessionService({
+  const { createSession, spawnShell, runWorkflow: runWorkflowRPC } = useSessionService({
     enabled: !authLoading && (!authEnabled || authenticated),
   });
+  const { workflows } = useWorkflows();
+
+  // Lean WorkflowEntry[] for the detector and @ autocomplete dropdown.
+  const workflowEntries = useMemo<WorkflowEntry[]>(
+    () =>
+      workflows.map((w) => ({
+        slug: w.slug,
+        name: w.name,
+        description: w.description,
+        targetDirectory: w.targetDirectory,
+        sessionType: w.sessionType,
+        inputTemplate: w.inputTemplate,
+      })),
+    [workflows]
+  );
+
+  // Dynamically register/unregister WorkflowDetector whenever the workflow list changes.
+  // The detector is NOT in createDefaultRegistry() — it lives only in the singleton
+  // returned by getDefaultRegistry() so it reflects the live DB state.
+  const workflowDetectorRef = useRef<WorkflowDetector | null>(null);
+  useEffect(() => {
+    const registry = getDefaultRegistry();
+    if (workflowDetectorRef.current) {
+      registry.unregister(workflowDetectorRef.current);
+    }
+    const detector = new WorkflowDetector(workflowEntries);
+    registry.register(detector);
+    workflowDetectorRef.current = detector;
+    return () => {
+      registry.unregister(detector);
+      workflowDetectorRef.current = null;
+    };
+  }, [workflowEntries]);
 
   const open = useCallback(() => {
     setInitialMode("discovery");
@@ -143,6 +180,8 @@ export function OmnibarProvider({ children }: OmnibarProviderProps) {
         oneOff: data.oneOff ?? false,
         createIfMissing: data.createIfMissing ?? false,
         initialPrompt: data.initialPrompt,
+        autonomousMode: data.autonomousMode ?? false,
+        permissionMode: data.permissionMode ?? "",
       });
 
       if (session) {
@@ -165,6 +204,27 @@ export function OmnibarProvider({ children }: OmnibarProviderProps) {
     [spawnShell]
   );
 
+  // Handle run_workflow omnibar action — fires the workflow via RunWorkflow RPC,
+  // then navigates to the newly created session so the user can see it running.
+  const handleRunWorkflow = useCallback(
+    async (slug: string, arg: string) => {
+      const wf = workflows.find((w) => w.slug === slug);
+      if (!wf) {
+        console.error("Unknown workflow slug:", slug);
+        return;
+      }
+      try {
+        const sessionId = await runWorkflowRPC({ id: wf.id, arg });
+        if (sessionId) {
+          router.push(`/?session=${sessionId}`);
+        }
+      } catch (err) {
+        console.error("Failed to run workflow:", err);
+      }
+    },
+    [runWorkflowRPC, workflows, router]
+  );
+
   const value: OmnibarContextValue = {
     isOpen,
     open,
@@ -184,8 +244,10 @@ export function OmnibarProvider({ children }: OmnibarProviderProps) {
         onNavigateToSession={handleNavigateToSession}
         onNavigateToSessionInNewPane={handleNavigateToSessionInNewPane}
         onSpawnShell={handleSpawnShell}
+        onRunWorkflow={handleRunWorkflow}
         initialMode={initialMode}
         initialInput={initialInput}
+        workflows={workflowEntries}
       />
     </OmnibarContext.Provider>
   );

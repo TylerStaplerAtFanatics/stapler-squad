@@ -26,6 +26,13 @@ type SessionCreator interface {
 	CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error)
 }
 
+// AutonomousDriverStarter allows BacklogService to start an AutonomousDriver on an existing instance.
+// Wired via SetAutonomousDriverStarter from server.go after both services are constructed.
+type AutonomousDriverStarter interface {
+	StartAutonomousDriverForInstance(inst *session.Instance)
+	StartAutonomousDriverWithTimeout(inst *session.Instance, startupTimeout time.Duration)
+}
+
 // SessionStopper allows BacklogService to kill live sessions.
 // It is nil-safe: BacklogService degrades gracefully when not wired.
 type SessionStopper interface {
@@ -49,12 +56,13 @@ type itemSourceBackend interface {
 
 // BacklogService handles Backlog RPCs.
 type BacklogService struct {
-	storage        *session.Storage
-	sourceBackend  itemSourceBackend
-	sessionCreator SessionCreator
-	sessionStopper SessionStopper
-	cfg            *config.Config
-	engine         session.WorkflowEngine
+	storage           *session.Storage
+	sourceBackend     itemSourceBackend
+	sessionCreator    SessionCreator
+	sessionStopper    SessionStopper
+	autonomousStarter AutonomousDriverStarter
+	cfg               *config.Config
+	engine            session.WorkflowEngine
 	// worktreeMu serializes context-file writes to the same worktree path so that
 	// concurrent SpawnSessionFromItem / AttachSessionToItem calls cannot produce
 	// a partially-written .claude/backlog-context.md.
@@ -84,6 +92,12 @@ func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *co
 // SetSessionStopper wires the optional session stopper used to kill orphaned sessions on re-triage.
 func (s *BacklogService) SetSessionStopper(stopper SessionStopper) {
 	s.sessionStopper = stopper
+}
+
+// SetAutonomousDriverStarter wires the optional autonomous driver starter.
+// When set, SpawnSessionFromItem with autonomous=true will start an AutonomousDriver on the spawned instance.
+func (s *BacklogService) SetAutonomousDriverStarter(starter AutonomousDriverStarter) {
+	s.autonomousStarter = starter
 }
 
 // encryptAndMergeToken produces a token config JSON string suitable for storage.
@@ -924,6 +938,10 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn session: %w", err))
 	}
 
+	if req.Msg.Autonomous && s.autonomousStarter != nil {
+		s.autonomousStarter.StartAutonomousDriverForInstance(inst)
+	}
+
 	// 11. Create ItemSession with the real session UUID (avoids "<pending>" orphan records on failure).
 	is, err := s.storage.CreateItemSession(ctx, session.ItemSessionData{
 		ItemID:      item.ID,
@@ -1157,12 +1175,16 @@ func (s *BacklogService) TriggerTriage(
 	// 7. Build triage prompt (use absolute path so agent submits a path os.Stat can verify).
 	triagePrompt := buildTriagePrompt(item, artifactAbsPath, slug)
 
-	// 8. Spawn one-shot triage session.
+	// 8. Spawn triage session — AutonomousDriver mode if available, oneShot fallback.
 	title := "triage:" + slug
+	useAutonomous := s.autonomousStarter != nil
 	inst, err := s.sessionCreator.CreateDirectorySession(ctx, title, item.RepoPath, triagePrompt,
-		[]string{"backlog:triage"}, true, true)
+		[]string{"backlog:triage"}, !useAutonomous /*oneShot*/, true /*hidden*/)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn triage session: %w", err))
+	}
+	if useAutonomous {
+		s.autonomousStarter.StartAutonomousDriverWithTimeout(inst, 5*time.Minute)
 	}
 
 	// 9. Create ItemSession with role=triage.
@@ -1510,13 +1532,17 @@ Do not modify the code. Only write the review verdict.
 		}), nil
 	}
 
-	// 10. Spawn one-shot re-review session.
+	// 10. Spawn re-review session — AutonomousDriver mode if available, oneShot fallback.
 	slug := slugify(item.Title)
 	title := "re-review:" + slug
+	useAutonomous := s.autonomousStarter != nil
 	inst, spawnErr := s.sessionCreator.CreateDirectorySession(ctx, title, item.RepoPath, reReviewPrompt,
-		[]string{"backlog:review"}, true, true)
+		[]string{"backlog:review"}, !useAutonomous /*oneShot*/, true /*hidden*/)
 	if spawnErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn re-review session: %w", spawnErr))
+	}
+	if useAutonomous {
+		s.autonomousStarter.StartAutonomousDriverWithTimeout(inst, 5*time.Minute)
 	}
 
 	// 11. Create ItemSession with role=review.

@@ -58,12 +58,22 @@ const (
 	ErrItemNotFound     = "ITEM_NOT_FOUND"
 )
 
+// ReviewCompletionSignaler allows the MCP handler to stop an AutonomousDriver
+// after submit_review_verdict completes. The stop call is belt-and-suspenders;
+// the LLM orchestrator will also detect completion from the terminal tail.
+// Note: Stop() fires fireCompletion(Stuck=true), but the role-aware callback
+// skips all status transitions for SessionRoleReview, so this is safe.
+type ReviewCompletionSignaler interface {
+	StopDriverForSession(sessionTitle string)
+}
+
 // --- Handler struct ---
 
 type backlogHandlers struct {
-	storage  *session.Storage
-	store    session.InstanceStore
-	eventBus *events.EventBus // optional; nil means notifications are disabled
+	storage       *session.Storage
+	store         session.InstanceStore
+	eventBus      *events.EventBus         // optional; nil means notifications are disabled
+	reviewStopper ReviewCompletionSignaler // optional; nil means no driver stop on review verdict
 }
 
 // --- get_backlog_item ---
@@ -378,10 +388,34 @@ func (h *backlogHandlers) submitReviewVerdict(ctx context.Context, req mcpgo.Cal
 		}
 	}
 
+	// Stop the AutonomousDriver for this review session (belt-and-suspenders).
+	// The verdict is already persisted; a subsequent Stuck fireCompletion is harmless
+	// because the role-aware callback skips transitions for SessionRoleReview.
+	if h.reviewStopper != nil {
+		if title, findErr := findSessionTitleByUUID(h.store, callerUUID); findErr == nil {
+			h.reviewStopper.StopDriverForSession(title)
+		}
+	}
+
 	return mcpgo.NewToolResultText(fmt.Sprintf(
 		"Review verdict submitted for item %s. Overall outcome: %s\n\nSummary: %s",
 		itemID, overallOutcome, summary,
 	)), nil
+}
+
+// findSessionTitleByUUID returns the session Title for the given UUID using ListInstanceData.
+// Returns "" and an error if not found.
+func findSessionTitleByUUID(store session.InstanceStore, uuid string) (string, error) {
+	instances, err := store.ListInstanceData()
+	if err != nil {
+		return "", err
+	}
+	for _, d := range instances {
+		if d.UUID == uuid {
+			return d.Title, nil
+		}
+	}
+	return "", fmt.Errorf("no session found with UUID %s", uuid)
 }
 
 // --- submit_triage_result ---

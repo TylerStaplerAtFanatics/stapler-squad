@@ -50,17 +50,27 @@ func (p *PTYAccess) Write(data []byte) (int, error) {
 // Returns the number of bytes read and any error encountered.
 func (p *PTYAccess) Read(buf []byte) (int, error) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	pty, closed := p.pty, p.closed
+	p.mu.RUnlock() // release BEFORE the blocking read
 
-	if p.closed {
+	if closed {
 		return 0, fmt.Errorf("PTY access for session '%s' is closed", p.sessionName)
 	}
 
-	if p.pty == nil {
+	if pty == nil {
 		return 0, fmt.Errorf("PTY for session '%s' is not initialized", p.sessionName)
 	}
 
-	return p.pty.Read(buf)
+	return pty.Read(buf)
+}
+
+// GetFile returns the underlying PTY *os.File and whether the PTY has been closed.
+// Returns (f, false) when open, (nil, false) when not yet initialized, (nil, true) when closed.
+// The returned file must not be used after a subsequent UpdatePTY or Close call.
+func (p *PTYAccess) GetFile() (*os.File, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.pty, p.closed
 }
 
 // GetBuffer returns the most recent output from the circular buffer.

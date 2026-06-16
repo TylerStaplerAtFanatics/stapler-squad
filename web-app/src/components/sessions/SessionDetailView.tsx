@@ -22,6 +22,7 @@ import { Modal, ModalContent, ModalTitle, ModalFooter } from "@/components/ui/Mo
 import { ResumeSessionModal } from "./ResumeSessionModal";
 import { TagEditor } from "./TagEditor";
 import { BacklogItemPanel } from "@/components/backlog/BacklogItemPanel";
+import { GoalPanel } from "./GoalPanel";
 import { useShells } from "@/lib/hooks/useShells";
 import { useNotifications } from "@/lib/contexts/NotificationContext";
 import { ShellTabLabel } from "./ShellTab";
@@ -69,6 +70,10 @@ export interface SessionDetailViewProps {
   onDismissFromQueue?: () => void;
   queuePosition?: number;
   queueTotal?: number;
+  nextSessionName?: string;
+  previousSessionName?: string;
+  onBack?: () => void;
+  canGoBack?: boolean;
   /** Backlog item ID to display in right-side panel. If provided, shows BacklogItemPanel. */
   backlogItemId?: string;
 }
@@ -116,6 +121,10 @@ export function SessionDetailView({
   onDismissFromQueue,
   queuePosition,
   queueTotal,
+  nextSessionName,
+  previousSessionName,
+  onBack,
+  canGoBack,
   backlogItemId,
 }: SessionDetailViewProps) {
   // activeTabId is either a static SessionDetailTab or a shell tab id "shell:<shellId>"
@@ -431,30 +440,51 @@ export function SessionDetailView({
               {isFullscreen ? "⊗" : "⛶"}
             </button>
           )}
+          {/* Back in history */}
+          {canGoBack && onBack && (
+            <button
+              className={styles.navButton}
+              onClick={onBack}
+              aria-label="Go back to previous session"
+              title="Back (previously visited)"
+            >
+              ↩
+            </button>
+          )}
           {/* Queue navigation — most used in review queue mode */}
           {showNavigation && (
             <>
-              <button
-                className={styles.navButton}
-                onClick={onPrevious}
-                aria-label="Previous session"
-                title="Previous session (Shift+←)"
-              >
-                ←
-              </button>
-              <button
-                className={styles.navButton}
-                onClick={onNext}
-                aria-label="Next session"
-                title="Next session (Shift+→)"
-              >
-                →
-              </button>
+              <div className={styles.navButtonWithLabel}>
+                <button
+                  className={styles.navButton}
+                  onClick={onPrevious}
+                  aria-label={previousSessionName ? `Previous session: ${previousSessionName}` : "Previous session"}
+                  title={previousSessionName ? `Previous: ${previousSessionName} (Shift+←)` : "Previous session (Shift+←)"}
+                >
+                  ←
+                </button>
+                {previousSessionName && (
+                  <span className={styles.navSessionLabel} aria-hidden="true">{previousSessionName}</span>
+                )}
+              </div>
               {queuePosition !== undefined && queuePosition > 0 && queueTotal !== undefined && queueTotal > 0 && (
                 <span className={styles.queuePosition} aria-live="polite">
                   {queuePosition} of {queueTotal}
                 </span>
               )}
+              <div className={styles.navButtonWithLabel}>
+                <button
+                  className={styles.navButton}
+                  onClick={onNext}
+                  aria-label={nextSessionName ? `Next session: ${nextSessionName}` : "Next session"}
+                  title={nextSessionName ? `Next: ${nextSessionName} (Shift+→)` : "Next session (Shift+→)"}
+                >
+                  →
+                </button>
+                {nextSessionName && (
+                  <span className={styles.navSessionLabel} aria-hidden="true">{nextSessionName}</span>
+                )}
+              </div>
             </>
           )}
           {/* Dismiss from queue */}
@@ -1138,14 +1168,47 @@ export function SessionDetailView({
                   )}
                 </>
               )}
-              {/* Initial prompt */}
+              {/* Launch prompt — passed as command-line arg to the program */}
               {session.prompt && (
                 <div className={styles.infoItem}>
-                  <span className={styles.infoLabel}>Initial Prompt:</span>
+                  <span className={styles.infoLabel}>Launch Prompt:</span>
                   <span className={styles.infoValue}>{session.prompt}</span>
                 </div>
               )}
+              {/* Terminal prompt — injected as keystrokes once the agent reached ready state */}
+              {session.initialPrompt && (
+                <div className={styles.infoItem}>
+                  <span className={styles.infoLabel}>Terminal Prompt:</span>
+                  <span className={styles.infoValue} style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: "0.85em" }}>
+                    {session.initialPrompt}
+                  </span>
+                </div>
+              )}
+              {/* Workflow metadata */}
+              {session.workflowId && (
+                <div className={styles.workflowSection} data-testid="workflow-metadata-section">
+                  <div className={styles.infoItem}>
+                    <span className={styles.infoLabel}>Workflow:</span>
+                    <span className={styles.infoValue}>
+                      {session.workflowName || session.workflowId}
+                    </span>
+                  </div>
+                  <div className={styles.infoItem}>
+                    <span className={styles.infoLabel}>Workflow ID:</span>
+                    <span className={styles.infoValue} style={{ fontFamily: "monospace", fontSize: "0.85em" }}>
+                      {session.workflowId}
+                      <button onClick={() => handleCopy("workflowId", session.workflowId)} className={styles.editButton} title="Copy to clipboard">
+                        {copiedField === "workflowId" ? "✓" : "📋"}
+                      </button>
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
+            {/* Goal & Task panel — shown when a goal has been set via MCP */}
+            {session.goal?.goalText && (
+              <GoalPanel goal={session.goal} />
+            )}
           </div>
         )}
       </div>

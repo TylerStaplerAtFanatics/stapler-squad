@@ -639,7 +639,7 @@ func TestReviewQueuePoller_ControllerSession_Started_NeedsApproval_AddsToQueue(t
 	ctrl.sessionName = inst.Title
 
 	// Mark the controller as started by setting a non-nil context.
-	ctrl.ctx = t.Context()
+	ctrl.lifecycle.Write(func(l *controllerLifecycle) { l.ctx = t.Context() })
 
 	inst.controllerManager.SetController(ctrl)
 	statusMgr.RegisterController(inst.Title, ctrl)

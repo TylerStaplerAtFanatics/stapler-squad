@@ -14,6 +14,7 @@ import { useNotifications } from "@/lib/contexts/NotificationContext";
 import { useOmnibar } from "@/lib/contexts/OmnibarContext";
 import { routes } from "@/lib/routes";
 import { NAV_PAGES } from "@/lib/nav-pages";
+import { useFeatureFlags } from "@/lib/contexts/FeatureFlagsContext";
 import { useAuth } from "@/lib/contexts/AuthContext";
 import { WorkspaceSwitcher } from "@/components/layout/WorkspaceSwitcher";
 import { BottomNav } from "@/components/layout/BottomNav";
@@ -28,6 +29,8 @@ export function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isApprovalDrawerOpen, setIsApprovalDrawerOpen] = useState(false);
   const { togglePanel, getUnreadCount } = useNotifications();
+  const { flags } = useFeatureFlags();
+  const visibleNavPages = NAV_PAGES.filter((p) => !p.featureFlag || flags[p.featureFlag]);
   const { open: openOmnibar } = useOmnibar();
   const unreadCount = getUnreadCount();
 
@@ -73,7 +76,7 @@ export function Header() {
             aria-label="Main navigation"
             className={`${styles.nav} ${isMobileMenuOpen ? styles.navOpen : ""}`}
           >
-            {NAV_PAGES.map((page) => {
+            {visibleNavPages.map((page) => {
               const isActive = page.href === routes.home
                 ? pathname === routes.home
                 : pathname?.startsWith(page.href);

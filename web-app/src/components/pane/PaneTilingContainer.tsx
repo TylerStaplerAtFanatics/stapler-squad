@@ -53,6 +53,7 @@ export function PaneTilingContainer({
   const prevVersionRef = useRef<number | null>(null);
 
   const [pickerPendingSession, setPickerPendingSession] = useState<Session | null>(null);
+  const pickerBarRef = useRef<HTMLDivElement>(null);
   // Mobile-only: bottom sheet picker state (replaces overlay when on narrow screens)
   const [mobilePickerSession, setMobilePickerSession] = useState<Session | null>(null);
   const [mobilePickerPanes, setMobilePickerPanes] = useState<{ id: string; label: string; letter: string }[]>([]);
@@ -182,6 +183,15 @@ export function PaneTilingContainer({
     }
   }, [mobilePickerSession]);
 
+  // Focus the first button in the picker action bar when it appears, so keyboard
+  // and screen reader users can immediately interact without hunting for focus.
+  useEffect(() => {
+    if (pickerPendingSession && pickerBarRef.current) {
+      const firstBtn = pickerBarRef.current.querySelector<HTMLButtonElement>("button");
+      firstBtn?.focus();
+    }
+  }, [pickerPendingSession]);
+
   // When externalSessionAssign fires (omnibar, URL nav, keyboard), route through
   // triggerPicker so the user gets the same pane-picker UX as session-list clicks.
   useEffect(() => {
@@ -213,8 +223,24 @@ export function PaneTilingContainer({
           dispatch={dispatch}
           sessions={sessions}
         />
+        {/* Aria-live region: always in DOM, announces picker appearance to screen readers */}
+        <div
+          role="status"
+          aria-live="assertive"
+          aria-atomic="true"
+          style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0,0,0,0)" }}
+        >
+          {pickerPendingSession
+            ? `Choose where to open "${pickerPendingSession.title}": Side by side (V), Top/Bottom (H), Replace list (M), or Cancel (Esc)`
+            : ""}
+        </div>
         {pickerPendingSession && (
-          <div className={pickerActionBar}>
+          <div
+            ref={pickerBarRef}
+            className={pickerActionBar}
+            role="toolbar"
+            aria-label={`Open ${pickerPendingSession.title}`}
+          >
             <button
               className={pickerActionButton}
               onClick={() => {

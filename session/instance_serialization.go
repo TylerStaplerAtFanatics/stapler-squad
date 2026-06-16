@@ -34,6 +34,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		Program:              i.Program,
 		AutoYes:              i.AutoYes,
 		Prompt:               i.Prompt,
+		InitialPrompt:        i.InitialPrompt,
 		Category:             i.Category,
 		IsExpanded:           i.IsExpanded,
 		Tags:                 i.Tags, // Include tags in serialization
@@ -88,6 +89,9 @@ func (i *Instance) ToInstanceData() InstanceData {
 		MCPServerURL: i.MCPServerURL,
 		// Pause reason — persisted so it survives restarts
 		PauseReason: i.PauseReason,
+		// Workflow linkage and archive state
+		WorkflowID: i.WorkflowID,
+		ArchivedAt: i.ArchivedAt,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -161,23 +165,24 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	}
 
 	instance := &Instance{
-		Title:       data.Title,
-		UUID:        data.UUID,
-		Path:        migratedPath, // Use migrated path
-		WorkingDir:  data.WorkingDir,
-		Branch:      data.Branch,
-		Status:      data.Status,
-		Height:      data.Height,
-		Width:       data.Width,
-		CreatedAt:   data.CreatedAt,
-		UpdatedAt:   data.UpdatedAt,
-		Program:     data.Program,
-		Prompt:      data.Prompt,
-		Category:    data.Category,
-		IsExpanded:  data.IsExpanded,
-		Tags:        tags, // Use migrated tags (includes category if needed)
-		SessionType: data.SessionType,
-		TmuxPrefix:  data.TmuxPrefix,
+		Title:         data.Title,
+		UUID:          data.UUID,
+		Path:          migratedPath, // Use migrated path
+		WorkingDir:    data.WorkingDir,
+		Branch:        data.Branch,
+		Status:        data.Status,
+		Height:        data.Height,
+		Width:         data.Width,
+		CreatedAt:     data.CreatedAt,
+		UpdatedAt:     data.UpdatedAt,
+		Program:       data.Program,
+		Prompt:        data.Prompt,
+		InitialPrompt: data.InitialPrompt,
+		Category:      data.Category,
+		IsExpanded:    data.IsExpanded,
+		Tags:          tags, // Use migrated tags (includes category if needed)
+		SessionType:   data.SessionType,
+		TmuxPrefix:    data.TmuxPrefix,
 		ReviewState: ReviewState{
 			LastTerminalUpdate:   data.LastTerminalUpdate,
 			LastMeaningfulOutput: data.LastMeaningfulOutput,
@@ -234,6 +239,9 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		MCPServerURL: data.MCPServerURL,
 		// Pause reason
 		PauseReason: data.PauseReason,
+		// Workflow linkage and archive state
+		WorkflowID: data.WorkflowID,
+		ArchivedAt: data.ArchivedAt,
 	}
 
 	// MIGRATION: Assign UUID to existing sessions that pre-date UUID assignment

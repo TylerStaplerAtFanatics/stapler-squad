@@ -17,15 +17,19 @@ import {
 } from "./Omnibar.css";
 import * as styles from "./OmnibarCreationPanel.css";
 import { FileChipList, type AttachedFile } from "./FileChipList";
+import { SlashCommandDropdown } from "@/components/ui/SlashCommandDropdown";
+import { useSlashCommands } from "@/lib/hooks/useSlashCommands";
+import { useSlashCommandSuggestions } from "@/lib/hooks/useSlashCommandSuggestions";
 
 // ─── Session Type Radio Group ────────────────────────────────────────────────
 
 export const SESSION_TYPES = [
-  { value: "new_worktree", label: "New Worktree" },
-  { value: "directory", label: "Directory" },
-  { value: "existing_worktree", label: "Use Worktree" },
-  { value: "one_off", label: "One-off" },
+  { value: "new_worktree", label: "New branch (isolated)" },
+  { value: "directory", label: "Existing folder" },
+  { value: "existing_worktree", label: "Existing branch" },
+  { value: "one_off", label: "Temporary (no git)" },
   { value: "new_project", label: "New Project" },
+  { value: "autonomous", label: "Fix Autonomously (Beta)" },
 ] as const;
 
 type SessionTypeValue = (typeof SESSION_TYPES)[number]["value"];
@@ -43,15 +47,17 @@ interface SessionTypeRadioGroupProps {
 
 function SessionTypeRadioGroup({ value, onChange }: SessionTypeRadioGroupProps) {
   const currentIndex = SESSION_TYPES.findIndex((t) => t.value === value);
+  const hasSelection = currentIndex !== -1;
 
   function handleKeyDown(e: KeyboardEvent) {
+    const fromIndex = hasSelection ? currentIndex : 0;
     if (e.key === "ArrowRight" || e.key === "ArrowDown") {
       e.preventDefault();
-      const next = (currentIndex + 1) % SESSION_TYPES.length;
+      const next = (fromIndex + 1) % SESSION_TYPES.length;
       onChange(SESSION_TYPES[next].value);
     } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
       e.preventDefault();
-      const prev = (currentIndex - 1 + SESSION_TYPES.length) % SESSION_TYPES.length;
+      const prev = (fromIndex - 1 + SESSION_TYPES.length) % SESSION_TYPES.length;
       onChange(SESSION_TYPES[prev].value);
     }
   }
@@ -63,12 +69,12 @@ function SessionTypeRadioGroup({ value, onChange }: SessionTypeRadioGroupProps) 
       className={styles.radioGroup}
       onKeyDown={handleKeyDown}
     >
-      {SESSION_TYPES.map((type) => (
+      {SESSION_TYPES.map((type, idx) => (
         <button
           key={type.value}
           role="radio"
           aria-checked={value === type.value}
-          tabIndex={value === type.value ? 0 : -1}
+          tabIndex={value === type.value ? 0 : (!hasSelection && idx === 0 ? 0 : -1)}
           type="button"
           onClick={() => onChange(type.value)}
           className={[styles.radioBtn, value === type.value ? styles.radioBtnActive : ""]
@@ -139,6 +145,49 @@ export function OmnibarCreationPanel({
     useTitleAsBranch, sessionType, existingWorktree, workingDir,
     parentDir, projectName, newProjectSessionType, createIfMissing, firstPrompt,
   } = formState;
+
+  // Slash command autocomplete for the firstPrompt textarea.
+  const firstPromptRef = useRef<HTMLTextAreaElement | null>(null);
+  const [firstPromptCursor, setFirstPromptCursor] = useState(0);
+  const [slashSuggestIndex, setSlashSuggestIndex] = useState(-1);
+  const { commands: slashCommands } = useSlashCommands(path ?? "");
+  const slashState = useSlashCommandSuggestions(firstPrompt, firstPromptCursor, slashCommands);
+  const isSlashDropdownVisible = slashState.isActive && slashState.suggestions.length > 0;
+
+  const handleSlashSelect = useCallback((cmd: Parameters<typeof slashState.complete>[1]) => {
+    const { newValue, newCursorPos } = slashState.complete(firstPrompt, cmd);
+    setFormField("firstPrompt", newValue);
+    setSlashSuggestIndex(-1);
+    requestAnimationFrame(() => {
+      if (firstPromptRef.current) {
+        firstPromptRef.current.setSelectionRange(newCursorPos, newCursorPos);
+        firstPromptRef.current.focus();
+        setFirstPromptCursor(newCursorPos);
+      }
+    });
+  }, [slashState, firstPrompt, setFormField]);
+
+  const handleFirstPromptKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!isSlashDropdownVisible) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSlashSuggestIndex((i) => Math.min(i + 1, slashState.suggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSlashSuggestIndex((i) => Math.max(i - 1, -1));
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      const idx = slashSuggestIndex >= 0 ? slashSuggestIndex : 0;
+      if (slashState.suggestions[idx]) handleSlashSelect(slashState.suggestions[idx]);
+    } else if (e.key === "Enter" && slashSuggestIndex >= 0) {
+      if (slashState.suggestions[slashSuggestIndex]) {
+        e.preventDefault();
+        handleSlashSelect(slashState.suggestions[slashSuggestIndex]);
+      }
+    } else if (e.key === "Escape") {
+      setSlashSuggestIndex(-1);
+    }
+  }, [isSlashDropdownVisible, slashState, slashSuggestIndex, handleSlashSelect]);
 
   // "Create new repository" affordance is only meaningful for session types
   // that operate on the path itself. existing_worktree expects a real parent
@@ -332,8 +381,8 @@ export function OmnibarCreationPanel({
                 Repository path doesn&rsquo;t exist
               </div>
               <div className={styles.createRepoNoticeDesc}>
-                &ldquo;Use Worktree&rdquo; needs a real parent repository.
-                Switch to &ldquo;Directory&rdquo; or &ldquo;New Worktree&rdquo;
+                &ldquo;Existing branch&rdquo; needs a real parent repository.
+                Switch to &ldquo;Existing folder&rdquo; or &ldquo;New branch (isolated)&rdquo;
                 if you want to create a new repo here.
               </div>
             </div>
@@ -377,11 +426,12 @@ export function OmnibarCreationPanel({
             onChange={(v) => setFormField("sessionType", v)}
           />
           <span className={hint}>
-            {sessionType === "new_worktree" && "Creates an isolated git worktree for this session"}
-            {sessionType === "existing_worktree" && "Uses an existing worktree at a specific path"}
-            {sessionType === "directory" && "Works directly in the repository without worktree isolation"}
-            {sessionType === "one_off" && "A fresh directory will be created automatically — no path needed"}
+            {sessionType === "new_worktree" && "Creates an isolated branch and working directory for this session"}
+            {sessionType === "existing_worktree" && "Opens a session in an existing checked-out branch"}
+            {sessionType === "directory" && "Works directly in a folder without branch isolation"}
+            {sessionType === "one_off" && "A fresh temporary directory will be created automatically — no path needed"}
             {sessionType === "new_project" && "Creates a new directory, runs git init, makes an initial commit, then opens a session"}
+            {sessionType === "autonomous" && "The agent runs fully autonomously — risky tool calls are approved by an LLM reviewer rather than queued for you. You will be notified on completion. To stop it, delete or hibernate the session."}
           </span>
         </div>
 
@@ -580,7 +630,7 @@ export function OmnibarCreationPanel({
         )}
 
         {/* Working Directory */}
-        {sessionType !== "one_off" && sessionType !== "new_project" && (
+        {sessionType !== "one_off" && sessionType !== "new_project" && sessionType !== "autonomous" && (
           <div className={field}>
             <label className={labelClass} htmlFor="omnibar-working-dir">
               Working Directory
@@ -634,16 +684,35 @@ export function OmnibarCreationPanel({
           <label className={labelClass} htmlFor="omnibar-first-prompt">
             First Prompt <span style={{ fontWeight: "normal", opacity: 0.6 }}>(optional)</span>
           </label>
-          <textarea
-            id="omnibar-first-prompt"
-            className={fieldInput}
-            placeholder="What should Claude do first? (injected as CLAUDE.md on session start)"
-            rows={3}
-            maxLength={2000}
-            value={formState.firstPrompt}
-            onChange={(e) => setFormField("firstPrompt", e.target.value)}
-            style={{ resize: "vertical", fontFamily: "inherit", fontSize: "inherit" }}
-          />
+          <div className={styles.textareaWrapper}>
+            <textarea
+              ref={firstPromptRef}
+              id="omnibar-first-prompt"
+              className={fieldInput}
+              placeholder="What should Claude do first? Type / for slash commands."
+              rows={3}
+              maxLength={2000}
+              value={formState.firstPrompt}
+              onChange={(e) => {
+                setFormField("firstPrompt", e.target.value);
+                setFirstPromptCursor(e.target.selectionStart ?? 0);
+                setSlashSuggestIndex(-1);
+              }}
+              onSelect={(e) => setFirstPromptCursor((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
+              onKeyDown={handleFirstPromptKeyDown}
+              style={{ resize: "vertical", fontFamily: "inherit", fontSize: "inherit" }}
+            />
+            {isSlashDropdownVisible && (
+              <div className={styles.slashDropdownWrapper}>
+                <SlashCommandDropdown
+                  id="omnibar-first-prompt-slash-listbox"
+                  suggestions={slashState.suggestions}
+                  selectedIndex={slashSuggestIndex}
+                  onSelect={handleSlashSelect}
+                />
+              </div>
+            )}
+          </div>
           {formState.firstPrompt.length > 1800 && (
             <span className={hint} style={{ color: "var(--warning)" }}>
               {2000 - formState.firstPrompt.length} characters remaining

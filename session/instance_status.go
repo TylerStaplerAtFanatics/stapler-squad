@@ -126,6 +126,10 @@ func (info InstanceStatusInfo) GetStatusIcon() string {
 		return "◐" // Working
 	case detection.StatusNeedsApproval:
 		return "❗" // Needs attention
+	case detection.StatusInputRequired:
+		return "⌨" // Waiting for input
+	case detection.StatusWaitingForAgent:
+		return "⏳" // Waiting for background agent
 	case detection.StatusError:
 		return "✖" // Error
 	default:
@@ -158,12 +162,22 @@ func (info InstanceStatusInfo) GetStatusDescription() string {
 		desc = "Ready"
 	case detection.StatusProcessing:
 		desc = "Processing"
+	case detection.StatusActive:
+		desc = "Active"
+	case detection.StatusIdle:
+		desc = "Idle"
 	case detection.StatusNeedsApproval:
 		desc = "Needs Approval"
+	case detection.StatusInputRequired:
+		desc = "Needs Input"
+	case detection.StatusSuccess:
+		desc = "Completed"
+	case detection.StatusWaitingForAgent:
+		desc = "Waiting for Agent"
+	case detection.StatusTestsFailing:
+		desc = "Tests Failing"
 	case detection.StatusError:
 		desc = "Error"
-	case detection.StatusUnknown:
-		desc = "Unknown"
 	default:
 		desc = "Unknown"
 	}
@@ -187,12 +201,15 @@ func (info InstanceStatusInfo) HasPendingWork() bool {
 // IsWaitingForUser returns true if the instance is waiting for user input.
 func (info InstanceStatusInfo) IsWaitingForUser() bool {
 	return info.ClaudeStatus == detection.StatusNeedsApproval ||
+		info.ClaudeStatus == detection.StatusInputRequired ||
 		info.PendingApprovals > 0
 }
 
 // NeedsAttention returns true if the instance requires user attention.
 func (info InstanceStatusInfo) NeedsAttention() bool {
-	return info.IsWaitingForUser() || info.ClaudeStatus == detection.StatusError
+	return info.IsWaitingForUser() ||
+		info.ClaudeStatus == detection.StatusError ||
+		info.ClaudeStatus == detection.StatusTestsFailing
 }
 
 // GetColorCode returns a color code for the status (for lipgloss styling).
@@ -205,7 +222,7 @@ func (info InstanceStatusInfo) GetColorCode() string {
 		return "214" // Orange
 	}
 
-	if info.ClaudeStatus == detection.StatusProcessing {
+	if info.ClaudeStatus == detection.StatusProcessing || info.ClaudeStatus == detection.StatusWaitingForAgent {
 		return "39" // Blue
 	}
 

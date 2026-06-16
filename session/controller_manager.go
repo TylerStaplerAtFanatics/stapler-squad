@@ -1,5 +1,14 @@
 package session
 
+import "sync/atomic"
+
+// noCopy prevents ControllerManager from being copied after first use.
+// go vet -copylocks will flag any copy of a type containing noCopy.
+type noCopy struct{}
+
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
+
 // ControllerManager owns the ClaudeController and InstanceStatusManager
 // references that were previously bare fields on Instance.
 //
@@ -11,9 +20,14 @@ package session
 // rich data object with complex lifecycle management (persistence, re-attachment,
 // session selection) that is tightly coupled to Instance business logic.
 // It remains a direct field on Instance for now.
+//
+// The controller field is accessed only while the owning Instance.stateMutex
+// is held; statusManager uses atomic.Pointer for lock-free concurrent access.
+// ControllerManager must not be copied after first use (enforced by noCopy).
 type ControllerManager struct {
+	_             noCopy
 	controller    *ClaudeController
-	statusManager *InstanceStatusManager
+	statusManager atomic.Pointer[InstanceStatusManager]
 }
 
 // HasController reports whether a ClaudeController has been registered.
@@ -42,20 +56,20 @@ func (cm *ControllerManager) StopAndClearController() {
 
 // GetStatusManager returns the current InstanceStatusManager (may be nil).
 func (cm *ControllerManager) GetStatusManager() *InstanceStatusManager {
-	return cm.statusManager
+	return cm.statusManager.Load()
 }
 
 // SetStatusManager replaces the status manager.
 func (cm *ControllerManager) SetStatusManager(m *InstanceStatusManager) {
-	cm.statusManager = m
+	cm.statusManager.Store(m)
 }
 
 // RegisterController wires a new controller into the status manager and stores
 // it. Any existing controller is stopped first.
 func (cm *ControllerManager) RegisterController(title string, controller *ClaudeController) {
 	cm.StopAndClearController()
-	if cm.statusManager != nil {
-		cm.statusManager.RegisterController(title, controller)
+	if mgr := cm.statusManager.Load(); mgr != nil {
+		mgr.RegisterController(title, controller)
 	}
 	cm.controller = controller
 }
@@ -63,8 +77,8 @@ func (cm *ControllerManager) RegisterController(title string, controller *Claude
 // UnregisterController stops and clears the controller, and removes it from
 // the status manager.
 func (cm *ControllerManager) UnregisterController(title string) {
-	if cm.statusManager != nil {
-		cm.statusManager.UnregisterController(title)
+	if mgr := cm.statusManager.Load(); mgr != nil {
+		mgr.UnregisterController(title)
 	}
 	cm.StopAndClearController()
 }

@@ -61,6 +61,10 @@ type TmuxSession struct {
 	// attachCmd is the tmux attach-session process that owns the PTY
 	// CRITICAL: Must be killed when closing PTY to prevent orphaned processes
 	attachCmd *exec.Cmd
+	// attachCmdWaitOnce guards attachCmd.Wait() so it is called exactly once
+	// across closePTYAndAttachCmd and the diagnostic goroutine in RestoreWithWorkDir.
+	// Reset to a new *sync.Once each time a new attachCmd is assigned.
+	attachCmdWaitOnce *sync.Once
 	// monitor monitors the tmux pane content and sends signals to the UI when it's status changes
 	monitor *statusMonitor
 	// bannerFilter detects and filters tmux status line banners from terminal output
@@ -118,8 +122,10 @@ type TmuxSession struct {
 	controlModeStdin       io.WriteCloser         // stdin pipe for control mode commands
 	controlModeDone        chan struct{}          // Signal channel for control mode termination
 	controlModeSubscribers map[string]chan []byte // WebSocket clients subscribed to control mode updates
-	controlModeSubMu       deadlock.RWMutex       // Protects controlModeSubscribers, controlModeExited, and pendingCmds
+	controlModeSubMu       deadlock.RWMutex       // Protects controlModeSubscribers, controlModeExited, pendingCmds, and controlModeRefCount
 	controlModeExited      bool                   // True after readControlModeOutput exits; new subscribers get pre-closed channel
+	controlModeStartMu     sync.Mutex             // Serializes Start/Stop so only one process starts at a time
+	controlModeRefCount    int                    // Number of active Start/Stop pairs; protected by controlModeSubMu
 
 	// Control mode command dispatch — priority queue
 	// A dedicated sender goroutine owns the stdin write path so that high-priority
@@ -211,10 +217,17 @@ func (t *TmuxSession) GetSanitizedName() string {
 
 // ResetExitOnce resets the exit callback so it can fire again after a session restart.
 // Also clears intentionalStop so the next StopControlMode() correctly guards the callback.
+// Resets control mode refcount/cmd/exited so a stale dead process left by a prior crash
+// does not corrupt the next Start/Stop cycle.
 // Call this before reusing a TmuxSession object for a restarted session.
 func (t *TmuxSession) ResetExitOnce() {
 	t.onExitOnce = sync.Once{}
 	t.intentionalStop.Store(false)
+	t.controlModeSubMu.Lock()
+	t.controlModeRefCount = 0
+	t.controlModeCmd = nil
+	t.controlModeExited = false
+	t.controlModeSubMu.Unlock()
 }
 
 // IsServerDown returns true if the tmux server is not running for the given socket.
@@ -569,6 +582,7 @@ func (t *TmuxSession) AttachToExisting() error {
 		}
 		t.ptmx = ptmx
 		t.attachCmd = cmd // CRITICAL: Save command so we can kill it on cleanup
+		t.attachCmdWaitOnce = new(sync.Once)
 		log.Info("successfully attached PTY to existing tmux session", "session", t.sanitizedName, "pid", cmd.Process.Pid)
 	}
 
@@ -606,8 +620,15 @@ func (t *TmuxSession) buildTmuxCommand(args ...string) *exec.Cmd {
 // buildAttachCommand creates a tmux attach-session command for PTY operations.
 // Note: -x/-y are NOT passed here; for attach-session -x means read-only mode
 // (not width), and tmux infers dimensions from the PTY itself.
+// TERM must be set explicitly: when the service runs headless (systemd, no
+// controlling terminal), TERM is absent from the environment, which causes
+// tmux to fail terminal initialization and exit immediately.
 func (t *TmuxSession) buildAttachCommand() *exec.Cmd {
-	return t.buildTmuxCommand("attach-session", "-t", t.sanitizedName)
+	cmd := t.buildTmuxCommand("attach-session", "-t", t.sanitizedName)
+	if os.Getenv("TERM") == "" {
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	}
+	return cmd
 }
 
 // Start creates and starts a new tmux session, then attaches to it. Program is the command to run in
@@ -856,7 +877,13 @@ func (t *TmuxSession) RestoreWithWorkDir(workDir string) error {
 
 	// Session exists - create PTY connection for detached operations
 	// This is needed for SetDetachedSize(), SendKeys(), and the Direct Claude Command Interface
-	// We use tmux attach-session to get a PTY handle without actually attaching interactively
+	// We use tmux attach-session to get a PTY handle without actually attaching interactively.
+	// Always close any existing PTY before creating a new one: the old attach-session may have
+	// exited (returning EIO on reads) but left t.ptmx non-nil, which would cause the new
+	// response stream to immediately get EIO. Closing and reopening guarantees a live connection.
+	if t.ptmx != nil {
+		_ = t.closePTYAndAttachCmd()
+	}
 	if t.ptmx == nil {
 		const ptyMaxRetries = 3
 		var lastPTYErr error
@@ -866,14 +893,31 @@ func (t *TmuxSession) RestoreWithWorkDir(workDir string) error {
 				log.Info("retrying PTY attach for session", "session", t.sanitizedName, "attempt", attempt+1, "maxRetries", ptyMaxRetries, "delay", delay)
 				time.Sleep(delay)
 			}
-			ptmx, attachCmd, err := t.ptyFactory.Start(t.buildAttachCommand())
+			// Use StartWithSize so the PTY has non-zero dimensions before tmux attach-session
+			// forks. Without this, running headless (systemd with no controlling terminal)
+			// produces a 0×0 PTY; tmux reads that size at client startup and immediately
+			// disconnects, causing EIO within ~1ms of the response stream starting.
+			ws := &pty.Winsize{
+				Rows: uint16(t.lastKnownRows.Load()),
+				Cols: uint16(t.lastKnownCols.Load()),
+			}
+			ptmx, attachCmd, err := t.ptyFactory.StartWithSize(t.buildAttachCommand(), ws)
 			if err != nil {
 				lastPTYErr = err
 				continue
 			}
 			t.ptmx = ptmx
 			t.attachCmd = attachCmd // CRITICAL: track so it can be killed on cleanup
+			waitOnce := new(sync.Once)
+			t.attachCmdWaitOnce = waitOnce
 			log.Info("successfully restored PTY connection for tmux session", "session", t.sanitizedName)
+			// Diagnostic: watch for unexpected early exit of the attach process.
+			// Uses the same sync.Once as closePTYAndAttachCmd so Wait is called exactly once.
+			go func(cmd *exec.Cmd, name string, once *sync.Once) {
+				var err error
+				once.Do(func() { err = cmd.Wait() })
+				log.Info("attach-session process exited", "session", name, "exitErr", err)
+			}(attachCmd, t.sanitizedName, waitOnce)
 			lastPTYErr = nil
 			break
 		}
@@ -1306,9 +1350,15 @@ func (t *TmuxSession) closePTYAndAttachCmd() []error {
 				errs = append(errs, fmt.Errorf("error killing attach process: %w", err))
 			}
 		}
-		// Wait for process to be reaped to avoid zombies
-		_ = t.attachCmd.Wait()
+		// Wait for process to be reaped to avoid zombies. Use attachCmdWaitOnce so this
+		// call is safe even when RestoreWithWorkDir's diagnostic goroutine also calls Wait.
+		if t.attachCmdWaitOnce != nil {
+			t.attachCmdWaitOnce.Do(func() { _ = t.attachCmd.Wait() })
+		} else {
+			_ = t.attachCmd.Wait()
+		}
 		t.attachCmd = nil
+		t.attachCmdWaitOnce = nil
 	}
 
 	return errs
@@ -1665,16 +1715,17 @@ func (t *TmuxSession) RefreshClient() error {
 	return nil
 }
 
-// cmEnabled returns true when the CM command dispatch path should be attempted.
-func (t *TmuxSession) cmEnabled() bool {
-	return cmCommandsEnabled.Load() && t.normPriSendCh != nil
-}
-
 // cmEnabledForBackground returns true when CM is available AND the normal-priority
 // send queue has room. Background ops skip CM when the queue is backed up — they
 // fall back to subprocess so that the queue stays clear for high-priority user input.
 func (t *TmuxSession) cmEnabledForBackground() bool {
-	return t.cmEnabled() && len(t.normPriSendCh) == 0
+	if !cmCommandsEnabled.Load() {
+		return false
+	}
+	t.controlModeSubMu.RLock()
+	ch := t.normPriSendCh
+	t.controlModeSubMu.RUnlock()
+	return ch != nil && len(ch) == 0
 }
 
 // cmCtx returns a 3-second context for use with sendCMCommand.

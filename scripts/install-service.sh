@@ -78,9 +78,10 @@ install_linux() {
     service_file="$service_dir/stapler-squad.service"
     log_dir="$HOME/.stapler-squad/logs"
 
-    # Verify systemd --user is available before writing any files
-    if ! systemctl --user is-system-running >/dev/null 2>&1 && \
-       ! systemctl --user status >/dev/null 2>&1; then
+    # Verify systemd --user is available before writing any files.
+    # Use timeout to avoid hanging indefinitely if D-Bus is unresponsive.
+    if ! timeout 5 systemctl --user is-system-running >/dev/null 2>&1 && \
+       ! timeout 5 systemctl --user status >/dev/null 2>&1; then
         log_error "systemd user session is not available."
         log_info  "On WSL or minimal containers, try adding stapler-squad to ~/.profile instead:"
         log_info  "  echo '$bin_path &' >> ~/.profile"
@@ -265,6 +266,55 @@ EOF
     open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || true
 }
 
+# ── Health Check + Auto-rollback ──────────────────────────────────────────────
+# Polls localhost:8543/health for up to 15s. On failure, restores the .prev
+# binary (if it exists) and restarts the service automatically.
+health_check_and_rollback() {
+    bin_path="$1"
+    prev_bin="${bin_path}.prev"
+    max_wait=15
+    elapsed=0
+    url="http://localhost:8543/health"
+    printf "==> Waiting for service to be healthy"
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        if curl -sf "$url" >/dev/null 2>&1; then
+            printf "\n"
+            log_success "Service is healthy"
+            return 0
+        fi
+        printf "."
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    printf "\n"
+    log_error "Service did not respond within ${max_wait}s."
+
+    if [ ! -f "$prev_bin" ]; then
+        log_warning "No previous build found at $prev_bin — cannot auto-rollback."
+        log_info "Check logs: tail -f ~/.stapler-squad/logs/service.log"
+        return 1
+    fi
+
+    log_info "Auto-rolling back to previous build..."
+    cp -f "$prev_bin" "$bin_path"
+    log_success "Binary restored from $prev_bin"
+
+    os=$(detect_os)
+    case "$os" in
+        linux)
+            systemctl --user restart stapler-squad
+            log_success "Service restarted with previous build."
+            ;;
+        macos)
+            launchctl kickstart -k "gui/$(id -u)/com.stapler-squad" 2>/dev/null || \
+                launchctl stop "gui/$(id -u)/com.stapler-squad" 2>/dev/null || true
+            log_success "Service restarted with previous build."
+            ;;
+    esac
+    log_info "Check logs: tail -f ~/.stapler-squad/logs/service.log"
+    return 1
+}
+
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 uninstall_service() {
     os="$1"
@@ -341,6 +391,8 @@ main() {
         linux) install_linux "$bin_path" ;;
         macos) install_macos "$bin_path" ;;
     esac
+
+    health_check_and_rollback "$bin_path"
 }
 
 main "$@"
