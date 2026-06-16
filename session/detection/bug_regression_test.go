@@ -160,6 +160,62 @@ func TestBug1_WithContextFromLines_ActiveWithTaskManager(t *testing.T) {
 	}
 }
 
+// TestBug2_CursorForwardStripping_EscToInterrupt guards against the regression where
+// modern Claude Code encodes "esc to interrupt" using \x1b[C (cursor-forward) between
+// words instead of literal spaces. Before the fix, stripANSI would collapse words into
+// "esctointterrupt" which the esc_to_interrupt regex couldn't match.
+func TestBug2_CursorForwardStripping_EscToInterrupt(t *testing.T) {
+	sd := NewStatusDetector()
+
+	// Exact byte sequence Claude Code v2.x writes to the status bar:
+	// each space is encoded as: \x1b[39m (reset fg) \x1b[1X (erase) \x1b[38;5;246m (color) \x1b[C (cursor right)
+	rawEscToInterrupt := "esc\x1b[39m\x1b[1X\x1b[38;5;246m\x1b[Cto\x1b[39m\x1b[1X\x1b[38;5;246m\x1b[Cinterrupt"
+	got := sd.Detect([]byte(rawEscToInterrupt))
+	if got != StatusActive {
+		t.Errorf("Detect(%q) = %s, want StatusActive\n"+
+			"  Claude Code v2 encodes 'esc to interrupt' with \\x1b[C cursor-forward between words.\n"+
+			"  stripANSI must replace \\x1b[C with a space to preserve word boundaries.",
+			rawEscToInterrupt, got)
+	}
+}
+
+// TestBug2_CursorForwardStripping_ThinkingVerb guards against the regression where
+// modern Claude Code encodes "✽ Transmuting…" with \x1b[C instead of a literal space
+// after the spinner character.
+func TestBug2_CursorForwardStripping_ThinkingVerb(t *testing.T) {
+	sd := NewStatusDetector()
+
+	// Raw spinner + \x1b[1X (erase) + color + \x1b[C + verb (as written by Claude Code v2)
+	rawSpinner := "✽\x1b[1X\x1b[38;5;180m\x1b[CTransmuting…"
+	got := sd.Detect([]byte(rawSpinner))
+	if got != StatusActive && got != StatusProcessing {
+		t.Errorf("Detect(%q) = %s, want StatusActive or StatusProcessing\n"+
+			"  Claude Code v2 encodes the spinner line as 'CHAR\\x1b[C verb' (cursor-forward not space).\n"+
+			"  stripANSI must replace \\x1b[C with a space so the thinking-verb pattern fires.",
+			rawSpinner, got)
+	}
+}
+
+// TestBug2_AbsoluteCursorPositioning_DetectedAsActive guards against the regression
+// where an actively-running session whose 4096-byte PTY tail consists entirely of
+// absolute cursor-position updates (\x1b[ROW;COLH) with no \n separators is wrongly
+// classified as Ready. The hasScreenOverwrite fallback must detect these sequences.
+func TestBug2_AbsoluteCursorPositioning_DetectedAsActive(t *testing.T) {
+	sd := NewStatusDetector()
+
+	// Simulate the single-line raw PTY content seen in long-running sessions:
+	// the entire tail is cursor-position updates painting box-drawing characters.
+	// This matches what GetCurrentStatus sees when lines_count == 1.
+	rawAbsCursor := "·······\x1b[33;107H│·····\x1b[34;107H│·····\x1b[35;107H│·····"
+	got := sd.Detect([]byte(rawAbsCursor))
+	if got != StatusActive && got != StatusProcessing {
+		t.Errorf("Detect(%q) = %s, want StatusActive or StatusProcessing\n"+
+			"  An active long-running session tail may consist entirely of \\x1b[ROW;COLH cursor-position\n"+
+			"  updates (no \\n separators). hasScreenOverwrite must detect these as active screen drawing.",
+			rawAbsCursor, got)
+	}
+}
+
 // TestBug2_InputRequired_WithSuccessScrollback verifies that DetectFromLines returns
 // StatusInputRequired when a selection dialog (❯ 1.) appears below an old completion
 // line (✻ Baked for X).
@@ -606,6 +662,47 @@ func TestBug4_NonBreakingSpace_OtherLayouts(t *testing.T) {
 					tc.name, got)
 			}
 		})
+	}
+}
+
+// TestBug5_CharsetDesignator_Stripped verifies that \x1b(B G0 charset-designator sequences
+// are removed by stripANSI. Modern Claude Code wraps each styled character in \x1b(B
+// (switching to ASCII G0 charset) which, if not stripped, breaks word-boundary patterns:
+// "t\x1b(Bh\x1b(Bi\x1b(Bn\x1b(Bk\x1b(Bi\x1b(Bn\x1b(Bg" can never match "thinking".
+func TestBug5_CharsetDesignator_Stripped(t *testing.T) {
+	// Simulates Claude Code writing a styled verb with \x1b(B between each character.
+	withDesignators := "✽\x1b(B \x1b(Bt\x1b(Bh\x1b(Bi\x1b(Bn\x1b(Bk\x1b(Bi\x1b(Bn\x1b(Bg"
+	got := stripANSI(withDesignators)
+	if strings.Contains(got, "\x1b(B") {
+		t.Errorf("stripANSI(%q) = %q, still contains \\x1b(B; G0 charset designators must be stripped",
+			withDesignators, got)
+	}
+	if !strings.Contains(got, "thinking") {
+		t.Errorf("stripANSI(%q) = %q, 'thinking' not preserved after removing charset designators",
+			withDesignators, got)
+	}
+}
+
+// TestBug5_SpinnerVerbFallback_FilteredEmpty verifies HasClaudeSpinnerActivity detects an
+// active spinner when the tail starts with a tmux status bar "[staplersq …]" (which
+// filterTmuxMetadata would remove) but contains spinner verb text interleaved on the
+// same line.  This guards the Case A fallback in GetCurrentStatus.
+func TestBug5_SpinnerVerbFallback_FilteredEmpty(t *testing.T) {
+	// Simulates tail after tailContent \n-snap: starts with "[staplersq ...]",
+	// then cursor-position codes jumping back to the spinner row, then "thinking".
+	activeTail := "[staplersq 0:claude (0,0) \"✦ Extract\" 18:19]\x1b[42;3H\x1b(B✽\x1b[1X\x1b[38;5;180m\x1b[Cthinking\x1b[42;3H]"
+	if !HasClaudeSpinnerActivity(activeTail) {
+		t.Errorf("HasClaudeSpinnerActivity(%q) = false, want true\n"+
+			"  Tail contains 'thinking' interleaved with tmux status bar; must be detected as active.",
+			activeTail)
+	}
+
+	// Idle session tail: only the tmux status bar — no spinner verbs.
+	idleTail := "[staplersq 0:claude (0,0) \"✦ Claude Code\" 18:19]\x1b[55;1H]\x1b[52;3H]"
+	if HasClaudeSpinnerActivity(idleTail) {
+		t.Errorf("HasClaudeSpinnerActivity(%q) = true, want false\n"+
+			"  Idle session tail (only tmux status bar) must not trigger the spinner fallback.",
+			idleTail)
 	}
 }
 

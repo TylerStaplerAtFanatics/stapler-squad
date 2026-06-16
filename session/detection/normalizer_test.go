@@ -52,3 +52,29 @@ func TestPTYNormalizer_SplitLines_should_returnEmpty_When_inputIsEmpty(t *testin
 		t.Errorf("got %v, want empty", got)
 	}
 }
+
+// TestStripANSI_should_preserveWordSpaces_When_cursorForwardUsedBetweenWords guards against
+// the regression where modern Claude Code uses \x1b[C (cursor-forward) instead of literal
+// spaces between words in status-bar output. Without this fix, "esc to interrupt" would
+// become "esctointterrupt" after stripping, causing the esc_to_interrupt pattern to miss.
+func TestStripANSI_should_preserveWordSpaces_When_cursorForwardUsedBetweenWords(t *testing.T) {
+	// Reproduce the exact encoding Claude Code uses for "esc to interrupt":
+	// each word is separated by \x1b[39m (reset fg) \x1b[1X (erase char) \x1b[38;5;246m (set color) \x1b[C (cursor right)
+	escToInterrupt := "esc\x1b[39m\x1b[1X\x1b[38;5;246m\x1b[Cto\x1b[39m\x1b[1X\x1b[38;5;246m\x1b[Cinterrupt"
+	got := stripANSI(escToInterrupt)
+	want := "esc to interrupt"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestStripANSI_should_preserveSpaceAfterSpinner_When_cursorForwardUsedAfterSpinnerChar guards
+// against the regression where "✽ Transmuting…" becomes "✽Transmuting…" after stripping.
+func TestStripANSI_should_preserveSpaceAfterSpinner_When_cursorForwardUsedAfterSpinnerChar(t *testing.T) {
+	spinnerLine := "✽\x1b[1X\x1b[38;5;180m\x1b[CTransmuting…"
+	got := stripANSI(spinnerLine)
+	want := "✽ Transmuting…"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
