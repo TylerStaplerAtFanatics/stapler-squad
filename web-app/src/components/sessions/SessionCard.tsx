@@ -71,6 +71,7 @@ import {
   taskFraction,
   autonomousBadge,
   workflowBadge,
+  creationSpinner,
 } from "./SessionCard.css";
 import { truncateGoal } from "@/lib/utils/string";
 
@@ -344,6 +345,7 @@ function SessionCardInner({
     if (e.key === "Enter") {
       handleInlineSave();
     } else if (e.key === "Escape") {
+      setInlineEditValue(session.title);
       setIsInlineEditing(false);
     }
   };
@@ -414,6 +416,8 @@ function SessionCardInner({
               onClick={handleTitleClick}
               title={selectMode ? undefined : "Click to rename"}
               style={selectMode ? undefined : { cursor: "text" }}
+              tabIndex={selectMode ? undefined : 0}
+              onKeyDown={selectMode ? undefined : (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); handleTitleClick(e as unknown as React.MouseEvent); } }}
             >
               {session.title}
             </h3>
@@ -543,6 +547,7 @@ function SessionCardInner({
                 role="status"
                 style={{ background: "var(--success-bg)", color: "var(--success)" }}
                 data-testid="badge-autonomous-done"
+                aria-label="Autonomous run completed"
               >
                 Done ✓
               </span>
@@ -554,6 +559,7 @@ function SessionCardInner({
                 style={{ background: "var(--warning-bg)", color: "var(--warning)" }}
                 data-testid="badge-autonomous-stuck"
                 title="Autonomous run stopped — open session to review and give next instruction"
+                aria-label="Autonomous run stopped — needs attention"
               >
                 Stuck
               </span>
@@ -586,6 +592,7 @@ function SessionCardInner({
             className={editTagsButton}
             onClick={handleEditTags}
             title="Edit tags"
+            aria-label={`${session.tags && session.tags.length > 0 ? "Edit" : "Add"} tags for ${session.title}`}
           >
             {session.tags && session.tags.length > 0 ? "Edit Tags" : "Add Tags"}
           </button>
@@ -716,7 +723,7 @@ function SessionCardInner({
             <span
               role="status"
               aria-label="Session is starting"
-              style={{ display: "inline-block", width: "14px", height: "14px", border: "2px solid var(--primary)", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }}
+              className={creationSpinner}
             />
             <span>{session.creationProgress || "Starting session..."}</span>
           </div>

@@ -11,7 +11,6 @@ import { SessionCard } from "./SessionCard";
 import { SessionRow } from "./SessionRow";
 import { SessionListEmptyState } from "./SessionListEmptyState";
 import { SessionListSkeleton } from "./SessionListSkeleton";
-import { groupHeader as groupHeaderStyle } from "./SessionRow.css";
 import { BulkActions } from "./BulkActions";
 import { TagEditor } from "./TagEditor";
 import { GroupingStrategy, GroupingStrategyLabels, groupSessions, cycleGroupingStrategy } from "@/lib/grouping/strategies";
@@ -473,9 +472,9 @@ export function SessionList({
     }
   };
 
-  const showFeedback = (msg: string) => {
+  const showFeedback = (msg: string, isError = false) => {
     setBulkFeedback(msg);
-    setTimeout(() => setBulkFeedback(null), 3000);
+    setTimeout(() => setBulkFeedback(null), isError ? 5000 : 3000);
   };
 
   // Entering selectMode automatically when hovering a card and clicking its checkbox.
@@ -591,6 +590,7 @@ export function SessionList({
               onClick={() => onNewSession?.()}
               className={newSessionHeaderButton}
               aria-label="Create new session (Ctrl+K)"
+              title="New session (Ctrl+K)"
             >
               +
             </button>
@@ -624,6 +624,10 @@ export function SessionList({
               }`}
               aria-expanded={filtersOpen}
               aria-controls="session-filter-controls"
+              aria-label={(() => {
+                const activeCount = [selectedStatus !== "all", selectedCategory !== "all", selectedTag !== "all", hidePaused, filterNeedsApproval].filter(Boolean).length;
+                return activeCount > 0 ? `Filters (${activeCount} active)` : "Filters";
+              })()}
               onClick={() => setFiltersOpen((prev) => !prev)}
             >
               Filters
@@ -717,7 +721,7 @@ export function SessionList({
               onChange={(e) => setGroupingStrategy(e.target.value as GroupingStrategy)}
               className={select}
               title="Group by (Keyboard: G)"
-              aria-label="Group sessions by"
+              aria-label="Group sessions by (keyboard: G)"
             >
               {Object.entries(GroupingStrategyLabels).map(([value, label]) => (
                 <option key={value} value={value}>
@@ -758,6 +762,9 @@ export function SessionList({
           onHibernate={onHibernateSession}
         />
       )}
+
+      {/* Persistent aria-live region so bulk-action announcements survive BulkActions unmount */}
+      <div role="status" aria-live="polite" aria-atomic="true" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0,0,0,0)", whiteSpace: "nowrap" }}>{bulkFeedback ?? ""}</div>
 
       {/* Bulk actions bar — BulkActions renders null when selectedCount === 0 */}
       {selectMode && (
@@ -826,9 +833,8 @@ export function SessionList({
             const item = flatItems[virtualItem.index];
             if (!item) return null;
             const isSessionItem = item.kind === "session";
-            const WrapperTag = isSessionItem ? "ul" : "div";
             return (
-              <WrapperTag
+              <div
                 key={virtualItem.key}
                 data-index={virtualItem.index}
                 style={{
@@ -837,12 +843,11 @@ export function SessionList({
                   left: 0,
                   width: "100%",
                   transform: `translateY(${virtualItem.start}px)`,
-                  ...(isSessionItem ? { listStyle: "none", margin: 0, padding: 0 } : {}),
                 }}
               >
                 {item.kind === "header" ? (
                   <h3
-                    className={groupHeaderStyle}
+                    className={categoryTitle}
                     style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
                   >
                     {item.isProjectGrouping && item.projectData && renamingProjectId === item.projectData.id ? (
@@ -892,7 +897,7 @@ export function SessionList({
                           </>
                         )}
                         {item.isProjectGrouping && item.projectData && !item.isUngrouped && (
-                          <span style={{ marginLeft: "auto", display: "flex", gap: "4px" }}>
+                          <span style={{ marginLeft: "auto", display: "flex", gap: "4px", flexShrink: 0 }}>
                             <button
                               type="button"
                               onClick={() => { setRenamingProjectId(item.projectData!.id); setRenameValue(item.projectData!.name); }}
@@ -958,7 +963,7 @@ export function SessionList({
                     visibleColumns={visibleColumns}
                   />
                 )}
-              </WrapperTag>
+              </div>
             );
           })}
         </div>

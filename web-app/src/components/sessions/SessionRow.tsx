@@ -77,6 +77,20 @@ function getStatusDotValue(status: SessionStatus): string {
   }
 }
 
+const STATUS_DOT_LABELS: Record<string, string> = {
+  "running": "Running",
+  "idle": "Idle",
+  "paused-session": "Paused",
+  "paused": "Stopped",
+  "loading": "Loading",
+  "needs-approval": "Needs Approval",
+  "hibernated": "Hibernated",
+};
+
+function getStatusDotLabel(dotValue: string): string {
+  return STATUS_DOT_LABELS[dotValue] ?? dotValue;
+}
+
 function formatElapsed(ts?: { seconds: bigint; nanos: number }): string {
   if (!ts || ts.seconds === BigInt(0)) return "";
   const now = Date.now();
@@ -143,12 +157,12 @@ export function SessionRow({
     memMB > 500 ? memoryBadgeHigh :
     memMB > 300 ? memoryBadgeWarning : "";
 
-  const handleContextMenu = (e: React.MouseEvent<HTMLLIElement>) => {
+  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
     overflowRef.current?.openAt(e.clientX, e.clientY);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLLIElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onClick?.();
@@ -156,7 +170,8 @@ export function SessionRow({
   };
 
   return (
-    <li
+    <div
+      role="listitem"
       className={[
         row,
         memMB > 500 ? rowMemoryPressure : "",
@@ -171,15 +186,15 @@ export function SessionRow({
       onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
       tabIndex={0}
-      aria-label={`Session ${session.title}, status: ${isPaused ? "paused" : dotStatus}, program: ${session.program}`}
+      aria-label={`Session ${session.title}, status: ${getStatusDotLabel(isPaused ? "paused-session" : dotStatus)}, program: ${session.program}`}
     >
       {/* Status dot — always visible */}
-      <Tooltip label={`Status: ${dotStatus}`}>
+      <Tooltip label={`Status: ${getStatusDotLabel(dotStatus)}`}>
         <span
           className={statusDot}
           data-status={dotStatus}
           role="img"
-          aria-label={`Status: ${dotStatus}`}
+          aria-label={`Status: ${getStatusDotLabel(dotStatus)}`}
         />
       </Tooltip>
 
@@ -219,7 +234,13 @@ export function SessionRow({
 
       {/* Diff stats — optional column */}
       {visibleColumns.includes("diff") && (
-        <span className={diffBadge} aria-label="Diff stats">
+        <span
+          className={diffBadge}
+          aria-label={session.diffStats && (session.diffStats.added > 0 || session.diffStats.removed > 0)
+            ? `Diff: +${session.diffStats.added} -${session.diffStats.removed}`
+            : undefined}
+          aria-hidden={session.diffStats && (session.diffStats.added > 0 || session.diffStats.removed > 0) ? undefined : "true"}
+        >
           {session.diffStats && (session.diffStats.added > 0 || session.diffStats.removed > 0) ? (
             <>
               <span style={{ color: "var(--success)" }}>+{session.diffStats.added}</span>
@@ -272,7 +293,7 @@ export function SessionRow({
       )}
 
       {/* Actions: primary (hover-only unless needs attention) + overflow (always visible) */}
-      <span className={actionsStyle} aria-label="Session actions">
+      <span className={actionsStyle} role="group" aria-label="Session actions">
         <span className={primaryActionWrapper}>
           {(isPaused || isReady) && onResume && (
             <button
@@ -325,6 +346,6 @@ export function SessionRow({
           onUpdateTags={onUpdateTags}
         />
       </span>
-    </li>
+    </div>
   );
 }

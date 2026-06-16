@@ -35,11 +35,22 @@ export function BulkActions({
 }: BulkActionsProps) {
   const [groupAsValue, setGroupAsValue] = useState("");
   const [groupAsLoading, setGroupAsLoading] = useState(false);
-  if (selectedCount === 0) return null;
+  if (selectedCount === 0) {
+    return (
+      <div className={container}>
+        <span className={count} style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+          Click sessions to select them
+        </span>
+        <button onClick={onClearSelection} className={clearButton}>
+          Cancel
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className={container}>
-      <div role="status" aria-live="polite" aria-atomic="true" className={feedback ? feedbackClass : undefined}>{feedback ?? ""}</div>
+      {feedback && <div className={feedbackClass} aria-hidden="true">{feedback}</div>}
       <div className={selection}>
         <span className={count}>
           {selectedCount} of {totalCount} selected
@@ -66,12 +77,6 @@ export function BulkActions({
           className={actionButton}
         >
           ▶️ Resume Selected
-        </button>
-        <button
-          onClick={onStopAll}
-          className={actionButton}
-        >
-          ⏹️ Stop Selected
         </button>
         <button
           onClick={onAddTagAll}

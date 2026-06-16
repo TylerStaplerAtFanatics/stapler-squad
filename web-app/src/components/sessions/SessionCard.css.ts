@@ -275,9 +275,13 @@ export const editTagsButton = style({
   cursor: "pointer",
   opacity: 0,
   transition: "all 0.2s ease, opacity 0.15s ease",
+  "@media": {
+    "(hover: none)": { opacity: 1 },
+  },
   selectors: {
     [`${card}:hover &`]: { opacity: 1 },
     [`${card}:focus-within &`]: { opacity: 1 },
+    "&:focus-visible": { opacity: 1 },
     "&:hover": { background: vars.color.primary, color: vars.color.primaryText },
   },
 });
@@ -832,4 +836,26 @@ export const taskFraction = style({
   fontSize: vars.fontSize.xs,
   color: vars.color.textSecondary,
   marginLeft: vars.space["1"],
+});
+
+const spinKeyframes = keyframes({
+  from: { transform: "rotate(0deg)" },
+  to: { transform: "rotate(360deg)" },
+});
+
+export const creationSpinner = style({
+  display: "inline-block",
+  width: "14px",
+  height: "14px",
+  border: `2px solid ${vars.color.primary}`,
+  borderTopColor: "transparent",
+  borderRadius: "50%",
+  "@media": {
+    "(prefers-reduced-motion: no-preference)": {
+      animationName: spinKeyframes,
+      animationDuration: "0.8s",
+      animationTimingFunction: "linear",
+      animationIterationCount: "infinite",
+    },
+  },
 });
