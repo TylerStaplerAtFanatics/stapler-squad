@@ -864,7 +864,6 @@ export function SessionList({
                 }}
               >
                 {item.kind === "header" ? (
-                  <div role="listitem">
                   <div
                     role="heading"
                     aria-level={3}
@@ -969,7 +968,6 @@ export function SessionList({
                         )}
                       </>
                     )}
-                  </div>
                   </div>
                 ) : (
                   <SessionRow

@@ -2,9 +2,10 @@ package session
 
 import "context"
 
-// State machine diagram (5-state model):
+// State machine diagram (6-state model):
 //
 //	Creating      --> Active, Stopped
+//	Restoring     --> Active, Creating (transient startup state; never persisted)
 //	Active        --> Paused, Stopped, Hibernated
 //	Paused        --> Active, Stopped
 //	Stopped       --> Active
@@ -39,6 +40,10 @@ type TransitionDef struct {
 var transitionDefs = []TransitionDef{
 	{From: Creating, To: Active},
 	{From: Creating, To: Stopped},
+	// Restoring is a transient startup status. It transitions to Active on success
+	// or Creating on failure (so the UI reverts to the pre-restore spinner).
+	{From: Restoring, To: Active},
+	{From: Restoring, To: Creating},
 	{From: Active, To: Paused},
 	{From: Active, To: Stopped},
 	{From: Active, To: Hibernated, After: func(ctx context.Context, i *Instance) {

@@ -51,6 +51,7 @@ linters:
       - web-app
       - \.stapler-squad
       - \.claude-squad
+      - \.claude
     rules:
       # infoplist_darwin.go uses import "C" to force CGO linking for macOS codesigning.
       # The CGO preamble comment causes a C compiler parse error when golangci-lint

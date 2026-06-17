@@ -40,6 +40,11 @@ const (
 	Ready = Active
 	// Deprecated: use Creating.
 	Loading = Creating
+
+	// Restoring is a transient in-memory-only status set during server startup
+	// while inst.Start(false) is executing for a previously-persisted session.
+	// This value is NEVER written to the database; SaveInstances skips Restoring instances.
+	Restoring Status = 5
 )
 
 // String returns a human-readable name for the status.
@@ -55,6 +60,8 @@ func (s Status) String() string {
 		return "Stopped"
 	case Hibernated:
 		return "Hibernated"
+	case Restoring:
+		return "Restoring"
 	default:
 		return fmt.Sprintf("Status(%d)", int(s))
 	}

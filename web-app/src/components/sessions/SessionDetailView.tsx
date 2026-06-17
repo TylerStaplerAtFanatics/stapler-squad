@@ -87,6 +87,7 @@ function getStatusLabel(status: SessionStatus): string {
     case SessionStatus.NEEDS_APPROVAL: return "Needs Approval";
     case SessionStatus.CREATING: return "Creating";
     case SessionStatus.STOPPED: return "Stopped";
+    case SessionStatus.RESTORING: return "Restoring";
     default: return "Unknown";
   }
 }
@@ -690,6 +691,20 @@ export function SessionDetailView({
                     >
                       ▶ Resume Session
                     </button>
+                  </div>
+                )}
+                {session.status === SessionStatus.RESTORING && (
+                  <div
+                    className={pausedOverlay}
+                    role="status"
+                    aria-live="polite"
+                    aria-label="Session is restoring"
+                  >
+                    <span className={pausedOverlayIcon} aria-hidden="true">⏳</span>
+                    <p className={pausedOverlayTitle}>Restoring session…</p>
+                    <p className={pausedOverlayReason}>
+                      This session is reconnecting to the terminal. It will be ready shortly.
+                    </p>
                   </div>
                 )}
               </div>
