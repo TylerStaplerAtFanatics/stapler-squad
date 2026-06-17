@@ -286,10 +286,12 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 
 	// Note: SetExternalDiscovery is now called inside BuildRuntimeDeps.
 
-	// Start external session infrastructure
-	deps.ExternalDiscovery.Start(5 * time.Second)
+	// Start external session infrastructure.
+	// Wire the approval monitor before starting discovery so its callbacks are
+	// registered before the async ScanFromUserOptions goroutine can fire.
 	deps.ExternalApprovalMonitor.Start()
 	deps.ExternalApprovalMonitor.IntegrateWithDiscoveryTmux(deps.ExternalDiscovery, deps.TmuxStreamerManager)
+	deps.ExternalDiscovery.Start(5 * time.Second)
 
 	// Register ConnectRPC WebSocket handler (must come before unary handler)
 	wsHandler := services.NewConnectRPCWebSocketHandler(
