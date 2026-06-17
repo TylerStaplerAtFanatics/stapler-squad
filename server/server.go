@@ -513,8 +513,7 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	log.Info("Analytics EventBus subscriber started")
 
 	// Register analytics HTTP handler (POST /api/analytics, GET /api/analytics/summary).
-	var analyticsHandler *handlers.AnalyticsHandler
-	analyticsHandler = handlers.NewAnalyticsHandlerWithClient(analyticsProvider, deps.AnalyticsEntClient)
+	analyticsHandler := handlers.NewAnalyticsHandlerWithClient(analyticsProvider, deps.AnalyticsEntClient)
 	analyticsHandler.RegisterRoutes(srv.mux)
 	log.Info("Registered analytics handler at POST /api/analytics and GET /api/analytics/summary")
 
