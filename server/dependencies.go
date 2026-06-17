@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
@@ -60,6 +61,10 @@ type ServerDependencies struct {
 	// is used as a fallback in that case).
 	AnalyticsEntClient *ent.Client
 
+	// AnalyticsClientPtr is populated asynchronously by a dedicated goroutine.
+	// The late-bind goroutine in wireDepsIntoServer polls this until non-nil.
+	AnalyticsClientPtr *atomic.Pointer[ent.Client]
+
 	// VNCDeps holds the result of the startup VNC dependency check.
 	// Available=false means the Browser tab will be hidden on all sessions.
 	VNCDeps vnc.DepsResult
@@ -104,6 +109,7 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
 		AnalyticsEntClient:      rt.AnalyticsEntClient,
+		AnalyticsClientPtr:      &rt.AnalyticsClientPtr,
 		VNCDeps:                 rt.VNCDeps,
 		CDPDeps:                 rt.CDPDeps,
 		HeadlessPool:            rt.HeadlessPool,
@@ -371,6 +377,11 @@ type RuntimeDeps struct {
 	// Analytics storage.
 	AnalyticsEntClient *ent.Client
 
+	// AnalyticsClientPtr is an atomic pointer populated asynchronously by a
+	// dedicated goroutine. The late-bind goroutine in wireDepsIntoServer polls
+	// this until non-nil, then upgrades the analytics provider.
+	AnalyticsClientPtr atomic.Pointer[ent.Client]
+
 	// VNCDeps holds the result of the startup VNC dependency check.
 	VNCDeps vnc.DepsResult
 
@@ -586,6 +597,23 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		syncOrphanedApprovalsToQueue(svc.ApprovalStore, instances, reviewQueue)
 	}()
 
+	// Dedicated analytics open goroutine — runs concurrently with session restore.
+	go func() {
+		configDir, configErr := config.GetConfigDir()
+		if configErr != nil {
+			log.Warn("could not determine config dir for analytics DB", "err", configErr)
+			return
+		}
+		ctx := context.Background()
+		ac, acErr := analytics.OpenAnalyticsDB(ctx, configDir)
+		if acErr != nil {
+			log.Warn("could not open analytics DB (will use log-only fallback)", "err", acErr)
+			return
+		}
+		log.Info("analytics DB opened (async)")
+		deps.AnalyticsClientPtr.Store(ac)
+	}()
+
 	// Step 8: ReactiveQueueManager
 	reactiveQueueMgr := NewReactiveQueueManager(reviewQueue, reviewQueuePoller, eventBus, statusManager, storage)
 	log.Info("ReactiveQueueManager initialized")
@@ -712,19 +740,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Warn("could not initialize UnfinishedWork state store", "err", configErr)
 	}
 
-	// Open the dedicated analytics database (non-fatal: fall back gracefully on failure).
-	var analyticsClient *ent.Client
-	if configDir, configErr := config.GetConfigDir(); configErr == nil {
-		ctx := context.Background()
-		if ac, acErr := analytics.OpenAnalyticsDB(ctx, configDir); acErr != nil {
-			log.Warn("could not open analytics DB (will use log-only fallback)", "err", acErr)
-		} else {
-			analyticsClient = ac
-			log.Info("analytics DB opened", "path", configDir+"/analytics.db")
-		}
-	} else {
-		log.Warn("could not determine config dir for analytics DB", "err", configErr)
-	}
+	// analyticsEntClient is populated asynchronously by a dedicated goroutine below.
 
 	// 60 s reconcile ticker: safety net for abnormal exits where EventExited cannot fire.
 	go func() {
@@ -843,7 +859,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		BacklogService:          backlogSvc,
 		SyncLoop:                nil, // managed by BacklogController
 		Config:                  cfg,
-		AnalyticsEntClient:      analyticsClient,
+		AnalyticsEntClient:      nil, // populated asynchronously via AnalyticsClientPtr
 		VNCDeps:                 vncDeps,
 		CDPDeps:                 cdpDeps,
 		WorkflowRepo:            workflowRepo,

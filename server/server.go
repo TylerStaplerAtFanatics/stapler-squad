@@ -513,7 +513,8 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	log.Info("Analytics EventBus subscriber started")
 
 	// Register analytics HTTP handler (POST /api/analytics, GET /api/analytics/summary).
-	analyticsHandler := handlers.NewAnalyticsHandlerWithClient(analyticsProvider, deps.AnalyticsEntClient)
+	var analyticsHandler *handlers.AnalyticsHandler
+	analyticsHandler = handlers.NewAnalyticsHandlerWithClient(analyticsProvider, deps.AnalyticsEntClient)
 	analyticsHandler.RegisterRoutes(srv.mux)
 	log.Info("Registered analytics handler at POST /api/analytics and GET /api/analytics/summary")
 
@@ -521,6 +522,44 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	telemetryHandler := handlers.NewTelemetryHandler(analyticsProvider)
 	srv.mux.HandleFunc("POST /api/telemetry", telemetryHandler.HandleTelemetry)
 	log.Info("Registered telemetry handler at POST /api/telemetry")
+
+	// Late-bind analytics provider once the dedicated open goroutine populates the atomic pointer.
+	if deps.AnalyticsClientPtr != nil {
+		go func() {
+			for {
+				if ac := deps.AnalyticsClientPtr.Load(); ac != nil {
+					log.Info("analytics DB ready (async): upgrading to SQLite provider")
+					analyticsProvider := analytics.NewSQLiteAnalyticsProvider(ac)
+					analytics.StartRetentionEnforcer(serverCtx, ac,
+						cfg.AnalyticsMaxRowsOrDefault(), cfg.AnalyticsMaxAgeDaysOrDefault(), cfg.EscapeAnalyticsRetentionDays)
+					if cfg.EscapeAnalyticsCaptureLevel != "off" {
+						escapeWriter := analytics.NewEscapeEventBatchWriter(ac, cfg.EscapeAnalyticsMaxRowsPerSession)
+						go escapeWriter.Start(serverCtx)
+						pkganalytics.SetGlobalEscapeWriter(escapeWriter)
+						log.Info("Escape analytics batch writer started (async)",
+							"captureLevel", cfg.EscapeAnalyticsCaptureLevel,
+							"maxRowsPerSession", cfg.EscapeAnalyticsMaxRowsPerSession,
+						)
+					}
+					if deps.SessionService != nil {
+						deps.SessionService.SetAnalyticsClient(ac)
+						deps.SessionService.SetAnalyticsProvider(analyticsProvider)
+						log.Info("Wired analytics ent client into SessionService (async)")
+					}
+					if analyticsHandler != nil {
+						analyticsHandler.SetClient(ac)
+						log.Info("Upgraded analytics handler to SQLite provider (async)")
+					}
+					return
+				}
+				select {
+				case <-serverCtx.Done():
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+		}()
+	}
 
 	// Register raw file download endpoint.
 	// Uses the FileService inside SessionService to validate paths against

@@ -99,6 +99,12 @@ func NewAnalyticsHandlerWithClient(provider analytics.AnalyticsProvider, client 
 	return h
 }
 
+// SetClient replaces the ent client used for summary queries. Safe to call after
+// construction when the analytics DB opens asynchronously.
+func (h *AnalyticsHandler) SetClient(client *ent.Client) {
+	h.client = client
+}
+
 // RegisterRoutes registers the analytics routes on mux.
 func (h *AnalyticsHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/analytics", h.HandlePost)
