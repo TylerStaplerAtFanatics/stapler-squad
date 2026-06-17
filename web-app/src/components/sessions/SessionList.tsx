@@ -612,6 +612,7 @@ export function SessionList({
               onClick={handleToggleSelectMode}
               className={`${selectModeButton} ${selectMode ? selectModeButtonActive : ""}`}
               aria-label={selectMode ? "Exit select mode" : "Enter select mode"}
+              aria-pressed={selectMode}
             >
               {selectMode ? "Cancel" : "Select"}
             </button>
@@ -948,6 +949,7 @@ export function SessionList({
                                 <button
                                   type="button"
                                   autoFocus
+                                  aria-label={`Cancel delete project ${item.displayName}`}
                                   onClick={() => setDeletingProjectId(null)}
                                   style={{ background: "none", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem", color: "var(--text-secondary)" }}
                                 >
@@ -1088,6 +1090,7 @@ export function SessionList({
                               <button
                                 type="button"
                                 autoFocus
+                                aria-label={`Cancel delete project ${displayName}`}
                                 onClick={() => setDeletingProjectId(null)}
                                 style={{ background: "none", border: "1px solid var(--border-color)", borderRadius: "4px", cursor: "pointer", padding: "2px 6px", fontSize: "0.75rem", color: "var(--text-secondary)" }}
                               >
@@ -1161,6 +1164,7 @@ export function SessionList({
           <ModalFooter>
             <button
               autoFocus
+              aria-describedby="bulk-delete-warning"
               style={{ padding: '0.5rem 1rem', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--card-background)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.875rem' }}
               onClick={() => setShowBulkDeleteConfirm(false)}
             >
