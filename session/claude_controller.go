@@ -615,14 +615,13 @@ func (cc *ClaudeController) GetCurrentStatus() (detection.DetectedStatus, string
 		return detection.StatusUnknown, "PTY not initialized"
 	}
 
-	// pa.GetBuffer() uses its own p.mu — safe without any lifecycle lock.
-	raw := pa.GetBuffer()
+	// Read only the tail bytes needed for detection — avoids copying the full 10MB buffer.
+	raw := pa.GetRecentOutput(statusDetectionTailBytes)
 	if len(raw) == 0 {
 		return detection.StatusUnknown, "No terminal content"
 	}
-	content := string(raw)
 
-	tail := tailContent(content, statusDetectionTailBytes)
+	tail := string(raw)
 	h := hashString(tail)
 
 	var hit bool
@@ -875,10 +874,9 @@ func (cc *ClaudeController) GetIdleState() (detection.IdleState, time.Time) {
 
 	var state detection.IdleState
 	if pa != nil {
-		raw := pa.GetBuffer()
+		raw := pa.GetRecentOutput(statusDetectionTailBytes)
 		if len(raw) > 0 {
-			content := string(raw)
-			tail := tailContent(content, statusDetectionTailBytes)
+			tail := string(raw)
 			h := hashString(tail)
 
 			var hit bool

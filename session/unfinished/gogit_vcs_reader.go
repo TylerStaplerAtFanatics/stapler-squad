@@ -633,10 +633,13 @@ func (g *GoGitVCSReader) diffShortstatUncached(worktreePath string) (DiffStat, e
 	// largest single changed file rather than the sum of all changed-file blobs.
 	var d DiffStat
 
-	readBlobUnderLock := func(hash plumbing.Hash) []byte {
+	readBlob := func(hash plumbing.Hash) []byte {
 		if hash == (plumbing.Hash{}) {
 			return nil
 		}
+		// Hold the lock only long enough to open the blob reader from the ODB;
+		// the actual decompression I/O runs outside the lock so parallel workers
+		// on different worktrees of the same repo don't serialize on disk reads.
 		entry.mu.Lock()
 		blob, berr := entry.repo.BlobObject(hash)
 		if berr != nil {
@@ -650,19 +653,18 @@ func (g *GoGitVCSReader) diffShortstatUncached(worktreePath string) (DiffStat, e
 			return nil
 		}
 		r, rerr := blob.Reader()
+		entry.mu.Unlock()
 		if rerr != nil {
-			entry.mu.Unlock()
 			return nil
 		}
 		data, _ := io.ReadAll(r)
 		_ = r.Close()
-		entry.mu.Unlock()
 		return data
 	}
 
 	applyDiff := func(t changeTarget) {
 		d.Files++
-		headData := readBlobUnderLock(t.headHash)
+		headData := readBlob(t.headHash)
 		if t.isDeleted {
 			d.Deletions += countBytesLines(headData)
 			return
