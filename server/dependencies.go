@@ -512,11 +512,11 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		// sessions with a live tmux). Pre-marking them would make Step 6b's check fail.
 		for _, inst := range instances {
 			if !inst.Started() && inst.Status != session.Stopped {
-				inst.Status = session.Restoring
+				inst.ForceStatus(session.Restoring)
 				eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"status"}))
 				if err := inst.Start(false); err != nil {
 					log.Error("failed to start loaded instance", "session", inst.Title, "err", err)
-					inst.Status = session.Creating
+					inst.ForceStatus(session.Creating)
 					eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"status"}))
 				} else {
 					log.Info("started loaded instance", "session", inst.Title)

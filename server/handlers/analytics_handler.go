@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/tstapler/stapler-squad/log"
@@ -73,9 +74,9 @@ type analyticsSummaryResponse struct {
 
 // AnalyticsHandler handles POST /api/analytics and GET /api/analytics/summary.
 type AnalyticsHandler struct {
-	provider analytics.AnalyticsProvider
-	limiter  *rateLimiter
-	client   *ent.Client // may be nil when only LogAnalyticsProvider is available
+	provider  analytics.AnalyticsProvider
+	limiter   *rateLimiter
+	clientPtr atomic.Pointer[ent.Client] // may be nil when only LogAnalyticsProvider is available
 }
 
 // NewAnalyticsHandler creates a new AnalyticsHandler with a 1000/min rate limiter.
@@ -95,14 +96,16 @@ func NewAnalyticsHandler(provider analytics.AnalyticsProvider) *AnalyticsHandler
 // summary queries from the ent client. Use this in production wiring.
 func NewAnalyticsHandlerWithClient(provider analytics.AnalyticsProvider, client *ent.Client) *AnalyticsHandler {
 	h := NewAnalyticsHandler(provider)
-	h.client = client
+	if client != nil {
+		h.clientPtr.Store(client)
+	}
 	return h
 }
 
 // SetClient replaces the ent client used for summary queries. Safe to call after
 // construction when the analytics DB opens asynchronously.
 func (h *AnalyticsHandler) SetClient(client *ent.Client) {
-	h.client = client
+	h.clientPtr.Store(client)
 }
 
 // RegisterRoutes registers the analytics routes on mux.
@@ -209,8 +212,10 @@ func (h *AnalyticsHandler) HandleSummary(w http.ResponseWriter, r *http.Request)
 
 	categoryFilter := q.Get("category")
 
+	client := h.clientPtr.Load()
+
 	// If no ent client, return an empty summary.
-	if h.client == nil {
+	if client == nil {
 		resp := analyticsSummaryResponse{
 			From:       from,
 			To:         to,
@@ -229,7 +234,7 @@ func (h *AnalyticsHandler) HandleSummary(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 
 	// Build base query with time range.
-	query := h.client.AnalyticsEvent.Query().
+	query := client.AnalyticsEvent.Query().
 		Where(
 			analyticsevent.CreatedAtGTE(from),
 			analyticsevent.CreatedAtLTE(to),

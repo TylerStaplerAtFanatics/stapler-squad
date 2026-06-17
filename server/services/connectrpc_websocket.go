@@ -547,6 +547,8 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 	// waitForQuiescence, causing it to always burn the full 500 ms timeout.
 	quiescenceSubID, quiescenceUpdateChan := streamer.SubscribeControlModeUpdates()
 	quiescenceCh := make(chan struct{}, 16)
+	// UnsubscribeControlModeUpdates (called below at line ~587) closes quiescenceUpdateChan,
+	// which causes this goroutine to exit cleanly via the range loop termination.
 	go func() {
 		for range quiescenceUpdateChan {
 			select {
