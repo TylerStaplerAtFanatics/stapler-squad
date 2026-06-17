@@ -586,6 +586,12 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		log.Info("Hibernation sweeper started",
 			"idle_timeout_minutes", cfg.Hibernation.IdleTimeoutMinutes)
 	}
+
+	// Start session health checker (detects Active sessions whose tmux session died
+	// and restarts them automatically after two consecutive missed checks).
+	healthChecker := session.NewSessionHealthChecker(deps.Storage)
+	go healthChecker.ScheduledHealthCheck(30*time.Second, serverCtx.Done())
+	log.Info("Session health checker started", "interval", "30s", "failure_threshold", 2)
 }
 
 // registerStaticRoutes mounts routes that are always registered regardless of
