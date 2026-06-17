@@ -140,6 +140,14 @@ func withCursorSync(content string, instance *session.Instance) string {
 	return content + fmt.Sprintf("\x1b[%d;%dH", y+1, x+1)
 }
 
+// formatSnapshotForClient is the single entry-point for preparing a full-screen
+// capture-pane snapshot before transmission to xterm.js.
+// Centralising this here prevents cursor-sync and line-ending normalisation from
+// drifting out of sync between the control-mode and capture-pane streaming paths.
+func formatSnapshotForClient(snapshotPrefix, content string, instance *session.Instance) string {
+	return withCursorSync(snapshotPrefix+prepareSnapshotContent(content), instance)
+}
+
 // sessionSnapshot caches terminal capture-pane output per session.
 // dirty is set true when new output arrives so the next connect gets a fresh capture.
 type sessionSnapshot struct {
@@ -532,10 +540,21 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 		}
 	}()
 
-	// quiescenceCh is signaled inline by the output forwarding goroutine (below) on every
-	// received frame, eliminating the separate subscription and fan-out goroutine that was
-	// waking up 212K+ times per stream for every terminal byte.
+	// Subscribe early so quiescenceCh gets signals during the resize nudge.
+	// The main streaming subscription (further below) is separate and starts after
+	// the initial snapshot is sent.  Without this early subscription the output
+	// forwarding goroutine — which signals quiescenceCh — would not exist during
+	// waitForQuiescence, causing it to always burn the full 500 ms timeout.
+	quiescenceSubID, quiescenceUpdateChan := streamer.SubscribeControlModeUpdates()
 	quiescenceCh := make(chan struct{}, 16)
+	go func() {
+		for range quiescenceUpdateChan {
+			select {
+			case quiescenceCh <- struct{}{}:
+			default:
+			}
+		}
+	}()
 
 	if currentPaneReq.TargetCols != nil && currentPaneReq.TargetRows != nil {
 		targetCols := int(*currentPaneReq.TargetCols)
@@ -564,6 +583,8 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 	} else {
 		log.Warn("[streamViaControlMode] handshake missing dimensions, layout may be incorrect")
 	}
+	// Release the early quiescence subscription; its goroutine exits when the channel closes.
+	streamer.UnsubscribeControlModeUpdates(quiescenceSubID)
 
 	// Now capture content at correct dimensions.
 	// If capture fails (session died), proceed with empty content rather than trying
@@ -580,12 +601,7 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 	}
 
 	if initialContent != "" {
-		// Strip cursor-positioning codes before prepending clear+home.
-		// capture-pane -e preserves absolute cursor positions (ESC[n;mH) from the live
-		// session. Replaying these in a fresh xterm.js terminal causes garbled output
-		// because the positions assume a prior terminal state that no longer exists.
-		// Colors (SGR) are preserved; only context-dependent positioning is removed.
-		fullContent := withCursorSync(ansiSnapshotPrefix+prepareSnapshotContent(initialContent), instance)
+		fullContent := formatSnapshotForClient(ansiSnapshotPrefix, initialContent, instance)
 
 		terminalData := &sessionv1.TerminalData{
 			SessionId: sessionID,
@@ -1085,7 +1101,7 @@ func (h *ConnectRPCWebSocketHandler) streamViaTmuxCapturePane(stream *connectWeb
 		initialContent = streamer.GetContent()
 	}
 	if initialContent != "" {
-		fullContent := clearAndHome + prepareSnapshotContent(initialContent)
+		fullContent := formatSnapshotForClient(clearAndHome, initialContent, instance)
 		terminalData := &sessionv1.TerminalData{
 			SessionId: sessionID,
 			Data: &sessionv1.TerminalData_Output{
@@ -1148,7 +1164,7 @@ func (h *ConnectRPCWebSocketHandler) streamViaTmuxCapturePane(stream *connectWeb
 			case content := <-outputChan:
 				// Send full terminal content with clear screen prefix
 				// Since tmux capture-pane returns full snapshots, we need to clear first
-				fullContent := clearAndHome + content
+				fullContent := formatSnapshotForClient(clearAndHome, content, instance)
 
 				terminalData := &sessionv1.TerminalData{
 					SessionId: sessionID,
