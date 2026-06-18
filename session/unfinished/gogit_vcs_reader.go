@@ -461,7 +461,7 @@ func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error
 }
 
 func (g *GoGitVCSReader) CommitMessages(worktreePath, base string, max int) ([]string, error) {
-	cacheKey := worktreePath + "\x00" + base
+	cacheKey := fmt.Sprintf("%s\x00%s\x00%d", worktreePath, base, max)
 	if v, ok := g.commitMessagesCache.Load(cacheKey); ok {
 		if e := v.(commitMessagesEntry); time.Now().Before(e.expiry) {
 			return e.msgs, nil
@@ -701,7 +701,7 @@ func (g *GoGitVCSReader) diffShortstatUncached(worktreePath string) (DiffStat, e
 		_, _ = blobBuf.ReadFrom(r)
 		_ = r.Close()
 		entry.mu.Unlock()
-		return blobBuf.Bytes()
+		return bytes.Clone(blobBuf.Bytes())
 	}
 
 	applyDiff := func(t changeTarget) {
