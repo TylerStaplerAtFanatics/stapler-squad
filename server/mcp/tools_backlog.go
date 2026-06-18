@@ -540,6 +540,7 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 	// Persist triage result JSON on the ItemSession.
 	if updateErr := h.storage.UpdateItemSessionTriageResult(ctx, itemSession.ID.String(), string(payloadJSON)); updateErr != nil {
 		log.ErrorLog.Printf("[mcp:submit_triage_result] failed to save triage result: %v", updateErr)
+		return errResult(ErrInternalError, fmt.Sprintf("failed to persist triage result: %v", updateErr), "Retry submit_triage_result — the data was not saved."), nil
 	}
 	log.InfoLog.Printf("[mcp:submit_triage_result] session=%s item=%s triage_result=%s", callerUUID, itemID, string(payloadJSON))
 
