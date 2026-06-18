@@ -274,6 +274,14 @@ EOF
         printf "\n\n"
     fi
 
+    # Verify the new binary is properly signed before stopping the running service.
+    # This prevents a bad binary from taking the service down with no way back.
+    if ! codesign --verify --no-strict "$bin_path" 2>/dev/null; then
+        log_error "New binary failed code signature verification: $bin_path"
+        log_error "Aborting install — existing service left running."
+        exit 1
+    fi
+
     # Stop the existing service before loading the updated plist.
     # Use 'launchctl bootout' (blocking — waits for the process to exit) so the
     # old process is fully gone before the new one starts.  This prevents the two
