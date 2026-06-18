@@ -325,7 +325,11 @@ func TestCreateSession_StatusManagerWiredBeforeDriver(t *testing.T) {
 	// We avoid testify's Eventually here because its condition runs in a goroutine,
 	// which prevents t.Skip from working correctly.
 	var managerWired bool
-	deadline := time.Now().Add(30 * time.Second)
+	// 60 s ceiling: the wiring happens after instance.Start() (tmux + git worktree
+	// init). Under `-race` on slow CI runners that startup can exceed a 30 s budget
+	// even though it completes in ~15 s locally, so the ceiling is generous to avoid
+	// false negatives while still bounding a genuine regression.
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if inst.GetStatusManager() != nil {
 			managerWired = true
@@ -336,11 +340,11 @@ func TestCreateSession_StatusManagerWiredBeforeDriver(t *testing.T) {
 
 	if !managerWired {
 		// When tmux is absent the goroutine sets Status=Stopped and returns early,
-		// never reaching SetStatusManager. By 30 s the goroutine is long finished.
+		// never reaching SetStatusManager. By 60 s the goroutine is long finished.
 		if session.Status(inst.GetStatus()) == session.Stopped {
 			t.Skip("tmux not available; skipping status-manager wiring assertion")
 		}
-		t.Error("status manager was never wired within 30 s — regression in CreateSession goroutine")
+		t.Error("status manager was never wired within 60 s — regression in CreateSession goroutine")
 	}
 }
 
