@@ -310,14 +310,15 @@ EOF
 }
 
 # ── Health Check + Auto-rollback ──────────────────────────────────────────────
-# Polls localhost:8543/health for up to 60s. On macOS, the extra time covers
-# the TCC consent dialog (Full Disk Access) that can stall first-boot startup.
+# Polls localhost:8543/health for up to 120s. The extra time covers the TCC
+# consent dialog (Full Disk Access) on first-boot and session-restore latency
+# when many sessions need to be reconnected on startup.
 # If the service exits with a non-zero status before the timeout we bail early
-# rather than waiting the full 60 s, since a crashed binary won't recover.
+# rather than waiting the full 120 s, since a crashed binary won't recover.
 health_check_and_rollback() {
     bin_path="$1"
     prev_bin="${bin_path}.prev"
-    max_wait=60
+    max_wait=120
     elapsed=0
     url="http://localhost:8543/health"
     printf "==> Waiting for service to be healthy (up to ${max_wait}s)"
