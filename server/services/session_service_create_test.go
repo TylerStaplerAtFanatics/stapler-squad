@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -293,6 +294,21 @@ func TestCreateSession_OneOff_BadBaseDir_ReturnsInternalError(t *testing.T) {
 //
 // Requires tmux to be installed; skipped automatically otherwise.
 func TestCreateSession_StatusManagerWiredBeforeDriver(t *testing.T) {
+	// This regression test exercises the tmux-available wiring path, which requires
+	// BOTH tmux and the launch program (claude) to be present. When claude is absent
+	// (e.g. CI), `tmux new-session ... claude` still returns 0 — the program-not-found
+	// failure happens inside the pane afterward — so instance.Start() returns nil and
+	// Status never becomes Stopped. That makes the runtime Stopped-skip below unreachable,
+	// and the test would spuriously fail at the deadline. Guard up front with the same
+	// exec.LookPath pattern used by the other tmux/claude integration tests
+	// (see session/mcp_integration_test.go).
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not in PATH")
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skip("claude not in PATH")
+	}
+
 	storage := createTestStorage(t)
 	bus := events.NewEventBus(16)
 	t.Cleanup(bus.Close)
@@ -325,11 +341,7 @@ func TestCreateSession_StatusManagerWiredBeforeDriver(t *testing.T) {
 	// We avoid testify's Eventually here because its condition runs in a goroutine,
 	// which prevents t.Skip from working correctly.
 	var managerWired bool
-	// 60 s ceiling: the wiring happens after instance.Start() (tmux + git worktree
-	// init). Under `-race` on slow CI runners that startup can exceed a 30 s budget
-	// even though it completes in ~15 s locally, so the ceiling is generous to avoid
-	// false negatives while still bounding a genuine regression.
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if inst.GetStatusManager() != nil {
 			managerWired = true
@@ -340,11 +352,11 @@ func TestCreateSession_StatusManagerWiredBeforeDriver(t *testing.T) {
 
 	if !managerWired {
 		// When tmux is absent the goroutine sets Status=Stopped and returns early,
-		// never reaching SetStatusManager. By 60 s the goroutine is long finished.
+		// never reaching SetStatusManager. By 30 s the goroutine is long finished.
 		if session.Status(inst.GetStatus()) == session.Stopped {
 			t.Skip("tmux not available; skipping status-manager wiring assertion")
 		}
-		t.Error("status manager was never wired within 60 s — regression in CreateSession goroutine")
+		t.Error("status manager was never wired within 30 s — regression in CreateSession goroutine")
 	}
 }
 
