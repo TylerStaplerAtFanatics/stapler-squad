@@ -1103,10 +1103,16 @@ func (s *BacklogService) TriggerTriage(
 			fmt.Errorf("set repo_path before triggering triage"))
 	}
 
+	// maxTriageDuration is the wall-clock limit for a single triage session.
+	// A session that has been running longer than this is treated as hung and
+	// eligible for tombstoning so a fresh triage can be triggered.
+	const maxTriageDuration = 2 * time.Hour
+
 	// 3a. Orphan-aware guard: if an open triage session exists, check whether it is
 	// genuinely still running. A session is orphaned (and safe to replace) when:
 	//   (a) the item has already advanced past "idea" (triage cycle completed), OR
-	//   (b) the session UUID is not live in memory (e.g. process died after a restart).
+	//   (b) the session UUID is not live in memory (e.g. process died after a restart), OR
+	//   (c) the session has been running longer than maxTriageDuration (hung session).
 	// Orphaned sessions are tombstoned so the re-trigger can proceed; only genuinely
 	// live sessions block with CodeAlreadyExists.
 	existingSessions, _ := s.storage.ListItemSessions(ctx, req.Msg.ItemId)
@@ -1119,7 +1125,8 @@ func (s *BacklogService) TriggerTriage(
 		neverStarted := is.StartedAt == nil
 		notLive := neverStarted || s.sessionStopper == nil || !s.sessionStopper.IsSessionLive(is.SessionUUID)
 		statusAdvanced := item.Status != string(session.BacklogStatusIdea)
-		if notLive || statusAdvanced {
+		timedOut := is.StartedAt != nil && time.Since(*is.StartedAt) > maxTriageDuration
+		if notLive || statusAdvanced || timedOut {
 			now := time.Now()
 			_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
 			if s.sessionStopper != nil {
