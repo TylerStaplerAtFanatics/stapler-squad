@@ -40,15 +40,20 @@ fi
     -addext "extendedKeyUsage=codeSigning"
 
 # Include -name so the private key label in keychain matches "StaplerSquadDev"
-# (required for set-key-partition-list -l filter to work correctly)
+# (required for set-key-partition-list -l filter to work correctly).
+# OpenSSL 3 defaults to AES-256/SHA-256 PKCS12; macOS's security tool rejects
+# both that and the RC2-based -legacy format. Use explicit PBE-SHA1-3DES ciphers
+# and a non-empty password (empty-password P12 MAC also fails on macOS import).
+P12_PASS="staplerdev-setup"
 "$OPENSSL" pkcs12 -export -out /tmp/StaplerSquadDev.p12 \
     -inkey /tmp/staplerdev.key -in /tmp/staplerdev.crt \
-    -passout pass:"" -name "StaplerSquadDev"
+    -passout pass:"$P12_PASS" -name "StaplerSquadDev" \
+    -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
 
 # 4. Import into login keychain (-T grants codesign access at import time)
 security import /tmp/StaplerSquadDev.p12 \
     -k ~/Library/Keychains/login.keychain-db \
-    -P "" -T /usr/bin/codesign
+    -P "$P12_PASS" -T /usr/bin/codesign
 
 # 5. Set trust: user domain only (no -d flag; -d = admin domain, requires sudo)
 # User-domain trust is sufficient for codesign on behalf of the current user.
@@ -56,13 +61,14 @@ security add-trusted-cert -r trustRoot \
     -k ~/Library/Keychains/login.keychain-db \
     /tmp/staplerdev.crt
 
-# 6. Set key partition list so codesign never prompts (no -k flag; omitting -k
-# causes security to use the currently-unlocked keychain without a password arg,
-# which is correct for the login keychain on a logged-in developer machine)
+# 6. Set key partition list so codesign never prompts.
+# Non-fatal: requires the keychain password interactively on some macOS versions.
+# If it fails, codesign will show a one-time allow/deny prompt on first use.
 security set-key-partition-list \
     -S "apple-tool:,apple:,codesign:" \
     -s -l "StaplerSquadDev" \
-    ~/Library/Keychains/login.keychain-db
+    ~/Library/Keychains/login.keychain-db 2>/dev/null || \
+    echo "  Note: key partition list not set; codesign may prompt once on first use."
 
 # 7. Clean up temp files
 rm -f /tmp/staplerdev.key /tmp/staplerdev.crt /tmp/StaplerSquadDev.p12

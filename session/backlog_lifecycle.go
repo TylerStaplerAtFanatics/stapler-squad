@@ -187,7 +187,9 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 	}
 
 	if BacklogStatus(item.Status) != BacklogStatusInProgress {
-		log.DebugLog.Printf("[BacklogLifecycle] item %s is %s (not in_progress); skipping", item.ID, item.Status)
+		if log.IsDebugEnabled() {
+			log.DebugLog.Printf("[BacklogLifecycle] item %s is %s (not in_progress); skipping", item.ID, item.Status)
+		}
 		return
 	}
 
@@ -355,7 +357,7 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 	}
 	if n > 0 {
 		log.InfoLog.Printf("[BacklogLifecycle] ReconcileStuckItems: transitioned %d stuck items to review", n)
-	} else {
+	} else if log.IsDebugEnabled() {
 		log.DebugLog.Printf("[BacklogLifecycle] ReconcileStuckItems: no stuck items found")
 	}
 }

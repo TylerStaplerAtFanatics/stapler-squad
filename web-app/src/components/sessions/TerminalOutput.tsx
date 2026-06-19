@@ -369,10 +369,14 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     if (!manager) return;
 
     if (!isInitialScrollbackDoneRef.current) {
-      // Initial load
+      // Initial load — the server already sent a clean snapshot via the output message,
+      // so we prepend historical scrollback above it rather than replacing the snapshot.
+      // writeInitialContent would call terminal.clear() and overwrite the snapshot with
+      // raw TUI render bytes, producing stacked status bar copies (cursor-up sequences
+      // replay against position 0 instead of the TUI's expected cursor position).
       console.log(`[TerminalOutput] Writing initial scrollback: ${scrollback.length} bytes`);
       isInitialScrollbackDoneRef.current = true;
-      await manager.writeInitialContent(scrollback);
+      await manager.prependScrollbackBatch(scrollback);
       if (metadata) {
         hasMoreScrollbackRef.current = metadata.hasMore;
         oldestSequenceReceivedRef.current = metadata.oldestSequence;
@@ -890,6 +894,11 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
+
+    // Reset scrollback state for new session so the initial ScrollbackResponse
+    // from the new connection is treated as an initial load (prependScrollbackBatch),
+    // not a paged history load.
+    isInitialScrollbackDoneRef.current = false;
 
     // Reset stream manager for new session
     if (streamManagerRef.current) {

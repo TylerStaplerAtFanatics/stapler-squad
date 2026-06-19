@@ -71,7 +71,7 @@ func TestHistoryLinker_AlreadyLinked_NoUpdate(t *testing.T) {
 	require.True(t, inst.HasClaudeSession())
 
 	linker := NewHistoryLinker(detector, nil)
-	linker.correlateSession(inst, false)
+	linker.correlateSession(inst, false, nil)
 
 	// force=false must skip already-linked sessions; UUID must be unchanged.
 	assert.Equal(t, originalUUID, inst.claudeSession.ConversationUUID)
@@ -108,7 +108,7 @@ func TestHistoryLinker_CorrelateSession_Force_UpdatesUUIDAfterClear(t *testing.T
 	require.True(t, inst.HasClaudeSession())
 
 	linker := NewHistoryLinker(detector, nil)
-	linker.correlateSession(inst, true)
+	linker.correlateSession(inst, true, nil)
 
 	// force=true must re-detect and update to the newer UUID.
 	require.True(t, inst.HasClaudeSession())
@@ -264,7 +264,7 @@ func TestHistoryLinker_CorrelateSession_UsesWorktreePath_NotBasePath(t *testing.
 	inst.gitManager.SetWorktree(newTestGitWorktree(repoPath, worktreePath))
 
 	linker := NewHistoryLinker(detector, nil)
-	linker.correlateSession(inst, false)
+	linker.correlateSession(inst, false, nil)
 
 	require.True(t, inst.HasClaudeSession(), "instance should be linked after correlateSession")
 	assert.Equal(t, worktreeUUID, inst.claudeSession.ConversationUUID,
@@ -293,7 +293,7 @@ func TestHistoryLinker_CorrelateSession_FallsBackToBasePath_WhenNoWorktree(t *te
 	// No worktree set — gitManager.HasWorktree() returns false.
 
 	linker := NewHistoryLinker(detector, nil)
-	linker.correlateSession(inst, false)
+	linker.correlateSession(inst, false, nil)
 
 	require.True(t, inst.HasClaudeSession())
 	assert.Equal(t, sessionUUID, inst.claudeSession.ConversationUUID)
