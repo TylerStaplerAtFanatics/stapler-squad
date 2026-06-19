@@ -112,6 +112,22 @@ export function BulkActions({
               type="text"
               value={groupAsValue}
               onChange={(e) => setGroupAsValue(e.target.value)}
+              onKeyDown={async (e) => {
+                if (e.key === "Enter" && groupAsValue.trim() && !groupAsLoading) {
+                  e.preventDefault();
+                  const name = groupAsValue.trim();
+                  setGroupAsLoading(true);
+                  setGroupAsError(null);
+                  try {
+                    await onGroupAs(name);
+                    setGroupAsValue("");
+                  } catch {
+                    setGroupAsError("Failed to group — try again");
+                  } finally {
+                    setGroupAsLoading(false);
+                  }
+                }
+              }}
               placeholder="Group as…"
               disabled={groupAsLoading}
               aria-label="Project name"
@@ -126,10 +142,25 @@ export function BulkActions({
               }}
             />
             <button
-              type="submit"
+              type="button"
               className={actionButton}
               disabled={groupAsLoading || !groupAsValue.trim()}
+              aria-busy={groupAsLoading}
               aria-label={groupAsLoading ? "Grouping sessions…" : groupAsValue.trim() ? `Group into project "${groupAsValue.trim()}"` : "Group selected sessions into project"}
+              onClick={async () => {
+                const name = groupAsValue.trim();
+                if (!name || groupAsLoading) return;
+                setGroupAsLoading(true);
+                setGroupAsError(null);
+                try {
+                  await onGroupAs(name);
+                  setGroupAsValue("");
+                } catch {
+                  setGroupAsError("Failed to group — try again");
+                } finally {
+                  setGroupAsLoading(false);
+                }
+              }}
             >
               {groupAsLoading ? "…" : <><span aria-hidden="true">📁</span> Group</>}
             </button>

@@ -289,7 +289,7 @@ function SessionCardInner({
   };
 
   const handleCardKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLAnchorElement)) {
+    if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLAnchorElement) && !(e.target instanceof HTMLSelectElement)) {
       e.preventDefault();
       if (selectMode && onToggleSelect) {
         onToggleSelect();
@@ -397,6 +397,7 @@ function SessionCardInner({
       aria-roledescription="session"
       tabIndex={0}
       aria-label={selectMode ? `${isSelected ? "Selected" : "Not selected"}: ${session.title}` : !isInlineEditing ? `${session.title}, press F2 to rename` : session.title}
+      aria-keyshortcuts={!selectMode && !isInlineEditing ? "F2" : undefined}
     >
       {selectMode && (
         <div className={checkbox} aria-hidden="true" onClick={handleCheckboxClick}>
@@ -600,13 +601,13 @@ function SessionCardInner({
           </div>
         </div>
         {session.category && (
-          <span className={category}>{session.category}</span>
+          <span className={category} aria-label={`Category: ${session.category}`}>{session.category}</span>
         )}
         <div className={tagsContainer}>
           {session.tags && session.tags.length > 0 && (
-            <div className={tags} role="group" aria-label="Session tags">
+            <div className={tags} role="list" aria-label="Session tags">
               {session.tags.map((sessionTag) => (
-                <span key={sessionTag} className={tag}>
+                <span key={sessionTag} className={tag} role="listitem">
                   {sessionTag}
                 </span>
               ))}
@@ -692,6 +693,7 @@ function SessionCardInner({
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className={githubLink}
+                  aria-label={`GitHub repository ${session.githubOwner}/${session.githubRepo}, opens in new tab`}
                 >
                   {session.githubOwner}/{session.githubRepo}
                 </a>
@@ -708,6 +710,7 @@ function SessionCardInner({
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className={githubLink}
+                  aria-label={`Pull request #${session.githubPrNumber} on ${session.githubOwner}/${session.githubRepo}, opens in new tab`}
                 >
                   #{session.githubPrNumber}
                 </a>
@@ -738,9 +741,13 @@ function SessionCardInner({
         </div>
 
         {session.diffStats && (
-          <div className={diffStats}>
-            <span className={diffAdded}>+{session.diffStats.added}</span>
-            <span className={diffRemoved}>-{session.diffStats.removed}</span>
+          <div
+            className={diffStats}
+            role="img"
+            aria-label={`Diff: +${session.diffStats.added} additions, -${session.diffStats.removed} deletions`}
+          >
+            <span className={diffAdded} aria-hidden="true">+{session.diffStats.added}</span>
+            <span className={diffRemoved} aria-hidden="true">-{session.diffStats.removed}</span>
           </div>
         )}
 
@@ -773,13 +780,13 @@ function SessionCardInner({
             </button>
             {isSnapshotOpen && (
               snapshotLoadingState ? (
-                <div className={snapshotLoading}>Loading…</div>
+                <div className={snapshotLoading} role="status">Loading…</div>
               ) : snapshotErrorMsg ? (
-                <div className={snapshotError.base}>
+                <div className={snapshotError.base} role="alert">
                   Failed to load preview
                 </div>
               ) : snapshotIsEmpty ? (
-                <div className={snapshotEmpty}>No recent output</div>
+                <div className={snapshotEmpty} role="status">No recent output</div>
               ) : (
                 <div
                   className={snapshotPane}
