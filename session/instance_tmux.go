@@ -52,10 +52,13 @@ func (i *Instance) GetTmuxSessionName() string {
 // in tmux, incorporating Claude session resume flags, MCP server URL, and prompt.
 func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 	program := i.Program
-	if claudeSessionID != "" && isClaude(program) {
+	// Evaluate once against the original program name before any flag mutation so
+	// later isClaude calls don't scan an ever-growing JSON-bloated command string.
+	isClaudeProgram := isClaude(program)
+	if claudeSessionID != "" && isClaudeProgram {
 		program = fmt.Sprintf("%s --resume %s", program, claudeSessionID)
 	}
-	if i.MCPServerURL != "" && isClaude(program) {
+	if i.MCPServerURL != "" && isClaudeProgram {
 		var mcpFlag string
 		if i.UUID != "" {
 			mcpFlag = fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}'`, i.MCPServerURL, i.UUID)
@@ -64,22 +67,22 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 		}
 		program = program + " " + mcpFlag
 	}
-	if i.AppendSystemPrompt != "" && isClaude(program) {
+	if i.AppendSystemPrompt != "" && isClaudeProgram {
 		program = fmt.Sprintf("%s --append-system-prompt %q", program, i.AppendSystemPrompt)
 	}
-	if i.AllowedTools != "" && isClaude(program) {
+	if i.AllowedTools != "" && isClaudeProgram {
 		program = fmt.Sprintf("%s --allowedTools %q", program, i.AllowedTools)
 	}
-	if i.PermissionMode != "" && isClaude(program) {
+	if i.PermissionMode != "" && isClaudeProgram {
 		program = fmt.Sprintf("%s --permission-mode %q", program, i.PermissionMode)
 	}
-	if i.AutoYes && isClaude(program) {
+	if i.AutoYes && isClaudeProgram {
 		program = program + " --dangerously-skip-permissions"
 	}
-	if i.OneShot && isClaude(program) {
+	if i.OneShot && isClaudeProgram {
 		program = program + " -p --output-format json"
 	}
-	if i.Prompt != "" && (claudeSessionID == "" || i.OneShot) && isClaude(program) {
+	if i.Prompt != "" && (claudeSessionID == "" || i.OneShot) && isClaudeProgram {
 		program = fmt.Sprintf("%s %q", program, i.Prompt)
 	}
 	return program
