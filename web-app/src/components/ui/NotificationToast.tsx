@@ -135,8 +135,9 @@ export function NotificationToast({
   };
 
   const handleViewBacklog = () => {
-    auditLog.logNotificationSessionViewed(notification.id, notification.sessionId);
-    router.push(`/backlog?item=${encodeURIComponent(backlogItemId!)}`);
+    if (!backlogItemId) return;
+    auditLog.logNotificationBacklogItemViewed(notification.id, backlogItemId);
+    router.push(`/backlog?item=${encodeURIComponent(backlogItemId)}`);
     handleClose();
   };
 

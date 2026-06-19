@@ -171,6 +171,19 @@ export function useAuditLog(options: UseAuditLogOptions = {}) {
     [logInteraction]
   );
 
+  const logNotificationBacklogItemViewed = useCallback(
+    (notificationId: string, itemId: string) => {
+      return logInteraction({
+        interactionType:
+          UserInteractionEvent_InteractionType.NOTIFICATION_SESSION_VIEWED,
+        context: "User clicked notification to view backlog item",
+        notificationId,
+        metadata: { item_id: itemId },
+      });
+    },
+    [logInteraction]
+  );
+
   return {
     // Generic method
     logInteraction,
@@ -185,5 +198,6 @@ export function useAuditLog(options: UseAuditLogOptions = {}) {
     logNotificationRemoved,
     logNotificationHistoryCleared,
     logNotificationSessionViewed,
+    logNotificationBacklogItemViewed,
   };
 }
