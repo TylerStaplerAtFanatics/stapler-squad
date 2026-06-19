@@ -185,7 +185,7 @@ export function SessionRow({
       onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
       tabIndex={0}
-      aria-label={`Session ${session.title}, status: ${getStatusDotLabel(dotStatus)}, program: ${session.program}`}
+      aria-label={`Session ${session.title}, status: ${getStatusDotLabel(dotStatus)}, program: ${session.program}${session.path ? `, path: ${abbreviatePath(session.path)}` : ""}`}
     >
       {/* Status dot — always visible */}
       <Tooltip label={`Status: ${getStatusDotLabel(dotStatus)}`}>
