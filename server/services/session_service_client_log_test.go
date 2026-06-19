@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
@@ -19,16 +20,35 @@ func newLogClientEventsRequest(entries ...*sessionv1.ClientLogEntry) *connect.Re
 	})
 }
 
+// syncBuffer is a bytes.Buffer protected by a mutex to allow concurrent writes
+// from background goroutines while the test reads the captured output.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
 // captureInfoLog temporarily redirects the slog default logger to a buffer
 // and returns a function that restores it and returns the captured output.
 func captureInfoLog() func() string {
-	var buf bytes.Buffer
-	h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	sb := &syncBuffer{}
+	h := slog.NewTextHandler(sb, &slog.HandlerOptions{Level: slog.LevelDebug})
 	original := slog.Default()
 	slog.SetDefault(slog.New(h))
 	return func() string {
 		slog.SetDefault(original)
-		return buf.String()
+		return sb.String()
 	}
 }
 
