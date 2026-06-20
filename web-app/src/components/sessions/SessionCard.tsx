@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, memo } from "react";
-import { Session, SessionStatus, SubStatus, ReviewItem, InstanceType, RateLimitState, CheckpointProto } from "@/gen/session/v1/types_pb";
+import { Session, SessionStatus, SubStatus, ReviewItem, InstanceType, RateLimitState, CheckpointProto, DetectedStatus } from "@/gen/session/v1/types_pb";
 import { Tooltip } from "../ui/Tooltip";
 import { ReviewQueueBadge } from "./ReviewQueueBadge";
 import { StatusBadge } from "./StatusBadge";
@@ -105,7 +105,7 @@ interface SessionCardProps {
   isSelected?: boolean;
   onToggleSelect?: () => void;
   reviewItem?: ReviewItem; // Optional review queue item if session needs attention
-  detectedStatus?: string; // Terminal-detected status from pattern analysis
+  detectedStatus?: DetectedStatus; // Terminal-detected status from pattern analysis
   detectedContext?: string; // Context string for the detected status
   suppressApprovalSubStatus?: boolean; // When true, hides Needs Approval chip/badge during optimistic clear
 }
@@ -506,8 +506,8 @@ function SessionCardInner({
             )}
             {/* StatusBadge: only shown when SubStatusChip has nothing to display (UNSPECIFIED or suppressed IDLE).
                 When the chip is active, it already carries the status info — showing both is duplication. */}
-            {detectedStatus &&
-              !(suppressApprovalSubStatus && (detectedStatus === "Needs Approval" || detectedStatus === "Input Required")) &&
+            {detectedStatus !== undefined &&
+              !(suppressApprovalSubStatus && (detectedStatus === DetectedStatus.NEEDS_APPROVAL || detectedStatus === DetectedStatus.INPUT_REQUIRED)) &&
               (session.subStatus === SubStatus.UNSPECIFIED || session.subStatus === SubStatus.IDLE) && (
               <StatusBadge detectedStatus={detectedStatus} context={detectedContext} />
             )}

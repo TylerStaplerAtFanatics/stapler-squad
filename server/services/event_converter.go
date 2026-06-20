@@ -5,6 +5,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/adapters"
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/detection"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -25,11 +26,18 @@ func convertEventToProto(event *events.Event) *sessionv1.SessionEvent {
 		}
 
 	case events.EventSessionUpdated:
+		sessionUpdatedProto := &sessionv1.SessionUpdatedEvent{
+			Session:       adapters.InstanceToProto(event.Session, nil),
+			UpdatedFields: event.UpdatedFields,
+		}
+		// Populate detection fields when detection data is present.
+		// StatusUnknown (zero value) means "no detection data" — map it to UNSPECIFIED.
+		if event.DetectedStatusTyped != detection.StatusUnknown {
+			sessionUpdatedProto.DetectedStatus = detection.DetectedStatusToProto(event.DetectedStatusTyped)
+			sessionUpdatedProto.DetectedContext = event.DetectedContext
+		}
 		protoEvent.Event = &sessionv1.SessionEvent_SessionUpdated{
-			SessionUpdated: &sessionv1.SessionUpdatedEvent{
-				Session:       adapters.InstanceToProto(event.Session, nil),
-				UpdatedFields: event.UpdatedFields,
-			},
+			SessionUpdated: sessionUpdatedProto,
 		}
 
 	case events.EventSessionDeleted:
@@ -38,20 +46,6 @@ func convertEventToProto(event *events.Event) *sessionv1.SessionEvent {
 				SessionId: event.SessionID,
 				Reason:    "", // Optional: could be populated from event context
 			},
-		}
-
-	case events.EventSessionStatusChanged:
-		statusChangedProto := &sessionv1.SessionStatusChangedEvent{
-			SessionId: event.SessionID,
-			OldStatus: adapters.StatusToProto(event.OldStatus),
-			NewStatus: adapters.StatusToProto(event.NewStatus),
-		}
-		if event.DetectedStatus != "" {
-			statusChangedProto.DetectedStatus = &event.DetectedStatus
-			statusChangedProto.DetectedContext = &event.DetectedContext
-		}
-		protoEvent.Event = &sessionv1.SessionEvent_StatusChanged{
-			StatusChanged: statusChangedProto,
 		}
 
 	case events.EventNotification:

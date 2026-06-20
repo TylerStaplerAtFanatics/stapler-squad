@@ -29,7 +29,6 @@ import {
   setLoading,
   setError,
   setConnectionState,
-  updateSessionStatus,
   selectAllSessions,
   selectSessionsLoading,
   selectSessionsError,
@@ -725,19 +724,6 @@ export function useSessionService(
         dispatch(removeSession(sessionId));
         dispatch(removeReviewQueueItem(sessionId));
         onSessionDeletedRef.current?.(sessionId);
-        break;
-      }
-      case "statusChanged": {
-        const { sessionId, newStatus, detectedStatus, detectedContext } = event.event.value;
-        // Dispatch into the reducer where state is always current.
-        // This avoids capturing `sessions` in the closure, which would force
-        // handleSessionEvent (and watchSessions) to reconnect on every change.
-        dispatch(updateSessionStatus({
-          sessionId,
-          newStatus,
-          detectedStatus: detectedStatus ?? undefined,
-          detectedContext: detectedContext ?? undefined,
-        }));
         break;
       }
       case "notification": {

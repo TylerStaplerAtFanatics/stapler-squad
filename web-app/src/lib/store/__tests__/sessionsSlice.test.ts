@@ -14,8 +14,9 @@ import sessionsReducer, {
   selectSessionsTotal,
   selectSessionsLoading,
   selectSessionsError,
+  selectDetectedStatusMap,
 } from "../sessionsSlice";
-import { Session, SessionSchema } from "@/gen/session/v1/types_pb";
+import { Session, SessionSchema, SessionStatus, SubStatus, DetectedStatus } from "@/gen/session/v1/types_pb";
 import { create } from "@bufbuild/protobuf";
 
 function makeStore() {
@@ -297,6 +298,79 @@ describe("sessionsSlice", () => {
       expect(selectSessionById(state, "bystander")).toBeDefined();
       expect(selectSessionById(state, "newcomer")).toBeDefined();
       expect(selectSessionsTotal(state)).toBe(2);
+    });
+  });
+
+  // Tests for upsertSession syncing detectedStatusMap from proto fields.
+  // Replaces the old updateSessionStatus tests (that action was removed in Epic 5).
+  describe("upsertSession — detectedStatusMap sync from proto fields", () => {
+    function makeActiveSessionWithDetection(id: string, detectedStatus: DetectedStatus, detectedContext = ""): Session {
+      return create(SessionSchema, {
+        id,
+        title: `Session ${id}`,
+        status: SessionStatus.ACTIVE,
+        detectedStatus,
+        detectedContext,
+      });
+    }
+
+    it("clears detectedStatusMap when session status is not ACTIVE", () => {
+      const store = makeStore();
+      // First seed a detected status entry by upserting an ACTIVE session
+      store.dispatch(upsertSession(makeActiveSessionWithDetection("s1", DetectedStatus.EXECUTING, "running")));
+      expect(selectDetectedStatusMap(store.getState() as any)["s1"]).toBeDefined();
+
+      // Now upsert the same session as STOPPED
+      store.dispatch(upsertSession(create(SessionSchema, { id: "s1", status: SessionStatus.STOPPED })));
+
+      expect(selectDetectedStatusMap(store.getState() as any)["s1"]).toBeUndefined();
+    });
+
+    it("sets detectedStatusMap when session is ACTIVE with typed DetectedStatus.EXECUTING", () => {
+      const store = makeStore();
+      store.dispatch(upsertSession(makeActiveSessionWithDetection("s1", DetectedStatus.EXECUTING, "tool running")));
+
+      const detected = selectDetectedStatusMap(store.getState() as any)["s1"];
+      expect(detected?.detectedStatus).toBe(DetectedStatus.EXECUTING);
+      expect(detected?.detectedContext).toBe("tool running");
+    });
+
+    it("clears detectedStatusMap when session is ACTIVE with DetectedStatus.UNSPECIFIED", () => {
+      const store = makeStore();
+      // Seed a detected entry
+      store.dispatch(upsertSession(makeActiveSessionWithDetection("s1", DetectedStatus.PROCESSING)));
+      expect(selectDetectedStatusMap(store.getState() as any)["s1"]).toBeDefined();
+
+      // Upsert with UNSPECIFIED detection
+      store.dispatch(upsertSession(create(SessionSchema, {
+        id: "s1",
+        status: SessionStatus.ACTIVE,
+        detectedStatus: DetectedStatus.UNSPECIFIED,
+      })));
+
+      expect(selectDetectedStatusMap(store.getState() as any)["s1"]).toBeUndefined();
+    });
+
+    it("clears detectedStatusMap when session is PAUSED", () => {
+      const store = makeStore();
+      store.dispatch(upsertSession(makeActiveSessionWithDetection("s1", DetectedStatus.NEEDS_APPROVAL)));
+      expect(selectDetectedStatusMap(store.getState() as any)["s1"]).toBeDefined();
+
+      store.dispatch(upsertSession(create(SessionSchema, { id: "s1", status: SessionStatus.PAUSED })));
+
+      expect(selectDetectedStatusMap(store.getState() as any)["s1"]).toBeUndefined();
+    });
+
+    it("does not affect detectedStatusMap entries for other sessions", () => {
+      const store = makeStore();
+      store.dispatch(upsertSession(makeActiveSessionWithDetection("s1", DetectedStatus.EXECUTING)));
+      store.dispatch(upsertSession(makeActiveSessionWithDetection("s2", DetectedStatus.PROCESSING)));
+
+      // Stop s1 only
+      store.dispatch(upsertSession(create(SessionSchema, { id: "s1", status: SessionStatus.STOPPED })));
+
+      expect(selectDetectedStatusMap(store.getState() as any)["s1"]).toBeUndefined();
+      expect(selectDetectedStatusMap(store.getState() as any)["s2"]?.detectedStatus).toBe(DetectedStatus.PROCESSING);
     });
   });
 });
