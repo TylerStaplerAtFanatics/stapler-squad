@@ -15,10 +15,18 @@ import (
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 )
 
+// newIsolatedDefaultsService creates a DefaultsService backed by a fresh temporary
+// directory, preventing config state from leaking between tests.
+func newIsolatedDefaultsService(t *testing.T) *DefaultsService {
+	t.Helper()
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	return NewDefaultsService()
+}
+
 // TestGetSessionDefaults_ReturnsDefaults verifies that GetSessionDefaults returns a
 // non-nil defaults payload without error on a fresh (empty) configuration.
 func TestGetSessionDefaults_ReturnsDefaults(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.GetSessionDefaultsRequest{})
 	resp, err := svc.GetSessionDefaults(context.Background(), req)
@@ -31,7 +39,7 @@ func TestGetSessionDefaults_ReturnsDefaults(t *testing.T) {
 // TestResolveDefaults_NoPath verifies that ResolveDefaults with an empty working
 // directory succeeds and returns a response (falls back to global defaults).
 func TestResolveDefaults_NoPath(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.ResolveDefaultsRequest{
 		WorkingDir:  "",
@@ -48,7 +56,7 @@ func TestResolveDefaults_NoPath(t *testing.T) {
 // TestUpdateGlobalDefaults_UpdatesProgram verifies that calling UpdateGlobalDefaults
 // with a program name persists it and returns the updated defaults.
 func TestUpdateGlobalDefaults_UpdatesProgram(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpdateGlobalDefaultsRequest{
 		Program: "aider",
@@ -64,7 +72,7 @@ func TestUpdateGlobalDefaults_UpdatesProgram(t *testing.T) {
 // TestUpsertProfile_EmptyName verifies that UpsertProfile with an empty profile name
 // returns CodeInvalidArgument.
 func TestUpsertProfile_EmptyName(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertProfileRequest{
 		Profile: &sessionv1.ProfileDefaultsProto{
@@ -83,7 +91,7 @@ func TestUpsertProfile_EmptyName(t *testing.T) {
 // TestUpsertProfile_NilProfile verifies that UpsertProfile with a nil profile
 // returns CodeInvalidArgument.
 func TestUpsertProfile_NilProfile(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertProfileRequest{
 		Profile: nil,
@@ -99,7 +107,7 @@ func TestUpsertProfile_NilProfile(t *testing.T) {
 // TestUpsertProfile_CreatesProfile verifies that a valid name + program succeeds and
 // the response echoes back the created profile.
 func TestUpsertProfile_CreatesProfile(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertProfileRequest{
 		Profile: &sessionv1.ProfileDefaultsProto{
@@ -119,7 +127,7 @@ func TestUpsertProfile_CreatesProfile(t *testing.T) {
 // TestDeleteProfile_NotFound verifies that deleting a non-existent profile returns
 // CodeNotFound.
 func TestDeleteProfile_NotFound(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.DeleteProfileRequest{
 		Name: "no-such-profile",
@@ -135,7 +143,7 @@ func TestDeleteProfile_NotFound(t *testing.T) {
 // TestDeleteProfile_EmptyName verifies that deleting with an empty name returns
 // CodeInvalidArgument.
 func TestDeleteProfile_EmptyName(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.DeleteProfileRequest{
 		Name: "",
@@ -151,7 +159,7 @@ func TestDeleteProfile_EmptyName(t *testing.T) {
 // TestDeleteProfile_Success verifies that upserting a profile and then deleting it
 // succeeds.
 func TestDeleteProfile_Success(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	// First create the profile.
 	upsertReq := connect.NewRequest(&sessionv1.UpsertProfileRequest{
@@ -174,7 +182,7 @@ func TestDeleteProfile_Success(t *testing.T) {
 // TestUpsertDirectoryRule_EmptyPath verifies that UpsertDirectoryRule with an empty
 // path returns CodeInvalidArgument.
 func TestUpsertDirectoryRule_EmptyPath(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertDirectoryRuleRequest{
 		Rule: &sessionv1.DirectoryRuleProto{
@@ -192,7 +200,7 @@ func TestUpsertDirectoryRule_EmptyPath(t *testing.T) {
 // TestUpsertDirectoryRule_NilRule verifies that UpsertDirectoryRule with a nil rule
 // returns CodeInvalidArgument.
 func TestUpsertDirectoryRule_NilRule(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertDirectoryRuleRequest{
 		Rule: nil,
@@ -208,7 +216,7 @@ func TestUpsertDirectoryRule_NilRule(t *testing.T) {
 // TestUpsertDirectoryRule_ValidPath verifies that a rule with a valid path is created
 // successfully and the response echoes back the path.
 func TestUpsertDirectoryRule_ValidPath(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertDirectoryRuleRequest{
 		Rule: &sessionv1.DirectoryRuleProto{
@@ -228,7 +236,7 @@ func TestUpsertDirectoryRule_ValidPath(t *testing.T) {
 // TestDeleteDirectoryRule_NotFound verifies that deleting a non-existent directory
 // rule returns CodeNotFound.
 func TestDeleteDirectoryRule_NotFound(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.DeleteDirectoryRuleRequest{
 		Path: "/nonexistent/path",
@@ -244,7 +252,7 @@ func TestDeleteDirectoryRule_NotFound(t *testing.T) {
 // TestDeleteDirectoryRule_EmptyPath verifies that deleting with an empty path returns
 // CodeInvalidArgument.
 func TestDeleteDirectoryRule_EmptyPath(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.DeleteDirectoryRuleRequest{
 		Path: "",
@@ -260,8 +268,7 @@ func TestDeleteDirectoryRule_EmptyPath(t *testing.T) {
 // TestListAliases_ReturnsEmptyList_WhenNoAliasesConfigured verifies that ListAliases
 // returns a non-nil empty slice when no aliases are configured.
 func TestListAliases_ReturnsEmptyList_WhenNoAliasesConfigured(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.ListAliasesRequest{})
 	resp, err := svc.ListAliases(context.Background(), req)
@@ -310,7 +317,7 @@ func TestListAliases_ReturnsAllAliases_WhenConfigHasAliases(t *testing.T) {
 // TestDeleteDirectoryRule_Success verifies that upserting a directory rule and then
 // deleting it succeeds.
 func TestDeleteDirectoryRule_Success(t *testing.T) {
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	// Create the rule first.
 	upsertReq := connect.NewRequest(&sessionv1.UpsertDirectoryRuleRequest{
@@ -333,8 +340,7 @@ func TestDeleteDirectoryRule_Success(t *testing.T) {
 // TestUpsertAlias_NilAlias verifies that UpsertAlias with a nil alias returns
 // CodeInvalidArgument.
 func TestUpsertAlias_NilAlias(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
 		Alias: nil,
@@ -350,8 +356,7 @@ func TestUpsertAlias_NilAlias(t *testing.T) {
 // TestUpsertAlias_EmptyName verifies that UpsertAlias with an empty alias name
 // returns CodeInvalidArgument.
 func TestUpsertAlias_EmptyName(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
 		Alias: &sessionv1.AliasProto{Name: ""},
@@ -367,8 +372,7 @@ func TestUpsertAlias_EmptyName(t *testing.T) {
 // TestUpsertAlias_InvalidName verifies that UpsertAlias with a name containing a
 // space returns CodeInvalidArgument with a message referencing the regex pattern.
 func TestUpsertAlias_InvalidName(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
 		Alias: &sessionv1.AliasProto{Name: "my project"},
@@ -384,8 +388,7 @@ func TestUpsertAlias_InvalidName(t *testing.T) {
 // TestUpsertAlias_CreatesAlias verifies that a valid new alias is appended to the
 // config and the response echoes back the alias with correct fields.
 func TestUpsertAlias_CreatesAlias(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
 		Alias: &sessionv1.AliasProto{Name: "myproj", Path: "~/code"},
@@ -407,8 +410,7 @@ func TestUpsertAlias_CreatesAlias(t *testing.T) {
 // TestUpsertAlias_UpdatesExistingAlias verifies that upserting an alias with the
 // same name overwrites the existing entry (no duplicate) and updates fields.
 func TestUpsertAlias_UpdatesExistingAlias(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 	ctx := context.Background()
 
 	// Pre-populate with an alias.
@@ -432,8 +434,7 @@ func TestUpsertAlias_UpdatesExistingAlias(t *testing.T) {
 // TestUpsertAlias_CaseInsensitiveDuplicate verifies that upserting an alias whose
 // name differs only in case from an existing alias overwrites in-place (no duplicate).
 func TestUpsertAlias_CaseInsensitiveDuplicate(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 	ctx := context.Background()
 
 	// Pre-populate with mixed-case alias.
@@ -455,8 +456,7 @@ func TestUpsertAlias_CaseInsensitiveDuplicate(t *testing.T) {
 // TestUpsertAlias_AllFieldsRoundTrip verifies that all AliasProto fields are persisted
 // and round-tripped correctly through UpsertAlias and config.LoadConfig.
 func TestUpsertAlias_AllFieldsRoundTrip(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
 		Alias: &sessionv1.AliasProto{
@@ -506,8 +506,7 @@ func TestUpsertAlias_AllFieldsRoundTrip(t *testing.T) {
 // TestUpsertAlias_WhitespaceOnlyName verifies that a whitespace-only name returns
 // CodeInvalidArgument (treated as empty after trimming).
 func TestUpsertAlias_WhitespaceOnlyName(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
 		Alias: &sessionv1.AliasProto{Name: "   "},
@@ -523,8 +522,7 @@ func TestUpsertAlias_WhitespaceOnlyName(t *testing.T) {
 // TestUpsertAlias_TrimsName verifies that a name with surrounding whitespace is trimmed
 // before validation and storage, and the trimmed name is returned.
 func TestUpsertAlias_TrimsName(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
 		Alias: &sessionv1.AliasProto{Name: "  myproj  "},
@@ -544,8 +542,7 @@ func TestUpsertAlias_TrimsName(t *testing.T) {
 // TestDeleteAlias_EmptyName verifies that DeleteAlias with an empty name returns
 // CodeInvalidArgument.
 func TestDeleteAlias_EmptyName(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.DeleteAliasRequest{Name: ""})
 	_, err := svc.DeleteAlias(context.Background(), req)
@@ -559,8 +556,7 @@ func TestDeleteAlias_EmptyName(t *testing.T) {
 // TestDeleteAlias_NotFound verifies that deleting a non-existent alias (with an
 // empty config) returns CodeNotFound and leaves the config unchanged.
 func TestDeleteAlias_NotFound(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 
 	req := connect.NewRequest(&sessionv1.DeleteAliasRequest{Name: "nonexistent"})
 	_, err := svc.DeleteAlias(context.Background(), req)
@@ -577,8 +573,7 @@ func TestDeleteAlias_NotFound(t *testing.T) {
 // TestDeleteAlias_DeletesAlias verifies that deleting the middle alias from a
 // three-alias config leaves exactly the two surrounding aliases intact.
 func TestDeleteAlias_DeletesAlias(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 	ctx := context.Background()
 
 	// Pre-populate three aliases.
@@ -604,8 +599,7 @@ func TestDeleteAlias_DeletesAlias(t *testing.T) {
 // TestDeleteAlias_CaseInsensitive verifies that DeleteAlias matches by name
 // case-insensitively, consistent with UpsertAlias.
 func TestDeleteAlias_CaseInsensitive(t *testing.T) {
-	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
-	svc := NewDefaultsService()
+	svc := newIsolatedDefaultsService(t)
 	ctx := context.Background()
 
 	_, err := svc.UpsertAlias(ctx, connect.NewRequest(&sessionv1.UpsertAliasRequest{

@@ -6,6 +6,8 @@ export const pageRoot = style({
   maxWidth: "960px",
   margin: "0 auto",
   padding: "2rem 1.5rem",
+  height: "100%",
+  overflowY: "auto",
 });
 
 export const pageTitle = style({

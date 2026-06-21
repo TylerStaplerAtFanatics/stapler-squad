@@ -131,6 +131,9 @@ func (d *DefaultsService) UpsertProfile(
 		p.CreatedAt = now
 	}
 
+	if cfg.SessionDefaults.Profiles == nil {
+		cfg.SessionDefaults.Profiles = make(map[string]config.ProfileDefaults)
+	}
 	cfg.SessionDefaults.Profiles[p.Name] = p
 
 	if err := config.SaveConfig(cfg); err != nil {
