@@ -238,6 +238,8 @@ export function useSessionService(
           initialPrompt: request.initialPrompt,
           autonomousMode: request.autonomousMode ?? false,
           permissionMode: request.permissionMode ?? "",
+          aliasName: request.aliasName ?? "",
+          cliFlags: request.cliFlags ?? "",
         });
 
         // Add to store (with duplicate check handled by entity adapter upsertOne)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -954,6 +955,7 @@ func (s *SessionService) CreateSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
 	}
 	if !req.Msg.OneOff &&
+		req.Msg.AliasName == "" &&
 		req.Msg.SessionType != sessionv1.SessionType_SESSION_TYPE_NEW_PROJECT &&
 		req.Msg.Path == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("path is required"))
@@ -1017,9 +1019,11 @@ func (s *SessionService) CreateSession(
 		log.Info("[CreateSession] resolved to local path", "path", resolvedPath, "branch", branch)
 	}
 
+	// Load config once; used by both the one-off path and the defaults/alias path below.
+	cfg := config.LoadConfig()
+
 	// One-off session: generate a fresh directory and override resolvedPath.
 	if req.Msg.OneOff {
-		cfg := config.LoadConfig()
 		baseDir, err := cfg.OneOffBaseDirOrDefault()
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve one_off_base_dir: %w", err))
@@ -1035,19 +1039,59 @@ func (s *SessionService) CreateSession(
 	// skip_defaults bypasses this for scripted or explicit-empty sessions.
 	program := req.Msg.Program
 	autoYes := req.Msg.AutoYes
+	instanceEnvVars := make(map[string]string)
+	instanceCLIFlags := ""
 	if !req.Msg.SkipDefaults {
-		cfg := config.LoadConfig()
-		workingDir := req.Msg.WorkingDir
-		if workingDir == "" {
-			workingDir = resolvedPath
+		if req.Msg.AliasName != "" {
+			resolved, err := config.ResolveAlias(cfg, req.Msg.AliasName, req.Msg.Branch, req.Msg.Title, "")
+			if err != nil {
+				if errors.Is(err, config.ErrAliasNotFound) {
+					return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("alias %q not found: %w", req.Msg.AliasName, err))
+				}
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve alias %q: %w", req.Msg.AliasName, err))
+			}
+			if program == "" {
+				program = resolved.Program
+			}
+			if !autoYes && resolved.AutoYes {
+				autoYes = true
+			}
+			for k, v := range resolved.EnvVars {
+				instanceEnvVars[k] = v
+			}
+			instanceCLIFlags = resolved.CLIFlags
+			if resolvedPath == "" && resolved.Path != "" {
+				resolvedPath = resolved.Path
+			}
+		} else {
+			workingDir := req.Msg.WorkingDir
+			if workingDir == "" {
+				workingDir = resolvedPath
+			}
+			resolved := config.ResolveDefaults(cfg, workingDir, req.Msg.Profile)
+			if program == "" {
+				program = resolved.Program
+			}
+			if !autoYes && resolved.AutoYes {
+				autoYes = true
+			}
+			for k, v := range resolved.EnvVars {
+				instanceEnvVars[k] = v
+			}
+			instanceCLIFlags = resolved.CLIFlags
 		}
-		resolved := config.ResolveDefaults(cfg, workingDir, req.Msg.Profile)
-		// Apply resolved defaults only for fields not explicitly set in the request.
-		if program == "" {
-			program = resolved.Program
-		}
-		if !autoYes && resolved.AutoYes {
-			autoYes = true
+	}
+
+	// Merge explicit request env_vars on top of resolved defaults.
+	for k, v := range req.Msg.EnvVars {
+		instanceEnvVars[k] = v
+	}
+	// Append explicit request cli_flags on top of resolved defaults.
+	if req.Msg.CliFlags != "" {
+		if instanceCLIFlags != "" {
+			instanceCLIFlags += " " + req.Msg.CliFlags
+		} else {
+			instanceCLIFlags = req.Msg.CliFlags
 		}
 	}
 
@@ -1100,6 +1144,8 @@ func (s *SessionService) CreateSession(
 		PermissionMode:   req.Msg.PermissionMode,
 		AutonomousMode:   req.Msg.AutonomousMode,
 		WorkflowID:       req.Msg.WorkflowId,
+		EnvVars:          instanceEnvVars,
+		CLIFlags:         instanceCLIFlags,
 	}
 
 	// Add GitHub metadata if this was a GitHub URL
@@ -2981,6 +3027,11 @@ func (s *SessionService) UpsertDirectoryRule(ctx context.Context, req *connect.R
 // DeleteDirectoryRule removes a directory rule by path.
 func (s *SessionService) DeleteDirectoryRule(ctx context.Context, req *connect.Request[sessionv1.DeleteDirectoryRuleRequest]) (*connect.Response[sessionv1.DeleteDirectoryRuleResponse], error) {
 	return s.defaultsSvc.DeleteDirectoryRule(ctx, req)
+}
+
+// ListAliases returns all configured alias presets.
+func (s *SessionService) ListAliases(ctx context.Context, req *connect.Request[sessionv1.ListAliasesRequest]) (*connect.Response[sessionv1.ListAliasesResponse], error) {
+	return s.defaultsSvc.ListAliases(ctx, req)
 }
 
 // SearchFiles performs a recursive name-substring search in a session's worktree.
