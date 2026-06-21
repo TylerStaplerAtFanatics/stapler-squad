@@ -24,7 +24,7 @@ const (
 	StatusError
 	StatusTestsFailing     // Tests are failing
 	StatusIdle             // Waiting for user input (INSERT mode, command prompt, etc.)
-	StatusActive           // Actively executing commands (shows "esc to interrupt")
+	StatusExecuting        // Actively executing commands (shows "esc to interrupt")
 	StatusSuccess          // Task completed successfully
 	StatusWaitingForAgent  // Waiting for one or more background agents to finish
 )
@@ -643,15 +643,16 @@ func (s DetectedStatus) String() string {
 		return "Tests Failing"
 	case StatusIdle:
 		return "Idle"
-	case StatusActive:
-		return "Active"
+	case StatusExecuting:
+		return "Executing"
 	case StatusSuccess:
 		return "Success"
 	case StatusWaitingForAgent:
 		return "Waiting for Agent"
-	default:
+	case StatusUnknown:
 		return "Unknown"
 	}
+	return "Unknown"
 }
 
 // ExportPatterns exports the current patterns to a YAML file.
@@ -691,13 +692,13 @@ func (sd *StatusDetector) GetPatternNames(status DetectedStatus) []string {
 		patterns = p.TestsFailing
 	case StatusIdle:
 		patterns = p.Idle
-	case StatusActive:
+	case StatusExecuting:
 		patterns = p.Active
 	case StatusSuccess:
 		patterns = p.Success
 	case StatusWaitingForAgent:
 		patterns = p.WaitingForAgent
-	default:
+	case StatusUnknown:
 		return nil
 	}
 
@@ -775,7 +776,7 @@ func (sd *StatusDetector) detectFromLines(lines []string) (DetectedStatus, strin
 				// hidden by a TUI overlay writing via \r but still indicate the session needs
 				// attention. Low-urgency statuses (Success, Processing, Idle) in earlier
 				// segments were overwritten and should not override the visual display.
-				if j == len(segs)-1 || s == StatusActive || s == StatusNeedsApproval || s == StatusInputRequired || s == StatusError {
+				if j == len(segs)-1 || s == StatusExecuting || s == StatusNeedsApproval || s == StatusInputRequired || s == StatusError {
 					return s, desc
 				}
 				// Low-urgency earlier segment: record as candidate but keep scanning.
@@ -796,22 +797,25 @@ func (sd *StatusDetector) detectFromLines(lines []string) (DetectedStatus, strin
 			}
 			continue
 		}
-		// StatusActive: store as candidate and keep scanning upward.
+		// StatusExecuting: store as candidate and keep scanning upward.
 		// WaitingForAgent is more specific (higher priority in single-line matching)
 		// and often appears on the spinner line above the "esc to interrupt" status bar.
 		// High-urgency statuses (Error, NeedsApproval, InputRequired) also override Active.
-		if s == StatusActive {
+		if s == StatusExecuting {
 			if bestStatus == StatusUnknown || bestStatus == StatusReady {
-				bestStatus, bestDesc = StatusActive, desc
+				bestStatus, bestDesc = StatusExecuting, desc
 			}
 			continue
 		}
-		// If we already have Active stored, only accept higher-urgency statuses from
+		// If we already have Executing stored, only accept higher-urgency statuses from
 		// earlier (higher) lines. Success/Processing/Idle on earlier lines are stale.
-		if bestStatus == StatusActive {
+		if bestStatus == StatusExecuting {
 			switch s {
 			case StatusWaitingForAgent, StatusError, StatusNeedsApproval, StatusInputRequired:
 				return s, desc
+			case StatusUnknown, StatusReady, StatusProcessing, StatusIdle, StatusSuccess, StatusTestsFailing, StatusExecuting:
+				// Lower-urgency statuses when we already have Executing — skip
+				continue
 			}
 			continue
 		}
