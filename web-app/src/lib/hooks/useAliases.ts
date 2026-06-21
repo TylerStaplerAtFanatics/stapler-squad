@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { createClient } from "@connectrpc/connect";
 import { SessionService } from "@/gen/session/v1/session_pb";
 import { getConnectTransport } from "@/lib/api/transport";
@@ -16,10 +16,11 @@ export interface AliasEntry {
   tags: string[];
 }
 
-export function useAliases(): { aliases: AliasEntry[]; loading: boolean; error: Error | null } {
+export function useAliases(): { aliases: AliasEntry[]; loading: boolean; error: Error | null; refetch: () => void } {
   const [aliases, setAliases] = useState<AliasEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [fetchTick, setFetchTick] = useState(0);
   const clientRef = useRef<ReturnType<typeof createClient<typeof SessionService>> | null>(null);
 
   useEffect(() => {
@@ -58,7 +59,9 @@ export function useAliases(): { aliases: AliasEntry[]; loading: boolean; error: 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetchTick]);
 
-  return { aliases, loading, error };
+  const refetch = useCallback(() => setFetchTick((t) => t + 1), []);
+
+  return { aliases, loading, error, refetch };
 }

@@ -46,20 +46,8 @@ export function AliasPalette({ aliases, input, selectedIndex, onSelect, error }:
         <div className={styles.emptyState} data-testid="alias-palette-empty" role="status">
           <div className={styles.emptyTitle}>No aliases yet</div>
           <div className={styles.emptyBody}>
-            Add them in config.json to launch sessions faster.
+            Add aliases in Settings → Aliases to launch sessions faster.
           </div>
-          <pre className={styles.emptyExample}>{`{
-  "name": "myproj",
-  "path": "~/code/myproj",
-  "program": "claude"
-}`}</pre>
-          <button
-            className={styles.copyButton}
-            data-testid="copy-config-path"
-            onClick={() => navigator.clipboard.writeText("~/.stapler-squad/config.json")}
-          >
-            Copy config.json path
-          </button>
         </div>
       </div>
     );
