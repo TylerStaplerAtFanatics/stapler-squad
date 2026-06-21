@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -259,6 +260,7 @@ func TestDeleteDirectoryRule_EmptyPath(t *testing.T) {
 // TestListAliases_ReturnsEmptyList_WhenNoAliasesConfigured verifies that ListAliases
 // returns a non-nil empty slice when no aliases are configured.
 func TestListAliases_ReturnsEmptyList_WhenNoAliasesConfigured(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
 	svc := NewDefaultsService()
 
 	req := connect.NewRequest(&sessionv1.ListAliasesRequest{})
@@ -326,4 +328,295 @@ func TestDeleteDirectoryRule_Success(t *testing.T) {
 	})
 	_, err = svc.DeleteDirectoryRule(context.Background(), deleteReq)
 	require.NoError(t, err)
+}
+
+// TestUpsertAlias_NilAlias verifies that UpsertAlias with a nil alias returns
+// CodeInvalidArgument.
+func TestUpsertAlias_NilAlias(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: nil,
+	})
+	_, err := svc.UpsertAlias(context.Background(), req)
+
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+}
+
+// TestUpsertAlias_EmptyName verifies that UpsertAlias with an empty alias name
+// returns CodeInvalidArgument.
+func TestUpsertAlias_EmptyName(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: ""},
+	})
+	_, err := svc.UpsertAlias(context.Background(), req)
+
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+}
+
+// TestUpsertAlias_InvalidName verifies that UpsertAlias with a name containing a
+// space returns CodeInvalidArgument with a message referencing the regex pattern.
+func TestUpsertAlias_InvalidName(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "my project"},
+	})
+	_, err := svc.UpsertAlias(context.Background(), req)
+
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+}
+
+// TestUpsertAlias_CreatesAlias verifies that a valid new alias is appended to the
+// config and the response echoes back the alias with correct fields.
+func TestUpsertAlias_CreatesAlias(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "myproj", Path: "~/code"},
+	})
+	resp, err := svc.UpsertAlias(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg)
+	require.NotNil(t, resp.Msg.Alias)
+	assert.Equal(t, "myproj", resp.Msg.Alias.Name)
+	assert.Equal(t, "~/code", resp.Msg.Alias.Path)
+
+	cfg := config.LoadConfig()
+	require.Len(t, cfg.SessionDefaults.Aliases, 1)
+	assert.Equal(t, "myproj", cfg.SessionDefaults.Aliases[0].Name)
+	assert.Equal(t, "~/code", cfg.SessionDefaults.Aliases[0].Path)
+}
+
+// TestUpsertAlias_UpdatesExistingAlias verifies that upserting an alias with the
+// same name overwrites the existing entry (no duplicate) and updates fields.
+func TestUpsertAlias_UpdatesExistingAlias(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+	ctx := context.Background()
+
+	// Pre-populate with an alias.
+	_, err := svc.UpsertAlias(ctx, connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "myproj", Description: "old"},
+	}))
+	require.NoError(t, err)
+
+	// Upsert the same name with a new description.
+	resp, err := svc.UpsertAlias(ctx, connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "myproj", Description: "new"},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "new", resp.Msg.Alias.Description)
+
+	cfg := config.LoadConfig()
+	require.Len(t, cfg.SessionDefaults.Aliases, 1)
+	assert.Equal(t, "new", cfg.SessionDefaults.Aliases[0].Description)
+}
+
+// TestUpsertAlias_CaseInsensitiveDuplicate verifies that upserting an alias whose
+// name differs only in case from an existing alias overwrites in-place (no duplicate).
+func TestUpsertAlias_CaseInsensitiveDuplicate(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+	ctx := context.Background()
+
+	// Pre-populate with mixed-case alias.
+	_, err := svc.UpsertAlias(ctx, connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "MyProj"},
+	}))
+	require.NoError(t, err)
+
+	// Upsert with lowercase name — should overwrite, not append.
+	_, err = svc.UpsertAlias(ctx, connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "myproj"},
+	}))
+	require.NoError(t, err)
+
+	cfg := config.LoadConfig()
+	require.Len(t, cfg.SessionDefaults.Aliases, 1, "case-insensitive duplicate should overwrite, not append")
+}
+
+// TestUpsertAlias_AllFieldsRoundTrip verifies that all AliasProto fields are persisted
+// and round-tripped correctly through UpsertAlias and config.LoadConfig.
+func TestUpsertAlias_AllFieldsRoundTrip(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{
+			Name:        "fullproj",
+			Path:        "~/code",
+			Group:       "work",
+			Description: "my desc",
+			Profile:     "my-profile",
+			Program:     "aider",
+			AutoYes:     true,
+			Tags:        []string{"backend", "infra"},
+			EnvVars:     map[string]string{"FOO": "bar"},
+			CliFlags:    "--verbose",
+		},
+	})
+	resp, err := svc.UpsertAlias(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg)
+	require.NotNil(t, resp.Msg.Alias)
+	assert.Equal(t, "fullproj", resp.Msg.Alias.Name)
+	assert.Equal(t, "~/code", resp.Msg.Alias.Path)
+	assert.Equal(t, "work", resp.Msg.Alias.Group)
+	assert.Equal(t, "my desc", resp.Msg.Alias.Description)
+	assert.Equal(t, "my-profile", resp.Msg.Alias.Profile)
+	assert.Equal(t, "aider", resp.Msg.Alias.Program)
+	assert.True(t, resp.Msg.Alias.AutoYes)
+	assert.ElementsMatch(t, []string{"backend", "infra"}, resp.Msg.Alias.Tags)
+	assert.Equal(t, map[string]string{"FOO": "bar"}, resp.Msg.Alias.EnvVars)
+	assert.Equal(t, "--verbose", resp.Msg.Alias.CliFlags)
+
+	cfg := config.LoadConfig()
+	require.Len(t, cfg.SessionDefaults.Aliases, 1)
+	a := cfg.SessionDefaults.Aliases[0]
+	assert.Equal(t, "fullproj", a.Name)
+	assert.Equal(t, "~/code", a.Path)
+	assert.Equal(t, "work", a.Group)
+	assert.Equal(t, "my desc", a.Description)
+	assert.Equal(t, "my-profile", a.Profile)
+	assert.Equal(t, "aider", a.Program)
+	assert.True(t, a.AutoYes)
+	assert.ElementsMatch(t, []string{"backend", "infra"}, a.Tags)
+	assert.Equal(t, map[string]string{"FOO": "bar"}, a.EnvVars)
+	assert.Equal(t, "--verbose", a.CLIFlags)
+}
+
+// TestUpsertAlias_WhitespaceOnlyName verifies that a whitespace-only name returns
+// CodeInvalidArgument (treated as empty after trimming).
+func TestUpsertAlias_WhitespaceOnlyName(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "   "},
+	})
+	_, err := svc.UpsertAlias(context.Background(), req)
+
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+}
+
+// TestUpsertAlias_TrimsName verifies that a name with surrounding whitespace is trimmed
+// before validation and storage, and the trimmed name is returned.
+func TestUpsertAlias_TrimsName(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "  myproj  "},
+	})
+	resp, err := svc.UpsertAlias(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg)
+	require.NotNil(t, resp.Msg.Alias)
+	assert.Equal(t, "myproj", resp.Msg.Alias.Name)
+
+	cfg := config.LoadConfig()
+	require.Len(t, cfg.SessionDefaults.Aliases, 1)
+	assert.Equal(t, "myproj", cfg.SessionDefaults.Aliases[0].Name)
+}
+
+// TestDeleteAlias_EmptyName verifies that DeleteAlias with an empty name returns
+// CodeInvalidArgument.
+func TestDeleteAlias_EmptyName(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.DeleteAliasRequest{Name: ""})
+	_, err := svc.DeleteAlias(context.Background(), req)
+
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+}
+
+// TestDeleteAlias_NotFound verifies that deleting a non-existent alias (with an
+// empty config) returns CodeNotFound and leaves the config unchanged.
+func TestDeleteAlias_NotFound(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+
+	req := connect.NewRequest(&sessionv1.DeleteAliasRequest{Name: "nonexistent"})
+	_, err := svc.DeleteAlias(context.Background(), req)
+
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeNotFound, connectErr.Code())
+
+	cfg := config.LoadConfig()
+	assert.Empty(t, cfg.SessionDefaults.Aliases)
+}
+
+// TestDeleteAlias_DeletesAlias verifies that deleting the middle alias from a
+// three-alias config leaves exactly the two surrounding aliases intact.
+func TestDeleteAlias_DeletesAlias(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+	ctx := context.Background()
+
+	// Pre-populate three aliases.
+	for _, name := range []string{"first", "middle", "last"} {
+		_, err := svc.UpsertAlias(ctx, connect.NewRequest(&sessionv1.UpsertAliasRequest{
+			Alias: &sessionv1.AliasProto{Name: name},
+		}))
+		require.NoError(t, err)
+	}
+
+	// Delete the middle one.
+	_, err := svc.DeleteAlias(ctx, connect.NewRequest(&sessionv1.DeleteAliasRequest{Name: "middle"}))
+	require.NoError(t, err)
+
+	cfg := config.LoadConfig()
+	require.Len(t, cfg.SessionDefaults.Aliases, 2)
+	names := []string{cfg.SessionDefaults.Aliases[0].Name, cfg.SessionDefaults.Aliases[1].Name}
+	assert.Contains(t, names, "first")
+	assert.Contains(t, names, "last")
+	assert.NotContains(t, names, "middle")
+}
+
+// TestDeleteAlias_CaseInsensitive verifies that DeleteAlias matches by name
+// case-insensitively, consistent with UpsertAlias.
+func TestDeleteAlias_CaseInsensitive(t *testing.T) {
+	t.Setenv("STAPLER_SQUAD_TEST_DIR", t.TempDir())
+	svc := NewDefaultsService()
+	ctx := context.Background()
+
+	_, err := svc.UpsertAlias(ctx, connect.NewRequest(&sessionv1.UpsertAliasRequest{
+		Alias: &sessionv1.AliasProto{Name: "MyAlias"},
+	}))
+	require.NoError(t, err)
+
+	// Delete using lowercase variant — should succeed.
+	_, err = svc.DeleteAlias(ctx, connect.NewRequest(&sessionv1.DeleteAliasRequest{Name: "myalias"}))
+	require.NoError(t, err)
+
+	cfg := config.LoadConfig()
+	assert.Empty(t, cfg.SessionDefaults.Aliases)
 }
