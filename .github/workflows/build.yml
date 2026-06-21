@@ -107,6 +107,9 @@ jobs:
             -covermode=atomic ./server/... ./session/... ./config/... \
             || (TMUX_BIN="$(pwd)/bin/tmux" go test -race -v ./...; exit 1)
 
+      - name: Run scanner unit tests
+        run: cd tools/scanner && go test ./...
+
       - name: Coverage gate
         uses: vladopajic/go-test-coverage@v2
         with:
