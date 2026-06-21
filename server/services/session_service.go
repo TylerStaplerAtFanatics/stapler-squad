@@ -1094,6 +1094,11 @@ func (s *SessionService) CreateSession(
 			if alias := config.FindAlias(cfg, req.Msg.AliasName); alias != nil {
 				aliasSessionType = alias.SessionType
 			}
+			// Read session type directly from the alias config — it is an alias-specific
+			// property, not a cascading default, so it is not part of ResolvedDefaults.
+			if alias := config.FindAlias(cfg, req.Msg.AliasName); alias != nil {
+				aliasSessionType = alias.SessionType
+			}
 		} else {
 			workingDir := req.Msg.WorkingDir
 			if workingDir == "" {
