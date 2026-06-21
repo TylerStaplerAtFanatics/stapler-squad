@@ -108,6 +108,11 @@ var methodToID = map[string]string{
 	// Directory rules RPCs
 	"UpsertDirectoryRule": "directory-rule:upsert",
 	"DeleteDirectoryRule": "directory-rule:delete",
+	// Detection RPCs
+	"GetDetectionEvents": "session:get-detection-events",
+	// Workflow session management RPCs
+	"ArchiveWorkflowSessions":       "session:archive-workflow",
+	"DeleteWorkflowFailedSessions":  "session:delete-workflow-failed",
 	// Unfinished work RPCs (UnfinishedWorkService in unfinished.proto)
 	"ListUnfinishedWork":         "unfinished:list",
 	"WatchUnfinishedWork":        "unfinished:watch",

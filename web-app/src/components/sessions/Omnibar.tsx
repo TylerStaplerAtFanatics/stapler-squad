@@ -310,7 +310,16 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
     useAtCommandSuggestions(input, workflows);
   const isAtDropdownVisible = isDiscoveryMode && isAtCommand;
 
-  const { aliases, error: aliasError } = useAliases();
+  const { aliases, error: aliasError, refetch: refetchAliases } = useAliases();
+
+  // Re-fetch aliases each time the omnibar opens so newly created aliases appear immediately.
+  const prevIsOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && !prevIsOpenRef.current) {
+      refetchAliases();
+    }
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, refetchAliases]);
   const { isAliasBrowse, isAliasCompletion, filteredAliases, complete: completeAlias } = useAliasSuggestions(input, aliases);
   const isAliasPaletteVisible = isDiscoveryMode && (isAliasBrowse || isAliasCompletion);
 
