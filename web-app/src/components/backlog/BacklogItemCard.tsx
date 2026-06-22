@@ -1,7 +1,9 @@
 "use client";
 // +feature: backlog:item-card
 
+import { useCallback } from "react";
 import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
+import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import * as styles from "./BacklogItemCard.css";
 
 interface BacklogItemCardProps {
@@ -66,6 +68,7 @@ const PRIORITY_LABELS: Record<number, string> = {
 
 export function BacklogItemCard({ item, onAction, onClick }: BacklogItemCardProps) {
   const actionSpec = getActionSpec(item);
+  const isTriageRunning = item.triageStatus === "running";
 
   const handleCardClick = (e: React.MouseEvent) => {
     // Don't open detail if the action button was clicked
@@ -79,6 +82,11 @@ export function BacklogItemCard({ item, onAction, onClick }: BacklogItemCardProp
       onClick(item.id);
     }
   };
+
+  const handleCancelTriage = useCallback(
+    () => onAction("cancel_triage", item.id),
+    [onAction, item.id],
+  );
 
   return (
     <div
@@ -101,17 +109,26 @@ export function BacklogItemCard({ item, onAction, onClick }: BacklogItemCardProp
         </span>
       </div>
 
+      {isTriageRunning && (
+        <TriageLoadingIndicator
+          elapsedSeconds={0}
+          context="list"
+          onCancel={handleCancelTriage}
+          compact
+        />
+      )}
+
       <div className={styles.cardFooter}>
         <AcSummary item={item} />
         <button
           className={`${styles.actionButton} ${actionSpec.isDone ? styles.actionButtonDone : ""}`}
-          disabled={actionSpec.disabled}
-          aria-label={actionSpec.label}
+          disabled={actionSpec.disabled || isTriageRunning}
+          aria-label={isTriageRunning ? "Triage in progress" : actionSpec.label}
           data-action-button="true"
           data-testid={`backlog-action-${actionSpec.action}`}
           onClick={(e) => {
             e.stopPropagation();
-            if (!actionSpec.disabled && !actionSpec.isDone) {
+            if (!actionSpec.disabled && !actionSpec.isDone && !isTriageRunning) {
               onAction(actionSpec.action, item.id);
             }
           }}
