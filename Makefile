@@ -201,6 +201,9 @@ install: ensure-tools ## Install stapler-squad locally
 	go install .
 	mkdir -p ~/.local/bin
 	go build -o ~/.local/bin/ssq-hooks ./cmd/ssq-hooks/
+	@# Stable path for the notification hook handler so the server can register
+	@# it during onboarding (InstallHooks RPC). See internal/claudehooks.
+	install -m 0755 scripts/ssq-hook-handler ~/.local/bin/ssq-hook-handler
 
 build-mux: ensure-tools ## Build the claude-mux PTY multiplexer binary
 	@echo "Building claude-mux..."

@@ -345,6 +345,12 @@ const (
 	// SessionServiceDeleteWorkflowFailedSessionsProcedure is the fully-qualified name of the
 	// SessionService's DeleteWorkflowFailedSessions RPC.
 	SessionServiceDeleteWorkflowFailedSessionsProcedure = "/session.v1.SessionService/DeleteWorkflowFailedSessions"
+	// SessionServiceGetHookStatusProcedure is the fully-qualified name of the SessionService's
+	// GetHookStatus RPC.
+	SessionServiceGetHookStatusProcedure = "/session.v1.SessionService/GetHookStatus"
+	// SessionServiceInstallHooksProcedure is the fully-qualified name of the SessionService's
+	// InstallHooks RPC.
+	SessionServiceInstallHooksProcedure = "/session.v1.SessionService/InstallHooks"
 )
 
 // SessionServiceClient is a client for the session.v1.SessionService service.
@@ -621,6 +627,14 @@ type SessionServiceClient interface {
 	// failed — specifically: Stopped sessions with no meaningful terminal output.
 	// Returns the count of sessions that were archived.
 	DeleteWorkflowFailedSessions(context.Context, *connect.Request[v1.DeleteWorkflowFailedSessionsRequest]) (*connect.Response[v1.DeleteWorkflowFailedSessionsResponse], error)
+	// GetHookStatus reports whether the global Claude Code hooks (rule enforcement
+	// and notifications) are installed in ~/.claude/settings.json.
+	// +api: hooks:status
+	GetHookStatus(context.Context, *connect.Request[v1.GetHookStatusRequest]) (*connect.Response[v1.GetHookStatusResponse], error)
+	// InstallHooks installs the requested global Claude Code hooks into
+	// ~/.claude/settings.json. Idempotent per hook.
+	// +api: hooks:install
+	InstallHooks(context.Context, *connect.Request[v1.InstallHooksRequest]) (*connect.Response[v1.InstallHooksResponse], error)
 }
 
 // NewSessionServiceClient constructs a client for the session.v1.SessionService service. By
@@ -1264,6 +1278,18 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("DeleteWorkflowFailedSessions")),
 			connect.WithClientOptions(opts...),
 		),
+		getHookStatus: connect.NewClient[v1.GetHookStatusRequest, v1.GetHookStatusResponse](
+			httpClient,
+			baseURL+SessionServiceGetHookStatusProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("GetHookStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		installHooks: connect.NewClient[v1.InstallHooksRequest, v1.InstallHooksResponse](
+			httpClient,
+			baseURL+SessionServiceInstallHooksProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("InstallHooks")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -1374,6 +1400,8 @@ type sessionServiceClient struct {
 	unarchiveSession             *connect.Client[v1.UnarchiveSessionRequest, v1.UnarchiveSessionResponse]
 	archiveWorkflowSessions      *connect.Client[v1.ArchiveWorkflowSessionsRequest, v1.ArchiveWorkflowSessionsResponse]
 	deleteWorkflowFailedSessions *connect.Client[v1.DeleteWorkflowFailedSessionsRequest, v1.DeleteWorkflowFailedSessionsResponse]
+	getHookStatus                *connect.Client[v1.GetHookStatusRequest, v1.GetHookStatusResponse]
+	installHooks                 *connect.Client[v1.InstallHooksRequest, v1.InstallHooksResponse]
 }
 
 // ListSessions calls session.v1.SessionService.ListSessions.
@@ -1901,6 +1929,16 @@ func (c *sessionServiceClient) DeleteWorkflowFailedSessions(ctx context.Context,
 	return c.deleteWorkflowFailedSessions.CallUnary(ctx, req)
 }
 
+// GetHookStatus calls session.v1.SessionService.GetHookStatus.
+func (c *sessionServiceClient) GetHookStatus(ctx context.Context, req *connect.Request[v1.GetHookStatusRequest]) (*connect.Response[v1.GetHookStatusResponse], error) {
+	return c.getHookStatus.CallUnary(ctx, req)
+}
+
+// InstallHooks calls session.v1.SessionService.InstallHooks.
+func (c *sessionServiceClient) InstallHooks(ctx context.Context, req *connect.Request[v1.InstallHooksRequest]) (*connect.Response[v1.InstallHooksResponse], error) {
+	return c.installHooks.CallUnary(ctx, req)
+}
+
 // SessionServiceHandler is an implementation of the session.v1.SessionService service.
 type SessionServiceHandler interface {
 	// ListSessions returns all sessions with optional filtering.
@@ -2175,6 +2213,14 @@ type SessionServiceHandler interface {
 	// failed — specifically: Stopped sessions with no meaningful terminal output.
 	// Returns the count of sessions that were archived.
 	DeleteWorkflowFailedSessions(context.Context, *connect.Request[v1.DeleteWorkflowFailedSessionsRequest]) (*connect.Response[v1.DeleteWorkflowFailedSessionsResponse], error)
+	// GetHookStatus reports whether the global Claude Code hooks (rule enforcement
+	// and notifications) are installed in ~/.claude/settings.json.
+	// +api: hooks:status
+	GetHookStatus(context.Context, *connect.Request[v1.GetHookStatusRequest]) (*connect.Response[v1.GetHookStatusResponse], error)
+	// InstallHooks installs the requested global Claude Code hooks into
+	// ~/.claude/settings.json. Idempotent per hook.
+	// +api: hooks:install
+	InstallHooks(context.Context, *connect.Request[v1.InstallHooksRequest]) (*connect.Response[v1.InstallHooksResponse], error)
 }
 
 // NewSessionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -2814,6 +2860,18 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("DeleteWorkflowFailedSessions")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionServiceGetHookStatusHandler := connect.NewUnaryHandler(
+		SessionServiceGetHookStatusProcedure,
+		svc.GetHookStatus,
+		connect.WithSchema(sessionServiceMethods.ByName("GetHookStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceInstallHooksHandler := connect.NewUnaryHandler(
+		SessionServiceInstallHooksProcedure,
+		svc.InstallHooks,
+		connect.WithSchema(sessionServiceMethods.ByName("InstallHooks")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/session.v1.SessionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SessionServiceListSessionsProcedure:
@@ -3026,6 +3084,10 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceArchiveWorkflowSessionsHandler.ServeHTTP(w, r)
 		case SessionServiceDeleteWorkflowFailedSessionsProcedure:
 			sessionServiceDeleteWorkflowFailedSessionsHandler.ServeHTTP(w, r)
+		case SessionServiceGetHookStatusProcedure:
+			sessionServiceGetHookStatusHandler.ServeHTTP(w, r)
+		case SessionServiceInstallHooksProcedure:
+			sessionServiceInstallHooksHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -3453,4 +3515,12 @@ func (UnimplementedSessionServiceHandler) ArchiveWorkflowSessions(context.Contex
 
 func (UnimplementedSessionServiceHandler) DeleteWorkflowFailedSessions(context.Context, *connect.Request[v1.DeleteWorkflowFailedSessionsRequest]) (*connect.Response[v1.DeleteWorkflowFailedSessionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.DeleteWorkflowFailedSessions is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) GetHookStatus(context.Context, *connect.Request[v1.GetHookStatusRequest]) (*connect.Response[v1.GetHookStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetHookStatus is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) InstallHooks(context.Context, *connect.Request[v1.InstallHooksRequest]) (*connect.Response[v1.InstallHooksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.InstallHooks is not implemented"))
 }
