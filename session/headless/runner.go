@@ -86,7 +86,7 @@ func filteredEnv() []string {
 // always be called.
 func (r *ProcessRunner) Run(ctx context.Context, args []string, stdin io.Reader) (io.ReadCloser, func() error, error) {
 	opts := []executor.ProcessOption{
-		executor.WithNoControllingTerminal(),
+		executor.WithNewSession(),
 		executor.WithProcessReplaceEnv(filteredEnv()),
 	}
 	if r.workDir != "" {
