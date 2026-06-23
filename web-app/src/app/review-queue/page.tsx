@@ -63,8 +63,11 @@ function ReviewQueueContent() {
     [runOneShot]
   );
 
-  // Acknowledge function for dismissing sessions from the modal
-  const { acknowledgeSession } = useReviewQueueContext();
+  // Acknowledge function for dismissing sessions from the modal.
+  // allQueueItems is the unfiltered Redux store list — used as the existence oracle in the
+  // "deleted externally" effect below so that a status transition to ACTIVE/PROCESSING
+  // (which filters the session from the visible queue) does not spuriously trigger auto-advance.
+  const { acknowledgeSession, items: allQueueItems } = useReviewQueueContext();
 
   // Review queue items for navigation (next/previous)
   const [reviewQueueItems, setReviewQueueItems] = useState<Session[]>([]);
@@ -231,11 +234,14 @@ function ReviewQueueContent() {
   }, [acknowledgeSession, handleAutoAdvance]);
 
   // Auto-advance when the currently selected session is deleted externally (not via dismiss/acknowledge).
-  // reviewQueueItems updates as soon as the Redux removeItem dispatch fires from the sessionDeleted event,
-  // so this catches the case where another tab or the session list deletes the session.
+  // Uses allQueueItems (the unfiltered Redux store) rather than reviewQueueItems (visible filtered list)
+  // so that a session transitioning to ACTIVE/PROCESSING — which is filtered from the visible queue but
+  // remains in the store — does not incorrectly trigger auto-advance.
+  // reviewQueueItems is kept as the dep so the effect fires when the visible queue changes (the moment
+  // we need to re-evaluate), but the guard checks allQueueItems to distinguish "filtered out" from "removed".
   useEffect(() => {
     if (!selectedSession) return;
-    const stillInQueue = reviewQueueItems.some((s) => s.id === selectedSession.id);
+    const stillInQueue = allQueueItems.some((item) => item.sessionId === selectedSession.id);
     if (!stillInQueue) {
       handleAutoAdvance(selectedSession.id, true);
     }
