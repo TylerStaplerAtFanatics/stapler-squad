@@ -446,7 +446,9 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           if (parsed.firstPrompt) {
             setFormField("firstPrompt", parsed.firstPrompt);
           }
-        } else if (result.suggestedName) {
+        } else if (result.suggestedName && result.type !== InputType.Alias) {
+          // Skip for Alias — the alias-specific block below handles name population
+          // (running both would reset lastSuggestedNameRef mid-effect and cause oscillation).
           if (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current) {
             setSessionName(result.suggestedName);
             lastSuggestedNameRef.current = result.suggestedName;
@@ -468,9 +470,12 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
               setFormField("program", alias.program);
               lastSuggestedProgramRef.current = alias.program;
             }
-            if (alias.sessionType !== SessionType.UNSPECIFIED) {
-              setFormField("sessionType", protoSessionTypeToFormString(alias.sessionType));
-            }
+            // UNSPECIFIED means "Default (directory)" in the alias editor — always apply it.
+            // Skipping UNSPECIFIED left the form at its initial "new_worktree" default.
+            const resolvedSessionType = alias.sessionType !== SessionType.UNSPECIFIED
+              ? protoSessionTypeToFormString(alias.sessionType)
+              : "directory";
+            setFormField("sessionType", resolvedSessionType);
             setFormField("autoYes", alias.autoYes);
           }
           // Populate branch from @alias:branch syntax so the user can see/edit it.
