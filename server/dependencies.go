@@ -15,6 +15,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/server/workflows"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/artifacts"
 	"github.com/tstapler/stapler-squad/session/cdp"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/headless"
@@ -789,6 +790,50 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		tokenStore.Start(context.Background())
 		insightsSvc = services.NewInsightsService(tokenStore, pricing, associator)
 		log.Info("InsightsService initialized", "historyDir", historyDir)
+
+		// Wire ArtifactExtractor to extract PR links, commits, and URLs from JSONL history.
+		// Uses historyLinker.Instances() for live instance snapshots so sessions created
+		// after startup are included in lookupTitle and OnScanComplete.
+		artifactExtractor := artifacts.NewArtifactExtractor(
+			func(title, blob string) error {
+				return storage.UpdateInstanceArtifacts(title, blob)
+			},
+			func(title string) (string, error) {
+				return storage.GetInstanceArtifacts(title)
+			},
+			func(filePath string) (string, bool) {
+				return session.FindInstanceByHistoryPath(historyLinker.Instances(), filePath)
+			},
+		)
+		artifactExtractor.OnScanComplete = func(title string, blob *artifacts.SessionArtifactsBlob) {
+			// Take a snapshot to avoid a data race with concurrent AddInstance calls (M-5 fix).
+			snapshot := historyLinker.Instances()
+			for _, inst := range snapshot {
+				if inst.Title == title {
+					inst.SetArtifacts(blob)
+					eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"artifacts"}))
+					// Feed discovered PR URLs to the PR status poller if not already set.
+					if !inst.HasGitHubPR() {
+						for _, prURL := range blob.PRURLs {
+							if ref, err := session.ParseGitHubURL(prURL); err == nil && ref.PRNumber > 0 {
+								if err := storage.UpdateInstancePRNumber(inst.Title, ref.PRNumber); err != nil {
+									log.Warn("ArtifactExtractor: failed to update PR number", "session", inst.Title, "err", err)
+								} else {
+									// Update in-memory state so HasGitHubPR() reflects the change (M-3 fix).
+									inst.SetGitHubPRNumber(ref.PRNumber)
+								}
+								break
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+		historyLinker.RegisterFileCallback(artifactExtractor.OnHistoryFileChanged)
+		artifactExtractor.SeedOffsets(session.InstanceInfoSlice(historyLinker.Instances()))
+		artifactExtractor.Start(context.Background(), historyDir)
+		log.Info("ArtifactExtractor initialized", "historyDir", historyDir)
 	} else {
 		log.Warn("could not determine home dir for InsightsService token store", "err", homeDirErr)
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/session/artifacts"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/ent/sessiongoal"
 	"github.com/tstapler/stapler-squad/session/tokens"
@@ -328,6 +329,27 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 		}
 	}
 
+	// Bulk-load stored artifact blobs so the first render shows cached artifacts
+	// without waiting for ArtifactExtractor's startup walk to complete.
+	// Single bulk query replaces N per-session queries (M-4 fix).
+	if s.GetEntClient() != nil && len(instances) > 0 {
+		allArtifacts, artifErr := s.GetAllInstanceArtifacts()
+		if artifErr != nil {
+			log.Warn("LoadInstances: failed to bulk-load artifacts", "err", artifErr)
+		} else {
+			for _, inst := range instances {
+				raw := allArtifacts[inst.Title]
+				if raw == "" {
+					continue
+				}
+				var blob artifacts.SessionArtifactsBlob
+				if err := json.Unmarshal([]byte(raw), &blob); err == nil {
+					inst.Artifacts = &blob
+				}
+			}
+		}
+	}
+
 	return instances, nil
 }
 
@@ -450,11 +472,14 @@ func (s *Storage) UpdateInstancePRStatus(_, _, _, _ string, _, _ int, _, _ bool)
 	return nil
 }
 
-// UpdateInstancePRNumber is intentionally a no-op: PR number is not persisted in
-// the ent schema. Callers (e.g. PRStatusPoller) call this as a persistence hook,
-// but no DB write occurs.
-func (s *Storage) UpdateInstancePRNumber(_ string, _ int) error {
-	return nil
+// UpdateInstancePRNumber persists the discovered PR number for a session so it
+// survives restarts and avoids repeated branch-name lookups in PRStatusPoller.
+func (s *Storage) UpdateInstancePRNumber(title string, prNumber int) error {
+	repo, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil
+	}
+	return repo.UpdateGitHubPRNumber(context.Background(), title, prNumber)
 }
 
 // UpdateInstanceForkFlag is intentionally a no-op: fork status is not persisted in
@@ -462,6 +487,36 @@ func (s *Storage) UpdateInstancePRNumber(_ string, _ int) error {
 // but no DB write occurs.
 func (s *Storage) UpdateInstanceForkFlag(_ string, _ bool) error {
 	return nil
+}
+
+// UpdateInstanceArtifacts persists the JSON-encoded artifact blob for a session.
+// Only the session_artifacts column is touched; all other fields are unchanged.
+func (s *Storage) UpdateInstanceArtifacts(title string, blob string) error {
+	repo, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil
+	}
+	return repo.UpdateSessionArtifacts(context.Background(), title, blob)
+}
+
+// GetInstanceArtifacts loads the raw JSON-encoded artifact blob for a session.
+// Returns ("", nil) if the session exists but has no artifacts yet.
+func (s *Storage) GetInstanceArtifacts(title string) (string, error) {
+	repo, ok := s.repo.(*EntRepository)
+	if !ok {
+		return "", nil
+	}
+	return repo.GetSessionArtifacts(context.Background(), title)
+}
+
+// GetAllInstanceArtifacts returns a map of title → raw artifacts JSON for all sessions
+// that have stored artifacts. Single bulk query (M-4 fix).
+func (s *Storage) GetAllInstanceArtifacts() (map[string]string, error) {
+	repo, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, nil
+	}
+	return repo.GetAllSessionArtifacts(context.Background())
 }
 
 // --- Session-first convenience methods (Task 2.5) ---
