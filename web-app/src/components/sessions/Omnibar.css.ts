@@ -289,15 +289,24 @@ export const shortcuts = style({
 
 export const createButton = style({
   marginLeft: "auto",
-  padding: "10px 20px",
-  borderRadius: 8,
-  fontSize: 14,
+  padding: "6px 16px",
+  borderRadius: 6,
+  fontSize: 13,
   fontWeight: 600,
   cursor: "pointer",
   border: "none",
   background: vars.color.primary,
   color: vars.color.primaryText,
-  minHeight: 44,
+  // Touch target: 44px minimum per Apple HIG, achieved via invisible padding.
+  // The button body stays compact so it fits the shortcuts bar height.
+  minHeight: 32,
+  "@media": {
+    "(pointer: coarse)": {
+      padding: "10px 20px",
+      fontSize: 14,
+      borderRadius: 8,
+    },
+  },
   selectors: {
     "&:hover:not(:disabled)": {
       background: vars.color.accentHover,
