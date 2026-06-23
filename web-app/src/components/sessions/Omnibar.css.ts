@@ -279,11 +279,34 @@ export const error = style({
 
 export const shortcuts = style({
   display: "flex",
+  alignItems: "center",
   gap: 16,
   padding: "8px 16px",
   background: vars.color.hoverBackground,
   fontSize: 12,
   color: vars.color.textMuted,
+});
+
+export const createButton = style({
+  marginLeft: "auto",
+  padding: "10px 20px",
+  borderRadius: 8,
+  fontSize: 14,
+  fontWeight: 600,
+  cursor: "pointer",
+  border: "none",
+  background: vars.color.primary,
+  color: vars.color.primaryText,
+  minHeight: 44,
+  selectors: {
+    "&:hover:not(:disabled)": {
+      background: vars.color.accentHover,
+    },
+    "&:disabled": {
+      opacity: 0.5,
+      cursor: "not-allowed",
+    },
+  },
 });
 
 export const shortcut = style({

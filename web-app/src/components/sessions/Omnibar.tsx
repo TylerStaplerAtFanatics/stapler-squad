@@ -31,6 +31,7 @@ import {
   detectionInfo, detectionBadge, unknown,
   shortcuts, shortcut, shortcutKey, completionError as completionErrorClass,
   pathIndicator, pathIndicatorValid, pathIndicatorInvalid, pathIndicatorLoading,
+  createButton,
 } from "./Omnibar.css";
 import { AliasPalette } from "@/components/ui/AliasPalette";
 import { useAliasSuggestions } from "@/lib/hooks/useAliasSuggestions";
@@ -1435,9 +1436,14 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
             <span className={shortcutKey}>Esc</span> Close
           </span>
           {!isDiscoveryMode && (
-            <span className={shortcut}>
-              <span className={shortcutKey}>{isMac ? '⌘↵' : 'Ctrl+↵'}</span> Create
-            </span>
+            <button
+              type="button"
+              className={createButton}
+              onClick={handleSubmit}
+              disabled={!canSubmit || isSubmitting}
+            >
+              {isSubmitting ? "Creating…" : "Create Session"}
+            </button>
           )}
           {isDiscoveryMode && (
             <>
