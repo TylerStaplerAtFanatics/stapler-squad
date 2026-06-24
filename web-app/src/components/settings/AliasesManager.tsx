@@ -70,6 +70,7 @@ interface AliasFormData {
   envVars: EnvVar[];
   cliFlags: string;
   sessionType: SessionType;
+  namePrefix: string;
   showAdvanced: boolean;
 }
 
@@ -86,6 +87,7 @@ const emptyForm: AliasFormData = {
   envVars: [],
   cliFlags: "",
   sessionType: SessionType.UNSPECIFIED,
+  namePrefix: "",
   showAdvanced: false,
 };
 
@@ -158,6 +160,7 @@ export function AliasesManager() {
       envVars: envVarsList,
       cliFlags: alias.cliFlags,
       sessionType: alias.sessionType,
+      namePrefix: alias.namePrefix,
       showAdvanced: hasAdvanced,
     });
     setNameError(null);
@@ -229,6 +232,7 @@ export function AliasesManager() {
           envVars: envVarsMap,
           cliFlags: form.cliFlags,
           sessionType: form.sessionType,
+          namePrefix: form.namePrefix,
         } as unknown as AliasProto,
       });
       if (successBannerTimerRef.current) clearTimeout(successBannerTimerRef.current);
@@ -508,6 +512,26 @@ export function AliasesManager() {
                     </option>
                   ))}
                 </select>
+              </div>
+
+              {/* Name Prefix */}
+              <div className={field}>
+                <label className={labelClass} htmlFor="alias-name-prefix">
+                  Name prefix
+                </label>
+                <input
+                  id="alias-name-prefix"
+                  className={input}
+                  type="text"
+                  placeholder="e.g. ssq-"
+                  value={form.namePrefix}
+                  onChange={(e) => setForm({ ...form, namePrefix: e.target.value })}
+                />
+                <div className={groupHint}>
+                  Prepended to the label you type after the alias — e.g.{" "}
+                  <code>@{form.name || "alias"} my-feature</code> → session name{" "}
+                  <code>{form.namePrefix || "(prefix)"}my-feature</code>
+                </div>
               </div>
 
               {/* Auto-yes */}

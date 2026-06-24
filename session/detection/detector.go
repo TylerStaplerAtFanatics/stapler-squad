@@ -519,10 +519,11 @@ func getDefaultPatterns() StatusPatterns {
 			},
 			{
 				Name: "verb_duration_completion",
-				// ✻ (asterism U+273B) and ◉ (fisheye U+25C9) are both used as the
-				// turn-completion bullet. The verb is a random past-tense word that
-				// rotates each turn (Baked, Cooked, Pondered, Synthesized, etc.).
-				Pattern:     `[✻◉]\s+\w+\s+for\s+\d+[hms]`,
+				// ✻ (asterism U+273B), ◉ (fisheye U+25C9), and ✦ (black four pointed
+				// star U+2726, Claude Code primary spinner) are used as the turn-completion
+				// bullet. The verb is a random past-tense word that rotates each turn
+				// (Baked, Cooked, Pondered, Synthesized, etc.).
+				Pattern:     `[✻◉✦]\s+\w+\s+for\s+\d+[hms]`,
 				Description: "Claude turn complete — '<PastTenseVerb> for <duration>' format",
 				Priority:    21,
 			},
@@ -560,10 +561,12 @@ func getDefaultPatterns() StatusPatterns {
 		WaitingForAgent: []StatusPattern{
 			{
 				Name: "waiting_for_background_agent",
-				// Matches Claude Code's "✻ Waiting for N background agent(s) to finish" line.
-				// The asterism ✻ (U+273B) is Claude's turn-marker; ◉ is an alternate.
-				Pattern:     `[✻◉]\s+Waiting for \d+ background agent`,
-				Description: "Claude is waiting for one or more background agents to finish",
+				// Matches Claude Code's "✻ Waiting for N background agent(s) to finish" and
+				// "✻ Waiting for N dynamic workflow(s) to finish" lines.
+				// ✻ (U+273B), ◉ (U+25C9), and ✦ (U+2726, primary spinner) are all used
+				// as the turn-marker bullet.
+				Pattern:     `[✻◉✦]\s+Waiting for \d+ (?:background agent|dynamic workflow)`,
+				Description: "Claude is waiting for one or more background agents or dynamic workflows to finish",
 				Priority:    27,
 			},
 			{
