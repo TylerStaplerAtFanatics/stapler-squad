@@ -369,14 +369,10 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     if (!manager) return;
 
     if (!isInitialScrollbackDoneRef.current) {
-      // Initial load — the server already sent a clean snapshot via the output message,
-      // so we prepend historical scrollback above it rather than replacing the snapshot.
-      // writeInitialContent would call terminal.clear() and overwrite the snapshot with
-      // raw TUI render bytes, producing stacked status bar copies (cursor-up sequences
-      // replay against position 0 instead of the TUI's expected cursor position).
+      // Initial load
       console.log(`[TerminalOutput] Writing initial scrollback: ${scrollback.length} bytes`);
       isInitialScrollbackDoneRef.current = true;
-      await manager.prependScrollbackBatch(scrollback);
+      await manager.writeInitialContent(scrollback);
       if (metadata) {
         hasMoreScrollbackRef.current = metadata.hasMore;
         oldestSequenceReceivedRef.current = metadata.oldestSequence;
@@ -680,6 +676,8 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     const wasConnected = previousConnectionStateRef.current;
     previousConnectionStateRef.current = isConnected;
 
+    let postConnectionResizeTimer: ReturnType<typeof setTimeout> | null = null;
+
     if (!wasConnected && isConnected) {
       if (metricsRef.current.connectedTime === null) {
         metricsRef.current.connectedTime = performance.now();
@@ -693,11 +691,19 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
         reconnectTimeoutRef.current = null;
       }
 
-      const currentSize = lastResizeRef.current;
-      if (currentSize) {
-        console.log(`[TerminalOutput] Post-connection resize sync: ${currentSize.cols}x${currentSize.rows}`);
-        resize(currentSize.cols, currentSize.rows);
-      }
+      // Delay the post-connection resize sync until after layout settles.
+      // Firing immediately would start the 200ms throttle clock at T+0, causing
+      // the ResizeObserver's settled-layout resize (arriving at T+150ms via its
+      // own debounce) to be dropped. Waiting 250ms lets the container stabilise
+      // first; by then the ResizeObserver has already sent the correct dims (or
+      // nothing changed and we send here as a safety net).
+      postConnectionResizeTimer = setTimeout(() => {
+        const settledSize = lastResizeRef.current;
+        if (settledSize) {
+          console.log(`[TerminalOutput] Post-connection resize sync (delayed): ${settledSize.cols}x${settledSize.rows}`);
+          resize(settledSize.cols, settledSize.rows);
+        }
+      }, 250);
     } else if (wasConnected && !isConnected) {
       console.log("[TerminalOutput] Connection lost, will attempt reconnection");
       // If connection drops while still loading, content won't arrive — clear the overlay
@@ -711,6 +717,9 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     }
 
     return () => {
+      if (postConnectionResizeTimer) {
+        clearTimeout(postConnectionResizeTimer);
+      }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -894,11 +903,6 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
-
-    // Reset scrollback state for new session so the initial ScrollbackResponse
-    // from the new connection is treated as an initial load (prependScrollbackBatch),
-    // not a paged history load.
-    isInitialScrollbackDoneRef.current = false;
 
     // Reset stream manager for new session
     if (streamManagerRef.current) {

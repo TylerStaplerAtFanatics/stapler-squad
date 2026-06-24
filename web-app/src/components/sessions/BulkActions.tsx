@@ -31,6 +31,7 @@ export function BulkActions({
   feedback,
   onGroupAs,
 }: BulkActionsProps) {
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
   const [groupAsValue, setGroupAsValue] = useState("");
   const [groupAsLoading, setGroupAsLoading] = useState(false);
   const [groupAsError, setGroupAsError] = useState<string | null>(null);
@@ -38,11 +39,11 @@ export function BulkActions({
     return (
       <div role="toolbar" aria-label="Bulk session actions" className={container}>
         {feedback && <div className={feedbackClass} aria-hidden="true">{feedback}</div>}
-        <span role="note" className={count} style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+        <span className={count} style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
           Click sessions to select them
         </span>
         <button onClick={onClearSelection} className={clearButton} aria-label="Cancel select mode">
-          Cancel
+          Cancel (Esc)
         </button>
       </div>
     );
@@ -52,16 +53,16 @@ export function BulkActions({
     <div role="toolbar" aria-label="Bulk session actions" className={container}>
       {feedback && <div className={feedbackClass} aria-hidden="true">{feedback}</div>}
       <div className={selection}>
-        <span className={count}>
+        <span className={count} aria-live="polite" aria-atomic="true">
           {selectedCount} of {totalCount} selected
         </span>
         {selectedCount < totalCount && (
           <button onClick={onSelectAll} className={selectAllButton} aria-label={`Select all ${totalCount} session${totalCount !== 1 ? "s" : ""}`}>
-            Select All
+            Select All {isMac ? "(⌘A)" : "(Ctrl+A)"}
           </button>
         )}
         <button onClick={onClearSelection} className={clearButton} aria-label={`Clear selection of ${selectedCount} session${selectedCount !== 1 ? "s" : ""}`}>
-          Clear Selection
+          Clear Selection (Esc)
         </button>
       </div>
 
@@ -69,6 +70,7 @@ export function BulkActions({
         <button
           onClick={onPauseAll}
           className={actionButton}
+          data-testid="bulk-pause-button"
           aria-label={`Pause ${selectedCount} selected session${selectedCount !== 1 ? "s" : ""}`}
         >
           <span aria-hidden="true">⏸️</span> Pause Selected
@@ -87,26 +89,12 @@ export function BulkActions({
         >
           <span aria-hidden="true">🏷️</span> Add Tag
         </button>
-        {/* S4-4: Group as project */}
+        {/* S4-4: Group as project — div instead of form to avoid invalid ARIA ownership inside role="toolbar" */}
         {onGroupAs && (
-          <form
+          <div
+            role="group"
             aria-label="Group selected sessions as project"
             style={{ display: "flex", gap: "4px", alignItems: "center" }}
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const name = groupAsValue.trim();
-              if (!name) return;
-              setGroupAsLoading(true);
-              setGroupAsError(null);
-              try {
-                await onGroupAs(name);
-                setGroupAsValue("");
-              } catch {
-                setGroupAsError("Failed to group — try again");
-              } finally {
-                setGroupAsLoading(false);
-              }
-            }}
           >
             <input
               type="text"
@@ -146,7 +134,7 @@ export function BulkActions({
               className={actionButton}
               disabled={groupAsLoading || !groupAsValue.trim()}
               aria-busy={groupAsLoading}
-              aria-label={groupAsLoading ? "Grouping sessions…" : groupAsValue.trim() ? `Group into project "${groupAsValue.trim()}"` : "Group selected sessions into project"}
+              aria-label={groupAsLoading ? "Grouping sessions…" : "Group selected sessions into project"}
               onClick={async () => {
                 const name = groupAsValue.trim();
                 if (!name || groupAsLoading) return;
@@ -169,11 +157,12 @@ export function BulkActions({
                 {groupAsError}
               </span>
             )}
-          </form>
+          </div>
         )}
         <button
           onClick={onDeleteAll}
           className={`${actionButton} ${danger}`}
+          data-testid="bulk-delete-button"
           aria-label={`Delete ${selectedCount} selected session${selectedCount !== 1 ? "s" : ""}`}
         >
           <span aria-hidden="true">🗑️</span> Delete Selected
