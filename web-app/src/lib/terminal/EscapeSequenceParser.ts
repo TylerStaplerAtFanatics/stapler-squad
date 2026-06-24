@@ -20,6 +20,9 @@
 export class EscapeSequenceParser {
   private partialSequence: string = "";
 
+  // Allocated once at class definition; avoids a per-call object allocation in the hot path.
+  private static readonly STRING_MODE_CHARS = new Set(['P', '^', '_', 'X']);
+
   /**
    * Process data chunk and ensure escape sequences are not split.
    * Returns the complete data that can be safely written, buffering any
@@ -139,13 +142,7 @@ export class EscapeSequenceParser {
     }
 
     // DCS (P), PM (^), APC (_), SOS (X) — all terminated by ST only (ESC \)
-    const stringModes: Record<string, boolean> = {
-      'P': false, // DCS
-      '^': false, // PM
-      '_': false, // APC
-      'X': false, // SOS
-    };
-    if (secondChar in stringModes) {
+    if (EscapeSequenceParser.STRING_MODE_CHARS.has(secondChar)) {
       return seq.includes('\x1b\\');
     }
 

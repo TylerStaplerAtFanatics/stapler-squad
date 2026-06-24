@@ -294,9 +294,11 @@ export function useTerminalStream({
             } else if (msg.data.case === "currentPaneResponse") {
               flowControl.handleCurrentPaneResponse(msg.data.value);
 
-              // Write deprecated pane content via scrollback callback
+              // Write deprecated pane content via scrollback callback.
+              // Use a fresh one-shot TextDecoder — currentPaneResponse is a single complete message,
+              // not a streaming sequence, so it must not share stateful decoder state with other messages.
               const response = msg.data.value;
-              const content = scrollbackDecoderRef.current.decode(response.content, { stream: true });
+              const content = new TextDecoder().decode(response.content);
               console.log(`[useTerminalStream] Received current pane (deprecated): ${content.length} bytes`);
 
               if (onScrollbackReceived) {
@@ -304,11 +306,17 @@ export function useTerminalStream({
               }
               setTerminalState('STABLE');
             } else if (msg.data.case === "scrollbackResponse") {
+              // Use a per-response decoder so chunks within one scrollbackResponse are streamed
+              // correctly, but separate responses don't share stateful decoder state.
+              const responseDecoder = new TextDecoder();
               const chunks: string[] = [];
               for (const chunk of msg.data.value.chunks) {
-                const text = scrollbackDecoderRef.current.decode(chunk.data, { stream: true });
+                const text = responseDecoder.decode(chunk.data, { stream: true });
                 chunks.push(text);
               }
+              // Flush any trailing bytes buffered by the streaming decoder.
+              const trailing = responseDecoder.decode();
+              if (trailing) chunks.push(trailing);
               const scrollbackText = chunks.join("");
 
               const metadata: ScrollbackMetadata = {
@@ -336,6 +344,10 @@ export function useTerminalStream({
         } finally {
           setIsConnected(false);
           setTerminalState('DISCONNECTED');
+          // Reset decoders so stale {stream:true} buffered state from a server-closed
+          // connection does not corrupt the next connect() call.
+          textDecoderRef.current = new TextDecoder();
+          scrollbackDecoderRef.current = new TextDecoder();
         }
       })();
     } catch (err) {

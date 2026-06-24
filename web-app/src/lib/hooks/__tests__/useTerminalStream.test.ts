@@ -346,8 +346,11 @@ describe('useTerminalStream — scrollback decoder isolation', () => {
     const firstHalf = new Uint8Array([0xe2]);
     const secondHalf = new Uint8Array([0x82, 0xac]);
 
-    // Interleaved scrollback data — any byte sequence (reuse the € bytes as filler)
-    const scrollbackBytes = new Uint8Array([0xe2, 0x82, 0xac]); // complete € for scrollback
+    // Interleaved scrollback data — a lone continuation byte.
+    // Without decoder isolation, this stray byte would corrupt the live stream's in-flight
+    // 0xe2 state (first byte of €), producing U+FFFD on the next live chunk instead of €.
+    // With proper isolation the live textDecoderRef is unaffected.
+    const scrollbackBytes = new Uint8Array([0x82]);
 
     // Send first half of live multi-byte sequence
     await act(async () => { stream.push(makeOutputMsg(firstHalf)); });
