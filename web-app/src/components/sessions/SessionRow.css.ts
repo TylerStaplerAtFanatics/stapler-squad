@@ -12,7 +12,7 @@ export const row = style({
   display: "grid",
   // gridTemplateColumns is set via inline style in SessionRow based on visibleColumns.
   // Default fallback (no JS): dot | name+path | agent | memory | elapsed | actions.
-  gridTemplateColumns: "8px 1fr 20px auto 32px auto",
+  gridTemplateColumns: "24px 8px 1fr 20px auto 32px auto",
   alignItems: "center",
   gap: vars.space["2"],
   padding: "6px 12px",
@@ -318,4 +318,69 @@ export const groupHeader = style({
   textTransform: "uppercase",
   letterSpacing: "0.05em",
   listStyle: "none",
+});
+
+/** Checkbox cell — always occupies the reserved 24px column; visibility is CSS-driven. */
+export const checkboxCell = style({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  visibility: "hidden",
+  pointerEvents: "none",
+  selectors: {
+    // Desktop hover reveal
+    [`${row}:hover &`]: {
+      visibility: "visible",
+      pointerEvents: "auto",
+    },
+    // Always visible when select mode is active (all devices)
+    [`[data-select-mode="true"] &`]: {
+      visibility: "visible",
+      pointerEvents: "auto",
+    },
+  },
+  // Touch devices: CSS :hover never fires on tap, so make checkboxes permanently visible.
+  "@media": {
+    "(hover: none)": {
+      visibility: "visible",
+      pointerEvents: "auto",
+    },
+  },
+});
+
+/** Custom checkbox button rendered inside checkboxCell. */
+export const checkboxButton = style({
+  width: "16px",
+  height: "16px",
+  borderRadius: vars.radii.sm,
+  border: `1px solid ${vars.color.borderColor}`,
+  background: vars.color.surfaceSubtle,
+  cursor: "pointer",
+  padding: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  selectors: {
+    '&[aria-checked="true"]': {
+      background: vars.color.primary,
+      borderColor: vars.color.primary,
+    },
+    '&[aria-checked="true"]::after': {
+      content: '"✓"',
+      color: "white",
+      fontSize: "10px",
+      lineHeight: 1,
+    },
+  },
+  "@media": {
+    "(pointer: coarse)": {
+      width: "44px",
+      height: "44px",
+    },
+  },
+});
+
+/** Applied to the row when it is in the selected set — background tint distinct from active/paused accents. */
+export const rowSelected = style({
+  background: "var(--session-selected-bg)",
 });

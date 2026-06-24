@@ -94,6 +94,8 @@ func TestClaude_AsterismCompletion_IsSuccess(t *testing.T) {
 		"✻ Perambulated for 1h 5m",
 		"✻ Synthesized for 30s",
 		"◉ Baked for 10s",
+		"✦ Cooked for 3s",
+		"✦ Pondered for 2m 14s",
 	}
 	for _, input := range cases {
 		got := sd.Detect([]byte(input))

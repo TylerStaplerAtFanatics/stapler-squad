@@ -523,6 +523,13 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 			inst.ReconcileShells(context.Background())
 		}
 
+		// Step 6d: Kill orphaned tmux sessions — staplersquad_ sessions with no
+		// matching DB record. These accumulate when DeleteSession removes the DB
+		// row but the server restarted before the live in-memory instance was
+		// available to call Destroy(). Must run after 6/6b so re-adopted sessions
+		// are already registered and won't be mistaken for orphans.
+		session.ReconcileOrphanedTmuxSessions(instances)
+
 		// Step 6.5: Persist any auto-detected worktree info (must happen after Step 6)
 		if len(instances) > 0 {
 			if err := storage.SaveInstances(instances); err != nil {

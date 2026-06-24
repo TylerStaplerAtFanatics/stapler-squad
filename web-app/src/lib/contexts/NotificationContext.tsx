@@ -60,6 +60,13 @@ interface NotificationContextValue {
   loadMoreHistory: () => Promise<void>;
   /** Re-fetch the full notification history from the server (e.g. after a stream reconnect). */
   refreshHistory: () => Promise<void>;
+  /**
+   * Show an undo-variant toast. Returns the notification ID so the caller can
+   * dismiss it when the undo window expires (e.g. via removeNotification).
+   * Default duration is 5000ms (passed as durationMs for callers that want to
+   * schedule their own dismissal; the toast itself auto-closes via the normal policy).
+   */
+  showUndoToast: (message: string, onUndo: () => void, durationMs?: number) => string;
 }
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
@@ -224,6 +231,28 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     [addNotification]
   );
 
+  const showUndoToast = useCallback(
+    (message: string, onUndo: () => void, durationMs: number = 5000): string => {
+      const id = `notification-${Date.now()}-${Math.random()}`;
+      const newNotification: NotificationData = {
+        id,
+        sessionId: "",
+        sessionName: "",
+        message,
+        timestamp: Date.now(),
+        notificationType: "undo",
+        onUndo,
+      };
+      setNotifications((prev) => [...prev, newNotification]);
+      // Auto-dismiss after durationMs
+      setTimeout(() => {
+        setNotifications((prev) => prev.filter((n) => n.id !== id));
+      }, durationMs);
+      return id;
+    },
+    []
+  );
+
   // Remove stale toasts every minute.
   // Non-actionable: removed after TOAST_STALE_MS (5 min).
   // Actionable (approval_needed, question): removed after ACTIONABLE_TOAST_STALE_MS (6 min).
@@ -383,6 +412,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         historyHasMore: history.hasMore,
         loadMoreHistory: history.loadMore,
         refreshHistory: history.refresh,
+        showUndoToast,
       }}
     >
       {children}

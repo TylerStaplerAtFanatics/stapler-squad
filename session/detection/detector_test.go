@@ -110,7 +110,13 @@ func TestStatusDetector_DetectWaitingForAgent(t *testing.T) {
 		"✻ Waiting for 1 background agent to finish",
 		"✻ Waiting for 2 background agents to finish",
 		"◉ Waiting for 3 background agents to finish",
+		"✦ Waiting for 1 background agent to finish",
 		"\x1b[33m✻\x1b[0m Waiting for 1 background agent to finish",
+		"✻ Waiting for 1 dynamic workflow to finish",
+		"✻ Waiting for 2 dynamic workflows to finish",
+		"◉ Waiting for 3 dynamic workflows to finish",
+		"✦ Waiting for 1 dynamic workflow to finish",
+		"✦ Waiting for 2 dynamic workflows to finish",
 	}
 
 	for _, output := range testCases {
