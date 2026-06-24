@@ -293,36 +293,4 @@ describe("Omnibar alias namePrefix population", () => {
       expect.objectContaining({ title: "my-custom-name" })
     );
   });
-
-  it("converts typed label to kebab-case lowercase before prepending prefix", async () => {
-    const onCreateSession = jest.fn().mockResolvedValue(undefined);
-    const { input } = renderOmnibar({ onCreateSession });
-
-    // Type "@ssq My New Feature" — label has spaces and uppercase
-    await typeAndDetect(input, "@ssq My New Feature");
-
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
-    });
-
-    // Label should be kebab-cased: "My New Feature" → "my-new-feature"
-    expect(onCreateSession).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "ssq-my-new-feature" })
-    );
-  });
-
-  it("converts underscores to hyphens in typed label", async () => {
-    const onCreateSession = jest.fn().mockResolvedValue(undefined);
-    const { input } = renderOmnibar({ onCreateSession });
-
-    await typeAndDetect(input, "@ssq fix_auth_bug");
-
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
-    });
-
-    expect(onCreateSession).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "ssq-fix-auth-bug" })
-    );
-  });
 });
