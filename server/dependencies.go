@@ -53,6 +53,9 @@ type ServerDependencies struct {
 	UnfinishedWorkService *services.UnfinishedWorkService
 	WorktreePRPoller      *session.WorktreePRPoller
 
+	// GitHub user-level PR cache (open PRs authored by the authenticated user).
+	UserPRCache *github.UserPRCache
+
 	// Token usage analytics.
 	InsightsService *services.InsightsService
 
@@ -108,6 +111,7 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		UnfinishedStateStore:    rt.UnfinishedStateStore,
 		UnfinishedWorkService:   rt.UnfinishedWorkService,
 		WorktreePRPoller:        rt.WorktreePRPoller,
+		UserPRCache:             rt.UserPRCache,
 		InsightsService:         rt.InsightsService,
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
@@ -370,6 +374,9 @@ type RuntimeDeps struct {
 	UnfinishedStateStore  *unfinished.StateStore
 	UnfinishedWorkService *services.UnfinishedWorkService
 	WorktreePRPoller      *session.WorktreePRPoller
+
+	// GitHub user-level PR cache (open PRs authored by the authenticated user).
+	UserPRCache *github.UserPRCache
 
 	// Token usage analytics.
 	InsightsService *services.InsightsService
@@ -733,6 +740,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		unfinishedStateStore *unfinished.StateStore
 		unfinishedWorkSvc    *services.UnfinishedWorkService
 		worktreePRPoller     *session.WorktreePRPoller
+		userPRCache          *github.UserPRCache
 	)
 	if configDir, configErr := config.GetConfigDir(); configErr == nil {
 		statePath := filepath.Join(configDir, "unfinished_state.json")
@@ -756,6 +764,9 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	} else {
 		log.Warn("could not initialize UnfinishedWork state store", "err", configErr)
 	}
+
+	// UserPRCache fetches all open PRs authored by the authenticated GitHub user.
+	userPRCache = github.NewUserPRCache()
 
 	// analyticsEntClient is populated asynchronously by a dedicated goroutine below.
 
@@ -873,6 +884,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		UnfinishedStateStore:    unfinishedStateStore,
 		UnfinishedWorkService:   unfinishedWorkSvc,
 		WorktreePRPoller:        worktreePRPoller,
+		UserPRCache:             userPRCache,
 		InsightsService:         insightsSvc,
 		BacklogService:          backlogSvc,
 		SyncLoop:                nil, // managed by BacklogController

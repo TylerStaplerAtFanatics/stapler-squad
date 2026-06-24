@@ -157,6 +157,13 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		log.Info("WorktreePRPoller started")
 	}
 
+	// Start UserPRCache: background refresh of all open PRs authored by the
+	// authenticated GitHub user (used by the GitHub Work Continuity feature).
+	if deps.UserPRCache != nil {
+		deps.UserPRCache.Start(serverCtx)
+		log.Info("UserPRCache started")
+	}
+
 	// Register shutdown hook: capture pane working dirs and persist instance
 	// state so cold restore can find the right directory on next start.
 	// Uses HistoryLinker.Instances() (not the startup snapshot) so externally

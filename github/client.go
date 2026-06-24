@@ -189,6 +189,39 @@ func CheckGHAuth() error {
 	return nil
 }
 
+// GetCurrentUserLogin returns the GitHub login of the authenticated user via
+// GET /user. Returns an empty string (not an error) when unauthenticated so
+// callers can degrade gracefully.
+func GetCurrentUserLogin(ctx context.Context) (string, error) {
+	req, err := newGHRequest(ctx, "user")
+	if err != nil {
+		return "", fmt.Errorf("build /user request: %w", err)
+	}
+
+	resp, err := ghHTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("/user request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", fmt.Errorf("/user: unexpected status %d", resp.StatusCode)
+	}
+
+	var u struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		return "", fmt.Errorf("decode /user response: %w", err)
+	}
+	return u.Login, nil
+}
+
 // GetPRInfo fetches metadata for a pull request including review and CI status.
 func GetPRInfo(owner, repo string, prNumber int) (*PRInfo, error) {
 	return GetPRInfoCtx(context.Background(), owner, repo, prNumber)

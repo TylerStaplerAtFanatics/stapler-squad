@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -117,6 +118,23 @@ func newGHRequest(ctx context.Context, path string) (*http.Request, error) {
 	if tok := getGHToken(ctx); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	return req, nil
+}
+
+// newGHPostRequest creates an authenticated POST request to the GitHub REST or
+// GraphQL API. Pass "graphql" as path to target https://api.github.com/graphql.
+// The body is read from body (typically a bytes.Reader wrapping a JSON payload).
+func newGHPostRequest(ctx context.Context, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.github.com/"+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if tok := getGHToken(ctx); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	return req, nil
