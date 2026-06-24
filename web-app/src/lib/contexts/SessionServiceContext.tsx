@@ -18,7 +18,7 @@ import { getApiBaseUrl } from "@/lib/config";
 import { closeNativeNotification, notificationTag } from "@/lib/utils/notifications";
 import type { ConnectionState } from "@/lib/store/sessionsSlice";
 
-interface SessionServiceContextValue {
+export interface SessionServiceContextValue {
   sessions: Session[];
   loading: boolean;
   error: Error | null;
@@ -49,7 +49,7 @@ interface SessionServiceContextValue {
   stopWatching: () => void;
 }
 
-const SessionServiceContext = createContext<SessionServiceContextValue | null>(null);
+export const SessionServiceContext = createContext<SessionServiceContextValue | null>(null);
 
 /**
  * GlobalSessionServiceProvider mounts a single persistent watchSessions connection

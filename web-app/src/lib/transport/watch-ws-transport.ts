@@ -29,7 +29,7 @@ function encodeEnvelope(flags: number, data: Uint8Array): Uint8Array {
   return buf;
 }
 
-async function* fromWebSocket(
+export async function* fromWebSocket(
   ws: WebSocket,
   signal: AbortSignal | undefined
 ): AsyncGenerator<Uint8Array> {
