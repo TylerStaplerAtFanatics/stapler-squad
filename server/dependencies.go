@@ -767,6 +767,9 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 
 	// UserPRCache fetches all open PRs authored by the authenticated GitHub user.
 	userPRCache = github.NewUserPRCache()
+	userPRCache.SetOnUpdated(func(prs []github.UserPR) {
+		annotateUserPRCache(userPRCache, svc.PRStatusPoller, unfinishedScanner)
+	})
 
 	// analyticsEntClient is populated asynchronously by a dedicated goroutine below.
 
@@ -915,6 +918,41 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}()
 
 	return rt, nil
+}
+
+// annotateUserPRCache populates session IDs and worktree paths on the cached
+// UserPR list. Called in the UserPRCache onUpdated callback.
+func annotateUserPRCache(cache *github.UserPRCache, poller *session.PRStatusPoller, scanner *unfinished.Scanner) {
+	var annSessions []github.PRAnnotationSession
+	if poller != nil {
+		for _, inst := range poller.GetInstances() {
+			if inst.GitHubOwner == "" || inst.Branch == "" {
+				continue
+			}
+			annSessions = append(annSessions, github.PRAnnotationSession{
+				ID:          inst.Title,
+				Branch:      inst.Branch,
+				GitHubOwner: inst.GitHubOwner,
+			})
+		}
+	}
+
+	var annWorktrees []github.PRAnnotationWorktree
+	if scanner != nil {
+		for _, r := range scanner.GetAllResults() {
+			owner, _, _ := github.GetOwnerRepoFromRemote(r.RepoPath)
+			if owner == "" || r.Branch == "" {
+				continue
+			}
+			annWorktrees = append(annWorktrees, github.PRAnnotationWorktree{
+				Branch:       r.Branch,
+				GitHubOwner:  owner,
+				WorktreePath: r.WorktreePath,
+			})
+		}
+	}
+
+	cache.Annotate(annSessions, annWorktrees)
 }
 
 // scannerSource adapts *unfinished.Scanner to session.WorktreeSource, bridging

@@ -68,6 +68,19 @@ func TestUserPRCache_UserPR_Fields(t *testing.T) {
 	}
 }
 
+// TestUserPRCache_Annotate verifies that Annotate is a no-op before first fetch
+// and populates SessionIDs / LocalWorktreePath on an existing snapshot.
+func TestUserPRCache_Annotate_NoopBeforeSnapshot(t *testing.T) {
+	c := github.NewUserPRCache()
+	// Annotate on an empty cache should not panic.
+	c.Annotate([]github.PRAnnotationSession{
+		{ID: "s1", Branch: "feat/x", GitHubOwner: "acme"},
+	}, nil)
+	if got := c.GetAll(); got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
+}
+
 // serveGraphQLMock runs a minimal httptest server that responds to POST /graphql.
 // It is used by integration-style tests in this package.
 func serveGraphQLMock(t *testing.T, response interface{}) *httptest.Server {

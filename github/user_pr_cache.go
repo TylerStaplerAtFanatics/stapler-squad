@@ -17,21 +17,43 @@ import (
 
 // UserPR is a pull request authored by the authenticated user across any repo.
 type UserPR struct {
-	Owner            string
-	Repo             string
-	Number           int
-	Title            string
-	URL              string
-	HeadRef          string
-	BaseRef          string
-	State            string // OPEN, CLOSED, MERGED
-	IsDraft          bool
-	UpdatedAt        time.Time
-	ClosedAt         time.Time
-	MergedAt         time.Time
-	ApprovedCount    int
-	ChangesReqCount  int
-	CheckConclusion  string // success / failure / pending / action_required / neutral / ""
+	Owner           string
+	Repo            string
+	Number          int
+	Title           string
+	URL             string
+	HeadRef         string
+	BaseRef         string
+	State           string // OPEN, CLOSED, MERGED
+	IsDraft         bool
+	UpdatedAt       time.Time
+	ClosedAt        time.Time
+	MergedAt        time.Time
+	ApprovedCount   int
+	ChangesReqCount int
+	CheckConclusion string // success / failure / pending / action_required / neutral / ""
+
+	// Populated by Annotate — not from the GitHub API.
+	SessionIDs        []string // IDs of local sessions checked out on this branch/owner
+	LocalWorktreePath string   // path of a local worktree for this PR (if any)
+}
+
+// PRAnnotationSession carries the fields UserPRCache.Annotate needs from a
+// local session. Callers build this from session.Instance without importing
+// the session package into the github package (avoids import cycle).
+type PRAnnotationSession struct {
+	ID          string // session ID
+	Branch      string // checked-out branch
+	GitHubOwner string // repo owner derived from git remote
+	WorktreePath string
+}
+
+// PRAnnotationWorktree carries the fields UserPRCache.Annotate needs from a
+// worktree scan result. Same import-cycle avoidance rationale.
+type PRAnnotationWorktree struct {
+	Branch      string
+	GitHubOwner string // derived from git remote URL
+	WorktreePath string
 }
 
 // userPRSnapshot is the immutable COW payload stored in atomic.Value.
@@ -137,6 +159,48 @@ func (c *UserPRCache) Refresh(ctx context.Context) error {
 		return nil, c.doRefresh(ctx)
 	})
 	return err
+}
+
+// Annotate enriches the current cached snapshot with local session IDs and
+// worktree paths. It is called after each refresh and after PRStatusPoller fires.
+// The COW pattern: load snapshot, copy+annotate, store new snapshot atomically.
+// Concurrent Annotate calls are safe — the worst case is one writer losing a
+// race; the next annotation call will correct it.
+func (c *UserPRCache) Annotate(sessions []PRAnnotationSession, worktrees []PRAnnotationWorktree) {
+	v := c.snapshot.Load()
+	if v == nil {
+		return
+	}
+	old := v.(*userPRSnapshot)
+
+	// Build lookup maps so annotation is O(n + m) rather than O(n*m).
+	// key: "owner/headRef" → []sessionIDs
+	sessionsByKey := make(map[string][]string, len(sessions))
+	for _, s := range sessions {
+		if s.Branch == "" || s.GitHubOwner == "" {
+			continue
+		}
+		key := s.GitHubOwner + "/" + s.Branch
+		sessionsByKey[key] = append(sessionsByKey[key], s.ID)
+	}
+	// key: "owner/headRef" → worktreePath (last writer wins for simplicity)
+	worktreeByKey := make(map[string]string, len(worktrees))
+	for _, wt := range worktrees {
+		if wt.Branch == "" || wt.GitHubOwner == "" {
+			continue
+		}
+		worktreeByKey[wt.GitHubOwner+"/"+wt.Branch] = wt.WorktreePath
+	}
+
+	annotated := make([]UserPR, len(old.prs))
+	for i, pr := range old.prs {
+		key := pr.Owner + "/" + pr.HeadRef
+		pr.SessionIDs = sessionsByKey[key]
+		pr.LocalWorktreePath = worktreeByKey[key]
+		annotated[i] = pr
+	}
+
+	c.snapshot.Store(&userPRSnapshot{prs: annotated, capturedAt: old.capturedAt})
 }
 
 func (c *UserPRCache) pollLoop() {

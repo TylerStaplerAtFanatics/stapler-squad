@@ -99,6 +99,16 @@ func (p *PRStatusPoller) SetInstances(instances []*Instance) {
 	p.instances = instances
 }
 
+// GetInstances returns a defensive copy of the currently monitored instances.
+// Callers must not modify the returned slice elements.
+func (p *PRStatusPoller) GetInstances() []*Instance {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]*Instance, len(p.instances))
+	copy(out, p.instances)
+	return out
+}
+
 // AddInstance adds a single instance to monitor.
 func (p *PRStatusPoller) AddInstance(inst *Instance) {
 	p.mu.Lock()
