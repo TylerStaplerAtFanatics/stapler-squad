@@ -17,6 +17,14 @@ jest.mock("@/lib/contexts/ReviewQueueContext", () => ({
   useReviewQueueContext: () => ({ items: [] }),
 }));
 
+jest.mock("@/lib/contexts/NotificationContext", () => ({
+  useNotifications: () => ({
+    showUndoToast: jest.fn(() => "toast-id"),
+    removeNotification: jest.fn(),
+    addNotification: jest.fn(),
+  }),
+}));
+
 jest.mock("@/lib/store", () => ({
   useAppSelector: jest.fn(() => ({})),
 }));
@@ -75,7 +83,7 @@ describe("SessionList — mobile new session flow", () => {
         onNewSession={jest.fn()}
       />
     );
-    expect(screen.getByRole("button", { name: "Create new session (Ctrl+K)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create new session" })).toBeInTheDocument();
   });
 
   it("calls onNewSession when the header + button is clicked", () => {
@@ -86,13 +94,13 @@ describe("SessionList — mobile new session flow", () => {
         onNewSession={onNewSession}
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Create new session (Ctrl+K)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create new session" }));
     expect(onNewSession).toHaveBeenCalledTimes(1);
   });
 
   it("shows the + button even when session list is empty", () => {
     render(<SessionList sessions={[]} onNewSession={jest.fn()} />);
-    expect(screen.getByRole("button", { name: "Create new session (Ctrl+K)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create new session" })).toBeInTheDocument();
   });
 
   it("does not crash when onNewSession is not provided", () => {

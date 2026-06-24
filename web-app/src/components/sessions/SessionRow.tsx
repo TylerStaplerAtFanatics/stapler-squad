@@ -9,6 +9,7 @@ import {
   row,
   rowPaused,
   rowActive,
+  rowSelected,
   statusDot,
   nameCell as nameCellStyle,
   name as nameStyle,
@@ -27,6 +28,8 @@ import {
   diffBadge,
   branchCell,
   rowMemoryPressure,
+  checkboxCell,
+  checkboxButton,
 } from "./SessionRow.css";
 import { ColumnKey, DEFAULT_VISIBLE_COLUMNS, buildRowGridTemplate } from "./session-columns";
 
@@ -53,6 +56,12 @@ interface SessionRowProps {
   suppressApprovalSubStatus?: boolean;
   /** Which optional columns to render. Defaults to DEFAULT_VISIBLE_COLUMNS. */
   visibleColumns?: ColumnKey[];
+  /** When true, the checkbox column is interactive and visible on hover/select mode. */
+  selectMode?: boolean;
+  /** Whether this row is currently in the selected set. */
+  isSelected?: boolean;
+  /** Called when the checkbox is clicked; receives the native MouseEvent so the parent can inspect e.shiftKey. */
+  onToggleSelect?: (e: React.MouseEvent) => void;
 }
 
 function getStatusDotValue(status: SessionStatus): string {
@@ -135,6 +144,9 @@ export function SessionRow({
   onHibernate, onResumeFromHibernation,
   suppressApprovalSubStatus = false,
   visibleColumns = DEFAULT_VISIBLE_COLUMNS,
+  selectMode = false,
+  isSelected = false,
+  onToggleSelect,
 }: SessionRowProps) {
   const overflowRef = useRef<SessionActionsOverflowHandle>(null);
 
@@ -179,8 +191,9 @@ export function SessionRow({
           (session.subStatus === SubStatus.PROCESSING || session.subStatus === SubStatus.WAITING_FOR_AGENT)
           ? rowActive
           : "",
+        isSelected ? rowSelected : "",
       ].filter(Boolean).join(" ")}
-      style={{ gridTemplateColumns: buildRowGridTemplate(visibleColumns) }}
+      style={{ gridTemplateColumns: buildRowGridTemplate(visibleColumns ?? DEFAULT_VISIBLE_COLUMNS, { reserveCheckbox: true }) }}
       data-testid="session-row"
       data-paused={isPaused ? "true" : undefined}
       data-actions-visible={actionsAlwaysVisible ? "true" : undefined}
@@ -189,7 +202,27 @@ export function SessionRow({
       onKeyDown={handleKeyDown}
       tabIndex={0}
       aria-label={`Session ${session.title}, status: ${getStatusDotLabel(dotStatus)}, program: ${session.program}${session.path ? `, path: ${abbreviatePath(session.path)}` : ""}`}
+      aria-selected={isSelected}
     >
+      {/* Checkbox cell — always in DOM to keep the reserved grid column occupied */}
+      <div
+        className={checkboxCell}
+        aria-hidden={!selectMode ? "true" : undefined}
+      >
+        <button
+          role="checkbox"
+          aria-checked={isSelected}
+          aria-label={`Select session ${displayName || session.id}`}
+          tabIndex={selectMode ? 0 : -1}
+          data-testid="session-row-checkbox"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSelect?.(e);
+          }}
+          className={checkboxButton}
+        />
+      </div>
+
       {/* Status dot — always visible */}
       <Tooltip label={`Status: ${getStatusDotLabel(dotStatus)}`}>
         <span

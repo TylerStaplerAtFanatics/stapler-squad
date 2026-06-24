@@ -31,6 +31,7 @@ export function BulkActions({
   feedback,
   onGroupAs,
 }: BulkActionsProps) {
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
   const [groupAsValue, setGroupAsValue] = useState("");
   const [groupAsLoading, setGroupAsLoading] = useState(false);
   const [groupAsError, setGroupAsError] = useState<string | null>(null);
@@ -42,7 +43,7 @@ export function BulkActions({
           Click sessions to select them
         </span>
         <button onClick={onClearSelection} className={clearButton} aria-label="Cancel select mode">
-          Cancel
+          Cancel (Esc)
         </button>
       </div>
     );
@@ -52,16 +53,16 @@ export function BulkActions({
     <div role="toolbar" aria-label="Bulk session actions" className={container}>
       {feedback && <div className={feedbackClass} aria-hidden="true">{feedback}</div>}
       <div className={selection}>
-        <span className={count}>
+        <span className={count} aria-live="polite" aria-atomic="true">
           {selectedCount} of {totalCount} selected
         </span>
         {selectedCount < totalCount && (
           <button onClick={onSelectAll} className={selectAllButton} aria-label={`Select all ${totalCount} session${totalCount !== 1 ? "s" : ""}`}>
-            Select All
+            Select All {isMac ? "(⌘A)" : "(Ctrl+A)"}
           </button>
         )}
         <button onClick={onClearSelection} className={clearButton} aria-label={`Clear selection of ${selectedCount} session${selectedCount !== 1 ? "s" : ""}`}>
-          Clear Selection
+          Clear Selection (Esc)
         </button>
       </div>
 
@@ -69,6 +70,7 @@ export function BulkActions({
         <button
           onClick={onPauseAll}
           className={actionButton}
+          data-testid="bulk-pause-button"
           aria-label={`Pause ${selectedCount} selected session${selectedCount !== 1 ? "s" : ""}`}
         >
           <span aria-hidden="true">⏸️</span> Pause Selected
@@ -160,6 +162,7 @@ export function BulkActions({
         <button
           onClick={onDeleteAll}
           className={`${actionButton} ${danger}`}
+          data-testid="bulk-delete-button"
           aria-label={`Delete ${selectedCount} selected session${selectedCount !== 1 ? "s" : ""}`}
         >
           <span aria-hidden="true">🗑️</span> Delete Selected
