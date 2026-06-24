@@ -2,9 +2,6 @@ package github_test
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -79,20 +76,6 @@ func TestUserPRCache_Annotate_NoopBeforeSnapshot(t *testing.T) {
 	if got := c.GetAll(); got != nil {
 		t.Fatalf("expected nil, got %v", got)
 	}
-}
-
-// serveGraphQLMock runs a minimal httptest server that responds to POST /graphql.
-// It is used by integration-style tests in this package.
-func serveGraphQLMock(t *testing.T, response interface{}) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/graphql" {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
-	}))
 }
 
 // TestParseGQLTime_Zero ensures an empty timestamp field does not panic.
