@@ -53,6 +53,31 @@ func TestParseHeadlessTriageResult_EmptySuggestionsOK(t *testing.T) {
 	assert.Empty(t, result.Tasks)
 }
 
+func TestParseHeadlessTriageResult_PreambleBeforeJSON(t *testing.T) {
+	raw := "Here is my analysis of the backlog item.\nSome additional notes.\n" +
+		`{"summary":"preamble ok","suggestions":[{"text":"s","rationale":"r"}]}`
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "preamble ok", result.Summary)
+}
+
+func TestParseHeadlessTriageResult_PreambleBeforeFencedJSON(t *testing.T) {
+	// Most common real-world case: Claude outputs text, then a fenced block.
+	raw := "Triage complete. Here is the result:\n\n" +
+		"```json\n" +
+		`{"summary":"fenced ok","suggestions":[]}` +
+		"\n```"
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "fenced ok", result.Summary)
+}
+
+func TestParseHeadlessTriageResult_NoJSON(t *testing.T) {
+	_, err := ParseHeadlessTriageResult("No JSON here at all.")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ParseHeadlessTriageResult")
+}
+
 // ─── BuildHeadlessTriagePrompt ────────────────────────────────────────────────
 
 func TestBuildHeadlessTriagePrompt_ContainsTitle(t *testing.T) {

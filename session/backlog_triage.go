@@ -88,21 +88,22 @@ After all files are written, output ONLY a JSON object (no other text before or 
 }
 
 // ParseHeadlessTriageResult unmarshals an LLM JSON response into HeadlessTriageResult.
-// Strips markdown code fences before parsing. Caps tasks at maxHeadlessTriageTasks.
+// Tolerates preamble text before the JSON block (e.g. "Here is the result:\n\n{...}").
+// Uses brace-scan to find the JSON object rather than requiring the output to start with `{`.
+// Caps tasks at maxHeadlessTriageTasks.
 func ParseHeadlessTriageResult(raw string) (HeadlessTriageResult, error) {
-	text := strings.TrimSpace(raw)
-	if strings.HasPrefix(text, "```") {
-		lines := strings.SplitN(text, "\n", 2)
-		if len(lines) == 2 {
-			text = lines[1]
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start == -1 || end <= start {
+		preview := raw
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
 		}
-		if idx := strings.LastIndex(text, "```"); idx >= 0 {
-			text = strings.TrimSpace(text[:idx])
-		}
+		return HeadlessTriageResult{}, fmt.Errorf("ParseHeadlessTriageResult: no JSON object found in output (raw: %q)", preview)
 	}
 
 	var result HeadlessTriageResult
-	if err := json.Unmarshal([]byte(text), &result); err != nil {
+	if err := json.Unmarshal([]byte(raw[start:end+1]), &result); err != nil {
 		preview := raw
 		if len(preview) > 200 {
 			preview = preview[:200] + "..."

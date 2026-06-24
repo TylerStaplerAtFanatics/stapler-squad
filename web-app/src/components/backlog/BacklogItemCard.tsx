@@ -30,7 +30,7 @@ function getActionSpec(item: BacklogItem): ActionSpec {
     case "refining":
       return { label: "Refining…", action: "refining", isDone: true };
     case "ready":
-      return { label: "Trigger Triage", action: "trigger_triage" };
+      return { label: "Trigger Triage", action: "trigger_triage", disabled: !item.repoPath };
     case "in_progress":
       return {
         label: "View Session",
