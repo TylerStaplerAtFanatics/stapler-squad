@@ -488,8 +488,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           const typedLabel = aliasMeta?.label;
           const namePrefix = alias?.namePrefix ?? "";
           if (typedLabel && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {
-            const labelKebab = typedLabel.trim().toLowerCase().replace(/[\s_]+/g, "-");
-            const suggested = namePrefix ? `${namePrefix}${labelKebab}` : labelKebab;
+            const suggested = namePrefix ? `${namePrefix}${typedLabel}` : typedLabel;
             setSessionName(suggested);
             lastSuggestedNameRef.current = suggested;
           } else if (namePrefix && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {

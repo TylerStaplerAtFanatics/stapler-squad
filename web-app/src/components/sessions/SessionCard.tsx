@@ -103,7 +103,7 @@ interface SessionCardProps {
   onResumeFromHibernation?: () => void;
   selectMode?: boolean;
   isSelected?: boolean;
-  onToggleSelect?: () => void;
+  onToggleSelect?: (e?: React.MouseEvent) => void;
   reviewItem?: ReviewItem; // Optional review queue item if session needs attention
   detectedStatus?: DetectedStatus; // Terminal-detected status from pattern analysis
   detectedContext?: string; // Context string for the detected status
