@@ -33,10 +33,7 @@ export class EscapeSequenceParser {
     const fullData = this.partialSequence + data;
     this.partialSequence = "";
 
-    // ED3 filter: strip ED3 (erase scrollback) when immediately preceded by ED2
-    // (erase visible screen). Most terminals redraw after ED2 alone; the paired
-    // ED2+ED3 sequence causes xterm.js to flicker by also wiping scrollback.
-    const filtered = fullData.replace(/\x1b\[2J\x1b\[3J/g, "\x1b[2J");
+    const filtered = fullData; // No sequence stripping - xterm.js v6 handles ED2+ED3 correctly
 
     // Check if data ends with a partial escape sequence
     const partial = this.findPartialEscapeAtEnd(filtered);
@@ -79,8 +76,8 @@ export class EscapeSequenceParser {
   private findPartialEscapeAtEnd(data: string): string {
     if (data.length === 0) return "";
 
-    // Maximum length to scan backward (escape sequences rarely exceed 20 bytes)
-    const scanLength = Math.min(20, data.length);
+    // Maximum length to scan backward - OSC title strings and DCS payloads can exceed 20 bytes
+    const scanLength = Math.min(256, data.length);
     const startIndex = data.length - scanLength;
 
     // Scan backward for last ESC character
@@ -139,6 +136,17 @@ export class EscapeSequenceParser {
     if (secondChar === ']') {
       // OSC ends with BEL (\x07) or ESC\ (\x1b\x5c)
       return this.hasOSCTerminator(seq);
+    }
+
+    // DCS (P), PM (^), APC (_), SOS (X) — all terminated by ST only (ESC \)
+    const stringModes: Record<string, boolean> = {
+      'P': false, // DCS
+      '^': false, // PM
+      '_': false, // APC
+      'X': false, // SOS
+    };
+    if (secondChar in stringModes) {
+      return seq.includes('\x1b\\');
     }
 
     // Simple escape: ESC + single char

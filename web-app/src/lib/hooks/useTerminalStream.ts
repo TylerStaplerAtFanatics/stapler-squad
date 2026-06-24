@@ -103,6 +103,7 @@ export function useTerminalStream({
   const isDisconnectingRef = useRef(false);
   const isConnectedRef = useRef(false);
   const textDecoderRef = useRef(new TextDecoder());
+  const scrollbackDecoderRef = useRef(new TextDecoder());
 
   const clientRef = useRef(createClient(
     SessionService,
@@ -295,7 +296,7 @@ export function useTerminalStream({
 
               // Write deprecated pane content via scrollback callback
               const response = msg.data.value;
-              const content = textDecoderRef.current.decode(response.content);
+              const content = scrollbackDecoderRef.current.decode(response.content, { stream: true });
               console.log(`[useTerminalStream] Received current pane (deprecated): ${content.length} bytes`);
 
               if (onScrollbackReceived) {
@@ -305,7 +306,7 @@ export function useTerminalStream({
             } else if (msg.data.case === "scrollbackResponse") {
               const chunks: string[] = [];
               for (const chunk of msg.data.value.chunks) {
-                const text = textDecoderRef.current.decode(chunk.data);
+                const text = scrollbackDecoderRef.current.decode(chunk.data, { stream: true });
                 chunks.push(text);
               }
               const scrollbackText = chunks.join("");
@@ -384,6 +385,8 @@ export function useTerminalStream({
 
     setIsConnected(false);
     isDisconnectingRef.current = false;
+    textDecoderRef.current = new TextDecoder();
+    scrollbackDecoderRef.current = new TextDecoder();
   }, [getIsResyncingRef]);
 
   // ---- Auto-connect / cleanup ----
