@@ -22,13 +22,16 @@ jest.mock("@/lib/contexts/OmnibarContext", () => ({
   useOmnibar: () => ({ open: jest.fn() }),
 }));
 
-// Advance the modal to the final (hooks) step.
+// Advance the modal to the final (hooks) step and wait for the status fetch to settle.
 async function gotoHooksStep() {
   render(<OnboardingModal isOpen onClose={jest.fn()} />);
   // 4 "Next" clicks: steps 1→2→3→4→5.
   for (let i = 0; i < 4; i++) {
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
   }
+  // The step-5 effect fires getHookStatus and resolves async state; wait for it
+  // so assertions don't race the resolved-promise setState (avoids act() warnings).
+  await waitFor(() => expect(mockGetHookStatus).toHaveBeenCalled());
 }
 
 describe("onboarding-hook-install", () => {

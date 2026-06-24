@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -116,6 +117,31 @@ func TestInstall_PreservesExistingUnrelatedHooks(t *testing.T) {
 	first := groups[0].(map[string]interface{})["hooks"].([]interface{})[0].(map[string]interface{})
 	if first["command"] != "/bin/ssq-hooks check" {
 		t.Errorf("our hook should be first, got %v", first["command"])
+	}
+}
+
+func TestInstall_ConcurrentWrites_NoCorruption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = InstallRules(path, "/bin/ssq-hooks") }()
+		go func() { defer wg.Done(); _ = InstallNotifications(path, "/bin/ssq-hook-handler") }()
+	}
+	wg.Wait()
+
+	// File must be valid JSON and both hooks present exactly once.
+	got := readBack(t, path)
+	st, err := DetectStatus(path)
+	if err != nil {
+		t.Fatalf("DetectStatus after concurrent writes: %v", err)
+	}
+	if !st.RulesInstalled || !st.NotificationsInstalled {
+		t.Errorf("both hooks should be installed after concurrent writes, got %+v", st)
+	}
+	pre := got["hooks"].(map[string]interface{})["PreToolUse"].([]interface{})
+	if len(pre) != 1 {
+		t.Errorf("expected exactly 1 PreToolUse group (idempotent under races), got %d", len(pre))
 	}
 }
 

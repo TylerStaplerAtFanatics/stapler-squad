@@ -22,7 +22,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+// mu serializes read-modify-write cycles on a settings file. All writers live in
+// this process (the server's InstallHooks handler and the ssq-hooks CLI), so a
+// package mutex is sufficient to prevent a lost update / clobbered file when two
+// installs race (e.g. a double-click in onboarding).
+var mu sync.Mutex //nolint:gochecknoglobals // serializes settings.json read-modify-write across all in-process callers
 
 // Markers identify our hook commands regardless of the absolute path they were
 // installed with, so detection and idempotency survive a binary relocation.
@@ -91,6 +98,9 @@ func InstallNotifications(settingsPath, handlerPath string) error {
 // mutate reads settingsPath, hands the hooks map to fn (creating it if absent),
 // and writes the result atomically.
 func mutate(settingsPath string, fn func(hooks map[string]interface{})) error {
+	mu.Lock()
+	defer mu.Unlock()
+
 	settings, err := readSettings(settingsPath)
 	if err != nil {
 		return err
@@ -112,14 +122,29 @@ func mutate(settingsPath string, fn func(hooks map[string]interface{})) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+	dir := filepath.Dir(settingsPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := settingsPath + ".tmp"
-	if err := os.WriteFile(tmp, append(out, '\n'), 0o644); err != nil {
+	// Unique temp file in the same dir so the rename is atomic and a crash mid-write
+	// can't leave a stale fixed-name .tmp or be clobbered by a concurrent writer.
+	tmp, err := os.CreateTemp(dir, "settings-*.json.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, settingsPath)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) //nolint:errcheck // best-effort cleanup if rename fails
+	if _, err := tmp.Write(append(out, '\n')); err != nil {
+		tmp.Close() //nolint:errcheck
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, settingsPath)
 }
 
 // readSettings parses settingsPath into a map. A missing file yields an empty map.

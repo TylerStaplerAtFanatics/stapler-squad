@@ -1,7 +1,7 @@
 // +feature: onboarding-hook-install
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
@@ -67,18 +67,34 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
     []
   );
 
+  // Guards: avoid setState after unmount, and only seed the toggle defaults once
+  // so navigating Back→forward to the hooks step doesn't clobber the user's edits.
+  const mountedRef = useRef(true);
+  const seededRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const refreshHookStatus = useCallback(async () => {
     try {
       const res = await client.getHookStatus({});
+      if (!mountedRef.current) return;
       setRulesInstalled(res.rulesInstalled);
       setNotificationsInstalled(res.notificationsInstalled);
       setRulesAvailable(res.rulesAvailable);
       setNotificationsAvailable(res.notificationsAvailable);
       // Pre-check a toggle only when the hook is available and not already installed.
-      setInstallRules(res.rulesAvailable && !res.rulesInstalled);
-      setInstallNotifications(res.notificationsAvailable && !res.notificationsInstalled);
+      // Seed once so re-entering the step preserves any manual toggle changes.
+      if (!seededRef.current) {
+        seededRef.current = true;
+        setInstallRules(res.rulesAvailable && !res.rulesInstalled);
+        setInstallNotifications(res.notificationsAvailable && !res.notificationsInstalled);
+      }
     } catch {
-      setHookMessage("Could not check hook status.");
+      if (mountedRef.current) setHookMessage("Could not check hook status.");
     }
   }, [client]);
 
@@ -94,15 +110,18 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
     setHookMessage(null);
     try {
       const res = await client.installHooks({ installRules, installNotifications });
+      if (!mountedRef.current) return;
       if (res.status) {
         setRulesInstalled(res.status.rulesInstalled);
         setNotificationsInstalled(res.status.notificationsInstalled);
       }
       setHookMessage(res.messages.join(" ") || "Hooks updated.");
     } catch {
-      setHookMessage("Failed to install hooks. You can set them up later from the docs.");
+      if (mountedRef.current) {
+        setHookMessage("Failed to install hooks. You can set them up later from the docs.");
+      }
     } finally {
-      setHookBusy(false);
+      if (mountedRef.current) setHookBusy(false);
     }
   };
 
@@ -157,6 +176,9 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
     if (open) {
       setStep(1);
       setDontShowAgain(true);
+      // Re-seed toggle defaults from fresh status on a new onboarding run.
+      seededRef.current = false;
+      setHookMessage(null);
     }
     if (!open) {
       onClose();
