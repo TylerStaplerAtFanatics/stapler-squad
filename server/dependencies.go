@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
+	"github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	warren "github.com/tstapler/stapler-squad/pkg/warren"
 	"github.com/tstapler/stapler-squad/server/analytics"
@@ -50,6 +51,7 @@ type ServerDependencies struct {
 	UnfinishedScanner     *unfinished.Scanner
 	UnfinishedStateStore  *unfinished.StateStore
 	UnfinishedWorkService *services.UnfinishedWorkService
+	WorktreePRPoller      *session.WorktreePRPoller
 
 	// Token usage analytics.
 	InsightsService *services.InsightsService
@@ -105,6 +107,7 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		UnfinishedScanner:       rt.UnfinishedScanner,
 		UnfinishedStateStore:    rt.UnfinishedStateStore,
 		UnfinishedWorkService:   rt.UnfinishedWorkService,
+		WorktreePRPoller:        rt.WorktreePRPoller,
 		InsightsService:         rt.InsightsService,
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
@@ -366,6 +369,7 @@ type RuntimeDeps struct {
 	UnfinishedScanner     *unfinished.Scanner
 	UnfinishedStateStore  *unfinished.StateStore
 	UnfinishedWorkService *services.UnfinishedWorkService
+	WorktreePRPoller      *session.WorktreePRPoller
 
 	// Token usage analytics.
 	InsightsService *services.InsightsService
@@ -728,6 +732,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		unfinishedScanner    *unfinished.Scanner
 		unfinishedStateStore *unfinished.StateStore
 		unfinishedWorkSvc    *services.UnfinishedWorkService
+		worktreePRPoller     *session.WorktreePRPoller
 	)
 	if configDir, configErr := config.GetConfigDir(); configErr == nil {
 		statePath := filepath.Join(configDir, "unfinished_state.json")
@@ -736,6 +741,17 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 			unfinishedScanner = unfinished.NewScanner(eventBus, unfinishedStateStore)
 			unfinishedWorkSvc = services.NewUnfinishedWorkService(unfinishedScanner, unfinishedStateStore, eventBus, storage)
 			log.Info("UnfinishedWorkService initialized", "state", statePath)
+
+			// WorktreePRPoller enriches worktrees-without-sessions with GitHub PR data.
+			// The scannerSource adapter bridges session/unfinished → session without a cycle.
+			worktreePRPoller = session.NewWorktreePRPoller(
+				github.NewETagCache(),
+				svc.PRStatusPoller,
+			)
+			worktreePRPoller.SetSource(&scannerSource{s: unfinishedScanner})
+			worktreePRPoller.SetOnUpdated(func(repoPath, branch string, info *github.PRInfo) {
+				log.Info("worktree PR updated", "repo", repoPath, "branch", branch, "pr", info.Number)
+			})
 		}
 	} else {
 		log.Warn("could not initialize UnfinishedWork state store", "err", configErr)
@@ -856,6 +872,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		UnfinishedScanner:       unfinishedScanner,
 		UnfinishedStateStore:    unfinishedStateStore,
 		UnfinishedWorkService:   unfinishedWorkSvc,
+		WorktreePRPoller:        worktreePRPoller,
 		InsightsService:         insightsSvc,
 		BacklogService:          backlogSvc,
 		SyncLoop:                nil, // managed by BacklogController
@@ -886,4 +903,28 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}()
 
 	return rt, nil
+}
+
+// scannerSource adapts *unfinished.Scanner to session.WorktreeSource, bridging
+// the two packages without creating an import cycle.
+// (session/unfinished → pkg/events → session would cycle; this adapter lives here.)
+type scannerSource struct {
+	s *unfinished.Scanner
+}
+
+func (a *scannerSource) ScanDone() <-chan time.Time {
+	return a.s.ScanDone()
+}
+
+func (a *scannerSource) GetWorktrees() []session.WorktreeScanItem {
+	results := a.s.GetAllResults()
+	items := make([]session.WorktreeScanItem, 0, len(results))
+	for _, r := range results {
+		items = append(items, session.WorktreeScanItem{
+			RepoPath:     r.RepoPath,
+			Branch:       r.Branch,
+			WorktreePath: r.WorktreePath,
+		})
+	}
+	return items
 }

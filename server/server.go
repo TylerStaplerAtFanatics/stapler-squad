@@ -151,6 +151,12 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		log.Info("UnfinishedWork scanner started")
 	}
 
+	// Start WorktreePRPoller: enriches worktrees-without-sessions with GitHub PR data.
+	if deps.WorktreePRPoller != nil {
+		deps.WorktreePRPoller.Start(serverCtx)
+		log.Info("WorktreePRPoller started")
+	}
+
 	// Register shutdown hook: capture pane working dirs and persist instance
 	// state so cold restore can find the right directory on next start.
 	// Uses HistoryLinker.Instances() (not the startup snapshot) so externally
