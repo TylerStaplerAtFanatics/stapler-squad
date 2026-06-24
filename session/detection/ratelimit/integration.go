@@ -137,12 +137,21 @@ func (pc *PTYConsumer) Stop() {
 }
 
 func (pc *PTYConsumer) pollLoop() {
+	// Capture stopCh at goroutine start while the mutex is still held by Start().
+	// Stop() reassigns pc.stopCh under the mutex; reading pc.stopCh directly inside
+	// the select loop creates a data race between the assignment and this read.
+	// Using a local snapshot is safe because Stop() closes the original channel
+	// (making this receive unblock) before reassigning.
+	pc.mu.Lock()
+	stopCh := pc.stopCh
+	pc.mu.Unlock()
+
 	heartbeat := time.NewTicker(5 * time.Second)
 	defer heartbeat.Stop()
 
 	for {
 		select {
-		case <-pc.stopCh:
+		case <-stopCh:
 			return
 		case <-pc.notifyCh:
 			data := pc.buffer.GetRecentOutput(4096)
