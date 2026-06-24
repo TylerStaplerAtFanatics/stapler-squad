@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useCallback, useRef, useMemo, useState } from "react";
-import { createClient } from "@connectrpc/connect";
+import { createClient, ConnectError, Code } from "@connectrpc/connect";
 import { createWatchTransport } from "@/lib/transport/watch-ws-transport";
 import { SessionService } from "@/gen/session/v1/session_pb";
 import { Session, SessionStatus, Shell, NotificationPriority } from "@/gen/session/v1/types_pb";
@@ -145,6 +145,7 @@ export function useSessionService(
 
   const dispatch = useAppDispatch();
   const [systemMemoryPct, setSystemMemoryPct] = useState<number>(0);
+  const [reconnectAttemptCount, setReconnectAttemptCount] = useState(0);
   const sessions = useAppSelector(selectAllSessions);
   const loading = useAppSelector(selectSessionsLoading);
   const errorStr = useAppSelector(selectSessionsError);
@@ -721,12 +722,13 @@ export function useSessionService(
   // Handle session events from watch stream
   const handleSessionEvent = useCallback((event: SessionEvent) => {
     // Advance the sequence cursor so reconnects can request a targeted replay.
-    if (event.seq > lastSeqRef.current) {
+    const prevSeq = lastSeqRef.current;
+    if (event.seq > prevSeq) {
       lastSeqRef.current = event.seq;
     }
 
     // Seq backwards-jump detection: indicates server restart → request full snapshot
-    if (event.seq > 0n && event.seq < lastSeqRef.current) {
+    if (event.seq > 0n && event.seq < prevSeq) {
       console.warn("[reconnect] seq backwards-jump detected — resetting afterSeq to 0");
       lastSeqRef.current = 0n;
       needsFullResyncRef.current = true;
@@ -802,6 +804,7 @@ export function useSessionService(
 
       shouldReconnectRef.current = true;
       backoffRef.current.reset(); // Reset backoff when explicitly (re)started
+      setReconnectAttemptCount(0);
       ++streamGenerationRef.current; // Invalidate any in-flight startStream from prior call
 
       const startStream = async () => {
@@ -861,6 +864,7 @@ export function useSessionService(
 
             onReconnectRef.current?.();
             const delay = backoffRef.current.next();
+            setReconnectAttemptCount(backoffRef.current.attempt);
             console.info(`[reconnect] stream=watch trigger=close attempt=${backoffRef.current.attempt} delay=${delay}ms`);
             await new Promise(r => setTimeout(r, delay));
             if (streamGenerationRef.current !== myGeneration || !shouldReconnectRef.current) return;
@@ -869,6 +873,9 @@ export function useSessionService(
         } catch (err) {
           if (err instanceof Error && err.name === "AbortError") {
             return; // Intentional stop via stopWatching()
+          }
+          if (err instanceof ConnectError && err.code === Code.Canceled) {
+            return; // ConnectRPC abort (e.g. AbortController signal)
           }
 
           // Check for non-retriable WS close codes
@@ -902,6 +909,7 @@ export function useSessionService(
 
             onReconnectRef.current?.();
             const delay = backoffRef.current.next();
+            setReconnectAttemptCount(backoffRef.current.attempt);
             console.info(`[reconnect] stream=watch trigger=error attempt=${backoffRef.current.attempt} delay=${delay}ms`);
             await new Promise(r => setTimeout(r, delay));
             if (streamGenerationRef.current !== myGeneration || !shouldReconnectRef.current) return;
@@ -931,8 +939,9 @@ export function useSessionService(
     if (!enabled) return;
     const interval = setInterval(() => {
       if (
-        lastEventTimeRef.current !== null &&
         shouldReconnectRef.current &&
+        !isConnectedRef.current &&
+        lastEventTimeRef.current !== null &&
         Date.now() - lastEventTimeRef.current > 30_000
       ) {
         dispatch(setConnectionState("stale"));
@@ -958,8 +967,9 @@ export function useSessionService(
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null;
       if (!shouldReconnectRef.current) return;
-      if (!isConnectedRef.current || (lastEventTimeRef.current !== null && lastEventTimeRef.current < Date.now() - 15_000)) {
-        if (lastEventTimeRef.current !== null && lastEventTimeRef.current < Date.now() - 15_000) {
+      const isStale = lastEventTimeRef.current !== null && lastEventTimeRef.current < Date.now() - 15_000;
+      if (!isConnectedRef.current || isStale) {
+        if (isStale) {
           dispatchRef.current(setConnectionState("stale"));
         }
         backoffRef.current.reset();
@@ -1052,7 +1062,7 @@ export function useSessionService(
     error,
     connectionState,
     systemMemoryPct,
-    reconnectAttemptCount: backoffRef.current.attempt,
+    reconnectAttemptCount,
     listSessions,
     getSession,
     createSession,

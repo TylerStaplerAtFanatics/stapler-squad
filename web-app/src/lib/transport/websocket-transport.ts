@@ -264,14 +264,13 @@ export function createWebsocketBasedTransport(
           // EventIterator `stop` on close (which ends the async generator without
           // an error), so we capture it externally here.
           let wsCloseCode: number | null = null;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (stream.socket as any).addEventListener("close", (ev: { code?: number }) => {
-            wsCloseCode = ev.code ?? null;
+          (stream.socket as unknown as WebSocket).addEventListener("close", (ev: CloseEvent) => {
+            wsCloseCode = ev.code;
           });
 
           if (signal !== undefined) {
             if (signal.aborted) stream.destroy();
-            else signal.onabort = () => stream.destroy();
+            else signal.addEventListener("abort", () => stream.destroy(), { once: true });
           }
 
           // Wait for connection
