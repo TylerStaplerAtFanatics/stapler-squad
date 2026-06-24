@@ -1732,6 +1732,13 @@ func (s *SessionService) DeleteSession(
 		log.Warn("cancelled pending approvals for deleted session", "session", req.Msg.Id, "count", len(cancelled))
 	}
 
+	// Cancel any pending approvals BEFORE deleting from storage, so blocked
+	// approval-hook goroutines can exit cleanly while the session still exists.
+	// Non-fatal: log at warn and continue even if there are no pending approvals.
+	if cancelled := s.approvalStore.CancelSession(sessionUUID); len(cancelled) > 0 {
+		log.Warn("cancelled pending approvals for deleted session", "session", req.Msg.Id, "count", len(cancelled))
+	}
+
 	// Delete from storage using Title (the storage key), not the client-supplied ID which may be a UUID.
 	if err := s.storage.DeleteInstance(sessionTitle); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete instance from storage: %w", err))
