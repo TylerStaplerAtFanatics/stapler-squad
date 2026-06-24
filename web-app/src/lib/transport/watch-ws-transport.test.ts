@@ -1,94 +1,30 @@
 /**
  * Tests for the fromWebSocket close-event propagation logic in watch-ws-transport.ts.
  *
- * Since fromWebSocket is a private function, we test its behaviour by exercising it
- * directly through a thin re-implementation of the same logic.  This mirrors the
- * exact production code and validates the three close-event paths:
- *
+ * Tests the three close-event paths:
  *  1. Non-clean WS close  → ConnectError with ws-close-code header
- *  2. AbortSignal.abort() → push(null)  (no error)
- *  3. wasClean=true close → push(null)  (no error)
+ *  2. AbortSignal.abort() → generator returns (no error)
+ *  3. wasClean=true / code=1000 close → generator returns (no error)
  */
 
 import { ConnectError, Code } from "@connectrpc/connect";
+import { fromWebSocket } from "./watch-ws-transport";
 
 // ---------------------------------------------------------------------------
-// Inline the fromWebSocket logic under test.
-// This is the exact implementation from watch-ws-transport.ts — kept here so
-// the tests don't depend on module-private exports.
+// Helper: build a minimal mock WebSocket that satisfies the subset of the
+// WebSocket API used by fromWebSocket (onmessage, onerror, onclose, close).
 // ---------------------------------------------------------------------------
-
-type QueueItem = Uint8Array | null | ConnectError;
 
 interface MockWS {
   onmessage: ((e: MessageEvent) => void) | null;
   onerror: (() => void) | null;
   onclose: ((ev: CloseEvent) => void) | null;
   close: () => void;
+  simulateClose: (ev: Partial<CloseEvent>) => void;
 }
 
-function fromWebSocket(
-  ws: MockWS,
-  signal: AbortSignal | undefined
-): AsyncGenerator<Uint8Array> {
-  const queue: QueueItem[] = [];
-  let notify: (() => void) | null = null;
-
-  const push = (item: QueueItem) => {
-    queue.push(item);
-    notify?.();
-    notify = null;
-  };
-
-  ws.onmessage = (e: MessageEvent) => push(new Uint8Array(e.data as ArrayBuffer));
-  ws.onerror = () => push(new ConnectError("WebSocket error", Code.Unavailable));
-  ws.onclose = (ev: CloseEvent) => {
-    if (signal?.aborted || ev.wasClean || ev.code === 1000) {
-      push(null); // clean close or intentional abort — no error
-    } else {
-      push(
-        new ConnectError(
-          "WebSocket closed",
-          Code.Unavailable,
-          new Headers({ "ws-close-code": String(ev.code) })
-        )
-      );
-    }
-  };
-
-  const abortHandler = () => {
-    ws.close();
-    push(null);
-  };
-  signal?.addEventListener("abort", abortHandler);
-
-  async function* gen(): AsyncGenerator<Uint8Array> {
-    try {
-      while (true) {
-        while (queue.length === 0) {
-          await new Promise<void>((r) => {
-            notify = r;
-          });
-        }
-        const item = queue.shift()!;
-        if (item === null) return;
-        if (item instanceof Error) throw item;
-        yield item as Uint8Array;
-      }
-    } finally {
-      signal?.removeEventListener("abort", abortHandler);
-    }
-  }
-
-  return gen();
-}
-
-// ---------------------------------------------------------------------------
-// Helper: build a minimal mock WebSocket
-// ---------------------------------------------------------------------------
-
-function makeMockWS(): MockWS & { simulateClose: (ev: Partial<CloseEvent>) => void } {
-  const ws: MockWS & { simulateClose: (ev: Partial<CloseEvent>) => void } = {
+function makeMockWS(): MockWS {
+  const ws: MockWS = {
     onmessage: null,
     onerror: null,
     onclose: null,
@@ -112,7 +48,7 @@ function makeMockWS(): MockWS & { simulateClose: (ev: Partial<CloseEvent>) => vo
 describe("fromWebSocket", () => {
   it("fromWebSocket_should_pushConnectError_When_wsClosesWithNonCleanCode", async () => {
     const ws = makeMockWS();
-    const gen = fromWebSocket(ws, undefined);
+    const gen = fromWebSocket(ws as unknown as WebSocket, undefined);
 
     // Trigger a non-clean close on the next tick
     setTimeout(() => {
@@ -136,7 +72,7 @@ describe("fromWebSocket", () => {
   it("fromWebSocket_should_pushNull_When_abortSignalFires", async () => {
     const controller = new AbortController();
     const ws = makeMockWS();
-    const gen = fromWebSocket(ws, controller.signal);
+    const gen = fromWebSocket(ws as unknown as WebSocket, controller.signal);
 
     // Abort before close fires — the abortHandler calls push(null) immediately
     setTimeout(() => {
@@ -149,9 +85,9 @@ describe("fromWebSocket", () => {
     expect(result.value).toBeUndefined();
   });
 
-  it("fromWebSocket_should_pushNull_When_wsClosesCleanly", async () => {
+  it("fromWebSocket_should_pushNull_When_wsClosesWithCode1000", async () => {
     const ws = makeMockWS();
-    const gen = fromWebSocket(ws, undefined);
+    const gen = fromWebSocket(ws as unknown as WebSocket, undefined);
 
     setTimeout(() => {
       ws.simulateClose({ code: 1000, wasClean: true });
@@ -160,5 +96,27 @@ describe("fromWebSocket", () => {
     const result = await gen.next();
     expect(result.done).toBe(true);
     expect(result.value).toBeUndefined();
+  });
+
+  it("fromWebSocket_should_pushConnectError_When_wsClosesWithCode1001", async () => {
+    // Code 1001 (Going Away) is NOT a clean close — the production code treats
+    // only code 1000 and abort as non-retriable clean closes.
+    const ws = makeMockWS();
+    const gen = fromWebSocket(ws as unknown as WebSocket, undefined);
+
+    setTimeout(() => {
+      ws.simulateClose({ code: 1001, wasClean: true });
+    }, 0);
+
+    let caught: unknown = null;
+    try {
+      await gen.next();
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(ConnectError);
+    const err = caught as ConnectError;
+    expect(err.metadata.get("ws-close-code")).toBe("1001");
   });
 });
