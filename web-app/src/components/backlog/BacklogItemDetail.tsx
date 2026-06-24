@@ -590,7 +590,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 <button
                   className={styles.actionButton}
                   onClick={() => handleAction("trigger_triage")}
-                  disabled={actionLoading}
+                  disabled={actionLoading || !item.repoPath}
+                  aria-disabled={!item.repoPath}
+                  title={!item.repoPath ? "Set repository path first" : undefined}
                   data-testid="backlog-action-trigger-triage"
                 >
                   Trigger Triage
@@ -603,7 +605,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 <button
                   className={styles.actionButton}
                   onClick={() => handleAction("trigger_triage")}
-                  disabled={actionLoading}
+                  disabled={actionLoading || !item.repoPath}
+                  aria-disabled={!item.repoPath}
+                  title={!item.repoPath ? "Set repository path first" : undefined}
                   data-testid="backlog-action-trigger-triage"
                 >
                   Trigger Triage
