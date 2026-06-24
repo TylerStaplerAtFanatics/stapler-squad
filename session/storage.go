@@ -514,7 +514,7 @@ func (s *Storage) GetInstanceArtifacts(title string) (string, error) {
 func (s *Storage) GetAllInstanceArtifacts() (map[string]string, error) {
 	repo, ok := s.repo.(*EntRepository)
 	if !ok {
-		return nil, nil
+		return map[string]string{}, nil
 	}
 	return repo.GetAllSessionArtifacts(context.Background())
 }
