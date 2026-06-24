@@ -16,7 +16,7 @@ import { useOmnibar } from "@/lib/contexts/OmnibarContext";
 import { useAuth } from "@/lib/contexts/AuthContext";
 import { useNotifications } from "@/lib/contexts/NotificationContext";
 import { routes } from "@/lib/routes";
-import { BOTTOM_NAV_PRIMARY, BOTTOM_NAV_MORE, type NavPage } from "@/lib/nav-pages";
+import { BOTTOM_NAV_PRIMARY, BOTTOM_NAV_MORE, groupNavPages, NAV_GROUP_LABELS, NAV_GROUP_SORT_ORDER, type NavPage } from "@/lib/nav-pages";
 import * as styles from "./BottomNav.css";
 import { useHandedness } from "@/lib/hooks/useHandedness";
 import { useFeatureFlags } from "@/lib/contexts/FeatureFlagsContext";
@@ -116,40 +116,52 @@ export function BottomNav() {
         aria-label="More navigation"
         role="navigation"
       >
-        {morePages.map((item) => {
-          const isActive = pathname?.startsWith(item.href);
-          const Icon = item.icon;
-          return (
-            <AppLink
-              key={item.href}
-              href={item.href}
-              className={`${styles.moreSheetItem} ${isActive ? styles.moreSheetItemActive : ""}`}
-              aria-current={isActive ? "page" : undefined}
+        <div className={styles.moreSheetScrollable}>
+          {Array.from(groupNavPages(morePages).entries())
+            .sort(([a], [b]) => NAV_GROUP_SORT_ORDER.indexOf(a) - NAV_GROUP_SORT_ORDER.indexOf(b))
+            .map(([group, pages]) => (
+              <section key={group} className={styles.moreSheetSection} aria-label={NAV_GROUP_LABELS[group]}>
+                <span className={styles.moreSheetSectionHeader} aria-hidden="true">
+                  {NAV_GROUP_LABELS[group]}
+                </span>
+                {pages.map((item) => {
+                  const isActive = pathname?.startsWith(item.href);
+                  const Icon = item.icon;
+                  return (
+                    <AppLink
+                      key={item.href}
+                      href={item.href}
+                      className={`${styles.moreSheetItem} ${isActive ? styles.moreSheetItemActive : ""}`}
+                      aria-current={isActive ? "page" : undefined}
+                    >
+                      <span className={styles.moreSheetItemIcon} aria-hidden="true"><Icon size={20} /></span>
+                      <span>{item.label}</span>
+                    </AppLink>
+                  );
+                })}
+              </section>
+            ))}
+          <div className={styles.moreSheetUtilitySection}>
+            <button
+              className={styles.moreSheetItem}
+              onClick={toggleHandedness}
+              aria-pressed={leftHanded}
             >
-              <span className={styles.moreSheetItemIcon} aria-hidden="true"><Icon size={20} /></span>
-              <span>{item.label}</span>
-            </AppLink>
-          );
-        })}
-        <button
-          className={styles.moreSheetItem}
-          onClick={toggleHandedness}
-          style={{ width: "100%", textAlign: "left", cursor: "pointer", border: "none", background: "transparent" }}
-          aria-pressed={leftHanded}
-        >
-          <span className={styles.moreSheetItemIcon} aria-hidden="true"><Hand size={20} /></span>
-          <span>{leftHanded ? "Switch to right-handed" : "Switch to left-handed"}</span>
-        </button>
-        {authEnabled && authenticated && (
-          <AppLink
-            href={routes.account}
-            className={`${styles.moreSheetItem} ${pathname === routes.account ? styles.moreSheetItemActive : ""}`}
-            aria-current={pathname === routes.account ? "page" : undefined}
-          >
-            <span className={styles.moreSheetItemIcon} aria-hidden="true"><User size={20} /></span>
-            <span>Account</span>
-          </AppLink>
-        )}
+              <span className={styles.moreSheetItemIcon} aria-hidden="true"><Hand size={20} /></span>
+              <span>{leftHanded ? "Switch to right-handed" : "Switch to left-handed"}</span>
+            </button>
+            {authEnabled && authenticated && (
+              <AppLink
+                href={routes.account}
+                className={`${styles.moreSheetItem} ${pathname === routes.account ? styles.moreSheetItemActive : ""}`}
+                aria-current={pathname === routes.account ? "page" : undefined}
+              >
+                <span className={styles.moreSheetItemIcon} aria-hidden="true"><User size={20} /></span>
+                <span>Account</span>
+              </AppLink>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Bottom nav bar */}
