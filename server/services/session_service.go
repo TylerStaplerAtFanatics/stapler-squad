@@ -1101,11 +1101,6 @@ func (s *SessionService) CreateSession(
 			if alias := config.FindAlias(cfg, req.Msg.AliasName); alias != nil {
 				aliasSessionType = alias.SessionType
 			}
-			// Read session type directly from the alias config — it is an alias-specific
-			// property, not a cascading default, so it is not part of ResolvedDefaults.
-			if alias := config.FindAlias(cfg, req.Msg.AliasName); alias != nil {
-				aliasSessionType = alias.SessionType
-			}
 		} else {
 			workingDir := req.Msg.WorkingDir
 			if workingDir == "" {
@@ -1723,6 +1718,13 @@ func (s *SessionService) DeleteSession(
 				log.Warn("failed to kill tmux session for non-live instance", "session", req.Msg.Id, "err", err)
 			}
 		}()
+	}
+
+	// Cancel any pending approvals BEFORE deleting from storage, so blocked
+	// approval-hook goroutines can exit cleanly while the session still exists.
+	// Non-fatal: log at warn and continue even if there are no pending approvals.
+	if cancelled := s.approvalStore.CancelSession(sessionUUID); len(cancelled) > 0 {
+		log.Warn("cancelled pending approvals for deleted session", "session", req.Msg.Id, "count", len(cancelled))
 	}
 
 	// Cancel any pending approvals BEFORE deleting from storage, so blocked
