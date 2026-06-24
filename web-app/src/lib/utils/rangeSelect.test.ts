@@ -16,6 +16,13 @@ describe("computeRangeIds", () => {
     const items = makeItems(["b", "c", "d"]);
     expect(computeRangeIds("a", "c", items)).toEqual(["c"]);
   });
+  it("returns [targetId] when anchor was filtered out but other items remain", () => {
+    // Simulates: anchor 'a' was visible, user applied a filter, now only b/c/d are visible
+    const items = makeItems(["b", "c", "d"]);
+    const result = computeRangeIds("a", "c", items);
+    // anchor not found → falls back to single-select of the target
+    expect(result).toEqual(["c"]);
+  });
   it("skips header items (non-session kind)", () => {
     const items = [
       { kind: "header" as const },
