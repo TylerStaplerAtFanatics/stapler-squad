@@ -18,11 +18,12 @@ import { ColumnKey, DEFAULT_VISIBLE_COLUMNS } from "./session-columns";
 import { ColumnPicker } from "./ColumnPicker";
 import { useReviewQueueContext } from "@/lib/contexts/ReviewQueueContext";
 import { useApprovalsContext } from "@/lib/contexts/ApprovalsContext";
+import { useNotifications } from "@/lib/contexts/NotificationContext";
 import { MemoryPressureCallout } from "./MemoryPressureCallout";
 import { useAppSelector } from "@/lib/store";
 import { selectDetectedStatusMap } from "@/lib/store/sessionsSlice";
 import { ActionBar } from "@/components/ui/ActionBar";
-import { Modal, ModalContent, ModalTitle, ModalFooter } from "@/components/ui/Modal";
+import { computeRangeIds } from "@/lib/utils/rangeSelect";
 import {
   container,
   header,
@@ -214,10 +215,21 @@ export function SessionList({
 
   // Multi-select state for bulk actions
   const [selectMode, setSelectMode] = useState(false);
+  const lastAnchorRef = useRef<string | null>(null);
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
   const [isBulkTagEditing, setIsBulkTagEditing] = useState(false);
-  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+
+  // Notification hook for undo toasts
+  const { showUndoToast, removeNotification, addNotification } = useNotifications();
+
+  // Pending-delete state: tracks sessions optimistically removed from the list while undo window is open
+  const pendingDeleteRef = useRef<{
+    ids: Set<string>;
+    timer: ReturnType<typeof setTimeout> | null;
+    toastId: string;
+  } | null>(null);
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(new Set());
 
   // Mobile filter panel toggle
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -355,6 +367,9 @@ export function SessionList({
   // Filter sessions based on search query and filters
   const filteredSessions = useMemo(() => {
     return sessions.filter((session) => {
+      // Exclude sessions that are pending deletion (optimistic removal)
+      if (pendingDeleteIds.has(session.id)) return false;
+
       // Search filter
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
@@ -398,7 +413,7 @@ export function SessionList({
 
       return true;
     });
-  }, [sessions, searchQuery, selectedStatus, selectedCategory, selectedTag, hidePaused, filterNeedsApproval]);
+  }, [sessions, searchQuery, selectedStatus, selectedCategory, selectedTag, hidePaused, filterNeedsApproval, pendingDeleteIds]);
 
   // Sort filtered sessions
   const sortedSessions = useMemo(() => {
@@ -428,6 +443,18 @@ export function SessionList({
     });
     return sorted;
   }, [filteredSessions, sortField, sortDir]);
+
+  // Epic 4.1: filteredSessionIds — for intersecting selectedSessions with visible sessions
+  const filteredSessionIds = useMemo(
+    () => new Set(filteredSessions.map(s => s.id)),
+    [filteredSessions]
+  );
+
+  // Epic 4.1: activeSelection — intersection of selectedSessions with currently filtered sessions
+  const activeSelection = useMemo(
+    () => new Set([...selectedSessions].filter(id => filteredSessionIds.has(id))),
+    [selectedSessions, filteredSessionIds]
+  );
 
   // Derived: whether any filter is active (used for empty-state messaging)
   const hasActiveFilters = !!(searchQuery || selectedStatus !== "all" || selectedCategory !== "all" || selectedTag !== "all" || hidePaused || filterNeedsApproval);
@@ -459,6 +486,9 @@ export function SessionList({
     return items;
   }, [groupedSessions, groupingStrategy, projects, viewMode]);
 
+  const flatItemsRef = useRef(flatItems);
+  flatItemsRef.current = flatItems;
+
   const rowVirtualizer = useVirtualizer({
     count: viewMode === "row" ? flatItems.length : 0,
     getScrollElement: () => containerRef.current,
@@ -481,40 +511,81 @@ export function SessionList({
     }
   };
 
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showFeedback = (msg: string, isError = false) => {
+    if (feedbackTimerRef.current !== null) clearTimeout(feedbackTimerRef.current);
     setBulkFeedback(msg);
-    setTimeout(() => setBulkFeedback(null), isError ? 5000 : 3000);
+    feedbackTimerRef.current = setTimeout(() => {
+      setBulkFeedback(null);
+      feedbackTimerRef.current = null;
+    }, isError ? 5000 : 3000);
   };
 
   // Entering selectMode automatically when hovering a card and clicking its checkbox.
-  const handleToggleSession = useCallback((sessionId: string) => {
-    setSelectMode(true);
-    setSelectedSessions((prev) => {
-      const newSelected = new Set(prev);
-      if (newSelected.has(sessionId)) {
-        newSelected.delete(sessionId);
-      } else {
-        newSelected.add(sessionId);
-      }
-      return newSelected;
-    });
+  const handleToggleSession = useCallback((sessionId: string, e?: React.MouseEvent) => {
+    if (e?.shiftKey && lastAnchorRef.current !== null) {
+      const rangeIds = computeRangeIds(lastAnchorRef.current, sessionId, flatItemsRef.current);
+      setSelectedSessions(new Set(rangeIds));
+    } else {
+      setSelectMode(true);
+      setSelectedSessions((prev) => {
+        const next = new Set(prev);
+        if (next.has(sessionId)) {
+          next.delete(sessionId);
+        } else {
+          next.add(sessionId);
+        }
+        return next;
+      });
+      lastAnchorRef.current = sessionId;
+    }
   }, []);
 
-  const handleSelectAll = () => {
+  const handleSelectAll = useCallback(() => {
     const allSessionIds = new Set(filteredSessions.map(s => s.id));
     setSelectedSessions(allSessionIds);
-  };
+  }, [filteredSessions]);
 
-  const handleClearSelection = () => {
+  const handleClearSelection = useCallback(() => {
     setSelectedSessions(new Set());
     setSelectMode(false);
+    lastAnchorRef.current = null;
     showFeedback("Selection cleared");
     setTimeout(() => selectButtonRef.current?.focus(), 0);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!selectMode) return;
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const inInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
+      if ((e.metaKey || e.ctrlKey) && e.key === "a") {
+        if (inInput) return;
+        e.preventDefault();
+        handleSelectAll();
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        handleClearSelection();
+        e.stopImmediatePropagation();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [selectMode, handleSelectAll, handleClearSelection]);
+
+  // Epic 3.3: Flush pending deletes on unmount — fire RPCs immediately rather than losing them.
+  // Note: async in cleanup is fire-and-forget; tab-close data loss is a known limitation.
+  useEffect(() => {
+    return () => {
+      void flushPendingDeletes();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — runs only on unmount
 
   const handlePauseSelected = () => {
     if (!onPauseSession) return;
-    const ids = Array.from(selectedSessions);
+    const ids = Array.from(activeSelection);
     ids.forEach(id => onPauseSession(id));
     showFeedback(`${ids.length} session${ids.length !== 1 ? 's' : ''} paused`);
     setSelectedSessions(new Set());
@@ -523,7 +594,7 @@ export function SessionList({
 
   const handleResumeSelected = () => {
     if (!onDirectResumeSession && !onResumeSession) return;
-    const ids = Array.from(selectedSessions);
+    const ids = Array.from(activeSelection);
     // Bulk resume bypasses the confirmation modal to avoid opening N modals
     ids.forEach(id => {
       const session = sessions.find(s => s.id === id);
@@ -542,30 +613,98 @@ export function SessionList({
 
   const handleStopSelected = handlePauseSelected;
 
-  const handleDeleteSelected = () => {
-    if (!onDeleteSession) return;
-    setShowBulkDeleteConfirm(true);
-  };
+  const flushPendingDeletes = useCallback(async () => {
+    if (!pendingDeleteRef.current) return;
+    clearTimeout(pendingDeleteRef.current.timer ?? undefined);
+    const ids = [...pendingDeleteRef.current.ids];
+    const toastId = pendingDeleteRef.current.toastId;
+    removeNotification(toastId);
+    pendingDeleteRef.current = null;
 
-  const handleConfirmBulkDelete = async () => {
-    if (!onDeleteSession) return;
-    const ids = Array.from(selectedSessions);
-    const results = await Promise.allSettled(
-      ids.map(id => Promise.resolve(onDeleteSession(id)))
-    );
-    const succeeded = results.filter(r => r.status === 'fulfilled').length;
-    const failed = results.filter(r => r.status === 'rejected').length;
-    const failedIds = new Set(ids.filter((_, i) => results[i].status === 'rejected'));
-    if (failed > 0) {
-      showFeedback(`${succeeded} deleted, ${failed} failed — failed sessions remain selected`, true);
-      setSelectedSessions(failedIds);
-    } else {
-      showFeedback(`${succeeded} session${succeeded !== 1 ? 's' : ''} deleted`);
-      setSelectedSessions(new Set());
-      setSelectMode(false);
-      setTimeout(() => selectButtonRef.current?.focus(), 0);
+    if (!onDeleteSession) {
+      setPendingDeleteIds(new Set());
+      return;
     }
-  };
+
+    const results = await Promise.allSettled(ids.map(id => Promise.resolve(onDeleteSession(id))));
+
+    const failed: string[] = [];
+    results.forEach((result, i) => {
+      if (result.status === "rejected") failed.push(ids[i]);
+    });
+
+    // Clear pendingDeleteIds unconditionally — failed sessions reappear via server state
+    setPendingDeleteIds(new Set());
+
+    if (failed.length > 0 && failed.length < ids.length) {
+      const succeeded = ids.length - failed.length;
+      addNotification({
+        message: `${succeeded} deleted, ${failed.length} failed — failed sessions are back in the list`,
+        notificationType: "error",
+        sessionId: "",
+        sessionName: "",
+      });
+    } else if (failed.length === ids.length) {
+      addNotification({
+        message: `All ${failed.length} delete${failed.length === 1 ? "" : "s"} failed — sessions are back in the list`,
+        notificationType: "error",
+        sessionId: "",
+        sessionName: "",
+      });
+    }
+  }, [onDeleteSession, removeNotification, addNotification]);
+
+  const handleDeleteSelected = useCallback(() => {
+    if (!onDeleteSession) return;
+
+    // Step 1: Synchronously flush any existing pending batch to avoid async race.
+    // Calling flushPendingDeletes() asynchronously would let its terminal
+    // setPendingDeleteIds(new Set()) overwrite the new batch we're about to set.
+    if (pendingDeleteRef.current) {
+      clearTimeout(pendingDeleteRef.current.timer ?? undefined);
+      removeNotification(pendingDeleteRef.current.toastId);
+      const prevIds = [...pendingDeleteRef.current.ids];
+      pendingDeleteRef.current = null;
+      void Promise.allSettled(prevIds.map(id => Promise.resolve(onDeleteSession(id))));
+    }
+
+    // Step 2: Capture session IDs for delete
+    const ids = Array.from(activeSelection);
+
+    // Step 3: Optimistic removal
+    setPendingDeleteIds(new Set(ids));
+
+    // Step 4: Exit select mode
+    setSelectedSessions(new Set());
+    setSelectMode(false);
+    lastAnchorRef.current = null;
+    setTimeout(() => selectButtonRef.current?.focus(), 0);
+
+    // Step 5: Start pending delete timer
+    let toastId = "";
+    toastId = showUndoToast(
+      `Deleted ${ids.length} session${ids.length !== 1 ? "s" : ""}`,
+      () => {
+        // Guard: if the flush timer fired first, pendingDeleteRef is already null.
+        if (!pendingDeleteRef.current) return;
+        clearTimeout(pendingDeleteRef.current.timer ?? undefined);
+        removeNotification(toastId);
+        setPendingDeleteIds(new Set());
+        pendingDeleteRef.current = null;
+      },
+      5000,
+    );
+
+    const timer = setTimeout(() => {
+      void flushPendingDeletes();
+    }, 5000);
+
+    pendingDeleteRef.current = {
+      ids: new Set(ids),
+      timer,
+      toastId,
+    };
+  }, [onDeleteSession, activeSelection, flushPendingDeletes, showUndoToast, removeNotification]);
 
   const handleBulkAddTag = () => {
     setIsBulkTagEditing(true);
@@ -573,18 +712,19 @@ export function SessionList({
 
   const handleBulkTagSave = (newTags: string[]) => {
     if (newTags.length > 0 && onUpdateTags) {
-      selectedSessions.forEach(id => {
-        const session = sessions.find(s => s.id === id);
+      const sessionMap = new Map(sessions.map(s => [s.id, s]));
+      activeSelection.forEach(id => {
+        const session = sessionMap.get(id);
         const merged = Array.from(new Set([...(session?.tags ?? []), ...newTags]));
         onUpdateTags(id, merged);
       });
-      showFeedback(`Added ${newTags.length} tag${newTags.length !== 1 ? 's' : ''} to ${selectedSessions.size} session${selectedSessions.size !== 1 ? 's' : ''}`);
+      showFeedback(`Added ${newTags.length} tag${newTags.length !== 1 ? 's' : ''} to ${activeSelection.size} session${activeSelection.size !== 1 ? 's' : ''}`);
     }
     setIsBulkTagEditing(false);
   };
 
   return (
-    <div ref={containerRef} className={container} data-context="session-list">
+    <div ref={containerRef} className={container} data-context="session-list" data-select-mode={selectMode ? "true" : "false"} aria-multiselectable={selectMode ? "true" : undefined}>
       <div className={header}>
         <div className={headerTop}>
           <h2 className={title} aria-live="polite" aria-atomic="true">Sessions ({filteredSessions.length !== sessions.length ? `${filteredSessions.length} of ${sessions.length}` : filteredSessions.length})</h2>
@@ -786,7 +926,7 @@ export function SessionList({
       {/* Bulk actions bar — BulkActions renders null when selectedCount === 0 */}
       {selectMode && (
         <BulkActions
-          selectedCount={selectedSessions.size}
+          selectedCount={activeSelection.size}
           totalCount={filteredSessions.length}
           onPauseAll={handlePauseSelected}
           onResumeAll={handleResumeSelected}
@@ -839,6 +979,8 @@ export function SessionList({
       ) : viewMode === "row" ? (
         // Row mode: virtualized — only renders visible items (~20 rows at a time).
         <div
+          role="list"
+          aria-label={`Sessions, ${flatItems.filter(i => i && i.kind === "session").length} items`}
           style={{
             height: rowVirtualizer.getTotalSize(),
             width: "100%",
@@ -864,6 +1006,7 @@ export function SessionList({
                 }}
               >
                 {item.kind === "header" ? (
+                  <div role="listitem">
                   <div
                     role="heading"
                     aria-level={3}
@@ -970,7 +1113,9 @@ export function SessionList({
                       </>
                     )}
                   </div>
+                  </div>
                 ) : (
+                  <div role="listitem">
                   <SessionRow
                     session={item.session}
                     onClick={() => onSessionClick?.(item.session)}
@@ -992,7 +1137,11 @@ export function SessionList({
                     onUpdateTags={onUpdateTags}
                     suppressApprovalSubStatus={clearedSessions.has(item.session.id)}
                     visibleColumns={visibleColumns}
+                    selectMode={selectMode}
+                    isSelected={selectedSessions.has(item.session.id)}
+                    onToggleSelect={(e) => handleToggleSession(item.session.id, e)}
                   />
+                  </div>
                 )}
               </div>
             );
@@ -1137,7 +1286,7 @@ export function SessionList({
                         onResumeFromHibernation={onResumeHibernatedSession ? () => onResumeHibernatedSession(session.id) : undefined}
                         selectMode={selectMode}
                         isSelected={selectedSessions.has(session.id)}
-                        onToggleSelect={() => handleToggleSession(session.id)}
+                        onToggleSelect={(e) => handleToggleSession(session.id, e)}
                         reviewItem={reviewItemBySessionId.get(session.id)}
                         detectedStatus={detectedStatusMap[session.id]?.detectedStatus}
                         detectedContext={detectedStatusMap[session.id]?.detectedContext}
@@ -1152,32 +1301,6 @@ export function SessionList({
         </div>
       )}
 
-      <Modal open={showBulkDeleteConfirm} onOpenChange={setShowBulkDeleteConfirm}>
-        <ModalContent fallbackTitle="Confirm delete">
-          <ModalTitle>Delete {selectedSessions.size} session{selectedSessions.size !== 1 ? 's' : ''}?</ModalTitle>
-          <p id="bulk-delete-warning" style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.875rem' }}>
-            This will permanently delete {selectedSessions.size} selected session{selectedSessions.size !== 1 ? 's' : ''}. This cannot be undone.
-          </p>
-          <ModalFooter>
-            <button
-              autoFocus
-              aria-describedby="bulk-delete-warning"
-              style={{ padding: '0.5rem 1rem', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--card-background)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.875rem' }}
-              onClick={() => setShowBulkDeleteConfirm(false)}
-            >
-              Cancel
-            </button>
-            <button
-              style={{ padding: '0.5rem 1rem', border: 'none', borderRadius: '6px', background: 'var(--error)', color: 'white', cursor: 'pointer', fontSize: '0.875rem', fontWeight: 600 }}
-              aria-describedby="bulk-delete-warning"
-              aria-label={`Confirm permanent deletion of ${selectedSessions.size} session${selectedSessions.size !== 1 ? 's' : ''}`}
-              onClick={() => { setShowBulkDeleteConfirm(false); handleConfirmBulkDelete(); }}
-            >
-              Delete {selectedSessions.size} session{selectedSessions.size !== 1 ? 's' : ''}
-            </button>
-          </ModalFooter>
-        </ModalContent>
-      </Modal>
     </div>
   );
 }

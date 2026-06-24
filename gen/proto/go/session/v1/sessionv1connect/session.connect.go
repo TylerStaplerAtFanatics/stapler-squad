@@ -333,6 +333,15 @@ const (
 	// SessionServiceListSlashCommandsProcedure is the fully-qualified name of the SessionService's
 	// ListSlashCommands RPC.
 	SessionServiceListSlashCommandsProcedure = "/session.v1.SessionService/ListSlashCommands"
+	// SessionServiceListAliasesProcedure is the fully-qualified name of the SessionService's
+	// ListAliases RPC.
+	SessionServiceListAliasesProcedure = "/session.v1.SessionService/ListAliases"
+	// SessionServiceUpsertAliasProcedure is the fully-qualified name of the SessionService's
+	// UpsertAlias RPC.
+	SessionServiceUpsertAliasProcedure = "/session.v1.SessionService/UpsertAlias"
+	// SessionServiceDeleteAliasProcedure is the fully-qualified name of the SessionService's
+	// DeleteAlias RPC.
+	SessionServiceDeleteAliasProcedure = "/session.v1.SessionService/DeleteAlias"
 	// SessionServiceArchiveSessionProcedure is the fully-qualified name of the SessionService's
 	// ArchiveSession RPC.
 	SessionServiceArchiveSessionProcedure = "/session.v1.SessionService/ArchiveSession"
@@ -608,6 +617,12 @@ type SessionServiceClient interface {
 	// Walks target_directory/.claude/commands/ (project) and ~/.claude/commands/ (user),
 	// merging both with a small set of built-in Claude Code commands.
 	ListSlashCommands(context.Context, *connect.Request[v1.ListSlashCommandsRequest]) (*connect.Response[v1.ListSlashCommandsResponse], error)
+	// ListAliases returns all configured alias presets from config.json.
+	ListAliases(context.Context, *connect.Request[v1.ListAliasesRequest]) (*connect.Response[v1.ListAliasesResponse], error)
+	// UpsertAlias creates or updates a named alias preset (matched by name).
+	UpsertAlias(context.Context, *connect.Request[v1.UpsertAliasRequest]) (*connect.Response[v1.UpsertAliasResponse], error)
+	// DeleteAlias removes an alias preset by name.
+	DeleteAlias(context.Context, *connect.Request[v1.DeleteAliasRequest]) (*connect.Response[v1.DeleteAliasResponse], error)
 	// ArchiveSession soft-archives a session by setting archived_at.
 	// Archived sessions are excluded from the default session list.
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
@@ -1240,6 +1255,24 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("ListSlashCommands")),
 			connect.WithClientOptions(opts...),
 		),
+		listAliases: connect.NewClient[v1.ListAliasesRequest, v1.ListAliasesResponse](
+			httpClient,
+			baseURL+SessionServiceListAliasesProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("ListAliases")),
+			connect.WithClientOptions(opts...),
+		),
+		upsertAlias: connect.NewClient[v1.UpsertAliasRequest, v1.UpsertAliasResponse](
+			httpClient,
+			baseURL+SessionServiceUpsertAliasProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("UpsertAlias")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteAlias: connect.NewClient[v1.DeleteAliasRequest, v1.DeleteAliasResponse](
+			httpClient,
+			baseURL+SessionServiceDeleteAliasProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("DeleteAlias")),
+			connect.WithClientOptions(opts...),
+		),
 		archiveSession: connect.NewClient[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse](
 			httpClient,
 			baseURL+SessionServiceArchiveSessionProcedure,
@@ -1370,6 +1403,9 @@ type sessionServiceClient struct {
 	runWorkflow                  *connect.Client[v1.RunWorkflowRequest, v1.RunWorkflowResponse]
 	getDetectionEvents           *connect.Client[v1.GetDetectionEventsRequest, v1.GetDetectionEventsResponse]
 	listSlashCommands            *connect.Client[v1.ListSlashCommandsRequest, v1.ListSlashCommandsResponse]
+	listAliases                  *connect.Client[v1.ListAliasesRequest, v1.ListAliasesResponse]
+	upsertAlias                  *connect.Client[v1.UpsertAliasRequest, v1.UpsertAliasResponse]
+	deleteAlias                  *connect.Client[v1.DeleteAliasRequest, v1.DeleteAliasResponse]
 	archiveSession               *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
 	unarchiveSession             *connect.Client[v1.UnarchiveSessionRequest, v1.UnarchiveSessionResponse]
 	archiveWorkflowSessions      *connect.Client[v1.ArchiveWorkflowSessionsRequest, v1.ArchiveWorkflowSessionsResponse]
@@ -1881,6 +1917,21 @@ func (c *sessionServiceClient) ListSlashCommands(ctx context.Context, req *conne
 	return c.listSlashCommands.CallUnary(ctx, req)
 }
 
+// ListAliases calls session.v1.SessionService.ListAliases.
+func (c *sessionServiceClient) ListAliases(ctx context.Context, req *connect.Request[v1.ListAliasesRequest]) (*connect.Response[v1.ListAliasesResponse], error) {
+	return c.listAliases.CallUnary(ctx, req)
+}
+
+// UpsertAlias calls session.v1.SessionService.UpsertAlias.
+func (c *sessionServiceClient) UpsertAlias(ctx context.Context, req *connect.Request[v1.UpsertAliasRequest]) (*connect.Response[v1.UpsertAliasResponse], error) {
+	return c.upsertAlias.CallUnary(ctx, req)
+}
+
+// DeleteAlias calls session.v1.SessionService.DeleteAlias.
+func (c *sessionServiceClient) DeleteAlias(ctx context.Context, req *connect.Request[v1.DeleteAliasRequest]) (*connect.Response[v1.DeleteAliasResponse], error) {
+	return c.deleteAlias.CallUnary(ctx, req)
+}
+
 // ArchiveSession calls session.v1.SessionService.ArchiveSession.
 func (c *sessionServiceClient) ArchiveSession(ctx context.Context, req *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error) {
 	return c.archiveSession.CallUnary(ctx, req)
@@ -2162,6 +2213,12 @@ type SessionServiceHandler interface {
 	// Walks target_directory/.claude/commands/ (project) and ~/.claude/commands/ (user),
 	// merging both with a small set of built-in Claude Code commands.
 	ListSlashCommands(context.Context, *connect.Request[v1.ListSlashCommandsRequest]) (*connect.Response[v1.ListSlashCommandsResponse], error)
+	// ListAliases returns all configured alias presets from config.json.
+	ListAliases(context.Context, *connect.Request[v1.ListAliasesRequest]) (*connect.Response[v1.ListAliasesResponse], error)
+	// UpsertAlias creates or updates a named alias preset (matched by name).
+	UpsertAlias(context.Context, *connect.Request[v1.UpsertAliasRequest]) (*connect.Response[v1.UpsertAliasResponse], error)
+	// DeleteAlias removes an alias preset by name.
+	DeleteAlias(context.Context, *connect.Request[v1.DeleteAliasRequest]) (*connect.Response[v1.DeleteAliasResponse], error)
 	// ArchiveSession soft-archives a session by setting archived_at.
 	// Archived sessions are excluded from the default session list.
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
@@ -2790,6 +2847,24 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("ListSlashCommands")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionServiceListAliasesHandler := connect.NewUnaryHandler(
+		SessionServiceListAliasesProcedure,
+		svc.ListAliases,
+		connect.WithSchema(sessionServiceMethods.ByName("ListAliases")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceUpsertAliasHandler := connect.NewUnaryHandler(
+		SessionServiceUpsertAliasProcedure,
+		svc.UpsertAlias,
+		connect.WithSchema(sessionServiceMethods.ByName("UpsertAlias")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceDeleteAliasHandler := connect.NewUnaryHandler(
+		SessionServiceDeleteAliasProcedure,
+		svc.DeleteAlias,
+		connect.WithSchema(sessionServiceMethods.ByName("DeleteAlias")),
+		connect.WithHandlerOptions(opts...),
+	)
 	sessionServiceArchiveSessionHandler := connect.NewUnaryHandler(
 		SessionServiceArchiveSessionProcedure,
 		svc.ArchiveSession,
@@ -3018,6 +3093,12 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceGetDetectionEventsHandler.ServeHTTP(w, r)
 		case SessionServiceListSlashCommandsProcedure:
 			sessionServiceListSlashCommandsHandler.ServeHTTP(w, r)
+		case SessionServiceListAliasesProcedure:
+			sessionServiceListAliasesHandler.ServeHTTP(w, r)
+		case SessionServiceUpsertAliasProcedure:
+			sessionServiceUpsertAliasHandler.ServeHTTP(w, r)
+		case SessionServiceDeleteAliasProcedure:
+			sessionServiceDeleteAliasHandler.ServeHTTP(w, r)
 		case SessionServiceArchiveSessionProcedure:
 			sessionServiceArchiveSessionHandler.ServeHTTP(w, r)
 		case SessionServiceUnarchiveSessionProcedure:
@@ -3437,6 +3518,18 @@ func (UnimplementedSessionServiceHandler) GetDetectionEvents(context.Context, *c
 
 func (UnimplementedSessionServiceHandler) ListSlashCommands(context.Context, *connect.Request[v1.ListSlashCommandsRequest]) (*connect.Response[v1.ListSlashCommandsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.ListSlashCommands is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) ListAliases(context.Context, *connect.Request[v1.ListAliasesRequest]) (*connect.Response[v1.ListAliasesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.ListAliases is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) UpsertAlias(context.Context, *connect.Request[v1.UpsertAliasRequest]) (*connect.Response[v1.UpsertAliasResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.UpsertAlias is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) DeleteAlias(context.Context, *connect.Request[v1.DeleteAliasRequest]) (*connect.Response[v1.DeleteAliasResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.DeleteAlias is not implemented"))
 }
 
 func (UnimplementedSessionServiceHandler) ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error) {

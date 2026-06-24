@@ -35,17 +35,15 @@ export function dispatchOmnibarAction(
       deps.close();
       return;
     case "create_session": {
-      const isOneOff = action.sessionType === "one_off";
       const isAutonomous = action.sessionType === "autonomous";
       if (track) track({ name: "omnibar.create_session", category: "user_action", labels: { sessionType: action.sessionType } });
       void deps.createSession({
         title: action.title ?? "",
         path: action.path,
-        sessionType: (isOneOff || isAutonomous) ? undefined : action.sessionType as "directory" | "new_worktree" | "existing_worktree",
+        sessionType: isAutonomous ? undefined : action.sessionType as "directory" | "new_worktree" | "existing_worktree" | "one_off",
         branch: action.branch,
         program: action.program ?? "",
         autoYes: false,
-        oneOff: isOneOff ? true : undefined,
         autonomousMode: isAutonomous ? true : undefined,
         permissionMode: isAutonomous ? "auto" : undefined,
       });
@@ -104,6 +102,18 @@ export function dispatchOmnibarAction(
     case "run_workflow":
       if (track) track({ name: "omnibar.run_workflow", category: "user_action", labels: { slug: action.workflowSlug } });
       deps.runWorkflow?.(action.workflowSlug, action.workflowArg);
+      deps.close();
+      return;
+    case "create_alias_session":
+      if (track) track({ name: "omnibar.create_alias_session", category: "user_action", labels: { aliasName: action.aliasName } });
+      void deps.createSession({
+        title: action.label?.trim() || action.aliasName,
+        path: "",
+        program: "",
+        autoYes: false,
+        aliasName: action.aliasName,
+        branch: action.branch,
+      });
       deps.close();
       return;
     // TypeScript exhaustiveness: adding a new OmnibarAction variant without a case → compile error ✅

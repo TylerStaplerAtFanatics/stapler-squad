@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
@@ -16,6 +15,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/server/workflows"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/artifacts"
 	"github.com/tstapler/stapler-squad/session/cdp"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/headless"
@@ -61,10 +61,6 @@ type ServerDependencies struct {
 	// is used as a fallback in that case).
 	AnalyticsEntClient *ent.Client
 
-	// AnalyticsClientPtr is populated asynchronously by a dedicated goroutine.
-	// The late-bind goroutine in wireDepsIntoServer polls this until non-nil.
-	AnalyticsClientPtr *atomic.Pointer[ent.Client]
-
 	// VNCDeps holds the result of the startup VNC dependency check.
 	// Available=false means the Browser tab will be hidden on all sessions.
 	VNCDeps vnc.DepsResult
@@ -109,7 +105,6 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
 		AnalyticsEntClient:      rt.AnalyticsEntClient,
-		AnalyticsClientPtr:      &rt.AnalyticsClientPtr,
 		VNCDeps:                 rt.VNCDeps,
 		CDPDeps:                 rt.CDPDeps,
 		HeadlessPool:            rt.HeadlessPool,
@@ -377,11 +372,6 @@ type RuntimeDeps struct {
 	// Analytics storage.
 	AnalyticsEntClient *ent.Client
 
-	// AnalyticsClientPtr is an atomic pointer populated asynchronously by a
-	// dedicated goroutine. The late-bind goroutine in wireDepsIntoServer polls
-	// this until non-nil, then upgrades the analytics provider.
-	AnalyticsClientPtr atomic.Pointer[ent.Client]
-
 	// VNCDeps holds the result of the startup VNC dependency check.
 	VNCDeps vnc.DepsResult
 
@@ -434,16 +424,6 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	instances, err := storage.LoadInstances()
 	if err != nil {
 		return nil, fmt.Errorf("load instances: %w", err)
-	}
-
-	// Startup safety guard (ADR-018): if a previous run accidentally persisted
-	// Restoring status (transient — must never be written to the DB), reset to Creating.
-	for _, inst := range instances {
-		if inst.Status == session.Restoring {
-			log.Warn("startup safety guard: found persisted Restoring status; resetting to Creating",
-				"session", inst.Title)
-			inst.Status = session.Creating
-		}
 	}
 
 	// WorkflowEngine governs backlog state transitions; constructed once and shared
@@ -503,26 +483,18 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 				log.ErrorLog.Printf("[startup] panic in background init goroutine: %v", r)
 			}
 		}()
-		// Step 6: restore tmux sessions for loaded instances (non-fatal failures).
-		// Stagger removed: hot-attach restores call RestoreWithWorkDir (tmux attach-session)
-		// which forks no new processes — no fork pressure risk on macOS or Linux.
-		//
-		// IMPORTANT: Only mark non-Stopped sessions as Restoring. Sessions with
-		// inst.Status == session.Stopped are left for Step 6b (crash-recovery: Stopped
-		// sessions with a live tmux). Pre-marking them would make Step 6b's check fail.
-		for _, inst := range instances {
-			if !inst.Started() && inst.Status != session.Stopped {
-				inst.ForceStatus(session.Restoring)
-				eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"status"}))
+		// Step 6: start tmux sessions for loaded instances (non-fatal failures).
+		// Stagger starts by 200ms each to avoid a fork burst that saturates the
+		// cgroup pids.max limit when many sessions restore simultaneously.
+		for i, inst := range instances {
+			if !inst.Started() {
+				if i > 0 {
+					time.Sleep(200 * time.Millisecond)
+				}
 				if err := inst.Start(false); err != nil {
 					log.Error("failed to start loaded instance", "session", inst.Title, "err", err)
-					inst.ForceStatus(session.Creating)
-					eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"status"}))
 				} else {
 					log.Info("started loaded instance", "session", inst.Title)
-					// inst.Start() does not publish a status event internally; publish here
-					// so WatchSessions clients see Restoring → Active without polling delay.
-					eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"status"}))
 				}
 			}
 		}
@@ -550,6 +522,13 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		for _, inst := range instances {
 			inst.ReconcileShells(context.Background())
 		}
+
+		// Step 6d: Kill orphaned tmux sessions — staplersquad_ sessions with no
+		// matching DB record. These accumulate when DeleteSession removes the DB
+		// row but the server restarted before the live in-memory instance was
+		// available to call Destroy(). Must run after 6/6b so re-adopted sessions
+		// are already registered and won't be mistaken for orphans.
+		session.ReconcileOrphanedTmuxSessions(instances)
 
 		// Step 6.5: Persist any auto-detected worktree info (must happen after Step 6)
 		if len(instances) > 0 {
@@ -741,7 +720,19 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Warn("could not initialize UnfinishedWork state store", "err", configErr)
 	}
 
-	// analyticsEntClient is populated asynchronously by a dedicated goroutine below.
+	// Open the dedicated analytics database (non-fatal: fall back gracefully on failure).
+	var analyticsClient *ent.Client
+	if configDir, configErr := config.GetConfigDir(); configErr == nil {
+		ctx := context.Background()
+		if ac, acErr := analytics.OpenAnalyticsDB(ctx, configDir); acErr != nil {
+			log.Warn("could not open analytics DB (will use log-only fallback)", "err", acErr)
+		} else {
+			analyticsClient = ac
+			log.Info("analytics DB opened", "path", configDir+"/analytics.db")
+		}
+	} else {
+		log.Warn("could not determine config dir for analytics DB", "err", configErr)
+	}
 
 	// 60 s reconcile ticker: safety net for abnormal exits where EventExited cannot fire.
 	go func() {
@@ -772,6 +763,9 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine)
 	backlogSvc.SetSessionStopper(sessionService)
 	backlogSvc.SetAutonomousDriverStarter(sessionService)
+	if headlessPool != nil {
+		backlogSvc.SetHeadlessPool(headlessPool)
+	}
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
@@ -803,6 +797,50 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		tokenStore.Start(context.Background())
 		insightsSvc = services.NewInsightsService(tokenStore, pricing, associator)
 		log.Info("InsightsService initialized", "historyDir", historyDir)
+
+		// Wire ArtifactExtractor to extract PR links, commits, and URLs from JSONL history.
+		// Uses historyLinker.Instances() for live instance snapshots so sessions created
+		// after startup are included in lookupTitle and OnScanComplete.
+		artifactExtractor := artifacts.NewArtifactExtractor(
+			func(title, blob string) error {
+				return storage.UpdateInstanceArtifacts(title, blob)
+			},
+			func(title string) (string, error) {
+				return storage.GetInstanceArtifacts(title)
+			},
+			func(filePath string) (string, bool) {
+				return session.FindInstanceByHistoryPath(historyLinker.Instances(), filePath)
+			},
+		)
+		artifactExtractor.OnScanComplete = func(title string, blob *artifacts.SessionArtifactsBlob) {
+			// Take a snapshot to avoid a data race with concurrent AddInstance calls (M-5 fix).
+			snapshot := historyLinker.Instances()
+			for _, inst := range snapshot {
+				if inst.Title == title {
+					inst.SetArtifacts(blob)
+					eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"artifacts"}))
+					// Feed discovered PR URLs to the PR status poller if not already set.
+					if !inst.HasGitHubPR() {
+						for _, prURL := range blob.PRURLs {
+							if ref, err := session.ParseGitHubURL(prURL); err == nil && ref.PRNumber > 0 {
+								if err := storage.UpdateInstancePRNumber(inst.Title, ref.PRNumber); err != nil {
+									log.Warn("ArtifactExtractor: failed to update PR number", "session", inst.Title, "err", err)
+								} else {
+									// Update in-memory state so HasGitHubPR() reflects the change (M-3 fix).
+									inst.SetGitHubPRNumber(ref.PRNumber)
+								}
+								break
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+		historyLinker.RegisterFileCallback(artifactExtractor.OnHistoryFileChanged)
+		artifactExtractor.SeedOffsets(session.InstanceInfoSlice(historyLinker.Instances()))
+		artifactExtractor.Start(context.Background(), historyDir)
+		log.Info("ArtifactExtractor initialized", "historyDir", historyDir)
 	} else {
 		log.Warn("could not determine home dir for InsightsService token store", "err", homeDirErr)
 	}
@@ -841,7 +879,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		}
 	}()
 
-	rt := &RuntimeDeps{
+	return &RuntimeDeps{
 		HeadlessPool:            headlessPool,
 		ServiceDeps:             svc,
 		Instances:               instances,
@@ -860,30 +898,10 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		BacklogService:          backlogSvc,
 		SyncLoop:                nil, // managed by BacklogController
 		Config:                  cfg,
-		AnalyticsEntClient:      nil, // populated asynchronously via AnalyticsClientPtr
+		AnalyticsEntClient:      analyticsClient,
 		VNCDeps:                 vncDeps,
 		CDPDeps:                 cdpDeps,
 		WorkflowRepo:            workflowRepo,
 		WorkflowScheduler:       workflowScheduler,
-	}
-
-	// Dedicated analytics open goroutine — runs concurrently with session restore.
-	// Launched after rt is constructed so the closure can safely capture rt.
-	go func() {
-		configDir, configErr := config.GetConfigDir()
-		if configErr != nil {
-			log.Warn("could not determine config dir for analytics DB", "err", configErr)
-			return
-		}
-		ctx := context.Background()
-		ac, acErr := analytics.OpenAnalyticsDB(ctx, configDir)
-		if acErr != nil {
-			log.Warn("could not open analytics DB (will use log-only fallback)", "err", acErr)
-			return
-		}
-		log.Info("analytics DB opened (async)")
-		rt.AnalyticsClientPtr.Store(ac)
-	}()
-
-	return rt, nil
+	}, nil
 }

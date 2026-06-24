@@ -254,33 +254,19 @@ function ReviewQueueContent() {
     : 0;
   const queueTotal = reviewQueueItems.length;
 
-  const [savedMsg, setSavedMsg] = useState("");
-
   return (
     <div className={styles.page}>
       <div id="main-content" className={styles.main}>
-        {/* Auto-advance preference toolbar */}
-        <div className={styles.toolbar}>
-          <label className={styles.autoAdvanceLabel}>
-            <input
-              type="checkbox"
-              checked={autoAdvance}
-              onChange={(e) => {
-                setAutoAdvance(e.target.checked);
-                localStorage.setItem("review-queue-auto-advance", String(e.target.checked));
-                setSavedMsg("Saved");
-                setTimeout(() => setSavedMsg(""), 2000);
-              }}
-            />
-            Auto-advance after action
-          </label>
-          {savedMsg && <span aria-live="polite" style={{ fontSize: "0.75rem", color: "var(--success)", marginLeft: "0.5rem" }}>{savedMsg}</span>}
-        </div>
         <ReviewQueuePanel
           onSessionClick={handleSessionClick}
           onItemsChange={handleItemsChange}
           onAcknowledged={handleAcknowledged}
           onRunOneShot={handleRunOneShot}
+          autoAdvance={autoAdvance}
+          onAutoAdvanceChange={(val) => {
+            setAutoAdvance(val);
+            localStorage.setItem("review-queue-auto-advance", String(val));
+          }}
         />
       </div>
 

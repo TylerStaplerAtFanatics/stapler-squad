@@ -16,6 +16,7 @@ import (
 	"github.com/linkdata/deadlock"
 	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/session/artifacts"
 	"github.com/tstapler/stapler-squad/session/detection"
 	"github.com/tstapler/stapler-squad/session/tmux"
 )
@@ -33,6 +34,9 @@ const (
 	Stopped Status = 3
 	// Hibernated is the status when the instance has been checkpointed and the tmux session killed.
 	Hibernated Status = 4
+	// Restoring is the transient startup state when a hibernated session is being restored.
+	// Never persisted to the database — transitions to Active or Creating on completion.
+	Restoring Status = 5
 
 	// Deprecated: use Active.
 	Running = Active
@@ -40,11 +44,6 @@ const (
 	Ready = Active
 	// Deprecated: use Creating.
 	Loading = Creating
-
-	// Restoring is a transient in-memory-only status set during server startup
-	// while inst.Start(false) is executing for a previously-persisted session.
-	// This value is NEVER written to the database; SaveInstances skips Restoring instances.
-	Restoring Status = 5
 )
 
 // String returns a human-readable name for the status.
@@ -274,6 +273,11 @@ type Instance struct {
 	// Empty for manually-created sessions.
 	WorkflowID string `json:"workflow_id,omitempty"`
 
+	// EnvVars are session-level environment variables injected at tmux session creation.
+	EnvVars map[string]string `json:"env_vars,omitempty"`
+	// CLIFlags are additional CLI flags appended to the program launch command.
+	CLIFlags string `json:"cli_flags,omitempty"`
+
 	// ArchivedAt is set when the session is archived. Nil means not archived.
 	ArchivedAt *time.Time `json:"archived_at,omitempty"`
 
@@ -362,6 +366,10 @@ type Instance struct {
 	// claudeSessionIDSavedCallback is called when SetClaudeConversationUUID stores a
 	// newly discovered session_id. Used by the service layer to trigger a storage save.
 	claudeSessionIDSavedCallback func()
+
+	// Artifacts holds structured artifacts extracted from the session's JSONL history.
+	// Populated asynchronously by ArtifactExtractor. Protected by stateMutex.
+	Artifacts *artifacts.SessionArtifactsBlob
 }
 
 // SessionType indicates the type of session workflow to use
@@ -373,35 +381,22 @@ const (
 	PauseReasonAutoResource   = "auto:resource"
 )
 
-type SessionType string
+// SessionType is an alias for config.SessionType so callers can use either package.
+type SessionType = config.SessionType
 
 const (
 	// SessionTypeDirectory creates a simple directory session without git worktree
-	SessionTypeDirectory SessionType = "directory"
+	SessionTypeDirectory = config.SessionTypeDirectory
 	// SessionTypeNewWorktree creates a new git worktree for the session
-	SessionTypeNewWorktree SessionType = "new_worktree"
+	SessionTypeNewWorktree = config.SessionTypeNewWorktree
 	// SessionTypeExistingWorktree uses an existing git worktree
-	SessionTypeExistingWorktree SessionType = "existing_worktree"
+	SessionTypeExistingWorktree = config.SessionTypeExistingWorktree
 	// SessionTypeNewProject creates a new directory, initializes a git repo with an
 	// initial commit, and opens the session. The directory need not exist beforehand.
-	SessionTypeNewProject SessionType = "new_project"
+	SessionTypeNewProject = config.SessionTypeNewProject
+	// SessionTypeOneOff generates a fresh temporary directory under one_off_base_dir.
+	SessionTypeOneOff = config.SessionTypeOneOff
 )
-
-// SessionTypeOneOff is the workflow session_type value that requests a one-off session.
-// It is a plain string (not a SessionType constant) because workflows store it as a
-// plain string field, and the backend maps it to OneOff=true at execution time.
-const SessionTypeOneOff = "one_off"
-
-// IsValid reports whether st is a recognized session type.
-func (st SessionType) IsValid() bool {
-	switch st {
-	case SessionTypeDirectory, SessionTypeNewWorktree, SessionTypeExistingWorktree,
-		SessionTypeNewProject:
-		return true
-	default:
-		return false
-	}
-}
 
 // Options for creating a new instance
 type InstanceOptions struct {
@@ -445,6 +440,7 @@ type InstanceOptions struct {
 	GitHubRepo      string // Repository name
 	GitHubSourceRef string // Original URL/reference used to create session
 	ClonedRepoPath  string // Path where repo was cloned (if cloned)
+
 	// ResumeId is the Claude conversation ID to resume (from history browser).
 	// When set, the session will start with --resume <id> flag.
 	ResumeId string
@@ -484,6 +480,11 @@ type InstanceOptions struct {
 	// WorkflowID is the UUID of the Workflow that spawned this session.
 	// Set by the scheduler; empty for manually-created sessions.
 	WorkflowID string
+
+	// EnvVars are session-level environment variables injected at tmux session creation time.
+	EnvVars map[string]string
+	// CLIFlags are additional CLI flags appended to the program launch command.
+	CLIFlags string
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -571,6 +572,8 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		AutonomousMode:     opts.AutonomousMode,
 		// Directory creation on missing path (R2 confirmation flow)
 		CreateIfMissing: opts.CreateIfMissing,
+		EnvVars:         opts.EnvVars,
+		CLIFlags:        opts.CLIFlags,
 	}
 
 	// Initialize TagManager backed by the Instance.Tags slice
@@ -635,6 +638,29 @@ func (i *Instance) GetSessionGoal() *SessionGoalData {
 		}
 	})
 	return result
+}
+
+// HasGitHubPR reports whether a GitHub PR has been associated with this session.
+// Safe for use from any goroutine; acquires stateMutex internally.
+func (i *Instance) HasGitHubPR() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
+	return i.GitHubPRNumber > 0
+}
+
+// SetArtifacts atomically updates the in-memory Artifacts cache.
+func (i *Instance) SetArtifacts(blob *artifacts.SessionArtifactsBlob) {
+	i.stateMutex.Lock()
+	defer i.stateMutex.Unlock()
+	i.Artifacts = blob
+}
+
+// SetGitHubPRNumber atomically updates the in-memory GitHubPRNumber field.
+// Call after a successful DB write so HasGitHubPR() reflects the update (M-3 fix).
+func (i *Instance) SetGitHubPRNumber(n int) {
+	i.stateMutex.Lock()
+	defer i.stateMutex.Unlock()
+	i.GitHubPRNumber = n
 }
 
 // SetSessionGoalCached atomically updates the in-memory sessionGoal cache.

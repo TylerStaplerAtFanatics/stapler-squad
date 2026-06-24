@@ -493,9 +493,13 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 		}
 	}
 
-	// Build triage result JSON payload using the canonical session.TriageResultPayload
-	// struct — both writer (here) and reader (backlog_service.go) share this type.
-	triagePayload := session.TriageResultPayload{
+	// Build triage result JSON payload using canonical struct (prevents schema drift).
+	type triageResultPayload struct {
+		Summary     string                   `json:"summary"`
+		Suggestions []session.TriageSuggestion `json:"suggestions"`
+		Tasks       []session.TriageTask       `json:"tasks,omitempty"`
+	}
+	triagePayload := triageResultPayload{
 		Summary:     summary,
 		Suggestions: suggestions,
 		Tasks:       tasks,
@@ -523,10 +527,8 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 	// Persist triage result JSON on the ItemSession.
 	if updateErr := h.storage.UpdateItemSessionTriageResult(ctx, itemSession.ID.String(), string(payloadJSON)); updateErr != nil {
 		log.ErrorLog.Printf("[mcp:submit_triage_result] failed to save triage result: %v", updateErr)
-		return errResult(ErrInternalError, fmt.Sprintf("failed to persist triage result: %v", updateErr), "Retry submit_triage_result — the data was not saved."), nil
 	}
-	log.InfoLog.Printf("[mcp:submit_triage_result] session=%s item=%s suggestions=%d tasks=%d summary_len=%d",
-		callerUUID, itemID, len(suggestions), len(tasks), len(summary))
+	log.InfoLog.Printf("[mcp:submit_triage_result] session=%s item=%s triage_result=%s", callerUUID, itemID, string(payloadJSON))
 
 	// Publish triage-complete notification if EventBus is wired.
 	if h.eventBus != nil {

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useShortcut } from "@/lib/shortcuts/useShortcut";
 import type { LucideIcon } from "lucide-react";
-import { Terminal, GitCompare, GitBranch, FolderOpen, ScrollText, Info, Globe } from "lucide-react";
+import { Terminal, GitCompare, GitBranch, FolderOpen, ScrollText, Info, Globe, Package } from "lucide-react";
 import dynamic from "next/dynamic";
 import { Session, InstanceType, SessionStatus, SessionType } from "@/gen/session/v1/types_pb";
 import { DiffViewer } from "./DiffViewer";
@@ -12,6 +12,7 @@ import { WorkspaceSwitchModal } from "./WorkspaceSwitchModal";
 import { SessionLogsTab } from "./SessionLogsTab";
 import { FilesTab } from "./FilesTab";
 import { BrowserTab } from "./BrowserTab";
+import { ArtifactsTab } from "./ArtifactsTab";
 import { VNCStatus } from "@/gen/session/v1/types_pb";
 import { ActionBar } from "@/components/ui/ActionBar";
 import { useSessionActions } from "@/lib/hooks/useSessionActions";
@@ -87,7 +88,6 @@ function getStatusLabel(status: SessionStatus): string {
     case SessionStatus.NEEDS_APPROVAL: return "Needs Approval";
     case SessionStatus.CREATING: return "Creating";
     case SessionStatus.STOPPED: return "Stopped";
-    case SessionStatus.RESTORING: return "Restoring";
     default: return "Unknown";
   }
 }
@@ -266,6 +266,7 @@ export function SessionDetailView({
     { id: "logs", label: "Logs", icon: ScrollText },
     { id: "info", label: "Info", icon: Info },
     { id: "browser", label: "Browser", icon: Globe, disabled: !isBrowserAvailable },
+    { id: "artifacts", label: "Artifacts", icon: Package },
   ];
 
   const handleTabChange = (tabId: string) => {
@@ -691,20 +692,6 @@ export function SessionDetailView({
                     >
                       ▶ Resume Session
                     </button>
-                  </div>
-                )}
-                {session.status === SessionStatus.RESTORING && (
-                  <div
-                    className={pausedOverlay}
-                    role="status"
-                    aria-live="polite"
-                    aria-label="Session is restoring"
-                  >
-                    <span className={pausedOverlayIcon} aria-hidden="true">⏳</span>
-                    <p className={pausedOverlayTitle}>Restoring session…</p>
-                    <p className={pausedOverlayReason}>
-                      This session is reconnecting to the terminal. It will be ready shortly.
-                    </p>
                   </div>
                 )}
               </div>
@@ -1224,6 +1211,11 @@ export function SessionDetailView({
             {session.goal?.goalText && (
               <GoalPanel goal={session.goal} />
             )}
+          </div>
+        )}
+        {activeTab === "artifacts" && (
+          <div className={styles.tabContent} role="tabpanel" aria-labelledby="tab-artifacts">
+            <ArtifactsTab session={session} />
           </div>
         )}
       </div>
