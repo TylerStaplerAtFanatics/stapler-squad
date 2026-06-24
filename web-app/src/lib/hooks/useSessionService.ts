@@ -19,6 +19,7 @@ import {
 import { create } from "@bufbuild/protobuf";
 import { SessionEvent, NotificationEvent } from "@/gen/session/v1/events_pb";
 import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
+import { BackoffState, getWsCloseCode, isRetriableCloseCode } from "@/lib/utils/backoff";
 import { createRpcTimingInterceptor } from "@/lib/telemetry/rpcTiming";
 import { useAnalytics } from "@/lib/contexts/AnalyticsContext";
 import { useAppDispatch, useAppSelector } from "@/lib/store";
@@ -106,6 +107,8 @@ interface UseSessionServiceReturn {
   listShells: (sessionId: string) => Promise<Shell[]>;
   deleteShell: (sessionId: string, shellId: string) => Promise<boolean>;
 
+  reconnectAttemptCount: number;
+
   // Real-time updates
   watchSessions: (options?: { categoryFilter?: string; statusFilter?: SessionStatus }) => void;
   stopWatching: () => void;
@@ -151,13 +154,29 @@ export function useSessionService(
 
   // Reconnect control: true while watchSessions is active (user did not explicitly stop)
   const shouldReconnectRef = useRef(false);
-  // Backoff delay in ms, doubles on each failure up to 30s
-  const reconnectDelayRef = useRef(1000);
+  // Jittered exponential backoff state
+  const backoffRef = useRef(new BackoffState(1000, 30_000));
   // Timestamp of last received stream event, used to detect staleness
   const lastEventTimeRef = useRef<number | null>(null);
   // Last seen event sequence number — passed as after_seq on reconnect so the
   // server replays any events missed during the disconnect window (up to 1 hour).
   const lastSeqRef = useRef<bigint>(0n);
+  // Stores current watch options so reconnects use the latest options without stale closure
+  const watchOptionsRef = useRef<{ categoryFilter?: string; statusFilter?: SessionStatus } | undefined>(undefined);
+  // Monotonically-increasing stream generation counter; checked at every await checkpoint
+  const streamGenerationRef = useRef(0);
+  // Whether isConnected — synced directly (not via useEffect) to avoid render-cycle lag
+  const isConnectedRef = useRef(false);
+  // Ref to current watchSessions function — updated every render for stable event handler indirection
+  const watchSessionsRef = useRef<((opts?: { categoryFilter?: string; statusFilter?: SessionStatus }) => void) | undefined>(undefined);
+  // Debounce timer for visibilitychange/online handlers
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks whether seq backwards-jump was detected, triggering full resync
+  const needsFullResyncRef = useRef(false);
+  // Tracks whether the backstop interval has already triggered a reconnect
+  const backstopTriggeredRef = useRef(false);
+  // Stable ref to dispatch so visibility/online handler can use [] deps
+  const dispatchRef = useRef(dispatch);
 
   // Initialize ConnectRPC client — uses HTTP for unary, WebSocket for streaming Watch* RPCs
   useEffect(() => {
@@ -706,6 +725,13 @@ export function useSessionService(
       lastSeqRef.current = event.seq;
     }
 
+    // Seq backwards-jump detection: indicates server restart → request full snapshot
+    if (event.seq > 0n && event.seq < lastSeqRef.current) {
+      console.warn("[reconnect] seq backwards-jump detected — resetting afterSeq to 0");
+      lastSeqRef.current = 0n;
+      needsFullResyncRef.current = true;
+    }
+
     // Handle different event types based on oneof case
     switch (event.event.case) {
       case "sessionCreated": {
@@ -766,68 +792,119 @@ export function useSessionService(
     (watchOptions?: { categoryFilter?: string; statusFilter?: SessionStatus }) => {
       if (!clientRef.current) return;
 
+      // Store options in ref so reconnects use them without stale closure
+      watchOptionsRef.current = watchOptions;
+
       // Stop any existing watch
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
 
       shouldReconnectRef.current = true;
-      reconnectDelayRef.current = 1000; // Reset backoff when explicitly (re)started
+      backoffRef.current.reset(); // Reset backoff when explicitly (re)started
+      ++streamGenerationRef.current; // Invalidate any in-flight startStream from prior call
 
       const startStream = async () => {
         if (!shouldReconnectRef.current || !clientRef.current) return;
+        const myGeneration = ++streamGenerationRef.current;
 
         abortControllerRef.current = new AbortController();
         lastEventTimeRef.current = Date.now(); // Treat stream start as an activity timestamp
-        dispatch(setConnectionState("connected"));
 
         try {
+          // Initial snapshot before stream starts (pass active filters so the snapshot matches the stream)
+          const initialResponse = await clientRef.current.listSessions({
+            category: watchOptionsRef.current?.categoryFilter,
+            status: watchOptionsRef.current?.statusFilter,
+          });
+          if (!shouldReconnectRef.current || streamGenerationRef.current !== myGeneration) return;
+          dispatch(setSessions(initialResponse.sessions));
+
           const stream = clientRef.current.watchSessions(
             {
-              categoryFilter: watchOptions?.categoryFilter,
-              statusFilter: watchOptions?.statusFilter,
+              categoryFilter: watchOptionsRef.current?.categoryFilter,
+              statusFilter: watchOptionsRef.current?.statusFilter,
               afterSeq: lastSeqRef.current,
             },
             { signal: abortControllerRef.current.signal }
           );
 
+          let firstEvent = true;
           for await (const event of stream) {
+            if (firstEvent) {
+              firstEvent = false;
+              isConnectedRef.current = true;
+              backstopTriggeredRef.current = false; // Reset backstop flag on successful stream
+              dispatch(setConnectionState("connected"));
+            }
             lastEventTimeRef.current = Date.now();
             handleSessionEvent(event);
           }
 
           // Stream ended normally (server-side close). Reconnect if still desired.
-          if (shouldReconnectRef.current) {
+          if (shouldReconnectRef.current && streamGenerationRef.current === myGeneration) {
             dispatch(setConnectionState("disconnected"));
-            // Refresh state before reconnecting — flushes changes missed while disconnected
-            if (clientRef.current) {
-              try {
-                const response = await clientRef.current.listSessions({});
-                dispatch(setSessions(response.sessions));
-              } catch { /* best-effort */ }
+            isConnectedRef.current = false;
+
+            // Handle backwards-jump: do a full resync
+            if (needsFullResyncRef.current) {
+              needsFullResyncRef.current = false;
+              void clientRef.current?.listSessions({
+                category: watchOptionsRef.current?.categoryFilter,
+                status: watchOptionsRef.current?.statusFilter,
+              }).then(r => {
+                if (shouldReconnectRef.current && streamGenerationRef.current === myGeneration) {
+                  dispatch(setSessions(r.sessions));
+                }
+              });
             }
+
             onReconnectRef.current?.();
-            await new Promise(r => setTimeout(r, reconnectDelayRef.current));
-            reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
+            const delay = backoffRef.current.next();
+            console.info(`[reconnect] stream=watch trigger=close attempt=${backoffRef.current.attempt} delay=${delay}ms`);
+            await new Promise(r => setTimeout(r, delay));
+            if (streamGenerationRef.current !== myGeneration || !shouldReconnectRef.current) return;
             startStream();
           }
         } catch (err) {
           if (err instanceof Error && err.name === "AbortError") {
             return; // Intentional stop via stopWatching()
           }
-          // Unexpected network error — log, refresh state, then reconnect
-          dispatch(setError(err instanceof Error ? err.message : "Watch stream error"));
-          if (shouldReconnectRef.current) {
+
+          // Check for non-retriable WS close codes
+          const wsCode = getWsCloseCode(err);
+          if (wsCode !== null && !isRetriableCloseCode(wsCode)) {
+            console.warn(`[reconnect] stream=watch non-retriable close code=${wsCode}, stopping reconnect`);
+            shouldReconnectRef.current = false;
+            isConnectedRef.current = false;
             dispatch(setConnectionState("disconnected"));
-            if (clientRef.current) {
-              try {
-                const response = await clientRef.current.listSessions({});
-                dispatch(setSessions(response.sessions));
-              } catch { /* best-effort */ }
+            return;
+          }
+
+          // Unexpected network error — log, then reconnect
+          dispatch(setError(err instanceof Error ? err.message : "Watch stream error"));
+          if (shouldReconnectRef.current && streamGenerationRef.current === myGeneration) {
+            dispatch(setConnectionState("disconnected"));
+            isConnectedRef.current = false;
+
+            // Handle backwards-jump: do a full resync
+            if (needsFullResyncRef.current) {
+              needsFullResyncRef.current = false;
+              void clientRef.current?.listSessions({
+                category: watchOptionsRef.current?.categoryFilter,
+                status: watchOptionsRef.current?.statusFilter,
+              }).then(r => {
+                if (shouldReconnectRef.current && streamGenerationRef.current === myGeneration) {
+                  dispatch(setSessions(r.sessions));
+                }
+              });
             }
+
             onReconnectRef.current?.();
-            await new Promise(r => setTimeout(r, reconnectDelayRef.current));
-            reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30_000);
+            const delay = backoffRef.current.next();
+            console.info(`[reconnect] stream=watch trigger=error attempt=${backoffRef.current.attempt} delay=${delay}ms`);
+            await new Promise(r => setTimeout(r, delay));
+            if (streamGenerationRef.current !== myGeneration || !shouldReconnectRef.current) return;
             startStream();
           }
         }
@@ -841,6 +918,7 @@ export function useSessionService(
   // Stop watching sessions
   const stopWatching = useCallback(() => {
     shouldReconnectRef.current = false;
+    isConnectedRef.current = false;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -848,20 +926,58 @@ export function useSessionService(
     dispatch(setConnectionState("disconnected"));
   }, [dispatch]);
 
-  // Staleness detector: if no events for >15s, mark state as stale
+  // Backstop staleness detector: 30s interval for always-visible tabs
   useEffect(() => {
     if (!enabled) return;
     const interval = setInterval(() => {
       if (
         lastEventTimeRef.current !== null &&
         shouldReconnectRef.current &&
-        Date.now() - lastEventTimeRef.current > 15_000
+        Date.now() - lastEventTimeRef.current > 30_000
       ) {
         dispatch(setConnectionState("stale"));
+        if (!backstopTriggeredRef.current) {
+          backstopTriggeredRef.current = true;
+          watchSessionsRef.current?.(watchOptionsRef.current);
+        }
       }
-    }, 5_000);
+    }, 30_000);
     return () => clearInterval(interval);
   }, [enabled, dispatch]);
+
+  // Keep refs current on every render (for stable event handler indirection)
+  watchSessionsRef.current = watchSessions;
+  dispatchRef.current = dispatch;
+
+  // Browser lifecycle listeners: reconnect on tab visibility restore or network online.
+  // Empty deps + dispatchRef indirection keeps the function reference stable across renders
+  // so removeEventListener correctly deregisters the exact same handler instance.
+  const handleVisibilityOrOnline = useCallback((ev: Event) => {
+    if (document.visibilityState !== "visible" && ev.type !== "online") return;
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      if (!shouldReconnectRef.current) return;
+      if (!isConnectedRef.current || (lastEventTimeRef.current !== null && lastEventTimeRef.current < Date.now() - 15_000)) {
+        if (lastEventTimeRef.current !== null && lastEventTimeRef.current < Date.now() - 15_000) {
+          dispatchRef.current(setConnectionState("stale"));
+        }
+        backoffRef.current.reset();
+        watchSessionsRef.current?.(watchOptionsRef.current);
+      }
+    }, 200);
+  }, []);
+
+  useEffect(() => {
+    if (!enabled || process.env.NEXT_PUBLIC_RECONNECT_V2 !== "true") return;
+    document.addEventListener("visibilitychange", handleVisibilityOrOnline);
+    window.addEventListener("online", handleVisibilityOrOnline);
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      document.removeEventListener("visibilitychange", handleVisibilityOrOnline);
+      window.removeEventListener("online", handleVisibilityOrOnline);
+    };
+  }, [enabled, handleVisibilityOrOnline]);
 
   // Auto-watch on mount if enabled and authenticated
   useEffect(() => {
@@ -936,6 +1052,7 @@ export function useSessionService(
     error,
     connectionState,
     systemMemoryPct,
+    reconnectAttemptCount: backoffRef.current.attempt,
     listSessions,
     getSession,
     createSession,
