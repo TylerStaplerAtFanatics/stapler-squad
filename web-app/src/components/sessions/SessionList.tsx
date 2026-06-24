@@ -226,7 +226,6 @@ export function SessionList({
   // Pending-delete state: tracks sessions optimistically removed from the list while undo window is open
   const pendingDeleteRef = useRef<{
     ids: Set<string>;
-    sessions: Session[];
     timer: ReturnType<typeof setTimeout> | null;
     toastId: string;
   } | null>(null);
@@ -487,6 +486,9 @@ export function SessionList({
     return items;
   }, [groupedSessions, groupingStrategy, projects, viewMode]);
 
+  const flatItemsRef = useRef(flatItems);
+  flatItemsRef.current = flatItems;
+
   const rowVirtualizer = useVirtualizer({
     count: viewMode === "row" ? flatItems.length : 0,
     getScrollElement: () => containerRef.current,
@@ -517,7 +519,7 @@ export function SessionList({
   // Entering selectMode automatically when hovering a card and clicking its checkbox.
   const handleToggleSession = useCallback((sessionId: string, e?: React.MouseEvent) => {
     if (e?.shiftKey && lastAnchorRef.current !== null) {
-      const rangeIds = computeRangeIds(lastAnchorRef.current, sessionId, flatItems);
+      const rangeIds = computeRangeIds(lastAnchorRef.current, sessionId, flatItemsRef.current);
       setSelectedSessions(new Set(rangeIds));
     } else {
       setSelectMode(true);
@@ -532,7 +534,7 @@ export function SessionList({
       });
       lastAnchorRef.current = sessionId;
     }
-  }, [flatItems]);
+  }, []);
 
   const handleSelectAll = useCallback(() => {
     const allSessionIds = new Set(filteredSessions.map(s => s.id));
@@ -652,11 +654,8 @@ export function SessionList({
     // Step 1: Flush any existing pending delete immediately (replace-not-stack)
     void flushPendingDeletes();
 
-    // Step 2: Capture session objects for undo restore
+    // Step 2: Capture session IDs for delete
     const ids = Array.from(activeSelection);
-    const sessionsToDelete = ids
-      .map(id => filteredSessions.find(s => s.id === id))
-      .filter((s): s is Session => s !== undefined);
 
     // Step 3: Optimistic removal
     setPendingDeleteIds(new Set(ids));
@@ -668,11 +667,13 @@ export function SessionList({
     setTimeout(() => selectButtonRef.current?.focus(), 0);
 
     // Step 5: Start pending delete timer
-    const toastId = showUndoToast(
+    let toastId = "";
+    toastId = showUndoToast(
       `Deleted ${ids.length} session${ids.length !== 1 ? "s" : ""}`,
       () => {
-        // Undo function: cancel timer, restore sessions (no RPC needed)
+        // Undo function: cancel timer, dismiss toast, restore sessions (no RPC needed)
         clearTimeout(pendingDeleteRef.current?.timer ?? undefined);
+        removeNotification(toastId);
         setPendingDeleteIds(new Set());
         pendingDeleteRef.current = null;
       },
@@ -685,11 +686,10 @@ export function SessionList({
 
     pendingDeleteRef.current = {
       ids: new Set(ids),
-      sessions: sessionsToDelete,
       timer,
       toastId,
     };
-  }, [onDeleteSession, activeSelection, filteredSessions, flushPendingDeletes, showUndoToast]);
+  }, [onDeleteSession, activeSelection, flushPendingDeletes, showUndoToast, removeNotification]);
 
   const handleBulkAddTag = () => {
     setIsBulkTagEditing(true);
@@ -1270,7 +1270,7 @@ export function SessionList({
                         onResumeFromHibernation={onResumeHibernatedSession ? () => onResumeHibernatedSession(session.id) : undefined}
                         selectMode={selectMode}
                         isSelected={selectedSessions.has(session.id)}
-                        onToggleSelect={() => handleToggleSession(session.id)}
+                        onToggleSelect={(e) => handleToggleSession(session.id, e)}
                         reviewItem={reviewItemBySessionId.get(session.id)}
                         detectedStatus={detectedStatusMap[session.id]?.detectedStatus}
                         detectedContext={detectedStatusMap[session.id]?.detectedContext}

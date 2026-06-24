@@ -1,11 +1,11 @@
 // @feature session:bulk-select, session:delete, session:pause
-import { FEATURE_CATALOG } from '../../web-app/src/lib/features';
-const _features = [FEATURE_CATALOG['session-list'], FEATURE_CATALOG['session-delete']] as const;
 import { test, expect } from '@playwright/test';
 
 const BASE_URL = process.env.TEST_SERVER_URL || 'http://localhost:8544';
 
 test.describe('bulk-select', () => {
+  // NOTE: These tests require a running server at BASE_URL with at least 2-3 sessions pre-loaded.
+  // Tests will fail (not skip) if the server is unavailable or sessions are missing.
   test.beforeEach(async ({ page }) => {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('input[aria-label="Search sessions"]', { timeout: 15000 });
@@ -14,19 +14,13 @@ test.describe('bulk-select', () => {
   test('bulk-delete in row mode — selects 2 sessions, clicks Delete, undo toast appears, sessions removed from list', async ({ page }) => {
     // Enter select mode
     const selectButton = page.getByRole('button', { name: /enter select mode/i });
-    if (!await selectButton.isVisible({ timeout: 5000 }).catch(() => false)) {
-      test.skip();
-      return;
-    }
+    await expect(selectButton).toBeVisible({ timeout: 5000 });
     await selectButton.click();
 
     // Click first two session row checkboxes
     const checkboxes = page.getByTestId('session-row-checkbox');
     const count = await checkboxes.count();
-    if (count < 2) {
-      test.skip();
-      return;
-    }
+    expect(count).toBeGreaterThanOrEqual(2);
     await checkboxes.nth(0).click();
     await checkboxes.nth(1).click();
 
@@ -42,19 +36,13 @@ test.describe('bulk-select', () => {
   test('bulk-pause in row mode — selects 2 active sessions, clicks Pause Selected, sessions show paused status', async ({ page }) => {
     // Enter select mode
     const selectButton = page.getByRole('button', { name: /enter select mode/i });
-    if (!await selectButton.isVisible({ timeout: 5000 }).catch(() => false)) {
-      test.skip();
-      return;
-    }
+    await expect(selectButton).toBeVisible({ timeout: 5000 });
     await selectButton.click();
 
     // Click first two session row checkboxes
     const checkboxes = page.getByTestId('session-row-checkbox');
     const count = await checkboxes.count();
-    if (count < 2) {
-      test.skip();
-      return;
-    }
+    expect(count).toBeGreaterThanOrEqual(2);
     await checkboxes.nth(0).click();
     await checkboxes.nth(1).click();
 
@@ -70,18 +58,12 @@ test.describe('bulk-select', () => {
   test('shift+click range select — plain click row 1, shift+click row 3, rows 1-3 are selected', async ({ page }) => {
     // Enter select mode
     const selectButton = page.getByRole('button', { name: /enter select mode/i });
-    if (!await selectButton.isVisible({ timeout: 5000 }).catch(() => false)) {
-      test.skip();
-      return;
-    }
+    await expect(selectButton).toBeVisible({ timeout: 5000 });
     await selectButton.click();
 
     const checkboxes = page.getByTestId('session-row-checkbox');
     const count = await checkboxes.count();
-    if (count < 3) {
-      test.skip();
-      return;
-    }
+    expect(count).toBeGreaterThanOrEqual(3);
 
     // Click first row (sets anchor)
     await checkboxes.nth(0).click();
@@ -97,10 +79,7 @@ test.describe('bulk-select', () => {
   test('escape exits select mode — enter select mode, press Escape, checkboxes hidden and toolbar gone', async ({ page }) => {
     // Enter select mode
     const selectButton = page.getByRole('button', { name: /enter select mode/i });
-    if (!await selectButton.isVisible({ timeout: 5000 }).catch(() => false)) {
-      test.skip();
-      return;
-    }
+    await expect(selectButton).toBeVisible({ timeout: 5000 });
     await selectButton.click();
 
     // The toolbar must be visible
@@ -120,18 +99,12 @@ test.describe('bulk-select', () => {
   test('undo restores deleted sessions — delete 2 sessions, click Undo in toast, sessions reappear', async ({ page }) => {
     // Enter select mode
     const selectButton = page.getByRole('button', { name: /enter select mode/i });
-    if (!await selectButton.isVisible({ timeout: 5000 }).catch(() => false)) {
-      test.skip();
-      return;
-    }
+    await expect(selectButton).toBeVisible({ timeout: 5000 });
     await selectButton.click();
 
     const checkboxes = page.getByTestId('session-row-checkbox');
     const count = await checkboxes.count();
-    if (count < 2) {
-      test.skip();
-      return;
-    }
+    expect(count).toBeGreaterThanOrEqual(2);
 
     // Count sessions before delete
     const sessionRows = page.getByTestId('session-row');
