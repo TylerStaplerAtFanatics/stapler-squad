@@ -7,7 +7,7 @@ import { create } from "@bufbuild/protobuf";
 import { createWebsocketBasedTransport } from "@/lib/transport/websocket-transport";
 import { createAuthInterceptor } from "@/lib/config";
 import { useEffect, useRef, useState, useCallback } from "react";
-import { BackoffState, getWsCloseCode } from "@/lib/utils/backoff";
+import { BackoffState, getWsCloseCode, isRetriableCloseCode } from "@/lib/utils/backoff";
 import { MessageQueue } from "@/lib/terminal/MessageQueue";
 import { decompressLZMA, isLZMACompressed } from "@/lib/compression/lzma";
 import { useTerminalFlowControl } from "./useTerminalFlowControl";
@@ -110,6 +110,7 @@ export function useTerminalStream({
   const terminalBackoffRef = useRef(new BackoffState(1000, 30_000));
   const isHardFailedRef = useRef(false);
   const terminalDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectRef = useRef<(overrideCols?: number, overrideRows?: number) => Promise<void>>(async () => {});
   const textDecoderRef = useRef(new TextDecoder());
 
@@ -343,8 +344,10 @@ export function useTerminalStream({
           }
         } catch (err) {
           const wsCode = getWsCloseCode(err);
-          if (wsCode !== null && (wsCode === 4001 || wsCode === 4004)) {
+          if (wsCode !== null && !isRetriableCloseCode(wsCode)) {
             shouldReconnectRef.current = false;
+            isHardFailedRef.current = true;
+            setIsHardFailed(true);
             console.warn(`[reconnect] stream=terminal non-retriable ws-close-code=${wsCode}, giving up`);
           }
           handleError(err);
@@ -362,9 +365,14 @@ export function useTerminalStream({
             } else {
               const delay = terminalBackoffRef.current.next();
               console.info(`[reconnect] stream=terminal trigger=close attempt=${terminalBackoffRef.current.attempt} delay=${delay}ms`);
-              setTimeout(() => {
+              if (reconnectTimerRef.current) {
+                clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = null;
+              }
+              reconnectTimerRef.current = setTimeout(() => {
+                reconnectTimerRef.current = null;
                 if (shouldReconnectRef.current && !isDisconnectingRef.current) {
-                  connect();
+                  connectRef.current?.();
                 }
               }, delay);
             }
@@ -388,6 +396,10 @@ export function useTerminalStream({
   const getIsResyncingRef = flowControl.getIsResyncingRef;
   const disconnect = useCallback(async () => {
     shouldReconnectRef.current = false;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     const isResyncingRef = getIsResyncingRef();
     if (isDisconnectingRef.current || isResyncingRef.current) {
       if (isResyncingRef.current) {
@@ -431,6 +443,10 @@ export function useTerminalStream({
     }
     return () => {
       shouldReconnectRef.current = false;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       metrics.flushOutputBuffer();
       disconnect();
     };
