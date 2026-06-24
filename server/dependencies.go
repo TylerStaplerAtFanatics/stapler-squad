@@ -53,8 +53,9 @@ type ServerDependencies struct {
 	UnfinishedWorkService *services.UnfinishedWorkService
 	WorktreePRPoller      *session.WorktreePRPoller
 
-	// GitHub user-level PR cache (open PRs authored by the authenticated user).
-	UserPRCache *github.UserPRCache
+	// GitHub user-level PR cache and service.
+	UserPRCache       *github.UserPRCache
+	GitHubUserService *services.GitHubUserService
 
 	// Token usage analytics.
 	InsightsService *services.InsightsService
@@ -112,6 +113,7 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		UnfinishedWorkService:   rt.UnfinishedWorkService,
 		WorktreePRPoller:        rt.WorktreePRPoller,
 		UserPRCache:             rt.UserPRCache,
+		GitHubUserService:       rt.GitHubUserService,
 		InsightsService:         rt.InsightsService,
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
@@ -375,8 +377,9 @@ type RuntimeDeps struct {
 	UnfinishedWorkService *services.UnfinishedWorkService
 	WorktreePRPoller      *session.WorktreePRPoller
 
-	// GitHub user-level PR cache (open PRs authored by the authenticated user).
-	UserPRCache *github.UserPRCache
+	// GitHub user-level PR cache and service.
+	UserPRCache       *github.UserPRCache
+	GitHubUserService *services.GitHubUserService
 
 	// Token usage analytics.
 	InsightsService *services.InsightsService
@@ -770,6 +773,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	userPRCache.SetOnUpdated(func(prs []github.UserPR) {
 		annotateUserPRCache(userPRCache, svc.PRStatusPoller, unfinishedScanner)
 	})
+	githubUserSvc := services.NewGitHubUserService(userPRCache)
 
 	// analyticsEntClient is populated asynchronously by a dedicated goroutine below.
 
@@ -888,6 +892,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		UnfinishedWorkService:   unfinishedWorkSvc,
 		WorktreePRPoller:        worktreePRPoller,
 		UserPRCache:             userPRCache,
+		GitHubUserService:       githubUserSvc,
 		InsightsService:         insightsSvc,
 		BacklogService:          backlogSvc,
 		SyncLoop:                nil, // managed by BacklogController

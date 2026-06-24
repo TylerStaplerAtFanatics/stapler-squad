@@ -358,6 +358,14 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		log.Info("Registered InsightsService handler", "path", insightsAPIPath)
 	}
 
+	// Register GitHubUserService handler (GitHub Work Continuity feature).
+	if deps.GitHubUserService != nil {
+		ghPath, ghHandler := sessionv1connect.NewGitHubUserServiceHandler(deps.GitHubUserService, ConnectOptions(deps.ErrorRegistry)...)
+		ghAPIPath := "/api" + ghPath
+		srv.RegisterConnectHandler(ghAPIPath, http.StripPrefix("/api", ghHandler))
+		log.Info("Registered GitHubUserService handler", "path", ghAPIPath)
+	}
+
 	// Register BacklogService handler.
 	if deps.BacklogService != nil {
 		blPath, blHandler := sessionv1connect.NewBacklogServiceHandler(deps.BacklogService, ConnectOptions(deps.ErrorRegistry)...)
