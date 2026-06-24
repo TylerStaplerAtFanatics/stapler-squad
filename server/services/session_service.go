@@ -315,6 +315,13 @@ func (s *SessionService) loadInstancesWithWiring() ([]*session.Instance, error) 
 		s.wireClaudeSessionIDCallback(inst)
 		s.wireAutoArchiveCallback(inst)
 		s.wireSessionExitedPublisher(inst)
+		// Backfill MCP server URL for sessions created before MCP integration was
+		// wired up. Without this, buildLaunchCommand omits --mcp-config entirely and
+		// the Claude process restarts without a session UUID or MCP connection.
+		// Only applied in-memory; the DB value is updated lazily via SaveInstances.
+		if inst.MCPServerURL == "" && s.mcpServerURL != "" {
+			inst.MCPServerURL = s.mcpServerURL
+		}
 	}
 
 	return instances, nil
@@ -1704,6 +1711,16 @@ func (s *SessionService) DeleteSession(
 		go func() {
 			if err := inst.Destroy(); err != nil {
 				log.Warn("failed to cleanup session resources", "session", req.Msg.Id, "err", err)
+			}
+		}()
+	} else {
+		// Instance is not in the live in-memory poller (e.g. the server restarted
+		// since this session was created). Fall back to killing the tmux session by
+		// its deterministic name so the Claude process inside it doesn't survive as
+		// an orphan after the DB record is gone.
+		go func() {
+			if err := s.KillTmuxSessionByTitle(context.Background(), sessionTitle); err != nil {
+				log.Warn("failed to kill tmux session for non-live instance", "session", req.Msg.Id, "err", err)
 			}
 		}()
 	}
