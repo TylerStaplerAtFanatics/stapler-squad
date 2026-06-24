@@ -511,9 +511,14 @@ export function SessionList({
     }
   };
 
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showFeedback = (msg: string, isError = false) => {
+    if (feedbackTimerRef.current !== null) clearTimeout(feedbackTimerRef.current);
     setBulkFeedback(msg);
-    setTimeout(() => setBulkFeedback(null), isError ? 5000 : 3000);
+    feedbackTimerRef.current = setTimeout(() => {
+      setBulkFeedback(null);
+      feedbackTimerRef.current = null;
+    }, isError ? 5000 : 3000);
   };
 
   // Entering selectMode automatically when hovering a card and clicking its checkbox.
@@ -651,8 +656,17 @@ export function SessionList({
 
   const handleDeleteSelected = useCallback(() => {
     if (!onDeleteSession) return;
-    // Step 1: Flush any existing pending delete immediately (replace-not-stack)
-    void flushPendingDeletes();
+
+    // Step 1: Synchronously flush any existing pending batch to avoid async race.
+    // Calling flushPendingDeletes() asynchronously would let its terminal
+    // setPendingDeleteIds(new Set()) overwrite the new batch we're about to set.
+    if (pendingDeleteRef.current) {
+      clearTimeout(pendingDeleteRef.current.timer ?? undefined);
+      removeNotification(pendingDeleteRef.current.toastId);
+      const prevIds = [...pendingDeleteRef.current.ids];
+      pendingDeleteRef.current = null;
+      void Promise.allSettled(prevIds.map(id => Promise.resolve(onDeleteSession(id))));
+    }
 
     // Step 2: Capture session IDs for delete
     const ids = Array.from(activeSelection);
@@ -671,8 +685,9 @@ export function SessionList({
     toastId = showUndoToast(
       `Deleted ${ids.length} session${ids.length !== 1 ? "s" : ""}`,
       () => {
-        // Undo function: cancel timer, dismiss toast, restore sessions (no RPC needed)
-        clearTimeout(pendingDeleteRef.current?.timer ?? undefined);
+        // Guard: if the flush timer fired first, pendingDeleteRef is already null.
+        if (!pendingDeleteRef.current) return;
+        clearTimeout(pendingDeleteRef.current.timer ?? undefined);
         removeNotification(toastId);
         setPendingDeleteIds(new Set());
         pendingDeleteRef.current = null;
@@ -697,12 +712,13 @@ export function SessionList({
 
   const handleBulkTagSave = (newTags: string[]) => {
     if (newTags.length > 0 && onUpdateTags) {
-      selectedSessions.forEach(id => {
-        const session = sessions.find(s => s.id === id);
+      const sessionMap = new Map(sessions.map(s => [s.id, s]));
+      activeSelection.forEach(id => {
+        const session = sessionMap.get(id);
         const merged = Array.from(new Set([...(session?.tags ?? []), ...newTags]));
         onUpdateTags(id, merged);
       });
-      showFeedback(`Added ${newTags.length} tag${newTags.length !== 1 ? 's' : ''} to ${selectedSessions.size} session${selectedSessions.size !== 1 ? 's' : ''}`);
+      showFeedback(`Added ${newTags.length} tag${newTags.length !== 1 ? 's' : ''} to ${activeSelection.size} session${activeSelection.size !== 1 ? 's' : ''}`);
     }
     setIsBulkTagEditing(false);
   };
