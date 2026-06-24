@@ -233,7 +233,8 @@ install_macos() {
     <key>ProgramArguments</key>
     <array>
         <string>$bin_path</string>
-        <string>--remote-access</string>$extra_args_xml
+        <string>--remote-access</string>
+        <string>--tmux-keep-server</string>$extra_args_xml
     </array>
 
     <key>RunAtLoad</key>
