@@ -453,6 +453,21 @@ test-race: ensure-tools proto-gen ## Run tests with race detector enabled (skips
 test-integration: ensure-tools proto-gen ## Run integration tests (requires real tmux)
 	go test -race -tags integration ./...
 
+test-triage-harness: proto-gen ## Run all backlog triage harness phases (no UI/browser needed)
+	go test -v -tags=harness -run TestTriageHarness ./server/services/
+
+test-triage-gate: proto-gen ## Phase 1: verify TriggerTriage is blocked when repoPath is empty
+	go test -v -tags=harness -run TestTriageHarness/Gate ./server/services/
+
+test-triage-trigger: proto-gen ## Phase 2: trigger triage and poll until item reaches ready status
+	go test -v -tags=harness -run TestTriageHarness/TriggerAndPoll ./server/services/
+
+test-triage-parser: proto-gen ## Phase 3: verify parser tolerates LLM preamble before JSON block
+	go test -v -tags=harness -run TestTriageHarness/ParserRobust ./server/services/
+
+test-triage-flow: proto-gen ## Phase 4: full flow — create, gate, set repoPath, trigger, verify
+	go test -v -tags=harness -run TestTriageHarness/FullFlow ./server/services/
+
 coverage-integration: ensure-tools proto-gen ## Build instrumented binary, run integration tests, emit integration.out
 	@mkdir -p /tmp/covdata
 	go build -cover -o stapler-squad-cov .
