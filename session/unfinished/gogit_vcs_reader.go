@@ -715,8 +715,34 @@ func (g *GoGitVCSReader) diffShortstatUncached(worktreePath string) (DiffStat, e
 			}
 			continue
 		}
-		if info.Size() != int64(m.size) ||
-			!info.ModTime().Truncate(time.Second).Equal(m.modifiedAt.Truncate(time.Second)) {
+		sizeDiffers := info.Size() != int64(m.size)
+		mtimeDiffers := !info.ModTime().Truncate(time.Second).Equal(m.modifiedAt.Truncate(time.Second))
+		if sizeDiffers || mtimeDiffers {
+			unstagedTargets = append(unstagedTargets, changeTarget{m.name, m.indexHash, false})
+			continue
+		}
+
+		// Racy-clean case: size matches the index entry AND the working-tree
+		// mtime (truncated to second) equals the index entry's recorded mtime.
+		// stat alone cannot prove the file is unchanged — a file rewritten with
+		// identical size within the same wall-clock second as the index update
+		// looks clean by stat but may differ in content (the classic "racy git"
+		// problem). Fall back to a content hash comparison, exactly as git does.
+		if info.Size() > maxUntrackedFileSize {
+			// Too large to hash within the cap; conservatively treat as changed
+			// rather than reading it into memory, consistent with how large
+			// modified tracked files are handled elsewhere (applyDiff skips the
+			// read but still counts the file via readFileIfSmall returning false).
+			unstagedTargets = append(unstagedTargets, changeTarget{m.name, m.indexHash, false})
+			continue
+		}
+		wtData, ok := readFileIfSmall(wtPath)
+		if !ok {
+			// Unreadable or raced past the cap; treat as changed conservatively.
+			unstagedTargets = append(unstagedTargets, changeTarget{m.name, m.indexHash, false})
+			continue
+		}
+		if plumbing.ComputeHash(plumbing.BlobObject, wtData) != m.indexHash {
 			unstagedTargets = append(unstagedTargets, changeTarget{m.name, m.indexHash, false})
 		}
 	}
