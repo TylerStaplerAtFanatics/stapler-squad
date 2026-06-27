@@ -94,6 +94,11 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
   // Set to true when we switch sessions while connected; triggers connect() once disconnect completes
   const pendingConnectAfterDisconnectRef = useRef(false);
 
+  // Story 3.2.1 — reconnecting banner state
+  const hasEverConnectedRef = useRef(false);
+  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showReconnectBanner, setShowReconnectBanner] = useState(false);
+
   // Debounce timer for the approval re-fetch triggered by any keystroke (ADR-4)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -369,14 +374,10 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     if (!manager) return;
 
     if (!isInitialScrollbackDoneRef.current) {
-      // Initial load — the server already sent a clean snapshot via the output message,
-      // so we prepend historical scrollback above it rather than replacing the snapshot.
-      // writeInitialContent would call terminal.clear() and overwrite the snapshot with
-      // raw TUI render bytes, producing stacked status bar copies (cursor-up sequences
-      // replay against position 0 instead of the TUI's expected cursor position).
+      // Initial load
       console.log(`[TerminalOutput] Writing initial scrollback: ${scrollback.length} bytes`);
       isInitialScrollbackDoneRef.current = true;
-      await manager.prependScrollbackBatch(scrollback);
+      await manager.writeInitialContent(scrollback);
       if (metadata) {
         hasMoreScrollbackRef.current = metadata.hasMore;
         oldestSequenceReceivedRef.current = metadata.oldestSequence;
@@ -436,7 +437,7 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     }
   }, []);
 
-  const { isConnected, error, sendInput, sendInputWithEcho, resize, connect, disconnect, scrollbackLoaded, requestScrollback, sendFlowControl, getIsApplyingState, sspNegotiated, startRecording, stopRecording, terminalState } = useTerminalStream({
+  const { isConnected, error, sendInput, sendInputWithEcho, resize, connect, disconnect, scrollbackLoaded, requestScrollback, sendFlowControl, getIsApplyingState, sspNegotiated, startRecording, stopRecording, terminalState, isHardFailed, handleManualReconnect: handleHookReconnect } = useTerminalStream({
     baseUrl,
     sessionId: effectiveSessionId,
     shellId,
@@ -509,6 +510,11 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
       if (sizeStabilityTimeoutRef.current) {
         clearTimeout(sizeStabilityTimeoutRef.current);
         sizeStabilityTimeoutRef.current = null;
+      }
+
+      if (bannerTimerRef.current) {
+        clearTimeout(bannerTimerRef.current);
+        bannerTimerRef.current = null;
       }
 
       // Cleanup TerminalStreamManager
@@ -680,6 +686,8 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     const wasConnected = previousConnectionStateRef.current;
     previousConnectionStateRef.current = isConnected;
 
+    let postConnectionResizeTimer: ReturnType<typeof setTimeout> | null = null;
+
     if (!wasConnected && isConnected) {
       if (metricsRef.current.connectedTime === null) {
         metricsRef.current.connectedTime = performance.now();
@@ -688,34 +696,87 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
       setShowReconnectButton(false);
       setConnectionAttempts(0);
 
+      // On reconnect (not first connect), append a separator so the user can see where
+      // the reconnection happened. showReconnectBanner being true means we disconnected.
+      if (hasEverConnectedRef.current && showReconnectBanner) {
+        const terminal = xtermRef.current?.terminal;
+        if (terminal && terminal.buffer.active.length > 0) {
+          const manager = streamManagerRef.current;
+          if (manager) {
+            manager.write("\r\n\x1b[2m--- reconnected ---\x1b[0m\r\n");
+          }
+        }
+      }
+
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
 
-      const currentSize = lastResizeRef.current;
-      if (currentSize) {
-        console.log(`[TerminalOutput] Post-connection resize sync: ${currentSize.cols}x${currentSize.rows}`);
-        resize(currentSize.cols, currentSize.rows);
-      }
+      // Delay the post-connection resize sync until after layout settles.
+      // Firing immediately would start the 200ms throttle clock at T+0, causing
+      // the ResizeObserver's settled-layout resize (arriving at T+150ms via its
+      // own debounce) to be dropped. Waiting 250ms lets the container stabilise
+      // first; by then the ResizeObserver has already sent the correct dims (or
+      // nothing changed and we send here as a safety net).
+      postConnectionResizeTimer = setTimeout(() => {
+        const settledSize = lastResizeRef.current;
+        if (settledSize) {
+          console.log(`[TerminalOutput] Post-connection resize sync (delayed): ${settledSize.cols}x${settledSize.rows}`);
+          resize(settledSize.cols, settledSize.rows);
+        }
+      }, 250);
     } else if (wasConnected && !isConnected) {
       console.log("[TerminalOutput] Connection lost, will attempt reconnection");
       // If connection drops while still loading, content won't arrive — clear the overlay
       // so the user sees the terminal pane and "Disconnected" status instead of a stuck spinner.
       setIsLoadingInitialContent(false);
-      reconnectTimeoutRef.current = setTimeout(() => {
-        if (!isConnected) {
-          setShowReconnectButton(true);
-        }
-      }, 5000);
+      if (process.env.NEXT_PUBLIC_RECONNECT_V2 !== "true") {
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (!isConnected) {
+            setShowReconnectButton(true);
+          }
+        }, 5000);
+      }
     }
 
     return () => {
+      if (postConnectionResizeTimer) {
+        clearTimeout(postConnectionResizeTimer);
+      }
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
     };
   }, [isConnected, resize]);
+
+  // Story 3.2.1 — reconnecting banner: show after 2s of disconnection (if was ever connected)
+  useEffect(() => {
+    if (isConnected) {
+      hasEverConnectedRef.current = true;
+      if (bannerTimerRef.current) {
+        clearTimeout(bannerTimerRef.current);
+        bannerTimerRef.current = null;
+      }
+      setShowReconnectBanner(false);
+      return;
+    }
+
+    if (!hasEverConnectedRef.current) return; // never connected — don't show banner
+
+    bannerTimerRef.current = setTimeout(() => {
+      if (!isConnected) {
+        setShowReconnectBanner(true);
+      }
+    }, 2000);
+
+    return () => {
+      if (bannerTimerRef.current) {
+        clearTimeout(bannerTimerRef.current);
+        bannerTimerRef.current = null;
+      }
+    };
+  }, [isConnected]);
 
   // Clear loading overlay when max reconnect attempts reached
   useEffect(() => {
@@ -768,6 +829,7 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
 
   // Auto-reconnect with exponential backoff
   useEffect(() => {
+    if (process.env.NEXT_PUBLIC_RECONNECT_V2 === "true") return; // hook-level reconnect handles it
     if (!isConnected && error && connectionAttempts > 0 && connectionAttempts < 5) {
       const backoffDelay = Math.min(1000 * Math.pow(2, connectionAttempts - 1), 10000);
       console.log(`[TerminalOutput] Auto-reconnecting in ${backoffDelay}ms (attempt ${connectionAttempts})`);
@@ -894,11 +956,6 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
-
-    // Reset scrollback state for new session so the initial ScrollbackResponse
-    // from the new connection is treated as an initial load (prependScrollbackBatch),
-    // not a paged history load.
-    isInitialScrollbackDoneRef.current = false;
 
     // Reset stream manager for new session
     if (streamManagerRef.current) {
@@ -1310,6 +1367,9 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
           {!isConnected && connectionAttempts >= 5 && (
             <span className={styles.errorText}> • Terminal unavailable</span>
           )}
+          {isHardFailed && (
+            <span className={styles.errorText}> • Terminal unavailable</span>
+          )}
         </div>
         <div className={styles.actions}>
           {/* Toolbar toggle — always visible on mobile; hidden on desktop via CSS */}
@@ -1572,6 +1632,16 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
         </div>
       )}
       <div className={styles.terminal} ref={terminalContainerRef}>
+        {showReconnectBanner && !isHardFailed && (
+          <div className={styles.reconnectingBanner}>
+            Reconnecting terminal…
+          </div>
+        )}
+        {showReconnectBanner && isHardFailed && (
+          <div className={styles.hardFailedBanner}>
+            Connection lost — <button onClick={handleHookReconnect}>Retry</button>
+          </div>
+        )}
         {isVisible !== false && isLoadingInitialContent && (
           <div className={styles.loadingOverlay}>
             <div className={styles.loadingSpinner} />

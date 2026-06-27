@@ -19,9 +19,13 @@ const (
 	FeatureKeyCustom             FeatureKey = "custom"
 	FeatureKeyAutonomousFix      FeatureKey = "autonomous_fix"
 	FeatureKeyAutonomousApproval FeatureKey = "autonomous_approval"
+	FeatureKeyTriage             FeatureKey = "triage"
 )
 
-// AllowedFeatureKeys is the set of feature keys accepted by RunHeadlessCall.
+// AllowedFeatureKeys is the set of feature keys accepted by the MCP-exposed RunHeadlessCall path
+// (server/services/headless_service.go). FeatureKeyTriage is intentionally excluded — triage calls
+// go through BacklogService.TriggerTriage → Pool.CallBlockingWithOptions directly, bypassing the
+// MCP gate. This prevents triage from being triggered via the public headless API.
 var AllowedFeatureKeys = map[FeatureKey]bool{
 	FeatureKeyReview:        true,
 	FeatureKeySummarize:     true,
@@ -87,6 +91,21 @@ func ReviewSystemPrompt() string { return reviewSystemPrompt }
 // HeadlessReviewSystemPrompt returns the system prompt for headless (no-tool) review calls.
 // Requests JSON output so the caller can parse the verdict without tool execution.
 func HeadlessReviewSystemPrompt() string { return headlessReviewSystemPrompt }
+
+// headlessTriageSystemPrompt instructs the model to perform pre-implementation
+// triage and output JSON. No submit_triage_result call; result is parsed directly.
+const headlessTriageSystemPrompt = `You are a senior software architect performing pre-implementation triage. You have full filesystem write access to the artifact directory specified in the user prompt. Work systematically.
+
+Rules:
+1. Write all planning files to the artifact directory specified in the user prompt.
+2. Do NOT modify any source code.
+3. After writing all files, output ONLY a single JSON object — no text before or after it — matching this schema:
+{"summary":"2-3 sentence executive summary","suggestions":[{"text":"...","rationale":"..."}],"tasks":[{"text":"one-line task","estimate":"2h","category":"backend"}]}
+Valid categories: backend, frontend, test, infra, docs. Maximum 12 tasks.`
+
+// HeadlessTriageSystemPrompt returns the stable system prompt for headless triage calls.
+// Requests JSON output so the caller can parse the result without MCP tool execution.
+func HeadlessTriageSystemPrompt() string { return headlessTriageSystemPrompt }
 
 // SummarizeBacklogItem calls the LLM to summarize a backlog item.
 // Returns the summary text from the JSON response.

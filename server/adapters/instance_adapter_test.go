@@ -121,13 +121,13 @@ func TestInstanceToProto_includesGoalSummaryWhenSet(t *testing.T) {
 }
 
 // TC-4: TestToProtoSubStatus_WaitingForAgent verifies that StatusWaitingForAgent
-// maps to SUB_STATUS_PROCESSING in the toProtoSubStatus switch.
+// maps to SUB_STATUS_WAITING_FOR_AGENT in the toProtoSubStatus switch.
 //
 // Note: toProtoSubStatus reads DetectedStatus via inst.GetDetectedStatus(), which
-// requires a running ClaudeController (not available in unit tests). The switch arm
-// is therefore validated via MapDetectedStatusToWorkingState, which contains the same
-// StatusWaitingForAgent mapping and IS exercisable without a controller. The non-Active
-// short-circuit path of toProtoSubStatus is also verified here.
+// requires a running ClaudeController (not available in unit tests). The non-Active
+// short-circuit path of toProtoSubStatus is verified here, and the StatusWaitingForAgent
+// mapping is verified via subStatusFromItem (review_queue_adapter.go), which shares
+// the same switch logic and is exercisable without a controller.
 func TestToProtoSubStatus_WaitingForAgent(t *testing.T) {
 	// Verify the non-Active short-circuit: a non-Active instance always returns UNSPECIFIED.
 	inst := &session.Instance{Status: session.Paused}
@@ -136,18 +136,13 @@ func TestToProtoSubStatus_WaitingForAgent(t *testing.T) {
 		t.Errorf("toProtoSubStatus(Paused) = %v, want SUB_STATUS_UNSPECIFIED", got)
 	}
 
-	// Verify the StatusWaitingForAgent → PROCESSING mapping in the switch
-	// via MapDetectedStatusToWorkingState (same switch arm, no controller required).
-	// This confirms the case is present and not silently falling to default.
-	wantWorking := sessionv1.WorkingState_WORKING_STATE_ACTIVE
-	got2 := MapDetectedStatusToWorkingState(detection.StatusWaitingForAgent)
-	if got2 != wantWorking {
-		t.Errorf("MapDetectedStatusToWorkingState(StatusWaitingForAgent) = %v, want %v", got2, wantWorking)
+	// Verify the StatusWaitingForAgent → SUB_STATUS_WAITING_FOR_AGENT mapping.
+	item := &session.ReviewItem{ClaudeStatus: detection.StatusWaitingForAgent}
+	gotSubStatus := subStatusFromItem(item)
+	if gotSubStatus != sessionv1.SubStatus_SUB_STATUS_WAITING_FOR_AGENT {
+		t.Errorf("subStatusFromItem(StatusWaitingForAgent) = %v, want SUB_STATUS_WAITING_FOR_AGENT", gotSubStatus)
 	}
 
-	// Verify the direct proto sub-status mapping (the same case that toProtoSubStatus uses).
-	// We test this via the switch table that MapDetectedStatusToWorkingState and
-	// toProtoSubStatus share: StatusWaitingForAgent must not map to UNSPECIFIED.
 	// A fresh Active instance with no controller returns StatusUnknown → UNSPECIFIED,
 	// confirming that any non-UNSPECIFIED result requires an explicit switch case.
 	activeNoCtrl := &session.Instance{Status: session.Active}
@@ -160,6 +155,55 @@ func TestToProtoSubStatus_WaitingForAgent(t *testing.T) {
 }
 
 // ─── U-GO-36: TestInstanceToProto_omitsGoalSummaryWhenNil ─────────────────────
+
+func TestStatusToProto_AllStates(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    session.Status
+		expected sessionv1.SessionStatus
+	}{
+		{"Active", session.Active, sessionv1.SessionStatus_SESSION_STATUS_ACTIVE},
+		{"Creating", session.Creating, sessionv1.SessionStatus_SESSION_STATUS_CREATING},
+		{"Paused", session.Paused, sessionv1.SessionStatus_SESSION_STATUS_PAUSED},
+		{"Stopped", session.Stopped, sessionv1.SessionStatus_SESSION_STATUS_STOPPED},
+		{"Hibernated", session.Hibernated, sessionv1.SessionStatus_SESSION_STATUS_HIBERNATED},
+		{"Restoring", session.Restoring, sessionv1.SessionStatus_SESSION_STATUS_RESTORING},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StatusToProto(tc.input)
+			if got != tc.expected {
+				t.Errorf("StatusToProto(%v) = %v, want %v", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestProtoToStatus_AllStates(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    sessionv1.SessionStatus
+		expected session.Status
+	}{
+		{"Active", sessionv1.SessionStatus_SESSION_STATUS_ACTIVE, session.Active},
+		{"Creating", sessionv1.SessionStatus_SESSION_STATUS_CREATING, session.Creating},
+		{"Paused", sessionv1.SessionStatus_SESSION_STATUS_PAUSED, session.Paused},
+		{"Stopped", sessionv1.SessionStatus_SESSION_STATUS_STOPPED, session.Stopped},
+		{"Hibernated", sessionv1.SessionStatus_SESSION_STATUS_HIBERNATED, session.Hibernated},
+		{"Restoring", sessionv1.SessionStatus_SESSION_STATUS_RESTORING, session.Restoring},
+		{"Unknown defaults to Creating", sessionv1.SessionStatus(99), session.Creating},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ProtoToStatus(tc.input)
+			if got != tc.expected {
+				t.Errorf("ProtoToStatus(%v) = %v, want %v", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
 
 func TestInstanceToProto_omitsGoalSummaryWhenNil(t *testing.T) {
 	inst := &session.Instance{}

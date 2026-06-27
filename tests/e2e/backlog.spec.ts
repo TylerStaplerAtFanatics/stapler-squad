@@ -5,6 +5,7 @@ const _features = [
   FEATURE_CATALOG['backlog-list-items'],
   FEATURE_CATALOG['backlog-transition-status'],
   FEATURE_CATALOG['backlog-spawn-session'],
+  FEATURE_CATALOG['backlog-trigger-triage'],
 ] as const;
 import { test, expect } from '@playwright/test';
 import { BacklogPage } from './pages/BacklogPage';
@@ -411,6 +412,58 @@ test.describe('Backlog', () => {
       // frontend UI (web-app/src/app/backlog/page.tsx). This test is marked
       // fixme until the feature is surfaced in the UI.
       test.fixme(true, 'SuggestNextItem RPC is implemented but has no UI button yet — add data-testid="backlog-suggest-next-button" and implement the test once the feature is exposed');
+    });
+  });
+
+  test.describe('Triage', () => {
+    let createdItemId: string | undefined;
+
+    test.afterEach(async ({ request }) => {
+      // Archive the item created during the test so it does not pollute empty-state tests.
+      // ArchiveBacklogItem is used because DeleteBacklogItem does not exist in the proto.
+      if (!createdItemId) return;
+      try {
+        await request.post(
+          `${BASE_URL}/api/session.v1.BacklogService/ArchiveBacklogItem`,
+          {
+            headers: { 'Content-Type': 'application/json' },
+            data: { id: createdItemId },
+          }
+        );
+      } catch {
+        // Best-effort cleanup — do not fail the test on cleanup errors.
+      }
+      createdItemId = undefined;
+    });
+
+    test('e2e:backlog-triage-gate-disabled - Trigger Triage button disabled when repoPath is empty', async ({ page, request }) => {
+      const backlogPage = new BacklogPage(page);
+      const itemTitle = `triage-gate-test-${Date.now()}`;
+
+      // Create an item WITHOUT repoPath via the API so we control repoPath precisely.
+      // The empty-state form only works when the backlog is empty; the modal form
+      // enforces repoPath client-side. Using the API directly is the most reliable path.
+      const createRes = await request.post(
+        `${BASE_URL}/api/session.v1.BacklogService/CreateBacklogItem`,
+        {
+          headers: { 'Content-Type': 'application/json' },
+          data: { title: itemTitle, priority: 3, repoPath: '', skipTriage: true },
+        }
+      );
+      const body = await createRes.json() as { item?: { id: string } };
+      createdItemId = body.item?.id;
+      await page.reload();
+      await page.waitForSelector('[data-testid="backlog-table-row"]', { timeout: 10000 });
+
+      // Open the detail pane.
+      await backlogPage.openItemDetail(itemTitle);
+      await expect(backlogPage.getItemDetailPane()).toBeVisible();
+
+      // The Trigger Triage button should be disabled because repoPath is empty.
+      const triggerBtn = page.locator('[data-testid="backlog-action-trigger-triage"]');
+      await expect(triggerBtn).toBeDisabled();
+      await expect(triggerBtn).toHaveAttribute('aria-disabled', 'true');
+      await expect(triggerBtn).toHaveAttribute('title', 'Set repository path first');
     });
   });
 });

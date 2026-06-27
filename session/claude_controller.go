@@ -615,14 +615,13 @@ func (cc *ClaudeController) GetCurrentStatus() (detection.DetectedStatus, string
 		return detection.StatusUnknown, "PTY not initialized"
 	}
 
-	// pa.GetBuffer() uses its own p.mu — safe without any lifecycle lock.
-	raw := pa.GetBuffer()
+	// Read only the tail bytes needed for detection — avoids copying the full 10MB buffer.
+	raw := pa.GetRecentOutput(statusDetectionTailBytes)
 	if len(raw) == 0 {
 		return detection.StatusUnknown, "No terminal content"
 	}
-	content := string(raw)
 
-	tail := tailContent(content, statusDetectionTailBytes)
+	tail := string(raw)
 	h := hashString(tail)
 
 	var hit bool
@@ -660,17 +659,17 @@ func (cc *ClaudeController) GetCurrentStatus() (detection.DetectedStatus, string
 	// tail. Idle sessions only have the status bar text (no verbs) → no false positive.
 	if status == detection.StatusUnknown && len(filtered) == 0 &&
 		detection.HasClaudeSpinnerActivity(tail) {
-		status = detection.StatusActive
+		status = detection.StatusExecuting
 		desc = "spinner_verb: active spinner in filtered-to-empty tail"
 	}
 	// Case B: the entire tail is a single long line (no \n after tailContent snap)
 	// because the spinner uses absolute cursor positioning instead of newlines. Pattern
-	// detection falls through to the Ready catch-all when \x1b(B charset designators
+	// detection falls through to the Unknown catch-all when \x1b(B charset designators
 	// (now stripped by ansiStripRegex) or other unhandled sequences break word matching.
 	// Spinner verbs in the raw tail confirm the session is still active.
-	if status == detection.StatusReady && len(lines) <= 1 &&
+	if status == detection.StatusUnknown && len(lines) <= 1 &&
 		detection.HasClaudeSpinnerActivity(tail) {
-		status = detection.StatusActive
+		status = detection.StatusExecuting
 		desc = "spinner_verb: active spinner in single-line tail"
 	}
 
@@ -875,10 +874,9 @@ func (cc *ClaudeController) GetIdleState() (detection.IdleState, time.Time) {
 
 	var state detection.IdleState
 	if pa != nil {
-		raw := pa.GetBuffer()
+		raw := pa.GetRecentOutput(statusDetectionTailBytes)
 		if len(raw) > 0 {
-			content := string(raw)
-			tail := tailContent(content, statusDetectionTailBytes)
+			tail := string(raw)
 			h := hashString(tail)
 
 			var hit bool

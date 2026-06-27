@@ -8,6 +8,47 @@ import (
 	"unicode/utf8"
 )
 
+// TestShouldAnswerStartupDialog verifies the cooldown guard that prevents
+// re-sending "1\n" within 5 seconds of the first answer. This is the extracted
+// helper used in runSessionDriverWithPrompt.
+func TestShouldAnswerStartupDialog(t *testing.T) {
+	dialogOutput := `Quick safety check: Is this a project you created or one you trust?
+ 1. Yes, I trust this folder
+ 2. No, exit`
+
+	t.Run("returns true when dialog present and cooldown has not started", func(t *testing.T) {
+		var zeroTime time.Time
+		got := shouldAnswerStartupDialog(dialogOutput, zeroTime, 5*time.Second)
+		if !got {
+			t.Error("expected true for fresh dialog with zero lastAnsweredAt")
+		}
+	})
+
+	t.Run("returns false when within the cooldown window", func(t *testing.T) {
+		recent := time.Now()
+		got := shouldAnswerStartupDialog(dialogOutput, recent, 5*time.Second)
+		if got {
+			t.Error("expected false within cooldown window")
+		}
+	})
+
+	t.Run("returns true when cooldown has elapsed", func(t *testing.T) {
+		old := time.Now().Add(-10 * time.Second)
+		got := shouldAnswerStartupDialog(dialogOutput, old, 5*time.Second)
+		if !got {
+			t.Error("expected true after cooldown has elapsed")
+		}
+	})
+
+	t.Run("returns false for non-dialog output regardless of cooldown", func(t *testing.T) {
+		var zeroTime time.Time
+		got := shouldAnswerStartupDialog("> ", zeroTime, 5*time.Second)
+		if got {
+			t.Error("expected false for non-dialog output")
+		}
+	})
+}
+
 func TestIsStartupDialog(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -177,36 +218,28 @@ func TestBuildContinuationPrompt_MissingFile(t *testing.T) {
 	}
 }
 
-// UT-9: TestStartSessionDriver_Idempotent — calling twice only starts one goroutine.
-// Uses Status=Stopped so the driver goroutine exits immediately.
+// UT-9: TestStartSessionDriver_Idempotent — calling twice on the same instance only
+// starts one goroutine. The CAS guard in StartSessionDriver prevents a second spawn.
 func TestStartSessionDriver_Idempotent(t *testing.T) {
 	inst := &Instance{
 		Title:  "test-idempotent",
 		Status: Stopped,
 	}
 
-	// First call: should CAS from false→true and start a goroutine.
+	// Pre-set driverRunning = true to simulate an already-running driver.
+	// This is the state the instance would be in after the first StartSessionDriver call
+	// while the goroutine is still executing.
+	inst.driverRunning.Store(true)
+
+	// This call must be a no-op because driverRunning is already true.
+	// StartSessionDriver checks CompareAndSwap(false, true) — when driverRunning is true,
+	// the CAS fails and the function returns immediately without spawning a goroutine.
 	StartSessionDriver(inst, "/tmp")
 
-	// Briefly yield to let the goroutine start. The goroutine will exit quickly
-	// because Status==Stopped (no tmux, so it exits on first tick).
-	// The important check is the CAS guard on the second call.
-	// Goroutine may have already exited (very fast path for Stopped instance) —
-	// that's fine; the CAS still happened so the second call will be a no-op.
-
-	// Second call: should CAS fail and return immediately.
-	// Idempotency is proven structurally by the CompareAndSwap guard in StartSessionDriver:
-	// when driverRunning is already true, the CAS from false→true fails and the function
-	// returns without spawning a goroutine.
-	inst2 := &Instance{
-		Title:  "test-idempotent-concurrent",
-		Status: Stopped,
+	// driverRunning should still be true (the no-op call did not reset it).
+	if !inst.driverRunning.Load() {
+		t.Error("driverRunning should still be true after no-op second call")
 	}
-	// Patch: set driverRunning to true manually to simulate an already-running driver.
-	inst2.driverRunning.Store(true)
-
-	// This call must be a no-op because driverRunning is true.
-	StartSessionDriver(inst2, "/tmp")
 }
 
 // UT-25: TestDriverConstants_Ordering — verifies BLOCK-1 fix: total > ready + inactivity.
@@ -319,6 +352,12 @@ func TestSanitizeInitialPromptForTmux_whitespaceOnlyFallsThrough(t *testing.T) {
 // ─── U-GO-05: TestRunSessionDriver_usesInitialPromptWhenNonEmpty ─────────────
 // These tests verify the runSessionDriver logic by inspecting the Instance struct
 // rather than running a full driver loop (which requires tmux).
+//
+// NOTE (M-14): These tests re-implement the prompt-selection logic from runSessionDriver.
+// If that logic changes, update these tests to match. The selection logic is a simple
+// 4-line block in runSessionDriver that checks inst.InitialPrompt and calls
+// sanitizeInitialPromptForTmux — extracting it to a standalone helper was judged
+// too invasive given the minimal complexity.
 
 func TestRunSessionDriver_selectsInitialPromptWhenNonEmpty(t *testing.T) {
 	// Verify the selection logic directly: if InitialPrompt is set, it should
@@ -436,5 +475,58 @@ func TestParseClaudeSessionID_noSessionId(t *testing.T) {
 	got := parseClaudeSessionID(output)
 	if got != "" {
 		t.Errorf("parseClaudeSessionID(%q) = %q, want empty string", output, got)
+	}
+}
+
+func TestScanTerminalForPRURL(t *testing.T) {
+	cases := []struct {
+		name        string
+		output      string
+		wantURL     string
+		wantPRNum   int
+	}{
+		{
+			name: "git push output with PR create link",
+			output: `remote: Create a pull request for 'feat/my-feature' on GitHub by visiting:
+remote:      https://github.com/tstapler/stapler-squad/pull/128
+remote:`,
+			wantURL:   "https://github.com/tstapler/stapler-squad/pull/128",
+			wantPRNum: 128,
+		},
+		{
+			name: "git push output with PR update link",
+			output: `To github.com:tstapler/stapler-squad.git
+   5353e50..abcd123  feat/my-feature -> feat/my-feature
+remote: https://github.com/tstapler/stapler-squad/pull/42`,
+			wantURL:   "https://github.com/tstapler/stapler-squad/pull/42",
+			wantPRNum: 42,
+		},
+		{
+			name:      "no PR URL in output",
+			output:    `remote: Resolving deltas: 100% (3/3), done.`,
+			wantURL:   "",
+			wantPRNum: 0,
+		},
+		{
+			name:      "empty output",
+			output:    "",
+			wantURL:   "",
+			wantPRNum: 0,
+		},
+		{
+			name:      "URL with trailing punctuation stripped",
+			output:    `See: https://github.com/tstapler/stapler-squad/pull/99.`,
+			wantURL:   "https://github.com/tstapler/stapler-squad/pull/99",
+			wantPRNum: 99,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotURL, gotNum := scanTerminalForPRURL(tc.output)
+			if gotURL != tc.wantURL || gotNum != tc.wantPRNum {
+				t.Errorf("scanTerminalForPRURL() = (%q, %d), want (%q, %d)",
+					gotURL, gotNum, tc.wantURL, tc.wantPRNum)
+			}
+		})
 	}
 }

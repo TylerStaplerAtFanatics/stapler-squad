@@ -15,11 +15,12 @@ import { useWorktreeSuggestions } from "@/lib/hooks/useWorktreeSuggestions";
 import { useSessionSearch, type SessionSearchResult } from "@/lib/hooks/useSessionSearch";
 import { useAppSelector } from "@/lib/store";
 import { selectActiveSessionsSortedByUpdatedAt } from "@/lib/store/sessionsSlice";
-import { Session } from "@/gen/session/v1/types_pb";
+import { Session, SessionType } from "@/gen/session/v1/types_pb";
 import { PathCompletionDropdown, type CompletionEntry } from "@/components/ui/PathCompletionDropdown";
 import { AtCommandDropdown } from "@/components/ui/AtCommandDropdown";
 import { useAtCommandSuggestions } from "@/lib/hooks/useAtCommandSuggestions";
 import type { WorkflowEntry } from "@/lib/omnibar/detectors/WorkflowDetector";
+import type { AliasMetadata } from "@/lib/omnibar/detectors/AliasDetector";
 import { OmnibarResultList, getResultListItemCount, getHighlightedItemId } from "./OmnibarResultList";
 import { OmnibarModeBadge } from "./OmnibarModeBadge";
 import { OmnibarCreationPanel, SESSION_TYPES } from "./OmnibarCreationPanel";
@@ -30,7 +31,11 @@ import {
   detectionInfo, detectionBadge, unknown,
   shortcuts, shortcut, shortcutKey, completionError as completionErrorClass,
   pathIndicator, pathIndicatorValid, pathIndicatorInvalid, pathIndicatorLoading,
+  createButton,
 } from "./Omnibar.css";
+import { AliasPalette } from "@/components/ui/AliasPalette";
+import { useAliasSuggestions } from "@/lib/hooks/useAliasSuggestions";
+import { useAliases } from "@/lib/hooks/useAliases";
 
 interface OmnibarProps {
   isOpen: boolean;
@@ -107,10 +112,9 @@ export interface OmnibarSessionData {
   gitHubRepo?: string;
   gitHubPRNumber?: number;
   // Session type and worktree
-  sessionType?: "directory" | "new_worktree" | "existing_worktree";
+  sessionType?: "directory" | "new_worktree" | "existing_worktree" | "one_off";
   existingWorktree?: string;
   workingDir?: string;
-  oneOff?: boolean;
   initialPrompt?: string;
   // New project mode: tells the context layer to use SESSION_TYPE_NEW_PROJECT
   isNewProject?: boolean;
@@ -120,6 +124,8 @@ export interface OmnibarSessionData {
   autonomousMode?: boolean;
   // Permission mode passed to Claude Code (e.g. "auto" for autonomous sessions).
   permissionMode?: string;
+  aliasName?: string;
+  extraCliFlags?: string;
 }
 
 // Validates a project name: no path separators, null bytes, or leading/trailing spaces/dots.
@@ -129,6 +135,16 @@ function isValidProjectName(name: string): boolean {
 }
 
 const RESULT_LISTBOX_ID = "omnibar-result-listbox";
+
+function protoSessionTypeToFormString(st: SessionType): OmnibarFormState["sessionType"] {
+  switch (st) {
+    case SessionType.DIRECTORY: return "directory";
+    case SessionType.NEW_WORKTREE: return "new_worktree";
+    case SessionType.EXISTING_WORKTREE: return "existing_worktree";
+    case SessionType.ONE_OFF: return "one_off";
+    default: return "new_worktree";
+  }
+}
 
 export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession, onNavigateToSessionInNewPane, onSpawnShell, onRunWorkflow, initialMode, initialInput, workflows = [] }: OmnibarProps) {
   const router = useRouter();
@@ -168,6 +184,9 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       setUIState((prev) => ({ ...prev, [key]: value })),
     []
   );
+
+  const [activeDropdown, setActiveDropdown] = useState<"alias" | "workflow" | "search" | null>(null);
+  const [aliasSuggestIndex, setAliasSuggestIndex] = useState(-1);
 
   // Submission state
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -216,8 +235,11 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
   // the effect (and resetting to discovery mode) when only form fields change.
   const sessionNameRef = useRef(sessionName);
   const branchRef = useRef(branch);
+  const programRef = useRef(program);
   useEffect(() => { sessionNameRef.current = sessionName; }, [sessionName]);
   useEffect(() => { branchRef.current = branch; }, [branch]);
+  useEffect(() => { programRef.current = program; }, [program]);
+  const lastSuggestedProgramRef = useRef<string>("");
 
   // API base URL for pre-session image uploads — uses shared helper for SSR/dev consistency.
   const uploadBaseUrl = getApiBaseUrl();
@@ -301,6 +323,19 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
   const { isAtCommand, suggestions: atSuggestions, complete: completeAtCommand } =
     useAtCommandSuggestions(input, workflows);
   const isAtDropdownVisible = isDiscoveryMode && isAtCommand;
+
+  const { aliases, error: aliasError, refetch: refetchAliases } = useAliases();
+
+  // Re-fetch aliases each time the omnibar opens so newly created aliases appear immediately.
+  const prevIsOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && !prevIsOpenRef.current) {
+      refetchAliases();
+    }
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, refetchAliases]);
+  const { isAliasBrowse, isAliasCompletion, filteredAliases, complete: completeAlias } = useAliasSuggestions(input, aliases);
+  const isAliasPaletteVisible = isDiscoveryMode && (isAliasBrowse || isAliasCompletion);
 
   // Session search query uses the debounced input so Fuse only runs after typing pauses.
   const sessionSearchQuery = useMemo(() => {
@@ -411,7 +446,9 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           if (parsed.firstPrompt) {
             setFormField("firstPrompt", parsed.firstPrompt);
           }
-        } else if (result.suggestedName) {
+        } else if (result.suggestedName && result.type !== InputType.Alias) {
+          // Skip for Alias — the alias-specific block below handles name population
+          // (running both would reset lastSuggestedNameRef mid-effect and cause oscillation).
           if (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current) {
             setSessionName(result.suggestedName);
             lastSuggestedNameRef.current = result.suggestedName;
@@ -421,6 +458,44 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
         // Auto-fill branch if detected
         if (result.branch && !branchRef.current) {
           setBranch(result.branch);
+        }
+
+        // When an alias resolves, populate form fields from its configured defaults
+        // so the user can see (and optionally adjust) what will be created.
+        if (result.type === InputType.Alias) {
+          const aliasMeta = result.metadata as AliasMetadata | undefined;
+          const alias = aliasMeta?.alias;
+          if (alias) {
+            if (alias.program && (!programRef.current || programRef.current === lastSuggestedProgramRef.current)) {
+              setFormField("program", alias.program);
+              lastSuggestedProgramRef.current = alias.program;
+            }
+            // UNSPECIFIED means "Default (directory)" in the alias editor — always apply it.
+            // Skipping UNSPECIFIED left the form at its initial "new_worktree" default.
+            const resolvedSessionType = alias.sessionType !== SessionType.UNSPECIFIED
+              ? protoSessionTypeToFormString(alias.sessionType)
+              : "directory";
+            setFormField("sessionType", resolvedSessionType);
+            setFormField("autoYes", alias.autoYes);
+          }
+          // Populate branch from @alias:branch syntax so the user can see/edit it.
+          if (aliasMeta?.branch && !branchRef.current) {
+            setBranch(aliasMeta.branch);
+          }
+          // If the user typed a label after the alias name (e.g. "@ssq my-feature"),
+          // use it as the session name so they can see and edit it before submitting.
+          // If the alias defines a name_prefix, prepend it (e.g. prefix "ssq-" → "ssq-my-feature").
+          const typedLabel = aliasMeta?.label;
+          const namePrefix = alias?.namePrefix ?? "";
+          if (typedLabel && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {
+            const suggested = namePrefix ? `${namePrefix}${typedLabel}` : typedLabel;
+            setSessionName(suggested);
+            lastSuggestedNameRef.current = suggested;
+          } else if (namePrefix && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {
+            // No label yet but prefix defined: show just the prefix so the user knows what to complete.
+            setSessionName(namePrefix);
+            lastSuggestedNameRef.current = namePrefix;
+          }
         }
       } else {
         setDetection(null);
@@ -463,6 +538,16 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       setUIField("atSuggestIndex", -1);
     }
   }, [isAtCommand, setUIField]);
+
+  useEffect(() => {
+    if (isAliasPaletteVisible) {
+      setActiveDropdown("alias");
+    } else if (isAtDropdownVisible) {
+      setActiveDropdown("workflow");
+    } else {
+      setActiveDropdown(null);
+    }
+  }, [isAliasPaletteVisible, isAtDropdownVisible]);
 
   // On open: apply initialMode if provided
   useEffect(() => {
@@ -540,6 +625,39 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Alias palette keyboard navigation
+      if (activeDropdown === "alias" && filteredAliases.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setAliasSuggestIndex((i) => Math.min(i + 1, filteredAliases.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setAliasSuggestIndex((i) => Math.max(i - 1, -1));
+          return;
+        }
+        if (e.key === "Tab" || (e.key === "Enter" && aliasSuggestIndex >= 0)) {
+          e.preventDefault();
+          const idx = aliasSuggestIndex >= 0 ? aliasSuggestIndex : 0;
+          if (filteredAliases[idx]) {
+            setInput(completeAlias(filteredAliases[idx]));
+            setAliasSuggestIndex(-1);
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          if (input.length > 1) {
+            setInput("@");
+          } else {
+            setInput("");
+          }
+          setAliasSuggestIndex(-1);
+          return;
+        }
+      }
+
       // @command autocomplete (highest priority when visible)
       if (isAtDropdownVisible) {
         if (e.key === "ArrowDown") {
@@ -668,8 +786,12 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
         } else {
           onClose();
         }
-      } else if (e.key === "Enter" && e.metaKey) {
-        // Cmd+Enter to submit — use ref to avoid declaration-order dependency.
+      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        // Cmd+Enter (Mac) / Ctrl+Enter (Linux/Windows) to submit.
+        handleSubmitRef.current();
+      } else if (e.key === "Enter" && !isDiscoveryMode) {
+        // Plain Enter in creation mode submits when the form is ready.
+        // handleSubmit guards on canSubmit internally, so this is a no-op when the form is incomplete.
         handleSubmitRef.current();
       }
     },
@@ -696,6 +818,11 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       atSuggestions,
       completeAtCommand,
       setUIField,
+      activeDropdown,
+      aliasSuggestIndex,
+      filteredAliases,
+      completeAlias,
+      input,
     ]
   );
 
@@ -753,7 +880,8 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
 
     if (!input.trim()) return false;
     if (!sessionName.trim()) return false;
-    if (!detection || detection.type === InputType.Unknown || detection.type === InputType.Command || detection.type === InputType.SessionSearch) return false;
+    if (!detection || detection.type === InputType.Unknown || detection.type === InputType.Command || detection.type === InputType.SessionSearch || detection.type === InputType.AliasNotFound || detection.type === InputType.AliasBrowse) return false;
+    if (detection.type === InputType.Alias) return true;
 
     // Validate session type specific requirements
     if (sessionType === "new_worktree") {
@@ -811,6 +939,42 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       return;
     }
 
+    // Alias invocation (@aliasname [...]) — create session with alias context.
+    if (detection?.type === InputType.Alias && detection.metadata?.aliasName) {
+      const aliasMeta = detection.metadata as unknown as AliasMetadata;
+      const { aliasName, branch: aliasBranch, label, extraFlags } = aliasMeta;
+      const sessionTitle = sessionName.trim() || label?.trim() || String(aliasName);
+      // Apply useTitleAsBranch for new_worktree alias sessions, same as the regular path.
+      let aliasFinalBranch = branch.trim() || (aliasBranch !== undefined ? String(aliasBranch) : "");
+      if (sessionType === "new_worktree" && useTitleAsBranch && !aliasFinalBranch) {
+        aliasFinalBranch = sessionTitle;
+      }
+      const firstPromptText = formState.firstPrompt?.trim() || undefined;
+      const sessionData: OmnibarSessionData = {
+        title: sessionTitle,
+        path: "",
+        program: program || "",
+        autoYes,
+        aliasName: String(aliasName),
+        branch: aliasFinalBranch || undefined,
+        extraCliFlags: extraFlags !== undefined ? String(extraFlags) : undefined,
+        sessionType: sessionType as "directory" | "new_worktree" | "existing_worktree" | "one_off",
+        workingDir: workingDir.trim() || undefined,
+        category: category.trim() || undefined,
+        initialPrompt: firstPromptText,
+      };
+      setIsSubmitting(true);
+      setError(null);
+      try {
+        await onCreateSession(sessionData);
+        onClose();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to create session");
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
     setIsSubmitting(true);
     setError(null);
 
@@ -854,10 +1018,9 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           category: category.trim() || undefined,
           prompt: finalPrompt,
           autoYes,
-          sessionType: (isOneOff || isAutonomous) ? "directory" : sessionType,
+          sessionType: isAutonomous ? "directory" : sessionType,
           existingWorktree: (isOneOff || isAutonomous) ? undefined : (existingWorktree.trim() || undefined),
           workingDir: (isOneOff || isAutonomous) ? undefined : (workingDir.trim() || undefined),
-          oneOff: isOneOff ? true : undefined,
           autonomousMode: isAutonomous ? true : undefined,
           permissionMode: isAutonomous ? "auto" : undefined,
           // Only forward when relevant (non-existent path + opt-in checked).
@@ -978,7 +1141,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
                 : sessionType === "autonomous"
                 ? "Session title (agent will run without human approval)…"
                 : isDiscoveryMode
-                ? "Jump to session or search repos..."
+                ? "Jump to session, @alias, or search repos..."
                 : "Enter path, GitHub URL, or owner/repo..."
             }
             value={input}
@@ -1045,6 +1208,19 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           )}
         </div>
 
+        {isAliasPaletteVisible && (
+          <AliasPalette
+            aliases={filteredAliases}
+            input={input}
+            selectedIndex={aliasSuggestIndex}
+            onSelect={(alias) => {
+              setInput(completeAlias(alias));
+              setAliasSuggestIndex(-1);
+            }}
+            error={aliasError}
+          />
+        )}
+
         {/* @command autocomplete — shown in discovery mode while typing @slug */}
         {isAtDropdownVisible && (
           <AtCommandDropdown
@@ -1058,6 +1234,26 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
             }}
           />
         )}
+
+        {detection?.type === InputType.Alias && detection.metadata && (() => {
+          const m = detection.metadata as Record<string, unknown>;
+          return (
+            <div role="status" aria-live="polite" data-testid="alias-resolution-chip">
+              <span>Alias resolved: @{String(m.aliasName)}</span>
+              {m.branch ? <span> :{String(m.branch)}</span> : null}
+              {m.label ? <span> · {String(m.label)}</span> : null}
+              {m.extraFlags ? <span> · {String(m.extraFlags)} (appended)</span> : null}
+            </div>
+          );
+        })()}
+        {detection?.type === InputType.AliasNotFound && (() => {
+          const m = detection.metadata as Record<string, unknown> | undefined;
+          return (
+            <div role="alert" aria-live="assertive" data-testid="alias-not-found">
+              No alias &apos;@{String(m?.slug)}&apos;
+            </div>
+          );
+        })()}
 
         {/* Discovery mode: session results + recent repos */}
         {isDiscoveryMode && !isAtDropdownVisible && (
@@ -1123,10 +1319,21 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
             error={error}
             showAdvanced={showAdvanced}
             onToggleAdvanced={() => setUIField("showAdvanced", !uiState.showAdvanced)}
-            path={modeState.type === "creation_with_repo" ? modeState.path : undefined}
+            path={
+              modeState.type === "creation_with_repo"
+                ? modeState.path
+                : detection?.type === InputType.Alias
+                ? ((detection.metadata as AliasMetadata | undefined)?.alias?.path || undefined)
+                : undefined
+            }
             uploadBaseUrl={uploadBaseUrl}
             onAttachedImagesChange={(paths) => { attachedImagePathsRef.current = paths; }}
             pathDoesNotExist={pathDoesNotExist}
+            namePrefix={
+              detection?.type === InputType.Alias
+                ? ((detection.metadata as AliasMetadata | undefined)?.alias?.namePrefix ?? "")
+                : ""
+            }
           />
         )}
 
@@ -1234,9 +1441,14 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
             <span className={shortcutKey}>Esc</span> Close
           </span>
           {!isDiscoveryMode && (
-            <span className={shortcut}>
-              <span className={shortcutKey}>{isMac ? '⌘↵' : 'Ctrl+↵'}</span> Create
-            </span>
+            <button
+              type="button"
+              className={createButton}
+              onClick={handleSubmit}
+              disabled={!canSubmit || isSubmitting}
+            >
+              {isSubmitting ? "Creating…" : "Create Session"}
+            </button>
           )}
           {isDiscoveryMode && (
             <>
