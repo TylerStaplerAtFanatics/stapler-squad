@@ -145,16 +145,29 @@ EOF
 # 1 otherwise (not granted, denied, or DB unreadable without FDA itself).
 # sqlite3 is pre-installed on macOS; we try both the system DB and the
 # per-user DB so the check works regardless of whether the calling terminal
-# has FDA.  If neither DB is readable we conservatively return 1 so the
-# FDA prompt is shown — safe default for a fresh install.
+# has FDA.
+#
+# Non-admin users cannot read either TCC database (authorization denied).
+# In that case, if the binary is already installed and cert-signed (not
+# ad-hoc), we assume FDA was previously granted — the TCC grant is tied
+# to the signing identity (com.stapler-squad + cert), which is stable across
+# rebuilds, so re-installs don't need a new grant.
 fda_is_granted() {
     local bin_path="$1"
     local result
+    local any_db_found=false
+    local all_denied=true
     for tcc_db in \
         "/Library/Application Support/com.apple.TCC/TCC.db" \
         "$HOME/Library/Application Support/com.apple.TCC/TCC.db"
     do
-        [ -r "$tcc_db" ] || continue
+        [ -f "$tcc_db" ] || continue
+        any_db_found=true
+        if [ ! -r "$tcc_db" ]; then
+            # DB exists but unreadable — likely non-admin user; note it and skip.
+            continue
+        fi
+        all_denied=false
         # auth_value=2  → kTCCAuthorizationRightAllow (macOS 11+)
         # allowed=1     → legacy boolean schema (macOS 10.x)
         result=$(sqlite3 "$tcc_db" \
@@ -163,6 +176,20 @@ fda_is_granted() {
                AND client='$bin_path'" 2>/dev/null)
         [ "$result" = "2" ] || [ "$result" = "1" ] && return 0
     done
+
+    # If at least one TCC DB existed but none were readable (non-admin user),
+    # fall back to a heuristic: assume FDA is already granted if the binary
+    # exists at the install path and is signed with our cert (not ad-hoc).
+    # Ad-hoc signatures embed a cdhash that changes every build; cert-signed
+    # binaries keep a stable designated requirement, so their TCC grant persists.
+    if $any_db_found && $all_denied && [ -f "$bin_path" ]; then
+        local dr
+        dr=$(codesign -d --requirements - "$bin_path" 2>/dev/null)
+        if echo "$dr" | grep -q "certificate root"; then
+            return 0
+        fi
+    fi
+
     return 1
 }
 
@@ -296,13 +323,12 @@ EOF
     sleep 0.5
 
     log_info "Starting updated service..."
-    if launchctl bootstrap "gui/$(id -u)" "$plist_file" 2>/dev/null; then
-        log_success "Service started via launchctl bootstrap."
-    else
-        # Fallback for macOS 12 and earlier
-        launchctl load -w "$plist_file"
-        log_success "Service loaded via launchctl load."
+    if ! launchctl bootstrap "gui/$(id -u)" "$plist_file"; then
+        log_error "launchctl bootstrap failed — service may not start on login."
+        log_error "Try: launchctl bootstrap gui/$(id -u) $plist_file"
+        exit 1
     fi
+    log_success "Service started via launchctl bootstrap."
 
     echo ""
     log_info "Check status:  launchctl list | grep stapler-squad"
@@ -351,6 +377,55 @@ health_check_and_rollback() {
             fi
         fi
 
+        printf "."
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    printf "\n"
+    log_error "Service did not respond within ${max_wait}s."
+
+    if [ ! -f "$prev_bin" ]; then
+        log_warning "No previous build found at $prev_bin — cannot auto-rollback."
+        log_info "Check logs: tail -f ~/.stapler-squad/logs/service.log"
+        return 1
+    fi
+
+    log_info "Auto-rolling back to previous build..."
+    cp -f "$prev_bin" "$bin_path"
+    log_success "Binary restored from $prev_bin"
+
+    os=$(detect_os)
+    case "$os" in
+        linux)
+            systemctl --user restart stapler-squad
+            log_success "Service restarted with previous build."
+            ;;
+        macos)
+            launchctl kickstart -k "gui/$(id -u)/com.stapler-squad" 2>/dev/null || \
+                launchctl stop "gui/$(id -u)/com.stapler-squad" 2>/dev/null || true
+            log_success "Service restarted with previous build."
+            ;;
+    esac
+    log_info "Check logs: tail -f ~/.stapler-squad/logs/service.log"
+    return 1
+}
+
+# ── Health Check + Auto-rollback ──────────────────────────────────────────────
+# Polls localhost:8543/health for up to 15s. On failure, restores the .prev
+# binary (if it exists) and restarts the service automatically.
+health_check_and_rollback() {
+    bin_path="$1"
+    prev_bin="${bin_path}.prev"
+    max_wait=15
+    elapsed=0
+    url="http://localhost:8543/health"
+    printf "==> Waiting for service to be healthy"
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        if curl -sf "$url" >/dev/null 2>&1; then
+            printf "\n"
+            log_success "Service is healthy"
+            return 0
+        fi
         printf "."
         sleep 1
         elapsed=$((elapsed + 1))

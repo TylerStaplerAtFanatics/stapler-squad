@@ -69,18 +69,25 @@ func (cb *CircularBuffer) Write(data []byte) (int, error) {
 		return originalLen, nil
 	}
 
-	// Normal incremental write
-	for _, b := range data {
-		cb.data[cb.head] = b
-		cb.head = (cb.head + 1) % cb.size
+	// Bulk copy in at most two segments (before and after the wrap point).
+	n := len(data)
+	spaceToEnd := cb.size - cb.head
+	if n <= spaceToEnd {
+		copy(cb.data[cb.head:], data)
+	} else {
+		copy(cb.data[cb.head:], data[:spaceToEnd])
+		copy(cb.data, data[spaceToEnd:])
+	}
+	cb.head = (cb.head + n) % cb.size
 
-		if cb.count < cb.size {
-			cb.count++
-		} else {
-			// Buffer is full, advance tail (overwrite oldest data)
-			cb.tail = (cb.tail + 1) % cb.size
-			cb.wrapped = true
-		}
+	// Update count and tail.
+	if cb.count+n <= cb.size {
+		cb.count += n
+	} else {
+		overwritten := cb.count + n - cb.size
+		cb.tail = (cb.tail + overwritten) % cb.size
+		cb.count = cb.size
+		cb.wrapped = true
 	}
 
 	// Return original data length to indicate all bytes were "written"
@@ -108,10 +115,13 @@ func (cb *CircularBuffer) GetRecent(n int) []byte {
 	// If we want last n bytes and count >= n, start at (head - n)
 	startPos := (cb.head - n + cb.size) % cb.size
 
-	// Copy data from circular buffer
-	for i := 0; i < n; i++ {
-		pos := (startPos + i) % cb.size
-		result[i] = cb.data[pos]
+	// Bulk copy in at most two segments (before and after the wrap point).
+	firstHalf := cb.size - startPos
+	if firstHalf >= n {
+		copy(result, cb.data[startPos:startPos+n])
+	} else {
+		copy(result, cb.data[startPos:])
+		copy(result[firstHalf:], cb.data[:n-firstHalf])
 	}
 
 	return result

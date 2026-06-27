@@ -159,6 +159,7 @@ message Session {
   // (e.g. --resume <id>, --mcp-server ..., -y, initial prompt). Empty for external sessions.
   string launch_command = 45;
 
+  // Deprecated: derived client-side via deriveWorkingState().
   // Active-work state for review queue filtering. Populated from IdleDetector state.
   WorkingState working_state = 50;
 
@@ -217,6 +218,33 @@ message Session {
   int32 autonomous_max_turns = 66;
   // Outcome of the last completed autonomous run: "", "done", "stuck".
   string autonomous_outcome = 67;
+
+  // Fine-grained detected status from PTY output analysis.
+  // Only meaningful when status == SESSION_STATUS_ACTIVE.
+  // Maps to detection.DetectedStatus in Go.
+  DetectedStatus detected_status = 68;
+
+  // Human-readable context string from the terminal pattern detector
+  // (e.g. "Waiting for tool approval", "Tests failing: 3 of 12").
+  // Empty when detected_status is UNSPECIFIED.
+  string detected_context = 69;
+
+  // Structured artifacts extracted from the session's JSONL conversation history.
+  // Populated asynchronously by ArtifactExtractor; nil until first scan completes.
+  SessionArtifacts artifacts = 70;
+}
+
+// SessionArtifacts holds structured artifacts extracted from the session's
+// Claude Code JSONL conversation history.
+message SessionArtifacts {
+  // GitHub PR URLs found in tool_result output (e.g. from gh pr create).
+  repeated string pr_urls = 1;
+  // Git commit SHAs (40-char) found in tool_result output.
+  repeated string commit_shas = 2;
+  // External URLs found in tool_result output (capped at 50 entries).
+  repeated string external_urls = 3;
+  // When the JSONL file was last successfully scanned.
+  google.protobuf.Timestamp last_scanned_at = 4;
 }
 
 // SessionGoalSummary summarizes the current goal and task state for a session.
@@ -325,6 +353,8 @@ enum SessionType {
   SESSION_TYPE_EXISTING_WORKTREE = 3;
   // Create a directory, run git init, and start a session in the new repo.
   SESSION_TYPE_NEW_PROJECT = 4;
+  // Generate a fresh temporary directory under one_off_base_dir and start a directory session.
+  SESSION_TYPE_ONE_OFF = 5;
 }
 
 // InstanceType indicates whether a session is managed by claude-squad or external.
@@ -334,6 +364,24 @@ enum InstanceType {
   INSTANCE_TYPE_MANAGED = 1;
   // Session discovered externally (e.g., via ssq-mux) with limited interaction.
   INSTANCE_TYPE_EXTERNAL = 2;
+}
+
+// DetectedStatus represents the fine-grained activity state detected from PTY output analysis.
+// Derived from terminal pattern matching in the detection layer; never stored in the database.
+// Only meaningful when Session.status == SESSION_STATUS_ACTIVE.
+enum DetectedStatus {
+  DETECTED_STATUS_UNSPECIFIED       = 0;
+  DETECTED_STATUS_IDLE              = 1;
+  DETECTED_STATUS_PROCESSING        = 2;
+  DETECTED_STATUS_EXECUTING         = 3;
+  DETECTED_STATUS_NEEDS_APPROVAL    = 4;
+  DETECTED_STATUS_INPUT_REQUIRED    = 5;
+  DETECTED_STATUS_ERROR             = 6;
+  DETECTED_STATUS_TESTS_FAILING     = 7;
+  DETECTED_STATUS_SUCCESS           = 8;
+  DETECTED_STATUS_UNKNOWN           = 9;
+  DETECTED_STATUS_READY             = 10;
+  DETECTED_STATUS_WAITING_FOR_AGENT = 11;
 }
 
 // WorkingState represents the active-work status of a session for review queue filtering.
@@ -373,6 +421,8 @@ enum SubStatus {
   SUB_STATUS_READY = 8;
   // Task completed successfully.
   SUB_STATUS_SUCCESS = 9;
+  // Claude is waiting for one or more background agents to finish (e.g. "✻ Waiting for 2 background agents").
+  SUB_STATUS_WAITING_FOR_AGENT = 10;
 }
 
 // RateLimitState indicates whether the session is experiencing rate limiting.
@@ -553,8 +603,14 @@ message ReviewItem {
   // Populated by RunOneShot pre-check; shows warning badge in review queue UI.
   bool branch_diverged_from_base = 19;
 
+  // Deprecated: derived client-side via deriveWorkingState().
   // Active-work state for review queue filtering. Populated from IdleDetector state.
   WorkingState working_state = 20;
+
+  // Fine-grained activity state derived from ClaudeStatus at the time the item
+  // was enqueued. Used by the frontend deriveWorkingState() utility to compute
+  // the effective WorkingState without relying on the deprecated working_state field.
+  SubStatus sub_status = 21;
 }
 
 // Priority levels for review queue items (highest to lowest urgency).

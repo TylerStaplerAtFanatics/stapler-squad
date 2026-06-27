@@ -185,8 +185,11 @@ export const backlogFeatures = {
     title: 'Trigger Triage',
     description: 'Triggers AI-powered triage of pending backlog items to assign priorities and verdicts.',
     rpcIds: ['backlog:trigger-triage'],
-    componentPaths: [],
-    testIds: [],
+    componentPaths: [
+      'web-app/src/components/backlog/BacklogItemDetail.tsx',
+      'web-app/src/components/backlog/BacklogItemCard.tsx',
+    ],
+    testIds: ['e2e:backlog-triage-gate-disabled'],
     status: 'experimental',
     since: '1.0.0',
   },

@@ -130,7 +130,7 @@ export class BacklogPage {
     await this.page.waitForSelector('[data-testid="backlog-form-modal"]', { timeout: 5000 });
   }
 
-  async fillNewItemForm(title: string, options?: { priority?: number; addAcCriterion?: string }) {
+  async fillNewItemForm(title: string, options?: { priority?: number; addAcCriterion?: string; repoPath?: string }) {
     const titleInput = this.page.locator('[data-testid="backlog-title-input"]');
     await titleInput.fill(title);
 
@@ -144,6 +144,11 @@ export class BacklogPage {
       await addBtn.click();
       const criterionInput = this.page.locator('[data-testid="backlog-criterion-text-0"]');
       await criterionInput.fill(options.addAcCriterion);
+    }
+
+    if (options?.repoPath) {
+      const repoPathInput = this.page.locator('[data-testid="backlog-repo-path-input"]');
+      await repoPathInput.fill(options.repoPath);
     }
   }
 

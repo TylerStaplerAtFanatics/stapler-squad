@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, memo } from "react";
-import { Session, SessionStatus, SubStatus, ReviewItem, InstanceType, RateLimitState, CheckpointProto } from "@/gen/session/v1/types_pb";
+import { Session, SessionStatus, SubStatus, ReviewItem, InstanceType, RateLimitState, CheckpointProto, DetectedStatus } from "@/gen/session/v1/types_pb";
 import { Tooltip } from "../ui/Tooltip";
 import { ReviewQueueBadge } from "./ReviewQueueBadge";
 import { StatusBadge } from "./StatusBadge";
@@ -103,9 +103,9 @@ interface SessionCardProps {
   onResumeFromHibernation?: () => void;
   selectMode?: boolean;
   isSelected?: boolean;
-  onToggleSelect?: () => void;
+  onToggleSelect?: (e?: React.MouseEvent) => void;
   reviewItem?: ReviewItem; // Optional review queue item if session needs attention
-  detectedStatus?: string; // Terminal-detected status from pattern analysis
+  detectedStatus?: DetectedStatus; // Terminal-detected status from pattern analysis
   detectedContext?: string; // Context string for the detected status
   suppressApprovalSubStatus?: boolean; // When true, hides Needs Approval chip/badge during optimistic clear
 }
@@ -156,7 +156,6 @@ function SessionCardInner({
   const isSnapshotEnabled = session.status === SessionStatus.ACTIVE && isSnapshotOpen;
   const isCreating = session.status === SessionStatus.CREATING;
   const isPaused = session.status === SessionStatus.PAUSED;
-  const isRestoring = session.status === SessionStatus.RESTORING;
   const { html: snapshotHtml, isEmpty: snapshotIsEmpty, loading: snapshotLoadingState, error: snapshotErrorMsg } =
     useTerminalSnapshot(session.id, isSnapshotEnabled);
 
@@ -171,8 +170,6 @@ function SessionCardInner({
       case SessionStatus.LOADING:
         return statusLoading;
       case SessionStatus.CREATING:
-        return statusLoading;
-      case SessionStatus.RESTORING:
         return statusLoading;
       case SessionStatus.NEEDS_APPROVAL:
         return statusNeedsApproval;
@@ -199,8 +196,6 @@ function SessionCardInner({
         return "Needs Approval";
       case SessionStatus.CREATING:
         return "Starting…";
-      case SessionStatus.RESTORING:
-        return "Restoring…";
       case SessionStatus.STOPPED:
         return "Stopped";
       case SessionStatus.HIBERNATED:
@@ -289,7 +284,7 @@ function SessionCardInner({
   };
 
   const handleCardKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLAnchorElement)) {
+    if ((e.key === "Enter" || e.key === " ") && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLButtonElement) && !(e.target instanceof HTMLAnchorElement) && !(e.target instanceof HTMLSelectElement)) {
       e.preventDefault();
       if (selectMode && onToggleSelect) {
         onToggleSelect();
@@ -385,18 +380,18 @@ function SessionCardInner({
         isExternal ? cardExternal : "",
         isDeleting ? cardDeleting : "",
         Number(session.memoryRssMb ?? 0n) > 500 ? cardMemoryPressure : "",
-        isPaused || isRestoring ? cardPaused : "",
+        isPaused ? cardPaused : "",
       ].filter(Boolean).join(" ")}
       ref={cardRef}
       data-testid="session-card"
       data-paused={isPaused ? "true" : undefined}
-      data-restoring={isRestoring ? "true" : undefined}
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
       role="group"
       aria-roledescription="session"
       tabIndex={0}
       aria-label={selectMode ? `${isSelected ? "Selected" : "Not selected"}: ${session.title}` : !isInlineEditing ? `${session.title}, press F2 to rename` : session.title}
+      aria-keyshortcuts={!selectMode && !isInlineEditing ? "F2" : undefined}
     >
       {selectMode && (
         <div className={checkbox} aria-hidden="true" onClick={handleCheckboxClick}>
@@ -432,14 +427,14 @@ function SessionCardInner({
             </span>
           ) : (
             <>
-              <h3
+              <span
                 className={title}
                 onClick={handleTitleClick}
                 title={selectMode ? undefined : "Click to rename"}
                 style={selectMode ? undefined : { cursor: "text" }}
               >
                 {session.title}
-              </h3>
+              </span>
             </>
           )}
           <div className={badges}>
@@ -505,8 +500,8 @@ function SessionCardInner({
             )}
             {/* StatusBadge: only shown when SubStatusChip has nothing to display (UNSPECIFIED or suppressed IDLE).
                 When the chip is active, it already carries the status info — showing both is duplication. */}
-            {detectedStatus &&
-              !(suppressApprovalSubStatus && (detectedStatus === "Needs Approval" || detectedStatus === "Input Required")) &&
+            {detectedStatus !== undefined &&
+              !(suppressApprovalSubStatus && (detectedStatus === DetectedStatus.NEEDS_APPROVAL || detectedStatus === DetectedStatus.INPUT_REQUIRED)) &&
               (session.subStatus === SubStatus.UNSPECIFIED || session.subStatus === SubStatus.IDLE) && (
               <StatusBadge detectedStatus={detectedStatus} context={detectedContext} />
             )}
@@ -600,13 +595,13 @@ function SessionCardInner({
           </div>
         </div>
         {session.category && (
-          <span className={category}>{session.category}</span>
+          <span className={category} aria-label={`Category: ${session.category}`}>{session.category}</span>
         )}
         <div className={tagsContainer}>
           {session.tags && session.tags.length > 0 && (
-            <div className={tags} role="group" aria-label="Session tags">
+            <div className={tags} role="list" aria-label="Session tags">
               {session.tags.map((sessionTag) => (
-                <span key={sessionTag} className={tag}>
+                <span key={sessionTag} className={tag} role="listitem">
                   {sessionTag}
                 </span>
               ))}
@@ -692,6 +687,7 @@ function SessionCardInner({
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className={githubLink}
+                  aria-label={`GitHub repository ${session.githubOwner}/${session.githubRepo}, opens in new tab`}
                 >
                   {session.githubOwner}/{session.githubRepo}
                 </a>
@@ -708,6 +704,7 @@ function SessionCardInner({
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className={githubLink}
+                  aria-label={`Pull request #${session.githubPrNumber} on ${session.githubOwner}/${session.githubRepo}, opens in new tab`}
                 >
                   #{session.githubPrNumber}
                 </a>
@@ -738,9 +735,13 @@ function SessionCardInner({
         </div>
 
         {session.diffStats && (
-          <div className={diffStats}>
-            <span className={diffAdded}>+{session.diffStats.added}</span>
-            <span className={diffRemoved}>-{session.diffStats.removed}</span>
+          <div
+            className={diffStats}
+            role="img"
+            aria-label={`Diff: +${session.diffStats.added} additions, -${session.diffStats.removed} deletions`}
+          >
+            <span className={diffAdded} aria-hidden="true">+{session.diffStats.added}</span>
+            <span className={diffRemoved} aria-hidden="true">-{session.diffStats.removed}</span>
           </div>
         )}
 
@@ -773,13 +774,13 @@ function SessionCardInner({
             </button>
             {isSnapshotOpen && (
               snapshotLoadingState ? (
-                <div className={snapshotLoading}>Loading…</div>
+                <div className={snapshotLoading} role="status">Loading…</div>
               ) : snapshotErrorMsg ? (
-                <div className={snapshotError.base}>
+                <div className={snapshotError.base} role="alert">
                   Failed to load preview
                 </div>
               ) : snapshotIsEmpty ? (
-                <div className={snapshotEmpty}>No recent output</div>
+                <div className={snapshotEmpty} role="status">No recent output</div>
               ) : (
                 <div
                   className={snapshotPane}
