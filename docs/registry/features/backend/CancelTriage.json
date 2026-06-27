@@ -1,11 +1,10 @@
 {
-  "id": "backlog:approve-plan",
+  "id": "CancelTriage",
   "type": "backend",
   "service": "BacklogService",
-  "method": "ApprovePlan",
+  "method": "CancelTriage",
   "protoFile": "proto/session/v1/backlog.proto",
-  "markerFound": true,
-  "handlerFile": "server/services/backlog_service.go",
+  "markerFound": false,
   "tested": false,
   "testIds": [],
   "lastModified": "2026-06-26T08:55:46.608260153-07:00"
