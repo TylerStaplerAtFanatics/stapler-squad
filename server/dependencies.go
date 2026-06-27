@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
+	githubpkg "github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	warren "github.com/tstapler/stapler-squad/pkg/warren"
 	"github.com/tstapler/stapler-squad/server/analytics"
@@ -57,6 +58,10 @@ type ServerDependencies struct {
 	BacklogService *services.BacklogService
 	SyncLoop       *session.SyncLoop
 
+	// GitHub user PR cache and service. Nil when no GitHub token is available.
+	UserPRCache        *githubpkg.UserPRCache
+	GitHubUserService  *services.GitHubUserService
+
 	// Analytics storage. Nil when the analytics DB failed to open (LogAnalyticsProvider
 	// is used as a fallback in that case).
 	AnalyticsEntClient *ent.Client
@@ -104,6 +109,8 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		InsightsService:         rt.InsightsService,
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
+		UserPRCache:             rt.UserPRCache,
+		GitHubUserService:       rt.GitHubUserService,
 		AnalyticsEntClient:      rt.AnalyticsEntClient,
 		VNCDeps:                 rt.VNCDeps,
 		CDPDeps:                 rt.CDPDeps,
@@ -368,6 +375,10 @@ type RuntimeDeps struct {
 	BacklogService *services.BacklogService
 	SyncLoop       *session.SyncLoop
 	Config         *config.Config // Used for encryption of sensitive data
+
+	// GitHub user PR cache and service.
+	UserPRCache       *githubpkg.UserPRCache
+	GitHubUserService *services.GitHubUserService
 
 	// Analytics storage.
 	AnalyticsEntClient *ent.Client
@@ -879,6 +890,12 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		}
 	}()
 
+	// UserPRCache polls the GitHub API for the authenticated user's open PRs.
+	// Annotate with current sessions so PRs show which local sessions match.
+	userPRCache := githubpkg.NewUserPRCache()
+	annotateUserPRCache(userPRCache, instances)
+	ghUserSvc := services.NewGitHubUserService(userPRCache)
+
 	return &RuntimeDeps{
 		HeadlessPool:            headlessPool,
 		ServiceDeps:             svc,
@@ -897,6 +914,8 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		InsightsService:         insightsSvc,
 		BacklogService:          backlogSvc,
 		SyncLoop:                nil, // managed by BacklogController
+		UserPRCache:             userPRCache,
+		GitHubUserService:       ghUserSvc,
 		Config:                  cfg,
 		AnalyticsEntClient:      analyticsClient,
 		VNCDeps:                 vncDeps,
@@ -904,4 +923,23 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		WorkflowRepo:            workflowRepo,
 		WorkflowScheduler:       workflowScheduler,
 	}, nil
+}
+
+// annotateUserPRCache converts session instances to PRAnnotationSession values
+// and pushes them into the cache. Lives here (not in the github package) to
+// avoid an import cycle: github → session → github.
+func annotateUserPRCache(cache *githubpkg.UserPRCache, instances []*session.Instance) {
+	annotations := make([]githubpkg.PRAnnotationSession, 0, len(instances))
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		annotations = append(annotations, githubpkg.PRAnnotationSession{
+			ID:           inst.Title,
+			Branch:       inst.Branch,
+			GitHubOwner:  inst.GitHubOwner,
+			WorktreePath: inst.Path,
+		})
+	}
+	cache.Annotate(annotations, nil)
 }

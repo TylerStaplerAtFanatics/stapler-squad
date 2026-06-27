@@ -13,6 +13,7 @@ import { create } from "@bufbuild/protobuf";
 import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
 import { useUnfinishedWork } from "@/lib/hooks/useUnfinishedWork";
 import { UnfinishedRepoGroup } from "@/components/unfinished/UnfinishedRepoGroup";
+import { GitHubPRsSection } from "@/components/unfinished/GitHubPRsSection";
 import * as styles from "./UnfinishedTab.css";
 
 type FilterType = "all" | "uncommitted" | "ahead" | "behind";
@@ -136,6 +137,9 @@ export function UnfinishedTab() {
           </button>
         ))}
       </div>
+
+      {/* GitHub PRs */}
+      <GitHubPRsSection />
 
       {/* Repo groups */}
       {groups.size === 0 ? (

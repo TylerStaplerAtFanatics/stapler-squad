@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package session.v1;
+
+import "session/v1/types.proto";
+
+option go_package = "github.com/tstapler/stapler-squad/gen/proto/go/session/v1";
+
+// GitHubUserService exposes the authenticated GitHub user's open pull requests
+// as a real-time stream so the Unfinished tab can show GitHub work alongside
+// local worktrees.
+service GitHubUserService {
+  // ListUserPRs returns the current cached snapshot of open PRs.
+  rpc ListUserPRs(ListUserPRsRequest) returns (ListUserPRsResponse) {}
+
+  // WatchUserPRs streams PR snapshot updates as a server-sent event stream.
+  rpc WatchUserPRs(WatchUserPRsRequest) returns (stream UserPREvent) {}
+
+  // GetGitHubAuthState returns the current authentication status.
+  rpc GetGitHubAuthState(GetGitHubAuthStateRequest) returns (GetGitHubAuthStateResponse) {}
+}
+
+message ListUserPRsRequest {}
+
+message ListUserPRsResponse {
+  repeated UserPR prs      = 1;
+  GitHubAuthState auth_state = 2;
+}
+
+message WatchUserPRsRequest {}
+
+// UserPREvent is emitted whenever the open PR snapshot changes.
+message UserPREvent {
+  // "snapshot" on initial send and every full refresh.
+  string         event_type = 1;
+  repeated UserPR prs       = 2;
+  GitHubAuthState auth_state = 3;
+}
+
+message GetGitHubAuthStateRequest {}
+
+message GetGitHubAuthStateResponse {
+  GitHubAuthState auth_state = 1;
+}
+
+// GitHubAuthState describes the current GitHub authentication status.
+message GitHubAuthState {
+  bool   available     = 1;
+  string username      = 2;
+  string error_message = 3;
+}

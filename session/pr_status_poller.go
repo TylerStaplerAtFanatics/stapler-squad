@@ -114,6 +114,15 @@ func (p *PRStatusPoller) RemoveInstance(title string) {
 	delete(p.noPRPollAfter, title)
 }
 
+// GetInstances returns a snapshot copy of all currently monitored instances.
+func (p *PRStatusPoller) GetInstances() []*Instance {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]*Instance, len(p.instances))
+	copy(out, p.instances)
+	return out
+}
+
 // SetOnUpdated registers a callback called when a session's PR priority changes.
 // The callback is invoked from a goroutine; it must be concurrency-safe.
 func (p *PRStatusPoller) SetOnUpdated(fn func(*Instance)) {

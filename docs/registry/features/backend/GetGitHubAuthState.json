@@ -1,0 +1,11 @@
+{
+  "id": "GetGitHubAuthState",
+  "type": "backend",
+  "service": "GitHubUserService",
+  "method": "GetGitHubAuthState",
+  "protoFile": "proto/session/v1/github_user.proto",
+  "markerFound": false,
+  "tested": false,
+  "testIds": [],
+  "lastModified": "2026-06-26T18:47:36.708877-07:00"
+}

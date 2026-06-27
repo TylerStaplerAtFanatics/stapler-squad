@@ -582,6 +582,36 @@ func CheckoutBranch(repoPath, branchName string) error {
 	return nil
 }
 
+// GetCurrentUserLogin returns the GitHub login for the currently authenticated user.
+// Returns an empty string (not an error) when unauthenticated (401/403).
+func GetCurrentUserLogin(ctx context.Context) (string, error) {
+	req, err := newGHRequest(ctx, "user")
+	if err != nil {
+		return "", fmt.Errorf("build /user request: %w", err)
+	}
+	resp, err := ghHTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("/user request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	checkRateLimitHeaders(resp)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", fmt.Errorf("/user: unexpected status %d", resp.StatusCode)
+	}
+	var u struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		return "", fmt.Errorf("decode /user response: %w", err)
+	}
+	return u.Login, nil
+}
+
 // GetRemoteURL returns the remote URL of a repository (used to determine owner/repo)
 func GetRemoteURL(repoPath string) (string, error) {
 	remoteCtx, remoteCancel := context.WithTimeout(context.Background(), 10*time.Second)

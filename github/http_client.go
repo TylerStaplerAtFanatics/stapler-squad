@@ -1,14 +1,17 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/log"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -74,4 +77,38 @@ func newGHRequest(ctx context.Context, path string) (*http.Request, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	return req, nil
+}
+
+// newGHPostRequest creates an authenticated POST request to the GitHub API with a JSON body.
+func newGHPostRequest(ctx context.Context, path string, body []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.github.com/"+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if tok := getGHToken(ctx); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	return req, nil
+}
+
+// checkRateLimitHeaders inspects GitHub rate-limit and SSO headers and logs warnings.
+// Callers should invoke this on every response from the GitHub API.
+func checkRateLimitHeaders(resp *http.Response) {
+	remaining := resp.Header.Get("X-RateLimit-Remaining")
+	if remaining != "" {
+		n, err := strconv.Atoi(remaining)
+		if err == nil && n < 100 {
+			log.Warn("GitHub API rate limit low", "remaining", n,
+				"reset", resp.Header.Get("X-RateLimit-Reset"))
+		}
+	}
+	if retry := resp.Header.Get("Retry-After"); retry != "" {
+		log.Warn("GitHub API Retry-After header present", "retry_after", retry)
+	}
+	if sso := resp.Header.Get("X-GitHub-Sso"); sso != "" {
+		log.Warn("GitHub SSO enforcement header present", "x_github_sso", sso)
+	}
 }
