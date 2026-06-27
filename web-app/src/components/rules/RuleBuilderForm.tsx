@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { ApprovalRuleProto, AutoDecision } from "@/gen/session/v1/types_pb";
 import { RuleBuilderPrefill } from "@/lib/ruleBuilderPrefill";
 import { RuleTemplate } from "@/lib/ruleTemplates";
@@ -67,7 +67,7 @@ function computeSuggestedName(
   if (toolTarget === "name" && toolName.trim()) return `${prefix} ${toolName.trim()}`;
   if (toolTarget === "category" && toolCategory) {
     const cat = TOOL_CATEGORIES.find((c) => c.value === toolCategory);
-    return cat?.value ? `${prefix} ${cat.label}` : "";
+    return cat ? `${prefix} ${cat.label}` : "";
   }
   if (toolTarget === "pattern" && toolPattern.trim()) return `${prefix} ${toolPattern.trim()}`;
   if (programs.length > 0) return `${prefix} ${programs[0]}`;
@@ -116,7 +116,7 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
   // Uses a ref so the effect doesn't re-run on every name keystroke.
   const lastAutoName = useRef("");
   const nameRef = useRef(name);
-  nameRef.current = name;
+  useLayoutEffect(() => { nameRef.current = name; });
   useEffect(() => {
     if (editRule) return;
     const suggested = computeSuggestedName(toolTarget, toolName, toolCategory, toolPattern, programs, decision);
