@@ -294,8 +294,10 @@ func TestDiffShortstat_MultiBlobWorktree(t *testing.T) {
 	run("add", ".")
 	run("commit", "-m", "add five files")
 
-	// Modify each file: replace 3 lines with 2 lines → 1 deletion + 2 insertions per file.
-	modified := "newline1\nnewline2\n"
+	// Modify each file: replace 3 lines with 2 lines → 3 deletions + 2 insertions per file.
+	// Use content with a different byte length (4 vs 18) so the size-based dirty check
+	// in diffShortstatUncached detects the change even when mtime truncates to the same second.
+	modified := "a\nb\n"
 	for _, name := range files {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(modified), 0644); err != nil {
 			t.Fatal(err)
