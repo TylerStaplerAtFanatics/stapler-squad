@@ -294,8 +294,10 @@ func TestDiffShortstat_MultiBlobWorktree(t *testing.T) {
 	run("add", ".")
 	run("commit", "-m", "add five files")
 
-	// Modify each file: replace 3 lines with 2 lines → 1 deletion + 2 insertions per file.
-	modified := "newline1\nnewline2\n"
+	// Modify each file: replace 3 lines with 2 distinct lines → 3 deletions + 2 insertions per file.
+	// Use "a\nb\n" (4 bytes) instead of a same-size string to ensure size-based
+	// unstaged-change detection in GoGitVCSReader.DiffShortstat always sees a delta.
+	modified := "a\nb\n"
 	for _, name := range files {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(modified), 0644); err != nil {
 			t.Fatal(err)
