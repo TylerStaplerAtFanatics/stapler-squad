@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/pkg/classifier"
 	"github.com/tstapler/stapler-squad/session"
@@ -59,7 +60,7 @@ func printUsage() {
 
 func handleCheck() {
 	checkCmd := flag.NewFlagSet("check", flag.ExitOnError)
-	dbPath := checkCmd.String("db", getDefaultDBPath(), "Path to SQLite database")
+	dbPath := checkCmd.String("db", "", "Path to SQLite database (defaults to workspace-specific database)")
 	geminiMode := checkCmd.Bool("gemini", false, "Translate Gemini TOOL_INPUT payload (exit-code output)")
 	agyMode := checkCmd.Bool("antigravity", false, "Translate Antigravity TOOL_INPUT payload (hooks.json format)")
 	checkCmd.Parse(os.Args[2:]) //nolint:errcheck
@@ -84,7 +85,12 @@ func handleCheck() {
 		}
 	}
 
-	storage := loadStorage(*dbPath)
+	storagePath := *dbPath
+	if storagePath == "" {
+		storagePath = getDBPathForCwd(payload.Cwd)
+	}
+
+	storage := loadStorage(storagePath)
 	defer storage.Close()
 
 	c := loadClassifier(storage)
@@ -239,8 +245,9 @@ func parseGeminiPayload() classifier.PermissionRequestPayload {
 		// Variant B: {"tool_name": "...", "tool_input": {...}}
 		ToolName  string                 `json:"tool_name"`
 		ToolInput map[string]interface{} `json:"tool_input"`
-		// Variant C (Antigravity toolCall): {"toolCall": {"name": "...", "args": {...}}}
-		ToolCall *ToolCall `json:"toolCall,omitempty"`
+		// Variant C (Antigravity toolCall): {"toolCall": {"name": "...", "args": {...}}, "workspacePaths": [...]}
+		ToolCall       *ToolCall `json:"toolCall,omitempty"`
+		WorkspacePaths []string  `json:"workspacePaths,omitempty"`
 		// Context fields
 		Cwd string `json:"cwd"`
 	}
@@ -278,16 +285,38 @@ func parseGeminiPayload() classifier.PermissionRequestPayload {
 	switch strings.ToLower(toolName) {
 	case "run_shell_command", "execute_bash", "run_bash_command", "run_command", "bash":
 		toolName = "Bash"
+		// Antigravity sends args with "CommandLine" (capital C) instead of "command" — normalize.
+		if toolInput != nil {
+			if v, ok := toolInput["CommandLine"]; ok {
+				if _, hasCmd := toolInput["command"]; !hasCmd {
+					toolInput["command"] = v
+				}
+			}
+			// Pull Cwd from args if not already set at the top level.
+			if p.Cwd == "" {
+				if v, ok := toolInput["Cwd"]; ok {
+					if s, ok := v.(string); ok {
+						p.Cwd = s
+					}
+				}
+			}
+		}
 	case "read_file", "read_many_files", "read":
 		toolName = "Read"
 	case "write_file", "write":
 		toolName = "Write"
 	}
 
+	// Prefer explicit cwd; fall back to first workspacePath.
+	cwd := p.Cwd
+	if cwd == "" && len(p.WorkspacePaths) > 0 {
+		cwd = p.WorkspacePaths[0]
+	}
+
 	return classifier.PermissionRequestPayload{
 		ToolName:  toolName,
 		ToolInput: toolInput,
-		Cwd:       p.Cwd,
+		Cwd:       cwd,
 	}
 }
 
@@ -843,13 +872,18 @@ func installAgy() {
 		os.Exit(1)
 	}
 	fmt.Printf("Installed binary: %s\n", destBin)
-	// 2. Patch ~/.gemini/antigravity-cli/hooks.json.
-	hooksPath := filepath.Join(home, ".gemini", "antigravity-cli", "hooks.json")
-	if err := patchAntigravityHooks(hooksPath, destBin); err != nil {
-		fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", hooksPath, err)
-		os.Exit(1)
+	// 2. Patch ~/.gemini/config/hooks.json (authoritative global path) and ~/.gemini/antigravity-cli/hooks.json (fallback).
+	hooksPaths := []string{
+		filepath.Join(home, ".gemini", "config", "hooks.json"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "hooks.json"),
 	}
-	fmt.Printf("Updated hook:     %s\n", hooksPath)
+	for _, hooksPath := range hooksPaths {
+		if err := patchAntigravityHooks(hooksPath, destBin); err != nil {
+			fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", hooksPath, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Updated hook:     %s\n", hooksPath)
+	}
 	fmt.Println("Done. Restart agy for the hook to take effect.")
 }
 
@@ -1169,6 +1203,19 @@ func installServiceMacOS(home, binPath, logDir, envPath string, uninstall bool) 
 }
 
 func getDefaultDBPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".stapler-squad", "sessions.db")
+	configDir, err := config.GetConfigDir()
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".stapler-squad", "sessions.db")
+	}
+	return filepath.Join(configDir, "sessions.db")
+}
+
+func getDBPathForCwd(cwd string) string {
+	configDir, err := config.GetConfigDirForDir(cwd)
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".stapler-squad", "sessions.db")
+	}
+	return filepath.Join(configDir, "sessions.db")
 }
