@@ -1344,6 +1344,12 @@ message UnfinishedWorktree {
   bool is_dismissed  = 18;
   bool is_snoozed    = 19;
   repeated string session_ids = 20; // UUIDs of active sessions covering this worktree path
+
+  // GitHub PR enrichment (populated from session PR state when sessions cover this worktree).
+  int32  github_pr_number   = 21; // 0 when no PR found
+  string github_pr_url      = 22;
+  string github_pr_state    = 23; // "open" / "closed" / "merged" / ""
+  string github_pr_priority = 24; // from PRStatusPoller (no_pr / needs_review / approved / etc.)
 }
 
 // UnfinishedWorkConfig holds user-configurable source settings.

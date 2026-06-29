@@ -372,6 +372,12 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 		log.InfoLog.Printf("Registered BacklogService handler at %s", blAPIPath)
 	}
 
+	// Start UserPRCache and register GitHubUserService handler.
+	if deps.UserPRCache != nil {
+		deps.UserPRCache.Start(serverCtx)
+		srv.shutdownHooks = append(srv.shutdownHooks, deps.UserPRCache.Stop)
+		log.Info("UserPRCache started")
+	}
 	// Start WorkflowScheduler (nil guard: disabled when workflow repo is unavailable).
 	if deps.WorkflowScheduler != nil {
 		deps.WorkflowScheduler.Start(serverCtx)

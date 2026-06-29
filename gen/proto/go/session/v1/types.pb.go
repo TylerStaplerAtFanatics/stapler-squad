@@ -5701,11 +5701,16 @@ type UnfinishedWorktree struct {
 	ScanStatus   ScanStatus `protobuf:"varint,16,opt,name=scan_status,json=scanStatus,proto3,enum=session.v1.ScanStatus" json:"scan_status,omitempty"`
 	ScanErrorMsg string     `protobuf:"bytes,17,opt,name=scan_error_msg,json=scanErrorMsg,proto3" json:"scan_error_msg,omitempty"` // human-readable error, empty on success
 	// Action state
-	IsDismissed   bool     `protobuf:"varint,18,opt,name=is_dismissed,json=isDismissed,proto3" json:"is_dismissed,omitempty"`
-	IsSnoozed     bool     `protobuf:"varint,19,opt,name=is_snoozed,json=isSnoozed,proto3" json:"is_snoozed,omitempty"`
-	SessionIds    []string `protobuf:"bytes,20,rep,name=session_ids,json=sessionIds,proto3" json:"session_ids,omitempty"` // UUIDs of active sessions covering this worktree path
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	IsDismissed bool     `protobuf:"varint,18,opt,name=is_dismissed,json=isDismissed,proto3" json:"is_dismissed,omitempty"`
+	IsSnoozed   bool     `protobuf:"varint,19,opt,name=is_snoozed,json=isSnoozed,proto3" json:"is_snoozed,omitempty"`
+	SessionIds  []string `protobuf:"bytes,20,rep,name=session_ids,json=sessionIds,proto3" json:"session_ids,omitempty"` // UUIDs of active sessions covering this worktree path
+	// GitHub PR enrichment (populated from session PR state when sessions cover this worktree).
+	GithubPrNumber   int32  `protobuf:"varint,21,opt,name=github_pr_number,json=githubPrNumber,proto3" json:"github_pr_number,omitempty"` // 0 when no PR found
+	GithubPrUrl      string `protobuf:"bytes,22,opt,name=github_pr_url,json=githubPrUrl,proto3" json:"github_pr_url,omitempty"`
+	GithubPrState    string `protobuf:"bytes,23,opt,name=github_pr_state,json=githubPrState,proto3" json:"github_pr_state,omitempty"`          // "open" / "closed" / "merged" / ""
+	GithubPrPriority string `protobuf:"bytes,24,opt,name=github_pr_priority,json=githubPrPriority,proto3" json:"github_pr_priority,omitempty"` // from PRStatusPoller (no_pr / needs_review / approved / etc.)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *UnfinishedWorktree) Reset() {
@@ -5876,6 +5881,34 @@ func (x *UnfinishedWorktree) GetSessionIds() []string {
 		return x.SessionIds
 	}
 	return nil
+}
+
+func (x *UnfinishedWorktree) GetGithubPrNumber() int32 {
+	if x != nil {
+		return x.GithubPrNumber
+	}
+	return 0
+}
+
+func (x *UnfinishedWorktree) GetGithubPrUrl() string {
+	if x != nil {
+		return x.GithubPrUrl
+	}
+	return ""
+}
+
+func (x *UnfinishedWorktree) GetGithubPrState() string {
+	if x != nil {
+		return x.GithubPrState
+	}
+	return ""
+}
+
+func (x *UnfinishedWorktree) GetGithubPrPriority() string {
+	if x != nil {
+		return x.GithubPrPriority
+	}
+	return ""
 }
 
 // UnfinishedWorkConfig holds user-configurable source settings.
@@ -6854,7 +6887,7 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\x0fscrollback_path\x18\x06 \x01(\tR\x0escrollbackPath\x12(\n" +
 	"\x10claude_conv_uuid\x18\a \x01(\tR\x0eclaudeConvUuid\x12$\n" +
 	"\x0egit_commit_sha\x18\b \x01(\tR\fgitCommitSha\x128\n" +
-	"\ttimestamp\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\"\xa5\x06\n" +
+	"\ttimestamp\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\"\xc9\a\n" +
 	"\x12UnfinishedWorktree\x12\x1b\n" +
 	"\trepo_path\x18\x01 \x01(\tR\brepoPath\x12\x16\n" +
 	"\x06branch\x18\x02 \x01(\tR\x06branch\x12#\n" +
@@ -6880,7 +6913,11 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\n" +
 	"is_snoozed\x18\x13 \x01(\bR\tisSnoozed\x12\x1f\n" +
 	"\vsession_ids\x18\x14 \x03(\tR\n" +
-	"sessionIds\"\x8a\x01\n" +
+	"sessionIds\x12(\n" +
+	"\x10github_pr_number\x18\x15 \x01(\x05R\x0egithubPrNumber\x12\"\n" +
+	"\rgithub_pr_url\x18\x16 \x01(\tR\vgithubPrUrl\x12&\n" +
+	"\x0fgithub_pr_state\x18\x17 \x01(\tR\rgithubPrState\x12,\n" +
+	"\x12github_pr_priority\x18\x18 \x01(\tR\x10githubPrPriority\"\x8a\x01\n" +
 	"\x14UnfinishedWorkConfig\x120\n" +
 	"\x14auto_spider_sessions\x18\x01 \x01(\bR\x12autoSpiderSessions\x12\x1d\n" +
 	"\n" +

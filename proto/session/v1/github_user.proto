@@ -4,6 +4,8 @@ package session.v1;
 
 import "session/v1/types.proto";
 
+option go_package = "github.com/tstapler/stapler-squad/gen/proto/go/session/v1";
+
 // GitHubUserService provides access to the authenticated user's GitHub pull
 // requests across all repos. Data is served from the in-process UserPRCache
 // (which polls the GitHub GraphQL API in the background). No subprocess calls.
