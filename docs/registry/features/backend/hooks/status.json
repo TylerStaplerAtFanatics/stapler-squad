@@ -1,13 +1,14 @@
 {
-  "id": "GetHookStatus",
+  "id": "hooks:status",
   "type": "backend",
   "service": "SessionService",
   "method": "GetHookStatus",
   "protoFile": "proto/session/v1/session.proto",
-  "markerFound": false,
+  "markerFound": true,
+  "handlerFile": "server/services/hook_status_service.go",
   "tested": true,
   "testIds": [
     "TestGetHookStatus_ReflectsGlobalSettings"
   ],
-  "lastModified": "2026-06-26T18:30:50.237823634-07:00"
+  "lastModified": "2026-06-26T08:55:46.608811477-07:00"
 }
