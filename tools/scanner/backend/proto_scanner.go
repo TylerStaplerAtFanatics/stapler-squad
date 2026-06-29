@@ -141,6 +141,7 @@ var methodToID = map[string]string{
 	"SpawnSessionFromItem":        "backlog:spawn-session",
 	"AttachSessionToItem":         "backlog:attach-session",
 	"TriggerTriage":               "backlog:trigger-triage",
+	"CancelTriage":                "backlog:cancel-triage",
 	"ApprovePlan":                 "backlog:approve-plan",
 	"SuggestNextItem":             "backlog:suggest-next",
 	"OverrideVerdict":             "backlog:override-verdict",
