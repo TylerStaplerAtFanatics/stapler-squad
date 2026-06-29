@@ -373,7 +373,9 @@ proto-gen: ensure-tools web-app/node_modules/.modules.yaml ## Generate Go and Ty
 	@echo "Checking if proto files need regeneration..."
 	@if [ ! -f $(PROTO_STAMP) ] \
 	   || [ "$$(find proto -name '*.proto' -newer $(PROTO_STAMP) -print -quit)" ] \
-	   || [ web-app/node_modules/.bin/protoc-gen-es -nt $(PROTO_STAMP) ]; then \
+	   || [ web-app/node_modules/.bin/protoc-gen-es -nt $(PROTO_STAMP) ] \
+	   || [ ! -f gen/proto/go/session/v1/session.pb.go ] \
+	   || [ ! -f web-app/src/gen/session/v1/session_pb.ts ]; then \
 		echo "Generating protocol buffer code..."; \
 		buf generate proto; \
 		echo "✅ Code generation complete"; \
