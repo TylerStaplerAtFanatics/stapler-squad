@@ -1,0 +1,11 @@
+{
+  "id": "CancelTriage",
+  "type": "backend",
+  "service": "BacklogService",
+  "method": "CancelTriage",
+  "protoFile": "proto/session/v1/backlog.proto",
+  "markerFound": false,
+  "tested": false,
+  "testIds": [],
+  "lastModified": "2026-06-26T18:30:50.237232635-07:00"
+}
