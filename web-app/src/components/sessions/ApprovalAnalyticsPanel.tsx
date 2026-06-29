@@ -1,26 +1,40 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import { buildPrefillHref } from "@/lib/ruleBuilderPrefill";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
-import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
-import { DailyBucketProto, SubcommandStatProto, SuggestionSource } from "@/gen/session/v1/types_pb";
+import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
+import { DailyBucketProto, SubcommandStatProto, AutoDecision } from "@/gen/session/v1/types_pb";
 import { ProgramDetailPanel } from "./ProgramDetailPanel";
-import { SuggestedRuleCard } from "./SuggestedRuleCard";
 import {
-  panel, header, titleRow, title, subtitle, refreshButton,
+  panel, titleRow, title, refreshButton,
   windowSelector, windowBtn, windowBtnActive,
   error as errorClass, retryButton,
   cards, card, cardAllow, cardDeny, cardManual, cardValue, cardLabel, cardSub,
   loading as loadingClass, empty, emptyHint,
   sectionTitle, tableSection, tableWrapper, table, th, thRight, td, tdRight, tdBar, row,
   allowCount, denyCount, manualCount, pctLabel, toolName, ruleName,
-  barTrack, barFill, barTotal, barTool, barRule, barCmd, barPython, barGap,
-  categoryBadge, subSectionTitle, filterInput, addRuleLink, addRuleManualLink,
-  coverageGapHeader, coverageGapHigh, coverageGapMed, coverageGapLow,
-  coverageGapTitleRow, coverageGapIcon, coverageGapTitle, coverageGapBadge, coverageGapDesc,
-  suggestRuleButton, rowActions, rowGeneratingText,
+  barTrack, barFill, barTool, barRule, barCmd, barPython, barGap,
+  categoryBadge, subSectionTitle, filterInput, addRuleLink,
+  twoColGrid, twoColCell,
+  stackedBarTrack, stackedAllow, stackedDeny, stackedManual,
+  gapBadgeHigh, gapBadgeMed, gapBadgeLow, gapBadgeDesc,
+  checkboxTh, checkboxTd,
+  bulkActionBar, bulkActionCount, bulkAddBtn, bulkClearBtn,
+  bulkReviewPanel, bulkReviewHeader, bulkReviewActions, bulkSaveBtn, bulkDiscardBtn,
+  bulkResultMsg, decisionSelect, removeEntryBtn,
 } from "./ApprovalAnalyticsPanel.css";
+
+// ── types ─────────────────────────────────────────────────────────────────────
+
+type BulkEntry = {
+  key: string;
+  program: string;
+  subcommand: string;
+  decision: AutoDecision;
+};
+
+type BulkUpsertFn = (rules: Array<{ id: string; name: string; programs: string[]; subcommands: string[]; decision: AutoDecision }>) => Promise<{ created: number; updated: number; errors: string[] }>;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -43,8 +57,24 @@ function formatDate(iso: string): string {
 function Bar({ value, max, className }: { value: number; max: number; className: string }) {
   const width = max === 0 ? 0 : Math.round((value / max) * 100);
   return (
-    <div className={barTrack}>
+    <div className={barTrack} aria-hidden="true">
       <div className={`${barFill} ${className}`} style={{ width: `${width}%` }} />
+    </div>
+  );
+}
+
+// Stacked bar showing allow/deny/manual composition scaled to max total.
+function StackedBar({ allow, deny, manual, total }: { allow: number; deny: number; manual: number; total: number }) {
+  const rowTotal = allow + deny + manual;
+  const scale = total === 0 ? 0 : rowTotal / total;
+  const ap = Math.round(scale * (allow / (rowTotal || 1)) * 100);
+  const dp = Math.round(scale * (deny  / (rowTotal || 1)) * 100);
+  const mp = Math.round(scale * (manual / (rowTotal || 1)) * 100);
+  return (
+    <div className={stackedBarTrack} aria-hidden="true">
+      {ap > 0 && <div className={stackedAllow} style={{ width: `${ap}%` }} />}
+      {dp > 0 && <div className={stackedDeny}  style={{ width: `${dp}%` }} />}
+      {mp > 0 && <div className={stackedManual} style={{ width: `${mp}%` }} />}
     </div>
   );
 }
@@ -71,9 +101,8 @@ const WINDOW_OPTIONS = [
 export function ApprovalAnalyticsPanel() {
   const [windowDays, setWindowDays] = useState(7);
   const [selectedProgram, setSelectedProgram] = useState<string | null>(null);
-  const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
   const { summary, dailyBuckets, loading, error, refresh } = useApprovalAnalytics({ windowDays });
-  const { loading: generateLoading, generate, suggestions, error: generateError, clear: generateClear } = useGenerateRule();
+  const { bulkUpsertRules } = useApprovalRules();
 
   const total = summary?.totalDecisions ?? 0;
   const autoAllowCount = summary?.decisionCounts["auto_allow"] ?? 0;
@@ -86,45 +115,40 @@ export function ApprovalAnalyticsPanel() {
   const autoDenyRate  = pct(autoDenyCount, total);
   const manualRate    = pct(escalateCount, total);
   const avgPerDay     = dailyBuckets.length > 0 ? Math.round(total / windowDays) : 0;
+  const manualAllow   = summary?.decisionCounts["manual_allow"] ?? 0;
+  const manualDeny    = summary?.decisionCounts["manual_deny"]  ?? 0;
+  const manualTotal   = manualAllow + manualDeny;
+  const manualAllowPct = manualTotal > 0 ? Math.round((manualAllow / manualTotal) * 100) : null;
 
   // Max total across days — used to scale inline bars.
   const maxDayTotal = dailyBuckets.reduce((m, b) => Math.max(m, b.total), 0);
 
   return (
     <div className={panel}>
-      {/* ── Header ── */}
-      <div className={header}>
-        <div className={titleRow}>
-          <h2 className={title}>Approval Analytics</h2>
-          <button
-            onClick={refresh}
-            className={refreshButton}
-            disabled={loading}
-            aria-label="Refresh analytics"
-          >
+      {/* ── Header + window selector ── */}
+      <div className={titleRow}>
+        <h2 className={title}>Approval Analytics</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div className={windowSelector} role="group" aria-label="Time window">
+            {WINDOW_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                className={`${windowBtn} ${windowDays === opt.value ? windowBtnActive : ""}`}
+                onClick={() => setWindowDays(opt.value)}
+                aria-pressed={windowDays === opt.value}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <button onClick={refresh} className={refreshButton} disabled={loading} aria-label="Refresh analytics">
             {loading ? "⟳" : "↻"}
           </button>
         </div>
-        <p className={subtitle}>
-          Decision trends for auto-classification over time.
-        </p>
-      </div>
-
-      {/* ── Window selector ── */}
-      <div className={windowSelector}>
-        {WINDOW_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            className={`${windowBtn} ${windowDays === opt.value ? windowBtnActive : ""}`}
-            onClick={() => setWindowDays(opt.value)}
-          >
-            {opt.label}
-          </button>
-        ))}
       </div>
 
       {error && (
-        <div className={errorClass}>
+        <div className={errorClass} role="alert">
           Failed to load analytics: {error.message}
           <button onClick={refresh} className={retryButton}>Retry</button>
         </div>
@@ -135,6 +159,7 @@ export function ApprovalAnalyticsPanel() {
         <div className={card}>
           <span className={cardValue}>{total}</span>
           <span className={cardLabel}>Total decisions</span>
+          <span className={cardSub}>{avgPerDay}/day avg</span>
         </div>
         <div className={`${card} ${cardAllow}`}>
           <span className={cardValue}>{autoAllowRate}%</span>
@@ -149,25 +174,10 @@ export function ApprovalAnalyticsPanel() {
         <div className={`${card} ${cardManual}`}>
           <span className={cardValue}>{manualRate}%</span>
           <span className={cardLabel}>Manual review</span>
-          <span className={cardSub}>{escalateCount} requests</span>
-        </div>
-        {escalateCount > 0 && (() => {
-          const manualAllow = summary?.decisionCounts["manual_allow"] ?? 0;
-          const manualDeny  = summary?.decisionCounts["manual_deny"]  ?? 0;
-          const manualTotal = manualAllow + manualDeny;
-          if (manualTotal === 0) return null;
-          const allowedPct = Math.round((manualAllow / manualTotal) * 100);
-          return (
-            <div className={`${card} ${cardAllow}`}>
-              <span className={cardValue}>{allowedPct}%</span>
-              <span className={cardLabel}>Manual → Allowed</span>
-              <span className={cardSub}>{manualDeny} denied</span>
-            </div>
-          );
-        })()}
-        <div className={card}>
-          <span className={cardValue}>{avgPerDay}</span>
-          <span className={cardLabel}>Avg / day</span>
+          <span className={cardSub}>
+            {escalateCount} requests
+            {manualAllowPct !== null && ` · ${manualAllowPct}% allowed`}
+          </span>
         </div>
       </div>
 
@@ -215,7 +225,12 @@ export function ApprovalAnalyticsPanel() {
                         <span className={pctLabel}> {pct(manualTotal, b.total)}%</span>
                       </td>
                       <td className={`${td} ${tdBar}`}>
-                        <Bar value={b.total} max={maxDayTotal} className={barTotal} />
+                        <StackedBar
+                          allow={b.autoAllow}
+                          deny={b.autoDeny}
+                          manual={manualTotal}
+                          total={maxDayTotal}
+                        />
                       </td>
                     </tr>
                   );
@@ -226,96 +241,63 @@ export function ApprovalAnalyticsPanel() {
         </div>
       )}
 
-      {/* ── Top tools ── */}
-      {summary && summary.topTools.length > 0 && (
-        <div className={tableSection}>
-          <h3 className={sectionTitle}>Top Tools</h3>
-          <div className={tableWrapper}>
-            <table className={table}>
-              <thead>
-                <tr>
-                  <th className={th}>Tool</th>
-                  <th className={`${th} ${thRight}`}>Requests</th>
-                  <th className={th}>Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.topTools.map((t) => (
-                  <tr key={t.toolName} className={row}>
-                    <td className={td}><code className={toolName}>{t.toolName}</code></td>
-                    <td className={`${td} ${tdRight}`}>{t.count}</td>
-                    <td className={`${td} ${tdBar}`}>
-                      <Bar value={t.count} max={summary.topTools[0]?.count ?? 1} className={barTool} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── Top triggered rules ── */}
-      {summary && summary.topTriggeredRules.length > 0 && (
-        <div className={tableSection}>
-          <h3 className={sectionTitle}>Top Triggered Rules</h3>
-          <div className={tableWrapper}>
-            <table className={table}>
-              <thead>
-                <tr>
-                  <th className={th}>Rule</th>
-                  <th className={`${th} ${thRight}`}>Triggers</th>
-                  <th className={th}>Frequency</th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.topTriggeredRules.map((r) => (
-                  <tr key={r.ruleId} className={row}>
-                    <td className={td}>
-                      <span className={ruleName}>{r.ruleName || r.ruleId}</span>
-                    </td>
-                    <td className={`${td} ${tdRight}`}>{r.count}</td>
-                    <td className={`${td} ${tdBar}`}>
-                      <Bar value={r.count} max={summary.topTriggeredRules[0]?.count ?? 1} className={barRule} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ── Top command programs (Bash AST) ── */}
-      {summary && summary.topCommandPrograms.length > 0 && (
-        <div className={tableSection}>
-          <h3 className={sectionTitle}>Top Bash Programs</h3>
-          <div className={tableWrapper}>
-            <table className={table}>
-              <thead>
-                <tr>
-                  <th className={th}>Program</th>
-                  <th className={th}>Category</th>
-                  <th className={`${th} ${thRight}`}>Calls</th>
-                  <th className={th}>Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.topCommandPrograms.map((p) => (
-                  <tr key={p.programName} className={row}>
-                    <td className={td}><code className={toolName}>{p.programName}</code></td>
-                    <td className={td}>
-                      <span className={categoryBadge}>{p.category}</span>
-                    </td>
-                    <td className={`${td} ${tdRight}`}>{p.count}</td>
-                    <td className={`${td} ${tdBar}`}>
-                      <Bar value={p.count} max={summary.topCommandPrograms[0]?.count ?? 1} className={barCmd} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      {/* ── Top tools + Top triggered rules (side-by-side) ── */}
+      {summary && (summary.topTools.length > 0 || summary.topTriggeredRules.length > 0) && (
+        <div className={twoColGrid}>
+          {summary.topTools.length > 0 && (
+            <div className={`${tableSection} ${twoColCell}`}>
+              <h3 className={sectionTitle}>Top Tools</h3>
+              <div className={tableWrapper}>
+                <table className={table}>
+                  <thead>
+                    <tr>
+                      <th className={th}>Tool</th>
+                      <th className={`${th} ${thRight}`}>Requests</th>
+                      <th className={th}>Share</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.topTools.map((t) => (
+                      <tr key={t.toolName} className={row}>
+                        <td className={td}><code className={toolName}>{t.toolName}</code></td>
+                        <td className={`${td} ${tdRight}`}>{t.count}</td>
+                        <td className={`${td} ${tdBar}`}>
+                          <Bar value={t.count} max={summary.topTools[0]?.count ?? 1} className={barTool} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {summary.topTriggeredRules.length > 0 && (
+            <div className={`${tableSection} ${twoColCell}`}>
+              <h3 className={sectionTitle}>Top Triggered Rules</h3>
+              <div className={tableWrapper}>
+                <table className={table}>
+                  <thead>
+                    <tr>
+                      <th className={th}>Rule</th>
+                      <th className={`${th} ${thRight}`}>Triggers</th>
+                      <th className={th}>Frequency</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.topTriggeredRules.map((r) => (
+                      <tr key={r.ruleId} className={row}>
+                        <td className={td}><span className={ruleName}>{r.ruleName || r.ruleId}</span></td>
+                        <td className={`${td} ${tdRight}`}>{r.count}</td>
+                        <td className={`${td} ${tdBar}`}>
+                          <Bar value={r.count} max={summary.topTriggeredRules[0]?.count ?? 1} className={barRule} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -352,193 +334,40 @@ export function ApprovalAnalyticsPanel() {
       {summary && summary.commandSubcommandStats.length > 0 && (
         <div className={tableSection}>
           <h3 className={sectionTitle}>Command Distribution</h3>
-          <CommandDistributionTable stats={summary.commandSubcommandStats} />
+          <CommandDistributionTable stats={summary.commandSubcommandStats} bulkUpsert={bulkUpsertRules} />
         </div>
       )}
 
       {/* ── Rule coverage gaps ── */}
       {summary && summary.coverageGapCount > 0 && (
         <div className={tableSection}>
-          <CoverageGapHeader gapCount={summary.coverageGapCount} gapRate={summary.coverageGapRate} total={total} />
+          <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 12, flexWrap: "wrap" }}>
+            <h3 className={sectionTitle} style={{ margin: 0 }}>Coverage Gaps</h3>
+            {(() => {
+              const rounded = Math.round(summary.coverageGapRate);
+              const cls = rounded >= 30 ? gapBadgeHigh : rounded >= 10 ? gapBadgeMed : gapBadgeLow;
+              return <span className={cls}>{rounded}% uncovered</span>;
+            })()}
+            <span className={gapBadgeDesc}>{summary.coverageGapCount} of {total} decisions had no matching rule</span>
+          </div>
 
           {summary.topUncoveredTools.length > 0 && (
             <>
               <h4 className={subSectionTitle}>Uncovered Tools</h4>
-              <div className={tableWrapper}>
-                <table className={table}>
-                  <thead>
-                    <tr>
-                      <th className={th}>Tool</th>
-                      <th className={`${th} ${thRight}`}>Unmatched</th>
-                      <th className={th}>Share of gaps</th>
-                      <th className={th}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.topUncoveredTools.map((t) => {
-                      const toolRowKey = `tool:${t.toolName}`;
-                      const isToolGenerating = generateLoading && activeRowKey === toolRowKey;
-                      const isActiveToolRow = activeRowKey === toolRowKey;
-                      return (
-                        <React.Fragment key={t.toolName}>
-                          <tr className={row}>
-                            <td className={td}><code className={toolName}>{t.toolName}</code></td>
-                            <td className={`${td} ${tdRight}`}>{t.count}</td>
-                            <td className={`${td} ${tdBar}`}>
-                              <Bar value={t.count} max={summary.topUncoveredTools[0]?.count ?? 1} className={barGap} />
-                            </td>
-                            <td className={td}>
-                              <div className={rowActions}>
-                                {isToolGenerating ? (
-                                  <span className={rowGeneratingText}>Generating…</span>
-                                ) : (
-                                  <button
-                                    className={suggestRuleButton}
-                                    data-testid={`suggest-rule-tool-${t.toolName}`}
-                                    disabled={generateLoading}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setActiveRowKey(toolRowKey);
-                                      void generate({
-                                        source: SuggestionSource.ANALYTICS_GAPS,
-                                        toolNameFilter: t.toolName,
-                                        windowDays,
-                                      });
-                                    }}
-                                  >
-                                    Suggest Rule
-                                  </button>
-                                )}
-                                <a href={buildPrefillHref({ toolName: t.toolName })} className={addRuleManualLink} title={`Add a rule for ${t.toolName}`} onClick={(e) => e.stopPropagation()}>
-                                  or add manually →
-                                </a>
-                              </div>
-                            </td>
-                          </tr>
-                          {isActiveToolRow && generateError && (
-                            <tr>
-                              <td colSpan={4}>
-                                <span>{generateError.message}</span>
-                              </td>
-                            </tr>
-                          )}
-                          {isActiveToolRow && !generateError && suggestions.length > 0 && (
-                            <tr>
-                              <td colSpan={4}>
-                                {suggestions.map((suggestion, i) => (
-                                  <SuggestedRuleCard
-                                    key={i}
-                                    suggestion={suggestion}
-                                    onAccept={() => { generateClear(); refresh(); }}
-                                    onDiscard={() => { generateClear(); }}
-                                  />
-                                ))}
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <UncoveredToolsTable tools={summary.topUncoveredTools} bulkUpsert={bulkUpsertRules} />
             </>
           )}
 
           {summary.topUncoveredPrograms.length > 0 && (
             <>
               <h4 className={subSectionTitle}>Uncovered Bash Programs</h4>
-              <div className={tableWrapper}>
-                <table className={table}>
-                  <thead>
-                    <tr>
-                      <th className={th}>Program</th>
-                      <th className={th}>Category</th>
-                      <th className={`${th} ${thRight}`}>Unmatched</th>
-                      <th className={th}>Share of gaps</th>
-                      <th className={th}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.topUncoveredPrograms.map((p) => {
-                      const isDrillOpen = selectedProgram === p.programName;
-                      const rowKey = `program:${p.programName}`;
-                      const isGenerating = generateLoading && activeRowKey === rowKey;
-                      return (
-                        <React.Fragment key={p.programName}>
-                          <tr
-                            className={row}
-                            style={{ cursor: "pointer" }}
-                            tabIndex={0}
-                            role="button"
-                            aria-expanded={isDrillOpen}
-                            aria-label={`${p.programName} — click to ${isDrillOpen ? "collapse" : "expand"} details`}
-                            onClick={() =>
-                              setSelectedProgram(isDrillOpen ? null : p.programName)
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                setSelectedProgram(isDrillOpen ? null : p.programName);
-                              }
-                            }}
-                          >
-                            <td className={td}><code className={toolName}>{p.programName}</code></td>
-                            <td className={td}><span className={categoryBadge}>{p.category}</span></td>
-                            <td className={`${td} ${tdRight}`}>{p.count}</td>
-                            <td className={`${td} ${tdBar}`}>
-                              <Bar value={p.count} max={summary.topUncoveredPrograms[0]?.count ?? 1} className={barGap} />
-                            </td>
-                            <td className={td}>
-                              <div className={rowActions}>
-                                {isGenerating ? (
-                                  <span className={rowGeneratingText}>Generating…</span>
-                                ) : (
-                                  <button
-                                    className={suggestRuleButton}
-                                    data-testid={`suggest-rule-program-${p.programName}`}
-                                    disabled={generateLoading}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setActiveRowKey(rowKey);
-                                      void generate({
-                                        source: SuggestionSource.ANALYTICS_GAPS,
-                                        programNameFilter: p.programName,
-                                        windowDays,
-                                      });
-                                    }}
-                                  >
-                                    Suggest Rule
-                                  </button>
-                                )}
-                                <a
-                                  href="/rules"
-                                  className={addRuleManualLink}
-                                  title="Add a rule manually"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  or add manually →
-                                </a>
-                              </div>
-                            </td>
-                          </tr>
-                          {isDrillOpen && (
-                            <tr>
-                              <td colSpan={5} onClick={(e) => e.stopPropagation()}>
-                                <ProgramDetailPanel
-                                  program={p.programName}
-                                  windowDays={windowDays}
-                                  onClose={() => setSelectedProgram(null)}
-                                />
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <UncoveredProgramsTable
+                programs={summary.topUncoveredPrograms}
+                windowDays={windowDays}
+                selectedProgram={selectedProgram}
+                onSelectProgram={setSelectedProgram}
+                bulkUpsert={bulkUpsertRules}
+              />
             </>
           )}
         </div>
@@ -547,10 +376,114 @@ export function ApprovalAnalyticsPanel() {
   );
 }
 
+// ── BulkReviewPanel ───────────────────────────────────────────────────────────
+
+function BulkReviewPanel({
+  entries,
+  onEntriesChange,
+  bulkUpsert,
+  onDone,
+}: {
+  entries: BulkEntry[];
+  onEntriesChange: (entries: BulkEntry[]) => void;
+  bulkUpsert: BulkUpsertFn;
+  onDone: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState("");
+
+  const setDecision = useCallback((key: string, decision: AutoDecision) => {
+    onEntriesChange(entries.map((e) => (e.key === key ? { ...e, decision } : e)));
+  }, [entries, onEntriesChange]);
+
+  const removeEntry = useCallback((key: string) => {
+    const next = entries.filter((e) => e.key !== key);
+    if (next.length === 0) { onDone(); return; }
+    onEntriesChange(next);
+  }, [entries, onEntriesChange, onDone]);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setResult("");
+    try {
+      const rules = entries.map((e) => ({
+        id: "",
+        name: e.subcommand ? `${e.program} ${e.subcommand}` : e.program,
+        programs: [e.program],
+        subcommands: e.subcommand ? [e.subcommand] : [],
+        decision: e.decision,
+      }));
+      const resp = await bulkUpsert(rules);
+      setResult(`✓ Created ${resp.created}, updated ${resp.updated}`);
+    } catch (err) {
+      setResult(`Error: ${err instanceof Error ? err.message : "unknown error"}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [entries, bulkUpsert, onDone]);
+
+  return (
+    <div className={bulkReviewPanel}>
+      <div className={bulkReviewHeader}>
+        <span>Review {entries.length} new rule{entries.length !== 1 ? "s" : ""}</span>
+        <div className={bulkReviewActions}>
+          {result && <span className={bulkResultMsg} role="status">{result}</span>}
+          {result ? (
+            <button className={bulkSaveBtn} onClick={onDone}>Done</button>
+          ) : (
+            <button className={bulkSaveBtn} onClick={handleSave} disabled={saving}>
+              {saving ? "Saving…" : "Save all"}
+            </button>
+          )}
+          {!result && <button className={bulkDiscardBtn} onClick={onDone} disabled={saving}>Cancel</button>}
+        </div>
+      </div>
+      <div className={tableWrapper}>
+        <table className={table}>
+          <thead>
+            <tr>
+              <th className={th}>Program</th>
+              <th className={th}>Subcommand</th>
+              <th className={th}>Decision</th>
+              <th className={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.key} className={row}>
+                <td className={td}><code className={toolName}>{e.program}</code></td>
+                <td className={td}>{e.subcommand ? <code className={toolName}>{e.subcommand}</code> : <span style={{ color: "var(--text-muted)" }}>any</span>}</td>
+                <td className={td}>
+                  <select
+                    className={decisionSelect}
+                    value={e.decision}
+                    onChange={(ev) => setDecision(e.key, Number(ev.target.value) as AutoDecision)}
+                    aria-label={`Decision for ${e.program} ${e.subcommand}`}
+                  >
+                    <option value={AutoDecision.ALLOW}>Allow</option>
+                    <option value={AutoDecision.DENY}>Deny</option>
+                    <option value={AutoDecision.ESCALATE}>Escalate (manual)</option>
+                  </select>
+                </td>
+                <td className={td}>
+                  <button className={removeEntryBtn} onClick={() => removeEntry(e.key)} aria-label="Remove">✕</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── CommandDistributionTable ───────────────────────────────────────────────────
 
-function CommandDistributionTable({ stats }: { stats: SubcommandStatProto[] }) {
+function CommandDistributionTable({ stats, bulkUpsert }: { stats: SubcommandStatProto[]; bulkUpsert: BulkUpsertFn }) {
   const [filter, setFilter] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [reviewEntries, setReviewEntries] = useState<BulkEntry[] | null>(null);
+
   const lc = filter.toLowerCase();
   const filtered = lc
     ? stats.filter(
@@ -560,6 +493,47 @@ function CommandDistributionTable({ stats }: { stats: SubcommandStatProto[] }) {
       )
     : stats;
   const maxCount = filtered[0]?.count ?? 1;
+
+  const allFilteredKeys = filtered.map((s) => `${s.programName}:${s.subcommand}`);
+  const allSelected = allFilteredKeys.length > 0 && allFilteredKeys.every((k) => selected.has(k));
+  const someSelected = selected.size > 0;
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        allFilteredKeys.forEach((k) => next.delete(k));
+        return next;
+      });
+    } else {
+      setSelected((prev) => new Set([...prev, ...allFilteredKeys]));
+    }
+  };
+
+  const toggleRow = (key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const openReview = () => {
+    const entries: BulkEntry[] = stats
+      .filter((s) => selected.has(`${s.programName}:${s.subcommand}`))
+      .map((s) => ({
+        key: `${s.programName}:${s.subcommand}`,
+        program: s.programName,
+        subcommand: s.subcommand,
+        decision: AutoDecision.ALLOW,
+      }));
+    setReviewEntries(entries);
+  };
+
+  const closeReview = () => {
+    setReviewEntries(null);
+    setSelected(new Set());
+  };
 
   return (
     <>
@@ -571,10 +545,34 @@ function CommandDistributionTable({ stats }: { stats: SubcommandStatProto[] }) {
         className={filterInput}
         aria-label="Filter command distribution entries"
       />
+      {someSelected && !reviewEntries && (
+        <div className={bulkActionBar}>
+          <span className={bulkActionCount}>{selected.size} selected</span>
+          <button className={bulkAddBtn} onClick={openReview}>Add rules for selected →</button>
+          <button className={bulkClearBtn} onClick={() => setSelected(new Set())}>Clear</button>
+        </div>
+      )}
+      {reviewEntries && (
+        <BulkReviewPanel
+          entries={reviewEntries}
+          onEntriesChange={setReviewEntries}
+          bulkUpsert={bulkUpsert}
+          onDone={closeReview}
+        />
+      )}
       <div className={tableWrapper}>
         <table className={table}>
           <thead>
             <tr>
+              <th className={checkboxTh}>
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  aria-label="Select all"
+                  disabled={filtered.length === 0}
+                />
+              </th>
               <th className={th}>Program</th>
               <th className={th}>Subcommand</th>
               <th className={th}>Category</th>
@@ -584,30 +582,119 @@ function CommandDistributionTable({ stats }: { stats: SubcommandStatProto[] }) {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((s) => (
-              <tr key={s.programName + ":" + s.subcommand} className={row}>
-                <td className={td}>
-                  <code className={toolName}>{s.programName}</code>
-                </td>
-                <td className={td}>
-                  <code className={toolName}>{s.subcommand}</code>
-                </td>
-                <td className={td}>
-                  <span className={categoryBadge}>{s.category}</span>
-                </td>
-                <td className={`${td} ${tdRight}`}>{s.count}</td>
+            {filtered.map((s) => {
+              const key = `${s.programName}:${s.subcommand}`;
+              return (
+                <tr key={key} className={row}>
+                  <td className={checkboxTd}>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(key)}
+                      onChange={() => toggleRow(key)}
+                      aria-label={`Select ${s.programName} ${s.subcommand}`}
+                    />
+                  </td>
+                  <td className={td}>
+                    <code className={toolName}>{s.programName}</code>
+                  </td>
+                  <td className={td}>
+                    <code className={toolName}>{s.subcommand}</code>
+                  </td>
+                  <td className={td}>
+                    <span className={categoryBadge}>{s.category}</span>
+                  </td>
+                  <td className={`${td} ${tdRight}`}>{s.count}</td>
+                  <td className={`${td} ${tdBar}`}>
+                    <Bar value={s.count} max={maxCount} className={barCmd} />
+                  </td>
+                  <td className={td}>
+                    <a
+                      href={buildPrefillHref({
+                        programs: [s.programName],
+                        subcommands: s.subcommand ? [s.subcommand] : [],
+                      })}
+                      className={addRuleLink}
+                      title={`Add a rule for ${s.programName} ${s.subcommand}`}
+                    >
+                      Add rule →
+                    </a>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+// ── UncoveredToolsTable ───────────────────────────────────────────────────────
+
+type UncoveredTool = { toolName: string; count: number };
+
+function UncoveredToolsTable({ tools, bulkUpsert }: { tools: UncoveredTool[]; bulkUpsert: BulkUpsertFn }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [reviewEntries, setReviewEntries] = useState<BulkEntry[] | null>(null);
+
+  const allSelected = tools.length > 0 && tools.every((t) => selected.has(t.toolName));
+
+  const toggleAll = () => {
+    if (allSelected) setSelected(new Set());
+    else setSelected(new Set(tools.map((t) => t.toolName)));
+  };
+
+  const toggleRow = (key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const openReview = () => {
+    const entries: BulkEntry[] = tools
+      .filter((t) => selected.has(t.toolName))
+      .map((t) => ({ key: t.toolName, program: t.toolName, subcommand: "", decision: AutoDecision.ALLOW }));
+    setReviewEntries(entries);
+  };
+
+  const closeReview = () => { setReviewEntries(null); setSelected(new Set()); };
+
+  return (
+    <>
+      {selected.size > 0 && !reviewEntries && (
+        <div className={bulkActionBar}>
+          <span className={bulkActionCount}>{selected.size} selected</span>
+          <button className={bulkAddBtn} onClick={openReview}>Add rules for selected →</button>
+          <button className={bulkClearBtn} onClick={() => setSelected(new Set())}>Clear</button>
+        </div>
+      )}
+      {reviewEntries && (
+        <BulkReviewPanel entries={reviewEntries} onEntriesChange={setReviewEntries} bulkUpsert={bulkUpsert} onDone={closeReview} />
+      )}
+      <div className={tableWrapper}>
+        <table className={table}>
+          <thead>
+            <tr>
+              <th className={checkboxTh}><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all tools" /></th>
+              <th className={th}>Tool</th>
+              <th className={`${th} ${thRight}`}>Unmatched</th>
+              <th className={th}>Share of gaps</th>
+              <th className={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {tools.map((t) => (
+              <tr key={t.toolName} className={row}>
+                <td className={checkboxTd}><input type="checkbox" checked={selected.has(t.toolName)} onChange={() => toggleRow(t.toolName)} aria-label={`Select ${t.toolName}`} /></td>
+                <td className={td}><code className={toolName}>{t.toolName}</code></td>
+                <td className={`${td} ${tdRight}`}>{t.count}</td>
                 <td className={`${td} ${tdBar}`}>
-                  <Bar value={s.count} max={maxCount} className={barCmd} />
+                  <Bar value={t.count} max={tools[0]?.count ?? 1} className={barGap} />
                 </td>
                 <td className={td}>
-                  <a
-                    href={buildPrefillHref({
-                      programs: [s.programName],
-                      subcommands: s.subcommand ? [s.subcommand] : [],
-                    })}
-                    className={addRuleLink}
-                    title={`Add a rule for ${s.programName} ${s.subcommand}`}
-                  >
+                  <a href={buildPrefillHref({ toolName: t.toolName })} className={addRuleLink} title={`Add a rule for ${t.toolName}`}>
                     Add rule →
                   </a>
                 </td>
@@ -620,28 +707,119 @@ function CommandDistributionTable({ stats }: { stats: SubcommandStatProto[] }) {
   );
 }
 
-// ── CoverageGapHeader ─────────────────────────────────────────────────────────
+// ── UncoveredProgramsTable ────────────────────────────────────────────────────
 
-function CoverageGapHeader({ gapCount, gapRate, total }: { gapCount: number; gapRate: number; total: number }) {
-  const rounded = Math.round(gapRate);
-  const isHigh  = rounded >= 30;
-  const isMed   = rounded >= 10;
+type UncoveredProgram = { programName: string; category: string; count: number };
+
+function UncoveredProgramsTable({
+  programs, windowDays, selectedProgram, onSelectProgram, bulkUpsert,
+}: {
+  programs: UncoveredProgram[];
+  windowDays: number;
+  selectedProgram: string | null;
+  onSelectProgram: (p: string | null) => void;
+  bulkUpsert: BulkUpsertFn;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [reviewEntries, setReviewEntries] = useState<BulkEntry[] | null>(null);
+
+  const allSelected = programs.length > 0 && programs.every((p) => selected.has(p.programName));
+
+  const toggleAll = () => {
+    if (allSelected) setSelected(new Set());
+    else setSelected(new Set(programs.map((p) => p.programName)));
+  };
+
+  const toggleRow = (key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const openReview = () => {
+    const entries: BulkEntry[] = programs
+      .filter((p) => selected.has(p.programName))
+      .map((p) => ({ key: p.programName, program: p.programName, subcommand: "", decision: AutoDecision.ALLOW }));
+    setReviewEntries(entries);
+  };
+
+  const closeReview = () => { setReviewEntries(null); setSelected(new Set()); };
 
   return (
-    <div className={`${coverageGapHeader} ${isHigh ? coverageGapHigh : isMed ? coverageGapMed : coverageGapLow}`}>
-      <div className={coverageGapTitleRow}>
-        <span className={coverageGapIcon}>{isHigh ? "⚠️" : isMed ? "💡" : "✓"}</span>
-        <h3 className={coverageGapTitle}>Rule Coverage Gaps</h3>
-        <span className={coverageGapBadge}>{rounded}% uncovered</span>
+    <>
+      {selected.size > 0 && !reviewEntries && (
+        <div className={bulkActionBar}>
+          <span className={bulkActionCount}>{selected.size} selected</span>
+          <button className={bulkAddBtn} onClick={openReview}>Add rules for selected →</button>
+          <button className={bulkClearBtn} onClick={() => setSelected(new Set())}>Clear</button>
+        </div>
+      )}
+      {reviewEntries && (
+        <BulkReviewPanel entries={reviewEntries} onEntriesChange={setReviewEntries} bulkUpsert={bulkUpsert} onDone={closeReview} />
+      )}
+      <div className={tableWrapper}>
+        <table className={table}>
+          <thead>
+            <tr>
+              <th className={checkboxTh}><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all programs" /></th>
+              <th className={th}>Program</th>
+              <th className={th}>Category</th>
+              <th className={`${th} ${thRight}`}>Unmatched</th>
+              <th className={th}>Share of gaps</th>
+              <th className={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {programs.map((p) => {
+              const isDrillOpen = selectedProgram === p.programName;
+              return (
+                <React.Fragment key={p.programName}>
+                  <tr
+                    className={row}
+                    style={{ cursor: "pointer" }}
+                    tabIndex={0}
+                    role="button"
+                    aria-expanded={isDrillOpen}
+                    aria-label={`${p.programName} — click to ${isDrillOpen ? "collapse" : "expand"} details`}
+                    onClick={() => onSelectProgram(isDrillOpen ? null : p.programName)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelectProgram(isDrillOpen ? null : p.programName);
+                      }
+                    }}
+                  >
+                    <td className={checkboxTd} onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={selected.has(p.programName)} onChange={() => toggleRow(p.programName)} aria-label={`Select ${p.programName}`} />
+                    </td>
+                    <td className={td}><code className={toolName}>{p.programName}</code></td>
+                    <td className={td}><span className={categoryBadge}>{p.category}</span></td>
+                    <td className={`${td} ${tdRight}`}>{p.count}</td>
+                    <td className={`${td} ${tdBar}`}>
+                      <Bar value={p.count} max={programs[0]?.count ?? 1} className={barGap} />
+                    </td>
+                    <td className={td}>
+                      <a href={buildPrefillHref({ programs: [p.programName] })} className={addRuleLink} title={`Add a rule for ${p.programName}`} onClick={(e) => e.stopPropagation()}>
+                        Add rule →
+                      </a>
+                    </td>
+                  </tr>
+                  {isDrillOpen && (
+                    <tr>
+                      <td colSpan={6} onClick={(e) => e.stopPropagation()}>
+                        <ProgramDetailPanel program={p.programName} windowDays={windowDays} onClose={() => onSelectProgram(null)} />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-      <p className={coverageGapDesc}>
-        {gapCount} of {total} decision{total !== 1 ? "s" : ""} had no matching rule and went to manual review.{" "}
-        {isHigh
-          ? "High gap rate — adding rules for the patterns below could significantly reduce manual review."
-          : isMed
-          ? "Consider adding rules for frequently unmatched patterns."
-          : "Coverage is good. Review any new patterns to stay ahead."}
-      </p>
-    </div>
+    </>
   );
 }
+
