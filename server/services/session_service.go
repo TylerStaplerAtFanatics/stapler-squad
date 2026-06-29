@@ -1460,26 +1460,37 @@ func (s *SessionService) UpdateSession(
 		updatedFields = append(updatedFields, "tags")
 	}
 
-	// Handle program update
-	if req.Msg.Program != nil && *req.Msg.Program != "" && instance.Program != *req.Msg.Program {
+	// Handle program update. Empty string means "System default" — resolve to the
+	// configured default so the DB NotEmpty constraint is satisfied.
+	if req.Msg.Program != nil {
 		oldProgram := instance.Program
 		newProgram := *req.Msg.Program
-		instance.Program = newProgram
-		updatedFields = append(updatedFields, "program")
-
-		// Port history if switching between Claude and Antigravity
-		if (strings.Contains(oldProgram, "claude") && (strings.Contains(newProgram, "agy") || strings.Contains(newProgram, "antigravity"))) ||
-			((strings.Contains(oldProgram, "agy") || strings.Contains(oldProgram, "antigravity")) && strings.Contains(newProgram, "claude")) {
-			if err := session.PortSessionHistory(ctx, oldProgram, newProgram, instance); err != nil {
-				log.Error("[UpdateSession] failed to port session history during program switch", "session", instance.Title, "old", oldProgram, "new", newProgram, "err", err)
-			}
+		if newProgram == "" {
+			newProgram = config.LoadConfig().DefaultProgram
 		}
+		if instance.Program != newProgram {
+			instance.Program = newProgram
+			updatedFields = append(updatedFields, "program")
 
-		// If the session is running, restart it with the new program
-		if instance.Status == session.Active {
-			if err := instance.Restart(true); err != nil {
-				log.Error("[UpdateSession] failed to restart session after program change", "session", instance.Title, "err", err)
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restart session after program change: %w", err))
+			// Port history if switching between Claude and Antigravity
+			if (strings.Contains(oldProgram, "claude") && (strings.Contains(newProgram, "agy") || strings.Contains(newProgram, "antigravity"))) ||
+				((strings.Contains(oldProgram, "agy") || strings.Contains(oldProgram, "antigravity")) && strings.Contains(newProgram, "claude")) {
+				if err := session.PortSessionHistory(ctx, oldProgram, newProgram, instance); err != nil {
+					log.Error("[UpdateSession] failed to port session history during program switch", "session", instance.Title, "old", oldProgram, "new", newProgram, "err", err)
+				}
+			}
+
+			// If the session is running, restart it with the new program.
+			// Save before restarting so the new program is persisted even if Restart fails.
+			if instance.Status == session.Active {
+				instances[instanceIndex] = instance
+				if saveErr := s.storage.SaveInstances(instances); saveErr != nil {
+					log.Warn("[UpdateSession] failed to pre-save before program restart", "session", instance.Title, "err", saveErr)
+				}
+				if err := instance.Restart(true); err != nil {
+					log.Error("[UpdateSession] failed to restart session after program change", "session", instance.Title, "err", err)
+					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restart session after program change: %w", err))
+				}
 			}
 		}
 	}
