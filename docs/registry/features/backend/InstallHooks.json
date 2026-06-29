@@ -1,0 +1,13 @@
+{
+  "id": "InstallHooks",
+  "type": "backend",
+  "service": "SessionService",
+  "method": "InstallHooks",
+  "protoFile": "proto/session/v1/session.proto",
+  "markerFound": false,
+  "tested": true,
+  "testIds": [
+    "TestInstallHooks_MissingBinary_ReportsManualFallback"
+  ],
+  "lastModified": "2026-06-26T18:30:50.237823634-07:00"
+}

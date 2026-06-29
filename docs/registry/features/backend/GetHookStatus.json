@@ -1,0 +1,13 @@
+{
+  "id": "GetHookStatus",
+  "type": "backend",
+  "service": "SessionService",
+  "method": "GetHookStatus",
+  "protoFile": "proto/session/v1/session.proto",
+  "markerFound": false,
+  "tested": true,
+  "testIds": [
+    "TestGetHookStatus_ReflectsGlobalSettings"
+  ],
+  "lastModified": "2026-06-26T18:30:50.237823634-07:00"
+}
