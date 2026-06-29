@@ -141,6 +141,7 @@ var methodToID = map[string]string{
 	"SpawnSessionFromItem":        "backlog:spawn-session",
 	"AttachSessionToItem":         "backlog:attach-session",
 	"TriggerTriage":               "backlog:trigger-triage",
+	"CancelTriage":                "backlog:cancel-triage",
 	"ApprovePlan":                 "backlog:approve-plan",
 	"SuggestNextItem":             "backlog:suggest-next",
 	"OverrideVerdict":             "backlog:override-verdict",
@@ -183,6 +184,9 @@ var methodToID = map[string]string{
 	// Feature flags RPCs
 	"GetFeatureFlags":   "feature-flag:get",
 	"UpdateFeatureFlag": "feature-flag:update",
+	// Hooks RPCs
+	"GetHookStatus": "hooks:status",
+	"InstallHooks":  "hooks:install",
 }
 
 // rpcPattern matches lines like:   rpc MethodName(  (indented or not)
