@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -85,10 +86,15 @@ func DefaultUserPRCacheConfig() UserPRCacheConfig {
 // UserPRCache fetches and caches open GitHub PRs authored by the authenticated user.
 // All reads are lock-free (atomic.Value COW). Concurrent refresh calls are
 // coalesced via singleflight.
+type onUpdatedFn struct {
+	fn func(prs []UserPR)
+}
+
 type UserPRCache struct {
 	config       UserPRCacheConfig
 	snapshot     atomic.Value // stores *userPRSnapshot
 	subscribers  sync.Map     // maps string ID → chan []UserPR
+	onUpdated    atomic.Value // stores onUpdatedFn
 	cachedLogin  atomic.Value // stores string
 	loginState   atomic.Value // stores loginResult
 	loginGroup   singleflight.Group //nolint:exhaustruct
@@ -118,6 +124,17 @@ func (c *UserPRCache) Start(ctx context.Context) {
 // Stop halts background polling.
 func (c *UserPRCache) Stop() {
 	c.cancel()
+}
+
+// SetOnUpdated atomically registers a callback invoked after every successful
+// refresh. Pass nil to clear. The callback receives the current PR slice.
+// Safe to call at any time, including after Start.
+func (c *UserPRCache) SetOnUpdated(fn func(prs []UserPR)) {
+	if fn == nil {
+		c.onUpdated.Store(onUpdatedFn{})
+	} else {
+		c.onUpdated.Store(onUpdatedFn{fn: fn})
+	}
 }
 
 // GetAll returns a copy of the current PR snapshot. Returns nil before the
@@ -252,6 +269,11 @@ func (c *UserPRCache) fetch() error {
 		}
 		return true
 	})
+	if v := c.onUpdated.Load(); v != nil {
+		if cb := v.(onUpdatedFn).fn; cb != nil {
+			cb(out)
+		}
+	}
 	return nil
 }
 
@@ -375,7 +397,7 @@ func (c *UserPRCache) fetchUserPRs() ([]UserPR, error) {
 		return nil, fmt.Errorf("marshal GraphQL query: %w", err)
 	}
 
-	req, err := newGHPostRequest(c.ctx, "graphql", body)
+	req, err := newGHPostRequest(c.ctx, "graphql", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build GraphQL request: %w", err)
 	}
@@ -385,7 +407,9 @@ func (c *UserPRCache) fetchUserPRs() ([]UserPR, error) {
 		return nil, fmt.Errorf("GraphQL request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	checkRateLimitHeaders(resp)
+	if backoff := checkRateLimitHeaders(resp); backoff > 0 {
+		time.Sleep(backoff)
+	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		_, _ = io.Copy(io.Discard, resp.Body)

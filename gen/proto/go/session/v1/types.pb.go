@@ -6091,7 +6091,169 @@ func (x *Shell) GetStoppedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-// UserPR represents an open GitHub pull request authored by the authenticated user.
+// SuggestedRuleProto carries a pre-filled rule proposal plus AI metadata.
+// It mirrors ApprovalRuleProto fields 1–11 (same field numbers) so the UI
+// can reuse ApprovalRuleProto rendering helpers with a simple copy.
+type SuggestedRuleProto struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	ToolName       string                 `protobuf:"bytes,2,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	ToolPattern    string                 `protobuf:"bytes,3,opt,name=tool_pattern,json=toolPattern,proto3" json:"tool_pattern,omitempty"`
+	CommandPattern string                 `protobuf:"bytes,4,opt,name=command_pattern,json=commandPattern,proto3" json:"command_pattern,omitempty"`
+	FilePattern    string                 `protobuf:"bytes,5,opt,name=file_pattern,json=filePattern,proto3" json:"file_pattern,omitempty"`
+	Decision       AutoDecision           `protobuf:"varint,6,opt,name=decision,proto3,enum=session.v1.AutoDecision" json:"decision,omitempty"`
+	RiskLevel      string                 `protobuf:"bytes,7,opt,name=risk_level,json=riskLevel,proto3" json:"risk_level,omitempty"`
+	Reason         string                 `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"`
+	Alternative    string                 `protobuf:"bytes,9,opt,name=alternative,proto3" json:"alternative,omitempty"`
+	Priority       int32                  `protobuf:"varint,10,opt,name=priority,proto3" json:"priority,omitempty"`
+	// AI metadata.
+	Confidence     float32  `protobuf:"fixed32,11,opt,name=confidence,proto3" json:"confidence,omitempty"`                             // 0.0–1.0; agent's certainty in the pattern
+	Explanation    string   `protobuf:"bytes,12,opt,name=explanation,proto3" json:"explanation,omitempty"`                             // why these fields were chosen
+	SourceCommands []string `protobuf:"bytes,13,rep,name=source_commands,json=sourceCommands,proto3" json:"source_commands,omitempty"` // up to 20 commands that informed the pattern
+	// Conflict detection results (computed server-side, heuristic — may overlap).
+	ShadowedByRuleIds []string `protobuf:"bytes,14,rep,name=shadowed_by_rule_ids,json=shadowedByRuleIds,proto3" json:"shadowed_by_rule_ids,omitempty"` // IDs of higher-priority rules that may fire first
+	ShadowsRuleIds    []string `protobuf:"bytes,15,rep,name=shadows_rule_ids,json=shadowsRuleIds,proto3" json:"shadows_rule_ids,omitempty"`            // IDs of lower-priority rules this may suppress
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *SuggestedRuleProto) Reset() {
+	*x = SuggestedRuleProto{}
+	mi := &file_session_v1_types_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SuggestedRuleProto) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SuggestedRuleProto) ProtoMessage() {}
+
+func (x *SuggestedRuleProto) ProtoReflect() protoreflect.Message {
+	mi := &file_session_v1_types_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SuggestedRuleProto.ProtoReflect.Descriptor instead.
+func (*SuggestedRuleProto) Descriptor() ([]byte, []int) {
+	return file_session_v1_types_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *SuggestedRuleProto) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetToolName() string {
+	if x != nil {
+		return x.ToolName
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetToolPattern() string {
+	if x != nil {
+		return x.ToolPattern
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetCommandPattern() string {
+	if x != nil {
+		return x.CommandPattern
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetFilePattern() string {
+	if x != nil {
+		return x.FilePattern
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetDecision() AutoDecision {
+	if x != nil {
+		return x.Decision
+	}
+	return AutoDecision_AUTO_DECISION_UNSPECIFIED
+}
+
+func (x *SuggestedRuleProto) GetRiskLevel() string {
+	if x != nil {
+		return x.RiskLevel
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetAlternative() string {
+	if x != nil {
+		return x.Alternative
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *SuggestedRuleProto) GetConfidence() float32 {
+	if x != nil {
+		return x.Confidence
+	}
+	return 0
+}
+
+func (x *SuggestedRuleProto) GetExplanation() string {
+	if x != nil {
+		return x.Explanation
+	}
+	return ""
+}
+
+func (x *SuggestedRuleProto) GetSourceCommands() []string {
+	if x != nil {
+		return x.SourceCommands
+	}
+	return nil
+}
+
+func (x *SuggestedRuleProto) GetShadowedByRuleIds() []string {
+	if x != nil {
+		return x.ShadowedByRuleIds
+	}
+	return nil
+}
+
+func (x *SuggestedRuleProto) GetShadowsRuleIds() []string {
+	if x != nil {
+		return x.ShadowsRuleIds
+	}
+	return nil
+}
+
+// UserPR represents an open (or recently closed) pull request authored by the
+// authenticated GitHub user. Served by GitHubUserService.
 type UserPR struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Owner             string                 `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
@@ -6099,25 +6261,25 @@ type UserPR struct {
 	Number            int32                  `protobuf:"varint,3,opt,name=number,proto3" json:"number,omitempty"`
 	Title             string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`
 	HtmlUrl           string                 `protobuf:"bytes,5,opt,name=html_url,json=htmlUrl,proto3" json:"html_url,omitempty"`
-	State             string                 `protobuf:"bytes,6,opt,name=state,proto3" json:"state,omitempty"`
+	State             string                 `protobuf:"bytes,6,opt,name=state,proto3" json:"state,omitempty"` // "OPEN" / "CLOSED" / "MERGED"
 	HeadRef           string                 `protobuf:"bytes,7,opt,name=head_ref,json=headRef,proto3" json:"head_ref,omitempty"`
 	BaseRef           string                 `protobuf:"bytes,8,opt,name=base_ref,json=baseRef,proto3" json:"base_ref,omitempty"`
 	IsDraft           bool                   `protobuf:"varint,9,opt,name=is_draft,json=isDraft,proto3" json:"is_draft,omitempty"`
-	CheckConclusion   string                 `protobuf:"bytes,10,opt,name=check_conclusion,json=checkConclusion,proto3" json:"check_conclusion,omitempty"`
+	CheckConclusion   string                 `protobuf:"bytes,10,opt,name=check_conclusion,json=checkConclusion,proto3" json:"check_conclusion,omitempty"` // "success" / "failure" / "pending" / ""
 	ApprovedCount     int32                  `protobuf:"varint,11,opt,name=approved_count,json=approvedCount,proto3" json:"approved_count,omitempty"`
 	ChangesReqCount   int32                  `protobuf:"varint,12,opt,name=changes_req_count,json=changesReqCount,proto3" json:"changes_req_count,omitempty"`
 	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	ClosedAt          *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=closed_at,json=closedAt,proto3" json:"closed_at,omitempty"`
 	MergedAt          *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=merged_at,json=mergedAt,proto3" json:"merged_at,omitempty"`
-	SessionIds        []string               `protobuf:"bytes,16,rep,name=session_ids,json=sessionIds,proto3" json:"session_ids,omitempty"`
-	LocalWorktreePath string                 `protobuf:"bytes,17,opt,name=local_worktree_path,json=localWorktreePath,proto3" json:"local_worktree_path,omitempty"`
+	SessionIds        []string               `protobuf:"bytes,16,rep,name=session_ids,json=sessionIds,proto3" json:"session_ids,omitempty"`                        // local sessions checked out on this branch
+	LocalWorktreePath string                 `protobuf:"bytes,17,opt,name=local_worktree_path,json=localWorktreePath,proto3" json:"local_worktree_path,omitempty"` // local worktree path, if any
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
 
 func (x *UserPR) Reset() {
 	*x = UserPR{}
-	mi := &file_session_v1_types_proto_msgTypes[39]
+	mi := &file_session_v1_types_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6129,7 +6291,7 @@ func (x *UserPR) String() string {
 func (*UserPR) ProtoMessage() {}
 
 func (x *UserPR) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[39]
+	mi := &file_session_v1_types_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6142,7 +6304,7 @@ func (x *UserPR) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserPR.ProtoReflect.Descriptor instead.
 func (*UserPR) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{39}
+	return file_session_v1_types_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *UserPR) GetOwner() string {
@@ -6262,167 +6424,6 @@ func (x *UserPR) GetLocalWorktreePath() string {
 		return x.LocalWorktreePath
 	}
 	return ""
-}
-
-// SuggestedRuleProto carries a pre-filled rule proposal plus AI metadata.
-// It mirrors ApprovalRuleProto fields 1–11 (same field numbers) so the UI
-// can reuse ApprovalRuleProto rendering helpers with a simple copy.
-type SuggestedRuleProto struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	ToolName       string                 `protobuf:"bytes,2,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	ToolPattern    string                 `protobuf:"bytes,3,opt,name=tool_pattern,json=toolPattern,proto3" json:"tool_pattern,omitempty"`
-	CommandPattern string                 `protobuf:"bytes,4,opt,name=command_pattern,json=commandPattern,proto3" json:"command_pattern,omitempty"`
-	FilePattern    string                 `protobuf:"bytes,5,opt,name=file_pattern,json=filePattern,proto3" json:"file_pattern,omitempty"`
-	Decision       AutoDecision           `protobuf:"varint,6,opt,name=decision,proto3,enum=session.v1.AutoDecision" json:"decision,omitempty"`
-	RiskLevel      string                 `protobuf:"bytes,7,opt,name=risk_level,json=riskLevel,proto3" json:"risk_level,omitempty"`
-	Reason         string                 `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"`
-	Alternative    string                 `protobuf:"bytes,9,opt,name=alternative,proto3" json:"alternative,omitempty"`
-	Priority       int32                  `protobuf:"varint,10,opt,name=priority,proto3" json:"priority,omitempty"`
-	// AI metadata.
-	Confidence     float32  `protobuf:"fixed32,11,opt,name=confidence,proto3" json:"confidence,omitempty"`                             // 0.0–1.0; agent's certainty in the pattern
-	Explanation    string   `protobuf:"bytes,12,opt,name=explanation,proto3" json:"explanation,omitempty"`                             // why these fields were chosen
-	SourceCommands []string `protobuf:"bytes,13,rep,name=source_commands,json=sourceCommands,proto3" json:"source_commands,omitempty"` // up to 20 commands that informed the pattern
-	// Conflict detection results (computed server-side, heuristic — may overlap).
-	ShadowedByRuleIds []string `protobuf:"bytes,14,rep,name=shadowed_by_rule_ids,json=shadowedByRuleIds,proto3" json:"shadowed_by_rule_ids,omitempty"` // IDs of higher-priority rules that may fire first
-	ShadowsRuleIds    []string `protobuf:"bytes,15,rep,name=shadows_rule_ids,json=shadowsRuleIds,proto3" json:"shadows_rule_ids,omitempty"`            // IDs of lower-priority rules this may suppress
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
-}
-
-func (x *SuggestedRuleProto) Reset() {
-	*x = SuggestedRuleProto{}
-	mi := &file_session_v1_types_proto_msgTypes[40]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SuggestedRuleProto) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SuggestedRuleProto) ProtoMessage() {}
-
-func (x *SuggestedRuleProto) ProtoReflect() protoreflect.Message {
-	mi := &file_session_v1_types_proto_msgTypes[40]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SuggestedRuleProto.ProtoReflect.Descriptor instead.
-func (*SuggestedRuleProto) Descriptor() ([]byte, []int) {
-	return file_session_v1_types_proto_rawDescGZIP(), []int{40}
-}
-
-func (x *SuggestedRuleProto) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetToolName() string {
-	if x != nil {
-		return x.ToolName
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetToolPattern() string {
-	if x != nil {
-		return x.ToolPattern
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetCommandPattern() string {
-	if x != nil {
-		return x.CommandPattern
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetFilePattern() string {
-	if x != nil {
-		return x.FilePattern
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetDecision() AutoDecision {
-	if x != nil {
-		return x.Decision
-	}
-	return AutoDecision_AUTO_DECISION_UNSPECIFIED
-}
-
-func (x *SuggestedRuleProto) GetRiskLevel() string {
-	if x != nil {
-		return x.RiskLevel
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetReason() string {
-	if x != nil {
-		return x.Reason
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetAlternative() string {
-	if x != nil {
-		return x.Alternative
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetPriority() int32 {
-	if x != nil {
-		return x.Priority
-	}
-	return 0
-}
-
-func (x *SuggestedRuleProto) GetConfidence() float32 {
-	if x != nil {
-		return x.Confidence
-	}
-	return 0
-}
-
-func (x *SuggestedRuleProto) GetExplanation() string {
-	if x != nil {
-		return x.Explanation
-	}
-	return ""
-}
-
-func (x *SuggestedRuleProto) GetSourceCommands() []string {
-	if x != nil {
-		return x.SourceCommands
-	}
-	return nil
-}
-
-func (x *SuggestedRuleProto) GetShadowedByRuleIds() []string {
-	if x != nil {
-		return x.ShadowedByRuleIds
-	}
-	return nil
-}
-
-func (x *SuggestedRuleProto) GetShadowsRuleIds() []string {
-	if x != nil {
-		return x.ShadowsRuleIds
-	}
-	return nil
 }
 
 var File_session_v1_types_proto protoreflect.FileDescriptor
@@ -6935,7 +6936,27 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x129\n" +
 	"\n" +
-	"stopped_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tstoppedAt\"\xde\x04\n" +
+	"stopped_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tstoppedAt\"\xa5\x04\n" +
+	"\x12SuggestedRuleProto\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
+	"\ttool_name\x18\x02 \x01(\tR\btoolName\x12!\n" +
+	"\ftool_pattern\x18\x03 \x01(\tR\vtoolPattern\x12'\n" +
+	"\x0fcommand_pattern\x18\x04 \x01(\tR\x0ecommandPattern\x12!\n" +
+	"\ffile_pattern\x18\x05 \x01(\tR\vfilePattern\x124\n" +
+	"\bdecision\x18\x06 \x01(\x0e2\x18.session.v1.AutoDecisionR\bdecision\x12\x1d\n" +
+	"\n" +
+	"risk_level\x18\a \x01(\tR\triskLevel\x12\x16\n" +
+	"\x06reason\x18\b \x01(\tR\x06reason\x12 \n" +
+	"\valternative\x18\t \x01(\tR\valternative\x12\x1a\n" +
+	"\bpriority\x18\n" +
+	" \x01(\x05R\bpriority\x12\x1e\n" +
+	"\n" +
+	"confidence\x18\v \x01(\x02R\n" +
+	"confidence\x12 \n" +
+	"\vexplanation\x18\f \x01(\tR\vexplanation\x12'\n" +
+	"\x0fsource_commands\x18\r \x03(\tR\x0esourceCommands\x12/\n" +
+	"\x14shadowed_by_rule_ids\x18\x0e \x03(\tR\x11shadowedByRuleIds\x12(\n" +
+	"\x10shadows_rule_ids\x18\x0f \x03(\tR\x0eshadowsRuleIds\"\xde\x04\n" +
 	"\x06UserPR\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x16\n" +
@@ -6956,27 +6977,7 @@ const file_session_v1_types_proto_rawDesc = "" +
 	"\tmerged_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\bmergedAt\x12\x1f\n" +
 	"\vsession_ids\x18\x10 \x03(\tR\n" +
 	"sessionIds\x12.\n" +
-	"\x13local_worktree_path\x18\x11 \x01(\tR\x11localWorktreePath\"\xa5\x04\n" +
-	"\x12SuggestedRuleProto\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
-	"\ttool_name\x18\x02 \x01(\tR\btoolName\x12!\n" +
-	"\ftool_pattern\x18\x03 \x01(\tR\vtoolPattern\x12'\n" +
-	"\x0fcommand_pattern\x18\x04 \x01(\tR\x0ecommandPattern\x12!\n" +
-	"\ffile_pattern\x18\x05 \x01(\tR\vfilePattern\x124\n" +
-	"\bdecision\x18\x06 \x01(\x0e2\x18.session.v1.AutoDecisionR\bdecision\x12\x1d\n" +
-	"\n" +
-	"risk_level\x18\a \x01(\tR\triskLevel\x12\x16\n" +
-	"\x06reason\x18\b \x01(\tR\x06reason\x12 \n" +
-	"\valternative\x18\t \x01(\tR\valternative\x12\x1a\n" +
-	"\bpriority\x18\n" +
-	" \x01(\x05R\bpriority\x12\x1e\n" +
-	"\n" +
-	"confidence\x18\v \x01(\x02R\n" +
-	"confidence\x12 \n" +
-	"\vexplanation\x18\f \x01(\tR\vexplanation\x12'\n" +
-	"\x0fsource_commands\x18\r \x03(\tR\x0esourceCommands\x12/\n" +
-	"\x14shadowed_by_rule_ids\x18\x0e \x03(\tR\x11shadowedByRuleIds\x12(\n" +
-	"\x10shadows_rule_ids\x18\x0f \x03(\tR\x0eshadowsRuleIds*\xa9\x01\n" +
+	"\x13local_worktree_path\x18\x11 \x01(\tR\x11localWorktreePath*\xa9\x01\n" +
 	"\tVNCStatus\x12\x1a\n" +
 	"\x16VNC_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13VNC_STATUS_STARTING\x10\x01\x12\x14\n" +
@@ -7222,8 +7223,8 @@ var file_session_v1_types_proto_goTypes = []any{
 	(*UnfinishedWorktree)(nil),        // 57: session.v1.UnfinishedWorktree
 	(*UnfinishedWorkConfig)(nil),      // 58: session.v1.UnfinishedWorkConfig
 	(*Shell)(nil),                     // 59: session.v1.Shell
-	(*UserPR)(nil),                    // 60: session.v1.UserPR
-	(*SuggestedRuleProto)(nil),        // 61: session.v1.SuggestedRuleProto
+	(*SuggestedRuleProto)(nil),        // 60: session.v1.SuggestedRuleProto
+	(*UserPR)(nil),                    // 61: session.v1.UserPR
 	nil,                               // 62: session.v1.ClaudeSession.MetadataEntry
 	nil,                               // 63: session.v1.ReviewItem.MetadataEntry
 	nil,                               // 64: session.v1.ReviewQueue.ByPriorityEntry
@@ -7319,10 +7320,10 @@ var file_session_v1_types_proto_depIdxs = []int32{
 	19, // 82: session.v1.Shell.status:type_name -> session.v1.ShellStatus
 	69, // 83: session.v1.Shell.started_at:type_name -> google.protobuf.Timestamp
 	69, // 84: session.v1.Shell.stopped_at:type_name -> google.protobuf.Timestamp
-	69, // 85: session.v1.UserPR.updated_at:type_name -> google.protobuf.Timestamp
-	69, // 86: session.v1.UserPR.closed_at:type_name -> google.protobuf.Timestamp
-	69, // 87: session.v1.UserPR.merged_at:type_name -> google.protobuf.Timestamp
-	17, // 88: session.v1.SuggestedRuleProto.decision:type_name -> session.v1.AutoDecision
+	17, // 85: session.v1.SuggestedRuleProto.decision:type_name -> session.v1.AutoDecision
+	69, // 86: session.v1.UserPR.updated_at:type_name -> google.protobuf.Timestamp
+	69, // 87: session.v1.UserPR.closed_at:type_name -> google.protobuf.Timestamp
+	69, // 88: session.v1.UserPR.merged_at:type_name -> google.protobuf.Timestamp
 	89, // [89:89] is the sub-list for method output_type
 	89, // [89:89] is the sub-list for method input_type
 	89, // [89:89] is the sub-list for extension type_name

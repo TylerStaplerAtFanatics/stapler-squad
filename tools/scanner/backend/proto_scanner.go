@@ -111,8 +111,8 @@ var methodToID = map[string]string{
 	// Detection RPCs
 	"GetDetectionEvents": "session:get-detection-events",
 	// Workflow session management RPCs
-	"ArchiveWorkflowSessions":       "session:archive-workflow",
-	"DeleteWorkflowFailedSessions":  "session:delete-workflow-failed",
+	"ArchiveWorkflowSessions":      "session:archive-workflow",
+	"DeleteWorkflowFailedSessions": "session:delete-workflow-failed",
 	// Unfinished work RPCs (UnfinishedWorkService in unfinished.proto)
 	"ListUnfinishedWork":         "unfinished:list",
 	"WatchUnfinishedWork":        "unfinished:watch",
@@ -167,11 +167,11 @@ var methodToID = map[string]string{
 	// Slash commands RPCs
 	"ListSlashCommands": "slash-command:list",
 	// Workflow RPCs
-	"CreateWorkflow":  "workflow:create",
-	"DeleteWorkflow":  "workflow:delete",
-	"ListWorkflows":   "workflow:list",
-	"UpdateWorkflow":  "workflow:update",
-	"RunWorkflow":     "workflow:run",
+	"CreateWorkflow": "workflow:create",
+	"DeleteWorkflow": "workflow:delete",
+	"ListWorkflows":  "workflow:list",
+	"UpdateWorkflow": "workflow:update",
+	"RunWorkflow":    "workflow:run",
 	// Approval rules RPCs
 	"BulkUpsertRules":       "approval:bulk-upsert-rules",
 	"ExportRules":           "approval:export-rules",
@@ -184,9 +184,13 @@ var methodToID = map[string]string{
 	// Feature flags RPCs
 	"GetFeatureFlags":   "feature-flag:get",
 	"UpdateFeatureFlag": "feature-flag:update",
-	// Hook management RPCs
-	"GetHookStatus": "session:get-hook-status",
-	"InstallHooks":  "session:install-hooks",
+	// Hooks RPCs
+	"GetHookStatus": "hooks:status",
+	"InstallHooks":  "hooks:install",
+	// GitHub user RPCs
+	"ListUserPRs":       "github-user:list-prs",
+	"WatchUserPRs":      "github-user:watch-prs",
+	"GetGitHubAuthState": "github-user:get-auth-state",
 }
 
 // rpcPattern matches lines like:   rpc MethodName(  (indented or not)

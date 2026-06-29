@@ -73,6 +73,9 @@ registry-generate-backend: ## Scan proto+markers → write per-feature files und
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/backlog.proto server/services/ $(BACKEND_FEATURES_DIR)
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/insights.proto server/services/ $(BACKEND_FEATURES_DIR)
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/github_user.proto server/services/ $(BACKEND_FEATURES_DIR)
+	@# Generation is additive; prune files whose RPC no longer exists so the
+	@# committed set stays in sync with the proto (avoids registry-validation drift).
+	@bash tools/scanner/prune-stale-backend.sh $(BACKEND_FEATURES_DIR)
 	@echo "✅ Backend per-feature files written to $(BACKEND_FEATURES_DIR)/"
 
 registry-generate-frontend: ## Generate frontend feature registry from React component markers
@@ -371,7 +374,9 @@ proto-gen: ensure-tools web-app/node_modules/.modules.yaml ## Generate Go and Ty
 	@echo "Checking if proto files need regeneration..."
 	@if [ ! -f $(PROTO_STAMP) ] \
 	   || [ "$$(find proto -name '*.proto' -newer $(PROTO_STAMP) -print -quit)" ] \
-	   || [ web-app/node_modules/.bin/protoc-gen-es -nt $(PROTO_STAMP) ]; then \
+	   || [ web-app/node_modules/.bin/protoc-gen-es -nt $(PROTO_STAMP) ] \
+	   || [ ! -f gen/proto/go/session/v1/session.pb.go ] \
+	   || [ ! -f web-app/src/gen/session/v1/session_pb.ts ]; then \
 		echo "Generating protocol buffer code..."; \
 		buf generate proto; \
 		echo "✅ Code generation complete"; \

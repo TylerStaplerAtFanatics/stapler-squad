@@ -51,16 +51,17 @@ type ServerDependencies struct {
 	UnfinishedScanner     *unfinished.Scanner
 	UnfinishedStateStore  *unfinished.StateStore
 	UnfinishedWorkService *services.UnfinishedWorkService
+	WorktreePRPoller      *session.WorktreePRPoller
+
+	// GitHub user PR cache and service. Nil when no GitHub token is available.
+	UserPRCache       *githubpkg.UserPRCache
+	GitHubUserService *services.GitHubUserService
 
 	// Token usage analytics.
 	InsightsService *services.InsightsService
 
 	BacklogService *services.BacklogService
 	SyncLoop       *session.SyncLoop
-
-	// GitHub user PR cache and service. Nil when no GitHub token is available.
-	UserPRCache        *githubpkg.UserPRCache
-	GitHubUserService  *services.GitHubUserService
 
 	// Analytics storage. Nil when the analytics DB failed to open (LogAnalyticsProvider
 	// is used as a fallback in that case).
@@ -106,11 +107,12 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		UnfinishedScanner:       rt.UnfinishedScanner,
 		UnfinishedStateStore:    rt.UnfinishedStateStore,
 		UnfinishedWorkService:   rt.UnfinishedWorkService,
+		WorktreePRPoller:        rt.WorktreePRPoller,
+		UserPRCache:             rt.UserPRCache,
+		GitHubUserService:       rt.GitHubUserService,
 		InsightsService:         rt.InsightsService,
 		BacklogService:          rt.BacklogService,
 		SyncLoop:                rt.SyncLoop,
-		UserPRCache:             rt.UserPRCache,
-		GitHubUserService:       rt.GitHubUserService,
 		AnalyticsEntClient:      rt.AnalyticsEntClient,
 		VNCDeps:                 rt.VNCDeps,
 		CDPDeps:                 rt.CDPDeps,
@@ -368,6 +370,11 @@ type RuntimeDeps struct {
 	UnfinishedScanner     *unfinished.Scanner
 	UnfinishedStateStore  *unfinished.StateStore
 	UnfinishedWorkService *services.UnfinishedWorkService
+	WorktreePRPoller      *session.WorktreePRPoller
+
+	// GitHub user PR cache and service.
+	UserPRCache       *githubpkg.UserPRCache
+	GitHubUserService *services.GitHubUserService
 
 	// Token usage analytics.
 	InsightsService *services.InsightsService
@@ -375,10 +382,6 @@ type RuntimeDeps struct {
 	BacklogService *services.BacklogService
 	SyncLoop       *session.SyncLoop
 	Config         *config.Config // Used for encryption of sensitive data
-
-	// GitHub user PR cache and service.
-	UserPRCache       *githubpkg.UserPRCache
-	GitHubUserService *services.GitHubUserService
 
 	// Analytics storage.
 	AnalyticsEntClient *ent.Client
@@ -718,6 +721,8 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		unfinishedScanner    *unfinished.Scanner
 		unfinishedStateStore *unfinished.StateStore
 		unfinishedWorkSvc    *services.UnfinishedWorkService
+		worktreePRPoller     *session.WorktreePRPoller
+		userPRCache          *githubpkg.UserPRCache
 	)
 	if configDir, configErr := config.GetConfigDir(); configErr == nil {
 		statePath := filepath.Join(configDir, "unfinished_state.json")
@@ -726,10 +731,28 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 			unfinishedScanner = unfinished.NewScanner(eventBus, unfinishedStateStore)
 			unfinishedWorkSvc = services.NewUnfinishedWorkService(unfinishedScanner, unfinishedStateStore, eventBus, storage)
 			log.Info("UnfinishedWorkService initialized", "state", statePath)
+
+			// WorktreePRPoller enriches worktrees-without-sessions with GitHub PR data.
+			// The scannerSource adapter bridges session/unfinished → session without a cycle.
+			worktreePRPoller = session.NewWorktreePRPoller(
+				githubpkg.NewETagCache(),
+				svc.PRStatusPoller,
+			)
+			worktreePRPoller.SetSource(&scannerSource{s: unfinishedScanner})
+			worktreePRPoller.SetOnUpdated(func(repoPath, branch string, info *githubpkg.PRInfo) {
+				log.Info("worktree PR updated", "repo", repoPath, "branch", branch, "pr", info.Number)
+			})
 		}
 	} else {
 		log.Warn("could not initialize UnfinishedWork state store", "err", configErr)
 	}
+
+	// UserPRCache fetches all open PRs authored by the authenticated GitHub user.
+	userPRCache = githubpkg.NewUserPRCache()
+	userPRCache.SetOnUpdated(func(prs []githubpkg.UserPR) {
+		annotateUserPRCache(userPRCache, svc.PRStatusPoller, unfinishedScanner)
+	})
+	githubUserSvc := services.NewGitHubUserService(userPRCache)
 
 	// Open the dedicated analytics database (non-fatal: fall back gracefully on failure).
 	var analyticsClient *ent.Client
@@ -890,12 +913,6 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		}
 	}()
 
-	// UserPRCache polls the GitHub API for the authenticated user's open PRs.
-	// Annotate with current sessions so PRs show which local sessions match.
-	userPRCache := githubpkg.NewUserPRCache()
-	annotateUserPRCache(userPRCache, instances)
-	ghUserSvc := services.NewGitHubUserService(userPRCache)
-
 	return &RuntimeDeps{
 		HeadlessPool:            headlessPool,
 		ServiceDeps:             svc,
@@ -911,11 +928,12 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		UnfinishedScanner:       unfinishedScanner,
 		UnfinishedStateStore:    unfinishedStateStore,
 		UnfinishedWorkService:   unfinishedWorkSvc,
+		WorktreePRPoller:        worktreePRPoller,
+		UserPRCache:             userPRCache,
+		GitHubUserService:       githubUserSvc,
 		InsightsService:         insightsSvc,
 		BacklogService:          backlogSvc,
 		SyncLoop:                nil, // managed by BacklogController
-		UserPRCache:             userPRCache,
-		GitHubUserService:       ghUserSvc,
 		Config:                  cfg,
 		AnalyticsEntClient:      analyticsClient,
 		VNCDeps:                 vncDeps,
@@ -925,21 +943,62 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}, nil
 }
 
-// annotateUserPRCache converts session instances to PRAnnotationSession values
-// and pushes them into the cache. Lives here (not in the github package) to
-// avoid an import cycle: github → session → github.
-func annotateUserPRCache(cache *githubpkg.UserPRCache, instances []*session.Instance) {
-	annotations := make([]githubpkg.PRAnnotationSession, 0, len(instances))
-	for _, inst := range instances {
-		if inst == nil {
-			continue
+// annotateUserPRCache populates session IDs and worktree paths on the cached
+// UserPR list. Called in the UserPRCache onUpdated callback. Lives here (not
+// in the github package) to avoid an import cycle: github → session → github.
+func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusPoller, scanner *unfinished.Scanner) {
+	var annSessions []githubpkg.PRAnnotationSession
+	if poller != nil {
+		for _, inst := range poller.GetInstances() {
+			if inst.GitHubOwner == "" || inst.Branch == "" {
+				continue
+			}
+			annSessions = append(annSessions, githubpkg.PRAnnotationSession{
+				ID:          inst.Title,
+				Branch:      inst.Branch,
+				GitHubOwner: inst.GitHubOwner,
+			})
 		}
-		annotations = append(annotations, githubpkg.PRAnnotationSession{
-			ID:           inst.Title,
-			Branch:       inst.Branch,
-			GitHubOwner:  inst.GitHubOwner,
-			WorktreePath: inst.Path,
+	}
+
+	var annWorktrees []githubpkg.PRAnnotationWorktree
+	if scanner != nil {
+		for _, r := range scanner.GetAllResults() {
+			owner, _, _ := githubpkg.GetOwnerRepoFromRemote(r.RepoPath)
+			if owner == "" || r.Branch == "" {
+				continue
+			}
+			annWorktrees = append(annWorktrees, githubpkg.PRAnnotationWorktree{
+				Branch:       r.Branch,
+				GitHubOwner:  owner,
+				WorktreePath: r.WorktreePath,
+			})
+		}
+	}
+
+	cache.Annotate(annSessions, annWorktrees)
+}
+
+// scannerSource adapts *unfinished.Scanner to session.WorktreeSource, bridging
+// the two packages without creating an import cycle.
+// (session/unfinished → pkg/events → session would cycle; this adapter lives here.)
+type scannerSource struct {
+	s *unfinished.Scanner
+}
+
+func (a *scannerSource) ScanDone() <-chan time.Time {
+	return a.s.ScanDone()
+}
+
+func (a *scannerSource) GetWorktrees() []session.WorktreeScanItem {
+	results := a.s.GetAllResults()
+	items := make([]session.WorktreeScanItem, 0, len(results))
+	for _, r := range results {
+		items = append(items, session.WorktreeScanItem{
+			RepoPath:     r.RepoPath,
+			Branch:       r.Branch,
+			WorktreePath: r.WorktreePath,
 		})
 	}
-	cache.Annotate(annotations, nil)
+	return items
 }
