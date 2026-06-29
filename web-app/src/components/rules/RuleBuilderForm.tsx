@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { ApprovalRuleProto, AutoDecision } from "@/gen/session/v1/types_pb";
 import { RuleBuilderPrefill } from "@/lib/ruleBuilderPrefill";
 import { RuleTemplate } from "@/lib/ruleTemplates";
@@ -47,6 +47,33 @@ function defaultPriority(decision: AutoDecision): number {
   }
 }
 
+function decisionPrefix(decision: AutoDecision): string {
+  switch (decision) {
+    case AutoDecision.ALLOW: return "Allow";
+    case AutoDecision.DENY: return "Block";
+    default: return "Escalate";
+  }
+}
+
+function computeSuggestedName(
+  toolTarget: ToolTarget,
+  toolName: string,
+  toolCategory: string,
+  toolPattern: string,
+  programs: string[],
+  decision: AutoDecision,
+): string {
+  const prefix = decisionPrefix(decision);
+  if (toolTarget === "name" && toolName.trim()) return `${prefix} ${toolName.trim()}`;
+  if (toolTarget === "category" && toolCategory) {
+    const cat = TOOL_CATEGORIES.find((c) => c.value === toolCategory);
+    return cat ? `${prefix} ${cat.label}` : "";
+  }
+  if (toolTarget === "pattern" && toolPattern.trim()) return `${prefix} ${toolPattern.trim()}`;
+  if (programs.length > 0) return `${prefix} ${programs[0]}`;
+  return "";
+}
+
 interface RuleBuilderFormProps {
   editRule?: ApprovalRuleProto | null;
   prefill?: RuleBuilderPrefill | null;
@@ -85,9 +112,26 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
   const showPythonSection = programs.some(isPythonProgram);
   const inlineChecked = pythonModes.includes("inline");
 
+  // Auto-suggest name from criteria when name is empty or still matches the last suggestion.
+  // Uses a ref so the effect doesn't re-run on every name keystroke.
+  const lastAutoName = useRef("");
+  const nameRef = useRef(name);
+  useLayoutEffect(() => { nameRef.current = name; });
+  useEffect(() => {
+    if (editRule) return;
+    const suggested = computeSuggestedName(toolTarget, toolName, toolCategory, toolPattern, programs, decision);
+    if (!suggested) return;
+    if (nameRef.current === "" || nameRef.current === lastAutoName.current) {
+      setName(suggested);
+      lastAutoName.current = suggested;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRule, toolTarget, toolName, toolCategory, toolPattern, programs, decision]);
+
   // Seed from template
   useEffect(() => {
     if (!templateSeed) return;
+    lastAutoName.current = "";
     setName("");
     if (templateSeed.toolCategory) { setToolTarget("category"); setToolCategory(templateSeed.toolCategory); }
     else if (templateSeed.toolName) { setToolTarget("name"); setToolName(templateSeed.toolName); }
