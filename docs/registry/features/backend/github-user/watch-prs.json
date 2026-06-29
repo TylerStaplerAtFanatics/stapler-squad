@@ -1,11 +1,12 @@
 {
-  "id": "WatchUserPRs",
+  "id": "github-user:watch-prs",
   "type": "backend",
   "service": "GitHubUserService",
   "method": "WatchUserPRs",
   "protoFile": "proto/session/v1/github_user.proto",
-  "markerFound": false,
+  "markerFound": true,
+  "handlerFile": "server/services/github_user_service.go",
   "tested": false,
   "testIds": [],
-  "lastModified": "2026-06-26T18:47:36.708877-07:00"
+  "lastModified": "2026-06-29T15:52:12.946168548-07:00"
 }
