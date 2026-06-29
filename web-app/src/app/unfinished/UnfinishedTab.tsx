@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { UnfinishedWorktree } from "@/gen/session/v1/types_pb";
@@ -27,11 +27,15 @@ export function UnfinishedTab() {
   const [filter, setFilter] = useState<FilterType>("all");
   const [secondsAgo, setSecondsAgo] = useState(0);
 
-  const transport = createConnectTransport({
-    baseUrl: getApiBaseUrl(),
-    interceptors: [createAuthInterceptor()],
-  });
-  const client = createClient(UnfinishedWorkService, transport);
+  const transport = useMemo(
+    () =>
+      createConnectTransport({
+        baseUrl: getApiBaseUrl(),
+        interceptors: [createAuthInterceptor()],
+      }),
+    []
+  );
+  const client = useMemo(() => createClient(UnfinishedWorkService, transport), [transport]);
 
   // Update "last scanned N seconds ago" counter every second
   useEffect(() => {

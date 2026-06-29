@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -53,8 +54,6 @@ type PRAnnotationWorktree struct {
 	WorktreePath string
 }
 
-type onUserPRUpdatedFn = func([]UserPR)
-
 // userPRSnapshot is an immutable snapshot stored in atomic.Value (COW pattern).
 type userPRSnapshot struct {
 	prs        []UserPR
@@ -89,7 +88,8 @@ func DefaultUserPRCacheConfig() UserPRCacheConfig {
 type UserPRCache struct {
 	config       UserPRCacheConfig
 	snapshot     atomic.Value // stores *userPRSnapshot
-	onUpdated    atomic.Value // stores onUserPRUpdatedFn
+	subscribers  sync.Map     // maps string ID → chan []UserPR
+	cachedLogin  atomic.Value // stores string
 	loginState   atomic.Value // stores loginResult
 	loginGroup   singleflight.Group //nolint:exhaustruct
 	refreshGroup singleflight.Group //nolint:exhaustruct
@@ -104,11 +104,8 @@ func NewUserPRCache() *UserPRCache {
 
 // NewUserPRCacheWithConfig creates a cache with custom configuration.
 func NewUserPRCacheWithConfig(cfg UserPRCacheConfig) *UserPRCache {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &UserPRCache{
 		config: cfg,
-		ctx:    ctx,
-		cancel: cancel,
 	}
 }
 
@@ -136,15 +133,25 @@ func (c *UserPRCache) GetAll() []UserPR {
 	return out
 }
 
-// SetOnUpdated registers a callback invoked whenever the snapshot changes.
-// Pass nil to deregister. The callback is called with a copy of the new snapshot.
-// Safe to call from any goroutine.
-func (c *UserPRCache) SetOnUpdated(fn onUserPRUpdatedFn) {
-	if fn == nil {
-		c.onUpdated.Store((onUserPRUpdatedFn)(nil))
-	} else {
-		c.onUpdated.Store(fn)
+// Subscribe registers a channel to receive PR snapshot updates.
+// The channel must be buffered. The caller is responsible for calling Unsubscribe.
+func (c *UserPRCache) Subscribe(id string, ch chan []UserPR) {
+	c.subscribers.Store(id, ch)
+}
+
+// Unsubscribe removes a previously registered subscriber channel.
+func (c *UserPRCache) Unsubscribe(id string) {
+	c.subscribers.Delete(id)
+}
+
+// GetCachedLogin returns the last successfully fetched GitHub login, or "" if not yet available.
+func (c *UserPRCache) GetCachedLogin() string {
+	v := c.cachedLogin.Load()
+	if v == nil {
+		return ""
 	}
+	s, _ := v.(string)
+	return s
 }
 
 // Annotate enriches the current snapshot with session IDs and worktree paths.
@@ -185,17 +192,22 @@ func (c *UserPRCache) Annotate(sessions []PRAnnotationSession, worktrees []PRAnn
 }
 
 // Refresh triggers an immediate fetch from GitHub, coalescing concurrent calls.
-func (c *UserPRCache) Refresh() {
-	_, _, _ = c.refreshGroup.Do("refresh", func() (interface{}, error) {
-		c.fetch()
-		return struct{}{}, nil
+func (c *UserPRCache) Refresh(ctx context.Context) error {
+	_, err, _ := c.refreshGroup.Do("refresh", func() (any, error) {
+		return struct{}{}, c.fetch()
 	})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // loop is the background polling goroutine.
 func (c *UserPRCache) loop() {
 	// Fetch immediately on start.
-	c.fetch()
+	if err := c.fetch(); err != nil {
+		log.Warn("UserPRCache: initial fetch failed", "err", err)
+	}
 	ticker := time.NewTicker(c.config.PollInterval)
 	defer ticker.Stop()
 	for {
@@ -203,42 +215,48 @@ func (c *UserPRCache) loop() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			c.fetch()
+			if err := c.fetch(); err != nil {
+				log.Warn("UserPRCache: fetch failed", "err", err)
+			}
 		}
 	}
 }
 
 // fetch queries the GitHub GraphQL API for the authenticated user's open PRs.
-func (c *UserPRCache) fetch() {
-	login, err := c.cachedLogin()
+func (c *UserPRCache) fetch() error {
+	login, err := c.resolveLogin()
 	if err != nil {
 		log.Debug("UserPRCache: skipping fetch, no GitHub auth", "err", err)
-		return
+		return err
 	}
 	if login == "" {
-		return
+		return nil
 	}
 
-	prs, err := c.fetchUserPRs(login)
+	prs, err := c.fetchUserPRs()
 	if err != nil {
-		log.Warn("UserPRCache: fetch failed", "err", err)
-		return
+		return err
 	}
 
 	snap := &userPRSnapshot{prs: prs, capturedAt: time.Now()}
 	c.snapshot.Store(snap)
 
-	if v := c.onUpdated.Load(); v != nil {
-		if fn, ok := v.(onUserPRUpdatedFn); ok && fn != nil {
-			out := make([]UserPR, len(prs))
-			copy(out, prs)
-			fn(out)
+	out := make([]UserPR, len(prs))
+	copy(out, prs)
+	c.subscribers.Range(func(_, v any) bool {
+		ch := v.(chan []UserPR)
+		select {
+		case ch <- out:
+		default:
+			log.Warn("UserPRCache: subscriber channel full, dropping event")
 		}
-	}
+		return true
+	})
+	return nil
 }
 
-// cachedLogin returns the cached GitHub login, refreshing if stale.
-func (c *UserPRCache) cachedLogin() (string, error) {
+// resolveLogin returns the cached GitHub login, refreshing if stale.
+func (c *UserPRCache) resolveLogin() (string, error) {
 	if v := c.loginState.Load(); v != nil {
 		r := v.(loginResult)
 		if time.Since(r.checkedAt) < c.config.LoginCacheTTL {
@@ -251,6 +269,9 @@ func (c *UserPRCache) cachedLogin() (string, error) {
 		defer cancel()
 		login, fetchErr := GetCurrentUserLogin(ctx)
 		c.loginState.Store(loginResult{login: login, checkedAt: time.Now()})
+		if fetchErr == nil && login != "" {
+			c.cachedLogin.Store(login)
+		}
 		return login, fetchErr
 	})
 	if err != nil {
@@ -348,7 +369,7 @@ type graphQLPRNode struct {
 	} `json:"commits"`
 }
 
-func (c *UserPRCache) fetchUserPRs(_ string) ([]UserPR, error) {
+func (c *UserPRCache) fetchUserPRs() ([]UserPR, error) {
 	body, err := json.Marshal(map[string]string{"query": userPRGraphQLQuery})
 	if err != nil {
 		return nil, fmt.Errorf("marshal GraphQL query: %w", err)

@@ -46,7 +46,7 @@ export const badge = style({
   color: vars.color.textMuted,
   background: vars.color.surfaceSubtle,
   borderRadius: vars.radii.full,
-  padding: `2px ${vars.space["2"]}`,
+  padding: `${vars.space["1"]} ${vars.space["2"]}`,
   marginLeft: vars.space["2"],
 });
 
@@ -127,7 +127,7 @@ export const chips = style({
 const chipBase = style({
   display: "inline-flex",
   alignItems: "center",
-  padding: `2px ${vars.space["2"]}`,
+  padding: `${vars.space["1"]} ${vars.space["2"]}`,
   borderRadius: vars.radii.sm,
   fontSize: vars.fontSize.xs,
   fontWeight: 600,

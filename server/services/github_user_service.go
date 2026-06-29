@@ -2,13 +2,13 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"connectrpc.com/connect"
 	githubpkg "github.com/tstapler/stapler-squad/github"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/gen/proto/go/session/v1/sessionv1connect"
-	"github.com/tstapler/stapler-squad/log"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -60,15 +60,10 @@ func (s *GitHubUserService) WatchUserPRs(
 	}
 
 	// 2. Register for updates via a buffered channel bridge.
+	subID := fmt.Sprintf("%p-%d", &stream, time.Now().UnixNano())
 	updateCh := make(chan []githubpkg.UserPR, 4)
-	s.cache.SetOnUpdated(func(updated []githubpkg.UserPR) {
-		select {
-		case updateCh <- updated:
-		default:
-			log.Warn("WatchUserPRs: update channel full, dropping event")
-		}
-	})
-	defer s.cache.SetOnUpdated(nil)
+	s.cache.Subscribe(subID, updateCh)
+	defer s.cache.Unsubscribe(subID)
 
 	// 3. Forward updates until client disconnects.
 	for {
@@ -101,19 +96,15 @@ func (s *GitHubUserService) GetGitHubAuthState(
 	}), nil
 }
 
-// resolveAuthState checks GitHub auth with a short timeout.
-func (s *GitHubUserService) resolveAuthState(ctx context.Context) *sessionv1.GitHubAuthState {
-	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	login, err := githubpkg.GetCurrentUserLogin(authCtx)
-	if err != nil {
+// resolveAuthState returns the current GitHub auth state from the cache.
+// No network call is made; it reads the login stored by the background fetch.
+func (s *GitHubUserService) resolveAuthState(_ context.Context) *sessionv1.GitHubAuthState {
+	login := s.cache.GetCachedLogin()
+	if login == "" {
 		return &sessionv1.GitHubAuthState{
 			Available:    false,
-			ErrorMessage: err.Error(),
+			ErrorMessage: "GitHub authentication not yet resolved",
 		}
-	}
-	if login == "" {
-		return &sessionv1.GitHubAuthState{Available: false}
 	}
 	return &sessionv1.GitHubAuthState{Available: true, Username: login}
 }
