@@ -27,6 +27,11 @@ import (
 // live tmux process and can be safely tombstoned on re-trigger.
 const headlessTriageUUIDPrefix = "headless-triage-"
 
+// maxTriageSessionAge is the maximum age of an open triage ItemSession before it is
+// treated as orphaned in the re-trigger guard. This prevents a hung or leaked session
+// from blocking re-trigger indefinitely.
+const maxTriageSessionAge = 2 * time.Hour
+
 // SessionCreator allows BacklogService to spawn sessions without importing handler internals.
 type SessionCreator interface {
 	CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error)
@@ -1140,8 +1145,11 @@ func (s *BacklogService) TriggerTriage(
 			continue
 		}
 		// Headless triage sessions have no live in-memory instance; treat as orphaned.
+		// Sessions older than maxTriageSessionAge are also treated as orphaned to prevent
+		// a hung or leaked session from blocking re-trigger indefinitely.
 		isHeadless := strings.HasPrefix(is.SessionUUID, headlessTriageUUIDPrefix)
-		notLive := isHeadless || s.sessionStopper == nil || !s.sessionStopper.IsSessionLive(is.SessionUUID)
+		isStale := time.Since(is.CreatedAt) > maxTriageSessionAge
+		notLive := isHeadless || isStale || s.sessionStopper == nil || !s.sessionStopper.IsSessionLive(is.SessionUUID)
 		statusAdvanced := item.Status != string(session.BacklogStatusIdea)
 		if notLive || statusAdvanced {
 			now := time.Now()
