@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
@@ -943,6 +945,10 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}, nil
 }
 
+// prNumFromTitle extracts a PR number from a session title following the
+// "pr-<number>-..." naming convention (e.g. "pr-1255-actions-spring-boot").
+var prNumFromTitle = regexp.MustCompile(`(?i)^pr-(\d+)-`)
+
 // annotateUserPRCache populates session IDs and worktree paths on the cached
 // UserPR list. Called in the UserPRCache onUpdated callback. Lives here (not
 // in the github package) to avoid an import cycle: github → session → github.
@@ -950,13 +956,41 @@ func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusP
 	var annSessions []githubpkg.PRAnnotationSession
 	if poller != nil {
 		for _, inst := range poller.GetInstances() {
-			if inst.GitHubOwner == "" || inst.Branch == "" {
+			prNumber := inst.GitHubPRNumber
+
+			// Resolve a full RepoRef (owner + repo) via a 3-tier fallback:
+			// 1. Direct from DB fields (new sessions written since schema migration).
+			// 2. Parse from stored PR URL.
+			// 3. Infer from git remote.
+			var repoRef githubpkg.RepoRef
+			if inst.GitHubOwner != "" && inst.GitHubRepo != "" {
+				repoRef, _ = githubpkg.NewRepoRef(inst.GitHubOwner, inst.GitHubRepo)
+			}
+			if !repoRef.IsValid() && inst.GitHubPRURL != "" {
+				if parsed, err := session.ParseGitHubURL(inst.GitHubPRURL); err == nil {
+					repoRef, _ = githubpkg.NewRepoRef(parsed.Owner, parsed.Repo)
+					if prNumber == 0 {
+						prNumber = parsed.PRNumber
+					}
+				}
+			}
+			if !repoRef.IsValid() && inst.Path != "" {
+				repoRef, _ = githubpkg.GetOwnerRepoFromRemote(inst.Path)
+			}
+			if !repoRef.IsValid() {
 				continue
 			}
+			// Last resort: extract PR number from session title (e.g. "pr-1255-...").
+			if prNumber == 0 {
+				if m := prNumFromTitle.FindStringSubmatch(inst.Title); m != nil {
+					prNumber, _ = strconv.Atoi(m[1])
+				}
+			}
 			annSessions = append(annSessions, githubpkg.PRAnnotationSession{
-				ID:          inst.Title,
-				Branch:      inst.Branch,
-				GitHubOwner: inst.GitHubOwner,
+				ID:       inst.Title,
+				Branch:   inst.Branch,
+				Repo:     repoRef,
+				PRNumber: prNumber,
 			})
 		}
 	}
@@ -964,13 +998,13 @@ func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusP
 	var annWorktrees []githubpkg.PRAnnotationWorktree
 	if scanner != nil {
 		for _, r := range scanner.GetAllResults() {
-			owner, _, _ := githubpkg.GetOwnerRepoFromRemote(r.RepoPath)
-			if owner == "" || r.Branch == "" {
+			repoRef, err := githubpkg.GetOwnerRepoFromRemote(r.RepoPath)
+			if err != nil || !repoRef.IsValid() || r.Branch == "" {
 				continue
 			}
 			annWorktrees = append(annWorktrees, githubpkg.PRAnnotationWorktree{
 				Branch:       r.Branch,
-				GitHubOwner:  owner,
+				Repo:         repoRef,
 				WorktreePath: r.WorktreePath,
 			})
 		}
