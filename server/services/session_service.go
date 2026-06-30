@@ -3752,7 +3752,9 @@ func (l *sessionExitedPublisher) OnLifecycleEvent(event session.LifecycleEvent, 
 
 // wireStatusChangeCallback registers a ReactiveQueueManager callback on inst so that
 // ClaudeController status transitions immediately trigger a CheckSession call, bypassing
-// the poll cycle. Safe to call before or after the controller is started.
+// the poll cycle. Also publishes a session update event so WatchSessions clients receive
+// the detection state change without waiting for the next poll cycle.
+// Safe to call before or after the controller is started.
 func (s *SessionService) wireStatusChangeCallback(inst *session.Instance) {
 	if inst == nil || s.reviewQueueSvc == nil {
 		return
@@ -3761,8 +3763,12 @@ func (s *SessionService) wireStatusChangeCallback(inst *session.Instance) {
 	if mgr == nil {
 		return
 	}
-	inst.SetStatusChangeCallback(func(newStatus detection.DetectedStatus, _ string) {
+	inst.SetStatusChangeCallback(func(newStatus detection.DetectedStatus, context string) {
 		mgr.OnControllerStatusChange(inst, newStatus)
+		s.eventBus.Publish(events.NewSessionUpdatedEventWithDetection(
+			inst, []string{"detected_status"},
+			newStatus, context,
+		))
 	})
 }
 
