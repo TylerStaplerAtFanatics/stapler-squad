@@ -194,6 +194,9 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Merge prop prefill with any URL-param derived prefill (prop takes priority).
+  const effectivePrefill = prefill ?? null;
+
   // ── filter ────────────────────────────────────────────────────────────────
 
   const visibleRules = sourceFilter === "all"
@@ -277,9 +280,6 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
       console.error("Failed to toggle rule:", e);
     }
   };
-
-  // Merge prop prefill with any URL-param derived prefill (prop takes priority).
-  const effectivePrefill = prefill ?? null;
 
   // ── Epic 3: handle suggestion cards ──────────────────────────────────────
 

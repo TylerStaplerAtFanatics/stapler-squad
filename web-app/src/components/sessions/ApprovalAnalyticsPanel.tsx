@@ -16,10 +16,10 @@ import {
   sectionTitle, tableSection, tableWrapper, table, th, thRight, td, tdRight, tdBar, row,
   allowCount, denyCount, manualCount, pctLabel, toolName, ruleName,
   barTrack, barFill, barTotal, barTool, barRule, barCmd, barPython, barGap,
-  categoryBadge, subSectionTitle, filterInput, addRuleLink,
+  categoryBadge, subSectionTitle, filterInput, addRuleLink, addRuleManualLink,
   coverageGapHeader, coverageGapHigh, coverageGapMed, coverageGapLow,
   coverageGapTitleRow, coverageGapIcon, coverageGapTitle, coverageGapBadge, coverageGapDesc,
-  rowActions, rowGeneratingText, suggestRuleButton, addRuleManualLink,
+  suggestRuleButton, rowActions, rowGeneratingText,
 } from "./ApprovalAnalyticsPanel.css";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
