@@ -6,7 +6,7 @@ import { RuleBuilderPrefill } from "@/lib/ruleBuilderPrefill";
 import { RuleTemplate } from "@/lib/ruleTemplates";
 import { TagInput } from "./TagInput";
 import { RulePreview } from "./RulePreview";
-import { RuleCriteria } from "@/lib/rulePreview";
+import { RuleCriteria, SubcommandStat } from "@/lib/rulePreview";
 import {
   formWrapper, formTitle, modeToggle, modeBtn, modeBtnActive,
   section, sectionTitle, formGrid, formGridFull, fieldLabel, fieldInput, fieldSelect,
@@ -85,10 +85,12 @@ interface RuleBuilderFormProps {
   cmdSuggestions?: SuggestedRuleProto[];
   cmdLoading?: boolean;
   cmdClear?: () => void;
+  subcommandStats?: SubcommandStat[];
 }
 
-export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCancel, onCmdGenerate, cmdSuggestions = [], cmdLoading = false, cmdClear }: RuleBuilderFormProps) {
+export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCancel, onCmdGenerate, cmdSuggestions = [], cmdLoading = false, cmdClear, subcommandStats }: RuleBuilderFormProps) {
   const [mode, setMode] = useState<Mode>("structured");
+  const [pendingMode, setPendingMode] = useState<Mode | null>(null);
   const [toolTarget, setToolTarget] = useState<ToolTarget>("name");
   const [name, setName] = useState("");
   const [toolName, setToolName] = useState("");
@@ -247,17 +249,27 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
 
   function handleModeSwitch(next: Mode) {
     if (next === mode) return;
-    if (next === "regex" && (programs.length > 0 || subcommands.length > 0)) {
-      if (!window.confirm("Switch to Regex mode? Structured criteria will be cleared.")) return;
+    const willLoseData =
+      (next === "regex" && (programs.length > 0 || subcommands.length > 0)) ||
+      (next === "structured" && !!commandPattern);
+    if (willLoseData) {
+      setPendingMode(next);
+      return;
+    }
+    applyModeSwitch(next);
+  }
+
+  function applyModeSwitch(next: Mode) {
+    if (next === "regex") {
       setPrograms([]); setSubcommands([]); setBlockedSubcommands([]);
       setRequiredFlags([]); setForbiddenFlags([]); setRequiredFlagPrefixes([]);
       setPythonModes([]); setSafePythonImportsOnly(false);
     }
-    if (next === "structured" && commandPattern) {
-      if (!window.confirm("Switch to Structured mode? The regex pattern will be cleared.")) return;
+    if (next === "structured") {
       setCommandPattern("");
     }
     setMode(next);
+    setPendingMode(null);
   }
 
   async function handleSave() {
@@ -334,6 +346,24 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
           Regex / Advanced
         </button>
       </div>
+
+      {pendingMode && (
+        <div className={errorBanner} role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span>
+            {pendingMode === "regex"
+              ? "Switch to Regex? Structured criteria will be cleared."
+              : "Switch to Structured? The regex pattern will be cleared."}
+          </span>
+          <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <button type="button" className={saveBtn} style={{ padding: "2px 10px" }} onClick={() => applyModeSwitch(pendingMode)}>
+              Confirm
+            </button>
+            <button type="button" className={cancelBtn} style={{ padding: "2px 10px" }} onClick={() => setPendingMode(null)}>
+              Keep
+            </button>
+          </span>
+        </div>
+      )}
 
       {formError && <div className={errorBanner}>{formError}</div>}
 
@@ -425,7 +455,12 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
             </div>
           )}
 
-          <RulePreview criteria={previewCriteria} showSafePythonNotice={safePythonImportsOnly} />
+          <RulePreview
+            criteria={previewCriteria}
+            showSafePythonNotice={safePythonImportsOnly}
+            subcommandStats={subcommandStats}
+            onAddSubcommand={(sub) => setSubcommands((prev) => prev.includes(sub) ? prev : [...prev, sub])}
+          />
         </div>
       )}
 
