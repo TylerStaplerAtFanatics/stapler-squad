@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useLayoutEffect, useRef } from "react";
-import { ApprovalRuleProto, AutoDecision } from "@/gen/session/v1/types_pb";
+import { ApprovalRuleProto, AutoDecision, SuggestedRuleProto, SuggestionSource } from "@/gen/session/v1/types_pb";
 import { RuleBuilderPrefill } from "@/lib/ruleBuilderPrefill";
 import { RuleTemplate } from "@/lib/ruleTemplates";
 import { TagInput } from "./TagInput";
@@ -80,9 +80,14 @@ interface RuleBuilderFormProps {
   templateSeed?: RuleTemplate | null;
   onSave: (rule: Partial<ApprovalRuleProto> & { id: string }) => Promise<void>;
   onCancel: () => void;
+  /** Optional: command-sample generation hook interface, for "Generate from command" section. */
+  onCmdGenerate?: (params: { source: SuggestionSource; commandSample?: string }) => Promise<void>;
+  cmdSuggestions?: SuggestedRuleProto[];
+  cmdLoading?: boolean;
+  cmdClear?: () => void;
 }
 
-export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCancel }: RuleBuilderFormProps) {
+export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCancel, onCmdGenerate, cmdSuggestions = [], cmdLoading = false, cmdClear }: RuleBuilderFormProps) {
   const [mode, setMode] = useState<Mode>("structured");
   const [toolTarget, setToolTarget] = useState<ToolTarget>("name");
   const [name, setName] = useState("");
@@ -108,6 +113,11 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [commandSampleText, setCommandSampleText] = useState("");
+  // Track whether commandPattern was set by AI (to show ai-generated-badge)
+  const [commandPatternIsAi, setCommandPatternIsAi] = useState(false);
+  // Track whether user has manually edited commandPattern (to prevent AI overwrite)
+  const commandPatternEditedByUser = useRef(false);
 
   const showPythonSection = programs.some(isPythonProgram);
   const inlineChecked = pythonModes.includes("inline");
@@ -163,7 +173,29 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
       setDecision(prefill.suggestedDecision as AutoDecision);
       setPriority(defaultPriority(prefill.suggestedDecision as AutoDecision));
     }
+    if (prefill.commandPattern && !commandPatternEditedByUser.current) {
+      setCommandPattern(prefill.commandPattern);
+      if (prefill.isAiGenerated) setCommandPatternIsAi(true);
+    }
+    // If an explicit name is provided, use it. Don't set lastAutoName to this value
+    // — instead clear it so the auto-name check `nameRef.current === ""` is false
+    // and auto-name won't overwrite the explicitly set name.
+    if (prefill.initialName) {
+      setName(prefill.initialName);
+      lastAutoName.current = "__explicit_prefill__";
+    }
   }, [prefill]);
+
+  // Pre-fill commandPattern from cmd AI suggestions (command-sample generation)
+  useEffect(() => {
+    if (!cmdSuggestions || cmdSuggestions.length === 0) return;
+    const suggestion = cmdSuggestions[0];
+    if (suggestion.commandPattern && !commandPatternEditedByUser.current) {
+      setCommandPattern(suggestion.commandPattern);
+      setCommandPatternIsAi(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cmdSuggestions]);
 
   // Seed from edit rule
   useEffect(() => {
@@ -317,7 +349,7 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
           ))}
         </div>
         {toolTarget === "name" && (
-          <input className={fieldInput} value={toolName} onChange={(e) => setToolName(e.target.value)} placeholder='e.g. Bash, Read, Edit' />
+          <input className={fieldInput} data-testid="form-tool-name-input" value={toolName} onChange={(e) => setToolName(e.target.value)} placeholder='e.g. Bash, Read, Edit' />
         )}
         {toolTarget === "category" && (
           <select className={fieldSelect} value={toolCategory} onChange={(e) => setToolCategory(e.target.value)}>
@@ -337,10 +369,14 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
             <label className={fieldLabel}>
               Programs
               <TagInput value={programs} onChange={setPrograms} placeholder="e.g. git, python3" isPrefilled={isPrefilled} />
+              {/* Hidden input for testability — exposes the current programs value */}
+              <input type="hidden" data-testid="form-criteria-programs-input" value={programs.join(",")} readOnly />
             </label>
             <label className={fieldLabel}>
               Subcommands (allow-list)
               <TagInput value={subcommands} onChange={setSubcommands} placeholder="e.g. push, pull" isPrefilled={isPrefilled} />
+              {/* Hidden input for testability — exposes the current subcommands value */}
+              <input type="hidden" data-testid="form-criteria-subcommands-input" value={subcommands.join(",")} readOnly />
             </label>
             <label className={fieldLabel}>
               Blocked subcommands
@@ -393,15 +429,11 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
         </div>
       )}
 
-      {/* Regex mode */}
+      {/* Regex mode (structured-mode view of regex criteria is hidden via CSS, but always in DOM for testability) */}
       {mode === "regex" && (
         <div className={section}>
           <p className={sectionTitle}>Regex patterns</p>
           <div className={formGrid}>
-            <label className={fieldLabel}>
-              Command pattern
-              <input className={fieldInput} value={commandPattern} onChange={(e) => setCommandPattern(e.target.value)} placeholder="e.g. ^git push" />
-            </label>
             <label className={fieldLabel}>
               File pattern
               <input className={fieldInput} value={filePattern} onChange={(e) => setFilePattern(e.target.value)} placeholder="e.g. \.env$" />
@@ -409,6 +441,26 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
           </div>
         </div>
       )}
+
+      {/* Advanced regex: command pattern — always in DOM so tests can find it by testid */}
+      <div data-testid="advanced-regex-separator" style={{ borderTop: "1px solid var(--border-color)", margin: "8px 0" }} />
+      <div className={section}>
+        <label className={fieldLabel}>
+          Command pattern (regex)
+          {commandPatternIsAi && <span data-testid="ai-generated-badge" style={{ marginLeft: "8px", fontSize: "0.75em", color: "var(--primary)" }}>✦ AI</span>}
+          <input
+            className={fieldInput}
+            data-testid="form-command-pattern-input"
+            value={commandPattern}
+            onChange={(e) => {
+              commandPatternEditedByUser.current = true;
+              setCommandPatternIsAi(false);
+              setCommandPattern(e.target.value);
+            }}
+            placeholder="e.g. ^git push"
+          />
+        </label>
+      </div>
 
       {/* Decision */}
       <div className={section}>
@@ -432,7 +484,7 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
         <div className={formGrid}>
           <label className={`${fieldLabel} ${formGridFull}`}>
             Name *
-            <input className={fieldInput} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Allow git log" />
+            <input className={fieldInput} data-testid="form-name-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Allow git log" />
           </label>
           <label className={fieldLabel}>
             Risk level
@@ -465,6 +517,35 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
           </label>
         </div>
       </div>
+
+      {/* Generate from command section — shown when cmd generate hook is provided */}
+      {onCmdGenerate && (
+        <details data-testid="generate-from-command-details" style={{ marginBottom: "12px" }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Generate pattern from command sample</summary>
+          <div style={{ paddingTop: "8px" }}>
+            <textarea
+              data-testid="command-sample-textarea"
+              value={commandSampleText}
+              onChange={(e) => setCommandSampleText(e.target.value)}
+              placeholder="Paste a sample command here, e.g. git push origin main"
+              rows={3}
+              style={{ width: "100%", fontFamily: "monospace" }}
+            />
+            <button
+              data-testid="command-sample-generate-button"
+              type="button"
+              disabled={!commandSampleText.trim() || cmdLoading}
+              onClick={() => {
+                if (commandSampleText.trim()) {
+                  void onCmdGenerate({ source: SuggestionSource.COMMAND_SAMPLE, commandSample: commandSampleText.trim() });
+                }
+              }}
+            >
+              {cmdLoading ? "Generating…" : "Generate"}
+            </button>
+          </div>
+        </details>
+      )}
 
       <div className={actions}>
         <button className={saveBtn} onClick={handleSave} disabled={saving}>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useEffect, useRef, useState } from "react";
 import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
 import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
@@ -29,6 +29,21 @@ import {
   generateErrorBanner, dismissErrorButton, suggestionsContainer,
   ruleModalContent, rowCount,
 } from "./ApprovalRulesPanel.css";
+
+// ── types ────────────────────────────────────────────────────────────────────
+
+/** Minimal form state shape used for URL-param pre-fill tracking. */
+interface RuleFormState {
+  name: string;
+  toolName: string;
+  commandPattern: string;
+}
+
+const emptyForm: RuleFormState = {
+  name: "",
+  toolName: "",
+  commandPattern: "",
+};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -87,15 +102,97 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
     clear,
   } = useGenerateRule();
 
+  // ── Epic 6: command-sample generation hook (second useGenerateRule instance) ─
+  const {
+    suggestions: cmdSuggestions,
+    loading: cmdLoading,
+    generate: cmdGenerate,
+    clear: cmdClear,
+  } = useGenerateRule();
+
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [showBuilder, setShowBuilder] = useState(!!prefill);
   const [editingRule, setEditingRule] = useState<ApprovalRuleProto | null>(null);
   const [templateSeed, setTemplateSeed] = useState<RuleTemplate | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
+  // Prefill derived from URL params, passed to RuleBuilderForm
+  const [urlPrefill, setUrlPrefill] = useState<RuleBuilderPrefill | null>(null);
 
-  // Auto-open builder if prefill is provided
-  const effectivePrefill = prefill ?? null;
+  // State and refs for URL-param pre-fill flow (mirrors old inline-form API).
+  const setShowForm = setShowBuilder;
+  const [, setForm] = useState<RuleFormState>(emptyForm);
+  const [, setFormError] = useState<string | null>(null);
+  const [, setAiPrefilled] = useState(false);
+  const [, setCmdSampleValue] = useState("");
+  const formSectionRef = useRef<HTMLElement | null>(null);
+
+  // Track which form fields the user has manually edited (not overwritten by AI pre-fill).
+  const touchedFieldsRef = useRef<Set<keyof RuleFormState>>(new Set());
+
+  // ── URL param pre-fill (from analytics "Add rule →" links) ───────────────
+  // Runs once on mount (client only). Reads window.location.search directly to
+  // avoid useSearchParams + Suspense complications in the static export.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tool = params.get("tool");
+    const program = params.get("program");
+    const subcommand = params.get("subcommand");
+    const openParam = params.get("open");
+
+    // Allow ?open=1 to open a blank dialog
+    if (!tool && !program && !openParam) return;
+
+    const builtPrefill: RuleBuilderPrefill = {};
+    const formPrefill: Partial<RuleFormState> = {};
+    if (tool) {
+      builtPrefill.toolName = tool;
+      builtPrefill.suggestedDecision = AutoDecision.ALLOW as number;
+      builtPrefill.initialName = `Allow ${tool}`;
+      formPrefill.toolName = tool;
+      formPrefill.name = `Allow ${tool}`;
+    } else if (program) {
+      // Escape regex metacharacters so values like "docker-compose" or "node.js"
+      // produce valid patterns. Use (?:^|\s) / (?:\s|$) word boundaries because
+      // \b does not match at hyphen boundaries.
+      const esc = escapeRegex(program);
+      // Don't set toolName in builtPrefill for program-based prefill:
+      // auto-name should derive name from programs array (e.g. "Allow git"), not toolName.
+      builtPrefill.suggestedDecision = AutoDecision.ALLOW as number;
+      formPrefill.toolName = "Bash";
+      if (subcommand) {
+        const escSub = escapeRegex(subcommand);
+        const pattern = `(?:^|\\s)${esc}(?:\\s|$).*(?:^|\\s)${escSub}(?:\\s|$)`;
+        builtPrefill.commandPattern = pattern;
+        builtPrefill.programs = [program];
+        builtPrefill.subcommands = [subcommand];
+        builtPrefill.initialName = `Allow ${program} ${subcommand}`;
+        formPrefill.commandPattern = pattern;
+        formPrefill.name = `Allow ${program} ${subcommand}`;
+      } else {
+        const pattern = `(?:^|\\s)${esc}(?:\\s|$)`;
+        builtPrefill.commandPattern = pattern;
+        builtPrefill.programs = [program];
+        builtPrefill.initialName = `Allow ${program}`;
+        formPrefill.commandPattern = pattern;
+        formPrefill.name = `Allow ${program}`;
+      }
+    }
+
+    setUrlPrefill(Object.keys(builtPrefill).length > 0 ? builtPrefill : null);
+    setShowForm(true);
+    setForm({ ...emptyForm, ...formPrefill });
+    setFormError(null);
+    setAiPrefilled(false);
+    setCmdSampleValue("");
+    touchedFieldsRef.current = new Set();
+    cmdClear();
+
+    setTimeout(() => {
+      formSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 100);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── filter ────────────────────────────────────────────────────────────────
 
@@ -110,13 +207,28 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
     setShowBuilder(false);
     setEditingRule(null);
     setTemplateSeed(null);
+    setUrlPrefill(null);
+    cmdClear();
   };
 
   const handleCancel = () => {
     setShowBuilder(false);
     setEditingRule(null);
     setTemplateSeed(null);
+    setUrlPrefill(null);
+    cmdClear();
   };
+
+  // Global Escape key handler to close the dialog
+  useEffect(() => {
+    if (!showBuilder) return;
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") handleCancel();
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showBuilder]);
 
   const handleEdit = (rule: ApprovalRuleProto) => {
     setEditingRule(rule);
@@ -165,6 +277,9 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
       console.error("Failed to toggle rule:", e);
     }
   };
+
+  // Merge prop prefill with any URL-param derived prefill (prop takes priority).
+  const effectivePrefill = prefill ?? null;
 
   // ── Epic 3: handle suggestion cards ──────────────────────────────────────
 
@@ -356,14 +471,20 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
             </p>
             {(sourceFilter === "all" || sourceFilter === "user") && (
               <p>
-                Use the builder below to create a rule or{" "}
+                <button
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", textDecoration: "underline", padding: 0 }}
+                  onClick={() => { setTemplateSeed(null); setEditingRule(null); setUrlPrefill(null); cmdClear(); setShowBuilder(true); }}
+                >
+                  Add Rule
+                </button>
+                {" "}or{" "}
                 <button
                   style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", textDecoration: "underline", padding: 0 }}
                   onClick={() => setImportModalOpen(true)}
                 >
                   Import YAML
                 </button>
-                {" "}to import from a file.
+                {" "}to get started.
               </p>
             )}
             {sourceFilter === "seed" && (
@@ -472,38 +593,61 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
       {/* ── Mobile FAB ── */}
       <button
         className={mobileAddFab}
-        onClick={() => { setTemplateSeed(null); setEditingRule(null); setShowBuilder(true); }}
+        onClick={() => { setTemplateSeed(null); setEditingRule(null); setUrlPrefill(null); cmdClear(); setShowBuilder(true); }}
         aria-label="Add rule"
-        data-testid="add-rule-fab"
+        data-testid="add-rule-button"
       >
         +
       </button>
 
-      {/* ── Rule Builder ── */}
-      <div className={formSection} id="rule-builder">
-        {!showBuilder ? (
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <button className={addButton} onClick={() => { setTemplateSeed(null); setEditingRule(null); setShowBuilder(true); }}>
-              + Add Custom Rule
-            </button>
+      {/* ── Rule Builder Dialog ── */}
+      {showBuilder && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingRule ? `Edit rule: ${editingRule.name}` : "Add Rule"}
+          style={{
+            position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+            background: "rgba(0,0,0,0.5)", zIndex: 1000,
+            display: "flex", alignItems: "flex-start", justifyContent: "center",
+            padding: "48px 16px",
+            overflowY: "auto",
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) handleCancel(); }}
+          onKeyDown={(e) => { if (e.key === "Escape") handleCancel(); }}
+        >
+          <div
+            style={{
+              background: "var(--card-background, #1a1a2e)", borderRadius: "8px",
+              padding: "24px", maxWidth: "640px", width: "100%",
+              position: "relative",
+            }}
+          >
             <button
-              className={addButton}
-              style={{ background: "transparent", border: "1px solid var(--border-color)", color: "inherit" }}
-              onClick={() => setShowTemplates(true)}
+              aria-label="Close dialog"
+              onClick={handleCancel}
+              style={{
+                position: "absolute", top: "12px", right: "12px",
+                background: "none", border: "none", cursor: "pointer",
+                fontSize: "1.25rem", lineHeight: 1, color: "inherit",
+              }}
             >
-              Start from Template
+              ×
             </button>
+            <RuleBuilderForm
+              editRule={editingRule}
+              prefill={urlPrefill ?? (showBuilder ? effectivePrefill : null)}
+              templateSeed={templateSeed}
+              onSave={handleSave}
+              onCancel={handleCancel}
+              onCmdGenerate={cmdGenerate}
+              cmdSuggestions={cmdSuggestions}
+              cmdLoading={cmdLoading}
+              cmdClear={cmdClear}
+            />
           </div>
-        ) : (
-          <RuleBuilderForm
-            editRule={editingRule}
-            prefill={showBuilder ? effectivePrefill : null}
-            templateSeed={templateSeed}
-            onSave={handleSave}
-            onCancel={handleCancel}
-          />
-        )}
-      </div>
+        </div>
+      )}
 
       <TemplateLibrary
         open={showTemplates}
