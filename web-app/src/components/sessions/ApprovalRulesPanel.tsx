@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useEffect, useRef, useState } from "react";
 import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
 import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
@@ -29,6 +29,21 @@ import {
   generateErrorBanner, dismissErrorButton, suggestionsContainer,
   ruleModalContent, rowCount,
 } from "./ApprovalRulesPanel.css";
+
+// ── types ────────────────────────────────────────────────────────────────────
+
+/** Minimal form state shape used for URL-param pre-fill tracking. */
+interface RuleFormState {
+  name: string;
+  toolName: string;
+  commandPattern: string;
+}
+
+const emptyForm: RuleFormState = {
+  name: "",
+  toolName: "",
+  commandPattern: "",
+};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +108,15 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
   const [editingRule, setEditingRule] = useState<ApprovalRuleProto | null>(null);
   const [templateSeed, setTemplateSeed] = useState<RuleTemplate | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
+
+  // State and refs for URL-param pre-fill flow (mirrors old inline-form API).
+  const setShowForm = setShowBuilder;
+  const [, setForm] = useState<RuleFormState>(emptyForm);
+  const [, setFormError] = useState<string | null>(null);
+  const [, setAiPrefilled] = useState(false);
+  const [, setCmdSampleValue] = useState("");
+  const cmdGenClear = () => {};
+  const formSectionRef = useRef<HTMLElement | null>(null);
 
   // Track which form fields the user has manually edited (not overwritten by AI pre-fill).
   const touchedFieldsRef = useRef<Set<keyof RuleFormState>>(new Set());
@@ -209,6 +233,9 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
       console.error("Failed to toggle rule:", e);
     }
   };
+
+  // Merge prop prefill with any URL-param derived prefill (prop takes priority).
+  const effectivePrefill = prefill ?? null;
 
   // ── Epic 3: handle suggestion cards ──────────────────────────────────────
 

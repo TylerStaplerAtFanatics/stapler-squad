@@ -3,7 +3,8 @@
 import React, { useState } from "react";
 import { buildPrefillHref } from "@/lib/ruleBuilderPrefill";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
-import { DailyBucketProto, SubcommandStatProto } from "@/gen/session/v1/types_pb";
+import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
+import { DailyBucketProto, SubcommandStatProto, SuggestionSource } from "@/gen/session/v1/types_pb";
 import { ProgramDetailPanel } from "./ProgramDetailPanel";
 import {
   panel, header, titleRow, title, subtitle, refreshButton,
@@ -17,6 +18,7 @@ import {
   categoryBadge, subSectionTitle, filterInput, addRuleLink,
   coverageGapHeader, coverageGapHigh, coverageGapMed, coverageGapLow,
   coverageGapTitleRow, coverageGapIcon, coverageGapTitle, coverageGapBadge, coverageGapDesc,
+  rowActions, rowGeneratingText, suggestRuleButton, addRuleManualLink,
 } from "./ApprovalAnalyticsPanel.css";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -68,7 +70,9 @@ const WINDOW_OPTIONS = [
 export function ApprovalAnalyticsPanel() {
   const [windowDays, setWindowDays] = useState(7);
   const [selectedProgram, setSelectedProgram] = useState<string | null>(null);
+  const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
   const { summary, dailyBuckets, loading, error, refresh } = useApprovalAnalytics({ windowDays });
+  const { loading: generateLoading, generate } = useGenerateRule();
 
   const total = summary?.totalDecisions ?? 0;
   const autoAllowCount = summary?.decisionCounts["auto_allow"] ?? 0;
@@ -407,6 +411,8 @@ export function ApprovalAnalyticsPanel() {
                   <tbody>
                     {summary.topUncoveredPrograms.map((p) => {
                       const isDrillOpen = selectedProgram === p.programName;
+                      const rowKey = `program:${p.programName}`;
+                      const isGenerating = generateLoading && activeRowKey === rowKey;
                       return (
                         <React.Fragment key={p.programName}>
                           <tr
@@ -443,7 +449,7 @@ export function ApprovalAnalyticsPanel() {
                                     disabled={generateLoading}
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      setActiveRowKey(`program:${p.programName}`);
+                                      setActiveRowKey(rowKey);
                                       void generate({
                                         source: SuggestionSource.ANALYTICS_GAPS,
                                         programNameFilter: p.programName,

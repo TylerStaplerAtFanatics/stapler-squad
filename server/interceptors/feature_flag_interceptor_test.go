@@ -8,7 +8,7 @@ import (
 )
 
 func alwaysNext(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-	return nil, nil
+	return connect.NewResponse(&struct{}{}), nil
 }
 
 func TestNewFeatureFlagInterceptor_FlagEnabled(t *testing.T) {
