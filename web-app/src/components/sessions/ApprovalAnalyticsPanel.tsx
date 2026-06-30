@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { buildPrefillHref } from "@/lib/ruleBuilderPrefill";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
 import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
-import { DailyBucketProto, SubcommandStatProto, AutoDecision } from "@/gen/session/v1/types_pb";
+import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
+import { DailyBucketProto, SubcommandStatProto, AutoDecision, SuggestionSource } from "@/gen/session/v1/types_pb";
 import { ProgramDetailPanel } from "./ProgramDetailPanel";
+import { SuggestedRuleCard } from "./SuggestedRuleCard";
 import {
   panel, titleRow, title, refreshButton,
   windowSelector, windowBtn, windowBtnActive,
@@ -15,7 +17,7 @@ import {
   sectionTitle, tableSection, tableWrapper, table, th, thRight, td, tdRight, tdBar, row,
   allowCount, denyCount, manualCount, pctLabel, toolName, ruleName,
   barTrack, barFill, barTool, barRule, barCmd, barPython, barGap,
-  categoryBadge, subSectionTitle, filterInput, addRuleLink,
+  categoryBadge, filterInput, addRuleLink,
   twoColGrid, twoColCell,
   stackedBarTrack, stackedAllow, stackedDeny, stackedManual,
   gapBadgeHigh, gapBadgeMed, gapBadgeLow, gapBadgeDesc,
@@ -330,46 +332,33 @@ export function ApprovalAnalyticsPanel() {
         </div>
       )}
 
-      {/* ── Command distribution ── */}
-      {summary && summary.commandSubcommandStats.length > 0 && (
-        <div className={tableSection}>
-          <h3 className={sectionTitle}>Command Distribution</h3>
-          <CommandDistributionTable stats={summary.commandSubcommandStats} bulkUpsert={bulkUpsertRules} />
-        </div>
-      )}
-
-      {/* ── Rule coverage gaps ── */}
-      {summary && summary.coverageGapCount > 0 && (
+      {/* ── Unified activity table ── */}
+      {summary && (summary.commandSubcommandStats.length > 0 || summary.topTools.length > 0 || summary.topUncoveredTools.length > 0) && (
         <div className={tableSection}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginBottom: 12, flexWrap: "wrap" }}>
-            <h3 className={sectionTitle} style={{ margin: 0 }}>Coverage Gaps</h3>
-            {(() => {
+            <h3 className={sectionTitle} style={{ margin: 0 }}>Activity</h3>
+            {summary.coverageGapCount > 0 && (() => {
               const rounded = Math.round(summary.coverageGapRate);
               const cls = rounded >= 30 ? gapBadgeHigh : rounded >= 10 ? gapBadgeMed : gapBadgeLow;
-              return <span className={cls}>{rounded}% uncovered</span>;
+              return (
+                <>
+                  <span className={cls}>{rounded}% uncovered</span>
+                  <span className={gapBadgeDesc}>{summary.coverageGapCount} of {total} decisions had no matching rule</span>
+                </>
+              );
             })()}
-            <span className={gapBadgeDesc}>{summary.coverageGapCount} of {total} decisions had no matching rule</span>
           </div>
-
-          {summary.topUncoveredTools.length > 0 && (
-            <>
-              <h4 className={subSectionTitle}>Uncovered Tools</h4>
-              <UncoveredToolsTable tools={summary.topUncoveredTools} bulkUpsert={bulkUpsertRules} />
-            </>
-          )}
-
-          {summary.topUncoveredPrograms.length > 0 && (
-            <>
-              <h4 className={subSectionTitle}>Uncovered Bash Programs</h4>
-              <UncoveredProgramsTable
-                programs={summary.topUncoveredPrograms}
-                windowDays={windowDays}
-                selectedProgram={selectedProgram}
-                onSelectProgram={setSelectedProgram}
-                bulkUpsert={bulkUpsertRules}
-              />
-            </>
-          )}
+          <UnifiedActivityTable
+            commandStats={summary.commandSubcommandStats}
+            uncoveredToolNames={new Set(summary.topUncoveredTools.map((t) => t.toolName))}
+            uncoveredProgramNames={new Set(summary.topUncoveredPrograms.map((p) => p.programName))}
+            allToolNames={summary.topTools}
+            windowDays={windowDays}
+            selectedProgram={selectedProgram}
+            onSelectProgram={setSelectedProgram}
+            bulkUpsert={bulkUpsertRules}
+            onRuleAccepted={refresh}
+          />
         </div>
       )}
     </div>
@@ -477,34 +466,155 @@ function BulkReviewPanel({
   );
 }
 
-// ── CommandDistributionTable ───────────────────────────────────────────────────
+// ── UnifiedActivityTable ──────────────────────────────────────────────────────
+//
+// Replaces the three separate tables (CommandDistribution, UncoveredTools,
+// UncoveredPrograms) with a single filterable table.
 
-function CommandDistributionTable({ stats, bulkUpsert }: { stats: SubcommandStatProto[]; bulkUpsert: BulkUpsertFn }) {
-  const [filter, setFilter] = useState("");
+type ActivityFilter = "all" | "needs-rule" | "has-manual";
+
+type UnifiedRow = {
+  key: string;
+  type: "tool" | "command";
+  name: string;        // tool name, or program
+  subcommand: string;  // empty for tools
+  category: string;
+  count: number;
+  manualCount: number;
+  isUncovered: boolean;
+  // for drill-down (command rows only)
+  programName?: string;
+  addRuleHref: string;
+  bulkEntry: BulkEntry;
+};
+
+const FILTER_LABELS: Record<ActivityFilter, string> = {
+  all: "All",
+  "needs-rule": "Needs rule",
+  "has-manual": "Has manual",
+};
+
+function UnifiedActivityTable({
+  commandStats,
+  uncoveredToolNames,
+  uncoveredProgramNames,
+  allToolNames,
+  windowDays,
+  selectedProgram,
+  onSelectProgram,
+  bulkUpsert,
+  onRuleAccepted,
+}: {
+  commandStats: SubcommandStatProto[];
+  uncoveredToolNames: Set<string>;
+  uncoveredProgramNames: Set<string>;
+  allToolNames: Array<{ toolName: string; count: number; manualAllow?: number; manualDeny?: number }>;
+  windowDays: number;
+  selectedProgram: string | null;
+  onSelectProgram: (p: string | null) => void;
+  bulkUpsert: BulkUpsertFn;
+  onRuleAccepted?: () => void;
+}) {
+  const [filter, setFilter] = useState<ActivityFilter>("all");
+  const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [reviewEntries, setReviewEntries] = useState<BulkEntry[] | null>(null);
+  const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
+  const { suggestions, loading: genLoading, error: genError, generate, clear: clearSuggestion } = useGenerateRule();
 
-  const lc = filter.toLowerCase();
-  const filtered = lc
-    ? stats.filter(
-        (s) =>
-          s.programName.toLowerCase().includes(lc) ||
-          s.subcommand.toLowerCase().includes(lc)
-      )
-    : stats;
-  const maxCount = filtered[0]?.count ?? 1;
+  // Build unified rows from both tools and commands
+  const allRows: UnifiedRow[] = React.useMemo(() => {
+    const rows: UnifiedRow[] = [];
 
-  const allFilteredKeys = filtered.map((s) => `${s.programName}:${s.subcommand}`);
-  const allSelected = allFilteredKeys.length > 0 && allFilteredKeys.every((k) => selected.has(k));
-  const someSelected = selected.size > 0;
+    // Tool rows — all tools from topTools, mark uncovered ones
+    for (const t of allToolNames) {
+      rows.push({
+        key: `tool:${t.toolName}`,
+        type: "tool",
+        name: t.toolName,
+        subcommand: "",
+        category: "tool",
+        count: t.count,
+        manualCount: (t.manualAllow ?? 0) + (t.manualDeny ?? 0),
+        isUncovered: uncoveredToolNames.has(t.toolName),
+        addRuleHref: buildPrefillHref({ toolName: t.toolName }),
+        bulkEntry: { key: `tool:${t.toolName}`, program: t.toolName, subcommand: "", decision: AutoDecision.ALLOW },
+      });
+    }
+    // Add uncovered tools not already present in topTools
+    for (const name of uncoveredToolNames) {
+      if (!allToolNames.find((t) => t.toolName === name)) {
+        rows.push({
+          key: `tool:${name}`, type: "tool", name, subcommand: "", category: "tool",
+          count: 0, manualCount: 0, isUncovered: true,
+          addRuleHref: buildPrefillHref({ toolName: name }),
+          bulkEntry: { key: `tool:${name}`, program: name, subcommand: "", decision: AutoDecision.ALLOW },
+        });
+      }
+    }
+
+    // Command rows from commandSubcommandStats
+    const seenPrograms = new Set<string>();
+    for (const s of commandStats) {
+      const manualCount = s.manualAllow + s.manualDeny;
+      seenPrograms.add(s.programName);
+      rows.push({
+        key: `cmd:${s.programName}:${s.subcommand}`,
+        type: "command",
+        name: s.programName,
+        subcommand: s.subcommand,
+        category: s.category,
+        count: s.count,
+        manualCount,
+        isUncovered: uncoveredProgramNames.has(s.programName),
+        programName: s.programName,
+        addRuleHref: buildPrefillHref({ programs: [s.programName], subcommands: s.subcommand ? [s.subcommand] : [] }),
+        bulkEntry: { key: `cmd:${s.programName}:${s.subcommand}`, program: s.programName, subcommand: s.subcommand, decision: AutoDecision.ALLOW },
+      });
+    }
+    // Also show uncovered programs not already present in commandStats
+    for (const p of uncoveredProgramNames) {
+      if (!seenPrograms.has(p)) {
+        rows.push({
+          key: `cmd:${p}:`,
+          type: "command",
+          name: p,
+          subcommand: "",
+          category: "",
+          count: 0,
+          manualCount: 0,
+          isUncovered: true,
+          programName: p,
+          addRuleHref: buildPrefillHref({ programs: [p] }),
+          bulkEntry: { key: `cmd:${p}:`, program: p, subcommand: "", decision: AutoDecision.ALLOW },
+        });
+      }
+    }
+
+    return rows;
+  }, [commandStats, uncoveredToolNames, uncoveredProgramNames, allToolNames]);
+
+  const filteredRows = React.useMemo(() => {
+    let rows = allRows;
+    if (filter === "needs-rule") rows = rows.filter((r) => r.isUncovered);
+    if (filter === "has-manual") rows = rows.filter((r) => r.manualCount > 0);
+    if (search) {
+      const lc = search.toLowerCase();
+      rows = rows.filter((r) =>
+        r.name.toLowerCase().includes(lc) || r.subcommand.toLowerCase().includes(lc)
+      );
+    }
+    return rows;
+  }, [allRows, filter, search]);
+
+  const maxCount = filteredRows.reduce((m, r) => Math.max(m, r.count), 1);
+
+  const allFilteredKeys = filteredRows.map((r) => r.key);
+  const allChecked = allFilteredKeys.length > 0 && allFilteredKeys.every((k) => selected.has(k));
 
   const toggleAll = () => {
-    if (allSelected) {
-      setSelected((prev) => {
-        const next = new Set(prev);
-        allFilteredKeys.forEach((k) => next.delete(k));
-        return next;
-      });
+    if (allChecked) {
+      setSelected((prev) => { const next = new Set(prev); allFilteredKeys.forEach((k) => next.delete(k)); return next; });
     } else {
       setSelected((prev) => new Set([...prev, ...allFilteredKeys]));
     }
@@ -519,150 +629,49 @@ function CommandDistributionTable({ stats, bulkUpsert }: { stats: SubcommandStat
   };
 
   const openReview = () => {
-    const entries: BulkEntry[] = stats
-      .filter((s) => selected.has(`${s.programName}:${s.subcommand}`))
-      .map((s) => ({
-        key: `${s.programName}:${s.subcommand}`,
-        program: s.programName,
-        subcommand: s.subcommand,
-        decision: AutoDecision.ALLOW,
-      }));
+    const entries = allRows
+      .filter((r) => selected.has(r.key))
+      .map((r) => ({ ...r.bulkEntry, decision: AutoDecision.ALLOW }));
     setReviewEntries(entries);
   };
 
-  const closeReview = () => {
-    setReviewEntries(null);
-    setSelected(new Set());
-  };
+  const closeReview = () => { setReviewEntries(null); setSelected(new Set()); };
+
+  // Counts for filter badges
+  const needsRuleCount = allRows.filter((r) => r.isUncovered).length;
+  const hasManualCount = allRows.filter((r) => r.manualCount > 0).length;
 
   return (
     <>
-      <input
-        type="text"
-        placeholder="Filter by program or subcommand (e.g. gh, sed, aws s3)…"
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        className={filterInput}
-        aria-label="Filter command distribution entries"
-      />
-      {someSelected && !reviewEntries && (
-        <div className={bulkActionBar}>
-          <span className={bulkActionCount}>{selected.size} selected</span>
-          <button className={bulkAddBtn} onClick={openReview}>Add rules for selected →</button>
-          <button className={bulkClearBtn} onClick={() => setSelected(new Set())}>Clear</button>
+      {/* Filter chips + search */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <div className={windowSelector} role="group" aria-label="Activity filter">
+          {(["all", "needs-rule", "has-manual"] as ActivityFilter[]).map((f) => {
+            const badge = f === "needs-rule" ? needsRuleCount : f === "has-manual" ? hasManualCount : allRows.length;
+            return (
+              <button
+                key={f}
+                className={`${windowBtn} ${filter === f ? windowBtnActive : ""}`}
+                onClick={() => setFilter(f)}
+                aria-pressed={filter === f}
+              >
+                {FILTER_LABELS[f]}
+                {badge > 0 && <span style={{ marginLeft: 4, opacity: 0.7, fontSize: "0.85em" }}>({badge})</span>}
+              </button>
+            );
+          })}
         </div>
-      )}
-      {reviewEntries && (
-        <BulkReviewPanel
-          entries={reviewEntries}
-          onEntriesChange={setReviewEntries}
-          bulkUpsert={bulkUpsert}
-          onDone={closeReview}
+        <input
+          type="text"
+          placeholder="Search…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className={filterInput}
+          style={{ flex: 1, minWidth: 120 }}
+          aria-label="Search activity"
         />
-      )}
-      <div className={tableWrapper}>
-        <table className={table}>
-          <thead>
-            <tr>
-              <th className={checkboxTh}>
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  onChange={toggleAll}
-                  aria-label="Select all"
-                  disabled={filtered.length === 0}
-                />
-              </th>
-              <th className={th}>Program</th>
-              <th className={th}>Subcommand</th>
-              <th className={th}>Category</th>
-              <th className={`${th} ${thRight}`}>Calls</th>
-              <th className={th}>Share</th>
-              <th className={th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((s) => {
-              const key = `${s.programName}:${s.subcommand}`;
-              return (
-                <tr key={key} className={row}>
-                  <td className={checkboxTd}>
-                    <input
-                      type="checkbox"
-                      checked={selected.has(key)}
-                      onChange={() => toggleRow(key)}
-                      aria-label={`Select ${s.programName} ${s.subcommand}`}
-                    />
-                  </td>
-                  <td className={td}>
-                    <code className={toolName}>{s.programName}</code>
-                  </td>
-                  <td className={td}>
-                    <code className={toolName}>{s.subcommand}</code>
-                  </td>
-                  <td className={td}>
-                    <span className={categoryBadge}>{s.category}</span>
-                  </td>
-                  <td className={`${td} ${tdRight}`}>{s.count}</td>
-                  <td className={`${td} ${tdBar}`}>
-                    <Bar value={s.count} max={maxCount} className={barCmd} />
-                  </td>
-                  <td className={td}>
-                    <a
-                      href={buildPrefillHref({
-                        programs: [s.programName],
-                        subcommands: s.subcommand ? [s.subcommand] : [],
-                      })}
-                      className={addRuleLink}
-                      title={`Add a rule for ${s.programName} ${s.subcommand}`}
-                    >
-                      Add rule →
-                    </a>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
       </div>
-    </>
-  );
-}
 
-// ── UncoveredToolsTable ───────────────────────────────────────────────────────
-
-type UncoveredTool = { toolName: string; count: number };
-
-function UncoveredToolsTable({ tools, bulkUpsert }: { tools: UncoveredTool[]; bulkUpsert: BulkUpsertFn }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [reviewEntries, setReviewEntries] = useState<BulkEntry[] | null>(null);
-
-  const allSelected = tools.length > 0 && tools.every((t) => selected.has(t.toolName));
-
-  const toggleAll = () => {
-    if (allSelected) setSelected(new Set());
-    else setSelected(new Set(tools.map((t) => t.toolName)));
-  };
-
-  const toggleRow = (key: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
-
-  const openReview = () => {
-    const entries: BulkEntry[] = tools
-      .filter((t) => selected.has(t.toolName))
-      .map((t) => ({ key: t.toolName, program: t.toolName, subcommand: "", decision: AutoDecision.ALLOW }));
-    setReviewEntries(entries);
-  };
-
-  const closeReview = () => { setReviewEntries(null); setSelected(new Set()); };
-
-  return (
-    <>
       {selected.size > 0 && !reviewEntries && (
         <div className={bulkActionBar}>
           <span className={bulkActionCount}>{selected.size} selected</span>
@@ -673,152 +682,140 @@ function UncoveredToolsTable({ tools, bulkUpsert }: { tools: UncoveredTool[]; bu
       {reviewEntries && (
         <BulkReviewPanel entries={reviewEntries} onEntriesChange={setReviewEntries} bulkUpsert={bulkUpsert} onDone={closeReview} />
       )}
-      <div className={tableWrapper}>
-        <table className={table}>
-          <thead>
-            <tr>
-              <th className={checkboxTh}><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all tools" /></th>
-              <th className={th}>Tool</th>
-              <th className={`${th} ${thRight}`}>Unmatched</th>
-              <th className={th}>Share of gaps</th>
-              <th className={th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {tools.map((t) => (
-              <tr key={t.toolName} className={row}>
-                <td className={checkboxTd}><input type="checkbox" checked={selected.has(t.toolName)} onChange={() => toggleRow(t.toolName)} aria-label={`Select ${t.toolName}`} /></td>
-                <td className={td}><code className={toolName}>{t.toolName}</code></td>
-                <td className={`${td} ${tdRight}`}>{t.count}</td>
-                <td className={`${td} ${tdBar}`}>
-                  <Bar value={t.count} max={tools[0]?.count ?? 1} className={barGap} />
-                </td>
-                <td className={td}>
-                  <a href={buildPrefillHref({ toolName: t.toolName })} className={addRuleLink} title={`Add a rule for ${t.toolName}`}>
-                    Add rule →
-                  </a>
-                </td>
+
+      {filteredRows.length === 0 ? (
+        <p style={{ color: "var(--text-muted)", fontSize: "0.85em", padding: "12px 0" }}>
+          {filter === "needs-rule" ? "No uncovered executions — all activity has a matching rule." :
+           filter === "has-manual" ? "No manual reviews in this window." : "No activity."}
+        </p>
+      ) : (
+        <div className={tableWrapper}>
+          <table className={table}>
+            <thead>
+              <tr>
+                <th className={checkboxTh}>
+                  <input type="checkbox" checked={allChecked} onChange={toggleAll} aria-label="Select all" />
+                </th>
+                <th className={th}>Name</th>
+                <th className={th}>Type</th>
+                <th className={th}>Category</th>
+                <th className={`${th} ${thRight}`}>Count</th>
+                <th className={`${th} ${thRight}`}>Manual</th>
+                <th className={th}>Volume</th>
+                <th className={th}></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
-}
-
-// ── UncoveredProgramsTable ────────────────────────────────────────────────────
-
-type UncoveredProgram = { programName: string; category: string; count: number };
-
-function UncoveredProgramsTable({
-  programs, windowDays, selectedProgram, onSelectProgram, bulkUpsert,
-}: {
-  programs: UncoveredProgram[];
-  windowDays: number;
-  selectedProgram: string | null;
-  onSelectProgram: (p: string | null) => void;
-  bulkUpsert: BulkUpsertFn;
-}) {
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [reviewEntries, setReviewEntries] = useState<BulkEntry[] | null>(null);
-
-  const allSelected = programs.length > 0 && programs.every((p) => selected.has(p.programName));
-
-  const toggleAll = () => {
-    if (allSelected) setSelected(new Set());
-    else setSelected(new Set(programs.map((p) => p.programName)));
-  };
-
-  const toggleRow = (key: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
-
-  const openReview = () => {
-    const entries: BulkEntry[] = programs
-      .filter((p) => selected.has(p.programName))
-      .map((p) => ({ key: p.programName, program: p.programName, subcommand: "", decision: AutoDecision.ALLOW }));
-    setReviewEntries(entries);
-  };
-
-  const closeReview = () => { setReviewEntries(null); setSelected(new Set()); };
-
-  return (
-    <>
-      {selected.size > 0 && !reviewEntries && (
-        <div className={bulkActionBar}>
-          <span className={bulkActionCount}>{selected.size} selected</span>
-          <button className={bulkAddBtn} onClick={openReview}>Add rules for selected →</button>
-          <button className={bulkClearBtn} onClick={() => setSelected(new Set())}>Clear</button>
-        </div>
-      )}
-      {reviewEntries && (
-        <BulkReviewPanel entries={reviewEntries} onEntriesChange={setReviewEntries} bulkUpsert={bulkUpsert} onDone={closeReview} />
-      )}
-      <div className={tableWrapper}>
-        <table className={table}>
-          <thead>
-            <tr>
-              <th className={checkboxTh}><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all programs" /></th>
-              <th className={th}>Program</th>
-              <th className={th}>Category</th>
-              <th className={`${th} ${thRight}`}>Unmatched</th>
-              <th className={th}>Share of gaps</th>
-              <th className={th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {programs.map((p) => {
-              const isDrillOpen = selectedProgram === p.programName;
-              return (
-                <React.Fragment key={p.programName}>
-                  <tr
-                    className={row}
-                    style={{ cursor: "pointer" }}
-                    tabIndex={0}
-                    role="button"
-                    aria-expanded={isDrillOpen}
-                    aria-label={`${p.programName} — click to ${isDrillOpen ? "collapse" : "expand"} details`}
-                    onClick={() => onSelectProgram(isDrillOpen ? null : p.programName)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        onSelectProgram(isDrillOpen ? null : p.programName);
-                      }
-                    }}
-                  >
-                    <td className={checkboxTd} onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" checked={selected.has(p.programName)} onChange={() => toggleRow(p.programName)} aria-label={`Select ${p.programName}`} />
-                    </td>
-                    <td className={td}><code className={toolName}>{p.programName}</code></td>
-                    <td className={td}><span className={categoryBadge}>{p.category}</span></td>
-                    <td className={`${td} ${tdRight}`}>{p.count}</td>
-                    <td className={`${td} ${tdBar}`}>
-                      <Bar value={p.count} max={programs[0]?.count ?? 1} className={barGap} />
-                    </td>
-                    <td className={td}>
-                      <a href={buildPrefillHref({ programs: [p.programName] })} className={addRuleLink} title={`Add a rule for ${p.programName}`} onClick={(e) => e.stopPropagation()}>
-                        Add rule →
-                      </a>
-                    </td>
-                  </tr>
-                  {isDrillOpen && (
-                    <tr>
-                      <td colSpan={6} onClick={(e) => e.stopPropagation()}>
-                        <ProgramDetailPanel program={p.programName} windowDays={windowDays} onClose={() => onSelectProgram(null)} />
+            </thead>
+            <tbody>
+              {filteredRows.map((r) => {
+                const isDrillOpen = r.type === "command" && selectedProgram === r.programName;
+                const colSpan = 8;
+                return (
+                  <React.Fragment key={r.key}>
+                    <tr
+                      className={row}
+                      style={r.type === "command" && r.programName ? { cursor: "pointer" } : undefined}
+                      tabIndex={r.type === "command" && r.programName ? 0 : undefined}
+                      role={r.type === "command" && r.programName ? "button" : undefined}
+                      aria-expanded={r.type === "command" && r.programName ? isDrillOpen : undefined}
+                      onClick={r.type === "command" && r.programName
+                        ? () => onSelectProgram(isDrillOpen ? null : r.programName!)
+                        : undefined}
+                      onKeyDown={r.type === "command" && r.programName ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectProgram(isDrillOpen ? null : r.programName!); }
+                      } : undefined}
+                    >
+                      <td className={checkboxTd} onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selected.has(r.key)}
+                          onChange={() => toggleRow(r.key)}
+                          aria-label={`Select ${r.name} ${r.subcommand}`}
+                        />
+                      </td>
+                      <td className={td}>
+                        <code className={toolName}>{r.name}</code>
+                        {r.subcommand && <> <code className={toolName} style={{ opacity: 0.7 }}>{r.subcommand}</code></>}
+                        {r.isUncovered && (
+                          <span className={gapBadgeLow} style={{ marginLeft: 6 }}>no rule</span>
+                        )}
+                      </td>
+                      <td className={td}>
+                        <span className={categoryBadge}>{r.type}</span>
+                      </td>
+                      <td className={td}>
+                        {r.category !== "tool" && <span className={categoryBadge}>{r.category}</span>}
+                      </td>
+                      <td className={`${td} ${tdRight}`}>{r.count}</td>
+                      <td className={`${td} ${tdRight}`}>
+                        {r.manualCount > 0
+                          ? <span className={manualCount}>{r.manualCount}</span>
+                          : <span style={{ opacity: 0.3 }}>—</span>}
+                      </td>
+                      <td className={`${td} ${tdBar}`}>
+                        <Bar value={r.count} max={maxCount} className={r.isUncovered ? barGap : barCmd} />
+                      </td>
+                      <td className={td} onClick={(e) => e.stopPropagation()}>
+                        {r.isUncovered ? (
+                          <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                            <button
+                              data-testid={r.type === "tool" ? `suggest-rule-tool-${r.name}` : `suggest-rule-program-${r.name}`}
+                              className={addRuleLink}
+                              style={{ background: "none", border: "none", cursor: genLoading ? "not-allowed" : "pointer", padding: 0, font: "inherit" }}
+                              disabled={genLoading}
+                              onClick={() => {
+                                setActiveRowKey(r.key);
+                                void generate({
+                                  source: SuggestionSource.ANALYTICS_GAPS,
+                                  windowDays,
+                                  ...(r.type === "tool" ? { toolNameFilter: r.name } : { programNameFilter: r.name }),
+                                });
+                              }}
+                            >
+                              {genLoading && activeRowKey === r.key ? "Generating…" : "Suggest rule →"}
+                            </button>
+                            <a href={r.addRuleHref} className={addRuleLink} style={{ fontSize: "0.8em", opacity: 0.7 }}>
+                              or add manually →
+                            </a>
+                          </span>
+                        ) : (
+                          <a href={r.addRuleHref} className={addRuleLink} title={`Add a rule for ${r.name}`}>
+                            Add rule →
+                          </a>
+                        )}
                       </td>
                     </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                    {genError && activeRowKey === r.key && (
+                      <tr>
+                        <td colSpan={colSpan} style={{ color: "var(--error)", fontSize: "0.85em", padding: "4px 8px" }}>
+                          {genError.message}
+                        </td>
+                      </tr>
+                    )}
+                    {!genError && activeRowKey === r.key && suggestions.length > 0 && (
+                      <tr>
+                        <td colSpan={colSpan} onClick={(e) => e.stopPropagation()}>
+                          <SuggestedRuleCard
+                            suggestion={suggestions[0]}
+                            onAccept={() => { clearSuggestion(); setActiveRowKey(null); onRuleAccepted?.(); }}
+                            onDiscard={() => { clearSuggestion(); setActiveRowKey(null); }}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                    {isDrillOpen && (
+                      <tr>
+                        <td colSpan={colSpan} onClick={(e) => e.stopPropagation()}>
+                          <ProgramDetailPanel program={r.programName!} windowDays={windowDays} onClose={() => onSelectProgram(null)} />
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }
