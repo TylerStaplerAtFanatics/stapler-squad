@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
 import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
@@ -31,11 +31,6 @@ import {
 } from "./ApprovalRulesPanel.css";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-/** Escape all regex metacharacters in a literal string for safe interpolation into patterns. */
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 function decisionLabel(d: AutoDecision): string {
   switch (d) {
@@ -94,8 +89,39 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
   const [templateSeed, setTemplateSeed] = useState<RuleTemplate | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
 
-  // Auto-open builder if prefill is provided
-  const effectivePrefill = prefill ?? null;
+  // ── URL param pre-fill (from analytics "Add rule →" links) ───────────────
+  // Runs once on mount (client only). Reads window.location.search directly to
+  // avoid useSearchParams + Suspense complications in the static export.
+  const [urlPrefill, setUrlPrefill] = useState<RuleBuilderPrefill | null>(null);
+  // Ref for the form section so we can scroll to it after URL-param pre-fill.
+  const formSectionRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tool = params.get("tool");
+    const program = params.get("program");
+    const subcommand = params.get("subcommand");
+    if (!tool && !program) return;
+
+    const fill: RuleBuilderPrefill = {};
+    if (tool) {
+      fill.toolName = tool;
+    } else if (program) {
+      fill.toolName = "Bash";
+      fill.programs = [program];
+      if (subcommand) fill.subcommands = [subcommand];
+    }
+
+    setUrlPrefill(fill);
+    setShowBuilder(true);
+
+    setTimeout(() => {
+      formSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 100);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const effectivePrefill = prefill ?? urlPrefill;
 
   // ── filter ────────────────────────────────────────────────────────────────
 
@@ -480,7 +506,7 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
       </button>
 
       {/* ── Rule Builder ── */}
-      <div className={formSection} id="rule-builder">
+      <div className={formSection} id="rule-builder" ref={formSectionRef}>
         {!showBuilder ? (
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             <button className={addButton} onClick={() => { setTemplateSeed(null); setEditingRule(null); setShowBuilder(true); }}>
