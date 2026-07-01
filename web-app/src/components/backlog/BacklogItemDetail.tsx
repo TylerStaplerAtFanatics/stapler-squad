@@ -56,6 +56,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     overrideVerdict,
     triggerReReview,
     archiveBacklogItem,
+    deleteBacklogItem,
     updateBacklogItem,
     lastError,
   } = useBacklogService();
@@ -161,6 +162,11 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           case "archive":
             await archiveBacklogItem(item.id);
             break;
+          case "delete":
+            if (!confirm("Permanently delete this item and all its history? This cannot be undone.")) return;
+            await deleteBacklogItem(item.id);
+            onClose?.();
+            return;
           case "reopen":
             await transitionStatus(item.id, "review");
             break;
@@ -174,7 +180,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         setActionLoading(false);
       }
     },
-    [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, archiveBacklogItem, load]
+    [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, archiveBacklogItem, deleteBacklogItem, onClose, load]
   );
 
   const handleSaveNotes = useCallback(async () => {
@@ -720,6 +726,15 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 </button>
               </>
             )}
+
+            <button
+              className={styles.actionButtonDanger}
+              onClick={() => handleAction("delete")}
+              disabled={actionLoading}
+              data-testid="backlog-action-delete"
+            >
+              Delete
+            </button>
           </div>
         </div>
 
