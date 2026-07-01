@@ -288,9 +288,9 @@ func TestGoGitVCSReader_AheadBehind_SingleflightCollapsesParallelCallers(t *test
 	}
 }
 
-// TestGoGitVCSReader_AheadBehind_PanicDoesNotCrashCaller verifies that
+// TestGoGitVCSReader_AheadBehind_PanicRecovery verifies that
 // a panic inside the singleflight Do body is caught and returned as an error.
-func TestGoGitVCSReader_AheadBehind_PanicDoesNotCrashCaller(t *testing.T) {
+func TestGoGitVCSReader_AheadBehind_PanicRecovery(t *testing.T) {
 	// Use a non-existent path — openRepoEntry returns error, not panic,
 	// but confirms the caller handles Do errors without crashing.
 	r := &GoGitVCSReader{}
