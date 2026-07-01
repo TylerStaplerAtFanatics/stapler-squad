@@ -337,7 +337,7 @@ verify-codesign: ## Verify binary code signing status and TCC identity
 	@# before feeding to xxd. The awk extracts the 2nd-5th columns (hex groups only).
 	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | \
 		tail -n +2 | \
-		awk '{for(i=2;i<=NF&&length($$i)==8;i++) printf $$i; print ""}' | \
+		awk '{for(i=2;i<=NF&&length($$i)==8;i++){s=$$i; printf "%s%s%s%s",substr(s,7,2),substr(s,5,2),substr(s,3,2),substr(s,1,2)}; print ""}' | \
 		tr -d '\n' | xxd -r -p | plutil -p - 2>&1 || \
 		echo "(no embedded plist — Info.plist not embedded; check CGO_ENABLED=1)"
 
