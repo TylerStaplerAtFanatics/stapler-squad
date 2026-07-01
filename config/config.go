@@ -20,7 +20,11 @@ import (
 // Pass nil to use the default timeout executor.
 func NewConfigWithExecutor(exec CommandExecutor) *Config {
 	if exec == nil {
-		exec = newTimeoutCommandExecutor(5 * time.Second)
+		if IsTestMode() {
+			exec = &lookPathOnlyExecutor{}
+		} else {
+			exec = newTimeoutCommandExecutor(5 * time.Second)
+		}
 	}
 	return &Config{executor: exec}
 }

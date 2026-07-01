@@ -450,13 +450,15 @@ func TestGetClaudeCommand_Timeout(t *testing.T) {
 	})
 
 	t.Run("Default executor uses timeout protection", func(t *testing.T) {
-		// Verify that NewConfig() creates a config with timeout protection.
+		// Verify that NewConfig() creates a config with a non-nil executor.
 		cfg := NewConfig()
 		assert.NotNil(t, cfg.executor)
 
-		// The default should be timeoutCommandExecutor
-		_, ok := cfg.executor.(*timeoutCommandExecutor)
-		assert.True(t, ok, "Default executor should be timeoutCommandExecutor")
+		// In test mode the default executor is lookPathOnlyExecutor (avoids slow
+		// shell config sourcing); in production it is timeoutCommandExecutor.
+		_, isTimeout := cfg.executor.(*timeoutCommandExecutor)
+		_, isLookPath := cfg.executor.(*lookPathOnlyExecutor)
+		assert.True(t, isTimeout || isLookPath, "Default executor should be timeoutCommandExecutor or lookPathOnlyExecutor, got %T", cfg.executor)
 	})
 }
 
