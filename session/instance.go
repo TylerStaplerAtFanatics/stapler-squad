@@ -977,6 +977,10 @@ func (i *Instance) Pause() error {
 		return fmt.Errorf("instance is already paused")
 	}
 
+	// Invalidate the IsDirty cache regardless of whether the pause succeeds,
+	// so the UI does not show stale dirty state if pause is retried.
+	defer i.gitManager.InvalidateDirtyCache()
+
 	// Stop the controller when pausing
 	i.StopController()
 
@@ -1149,6 +1153,7 @@ func (i *Instance) Resume() error {
 		return fmt.Errorf("failed to transition to Active on resume: %w", err)
 	}
 	i.stateMutex.Unlock()
+	i.gitManager.InvalidateDirtyCache()
 	log.ForSession(i.Title).Info("session resumed")
 
 	// Start ClaudeController for idle detection and automation
