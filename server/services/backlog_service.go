@@ -668,6 +668,28 @@ func (s *BacklogService) ArchiveBacklogItem(
 	}), nil
 }
 
+// --- DeleteBacklogItem ---
+
+// DeleteBacklogItem permanently removes an item and all its child records.
+// +api: backlog:delete-item
+func (s *BacklogService) DeleteBacklogItem(
+	ctx context.Context,
+	req *connect.Request[sessionv1.DeleteBacklogItemRequest],
+) (*connect.Response[sessionv1.DeleteBacklogItemResponse], error) {
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+
+	if err := s.storage.DeleteBacklogItem(ctx, req.Msg.ItemId); err != nil {
+		if ent.IsNotFound(err) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete backlog item: %w", err))
+	}
+
+	return connect.NewResponse(&sessionv1.DeleteBacklogItemResponse{}), nil
+}
+
 // --- TransitionBacklogItemStatus ---
 
 // TransitionBacklogItemStatus moves an item through the status state machine.
