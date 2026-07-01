@@ -199,7 +199,7 @@ export const authError = style({
 
 export const authBanner = style({
   display: "flex",
-  alignItems: "center",
+  flexDirection: "column",
   gap: vars.space["3"],
   padding: `${vars.space["3"]} ${vars.space["4"]}`,
   background: vars.color.warningBg,
@@ -211,7 +211,6 @@ export const authBanner = style({
 export const authBannerText = style({
   fontSize: vars.fontSize.sm,
   color: vars.color.warningText,
-  flexGrow: 1,
 });
 
 export const authBannerSuccess = style({
@@ -228,15 +227,15 @@ export const authBannerSuccess = style({
 });
 
 export const connectButton = style({
-  padding: `${vars.space["1"]} ${vars.space["3"]}`,
+  padding: `${vars.space["2"]} ${vars.space["3"]}`,
   background: vars.color.primary,
   color: vars.color.textInverse,
   border: "none",
   borderRadius: vars.radii.sm,
-  fontSize: vars.fontSize.xs,
+  fontSize: vars.fontSize.sm,
   fontWeight: 600,
   cursor: "pointer",
-  whiteSpace: "nowrap",
+  alignSelf: "flex-start",
   ":hover": {
     background: vars.color.primaryHover,
   },
