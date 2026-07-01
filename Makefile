@@ -13,6 +13,12 @@ else
 endif
 export CGO_ENABLED := 1
 
+# Version reported by `stapler-squad version`, injected via ldflags to match
+# GoReleaser's `-X main.version={{.Version}}`. Falls back to a dev marker
+# when building outside a git checkout (e.g. from a source tarball).
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
+
 # File dependencies
 GO_FILES := $(shell find . -maxdepth 3 -name "*.go" -not -path "./vendor/*" -not -path "./node_modules/*")
 WEB_FILES := $(shell find web-app/src -type f 2>/dev/null)
@@ -123,12 +129,12 @@ stapler-squad: ensure-tools proto-gen server/web/dist lint $(GO_FILES) ## Build 
 	@echo "Building Go application..."
 ifeq ($(UNAME_S),Darwin)
 	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/Info.plist" \
-		go build -o stapler-squad .
+		go build -ldflags "$(LDFLAGS)" -o stapler-squad .
 	@# Verify Info.plist was actually embedded (catches silent CGO_ENABLED=0 failures)
 	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
 		(echo "ERROR: Info.plist was not embedded. Ensure CGO_ENABLED=1 and try again." && exit 1)
 else
-	go build -o stapler-squad .
+	go build -ldflags "$(LDFLAGS)" -o stapler-squad .
 endif
 	@echo "✅ stapler-squad built successfully"
 
