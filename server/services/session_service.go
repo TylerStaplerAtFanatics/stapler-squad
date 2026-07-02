@@ -166,6 +166,10 @@ type SessionService struct {
 	// Populated on startup and refreshed every minute. Protected by workflowMetaMu.
 	workflowMetaCache map[string]workflowMeta
 	workflowMetaMu    sync.RWMutex
+
+	// registry is the live-handle map for all running sessions. Wired after construction
+	// via SetRegistry so that NewSessionService callers don't need to supply it at build time.
+	registry *session.Registry
 }
 
 // workflowMeta holds cached metadata about a workflow used at session-list time.
@@ -286,7 +290,7 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 			log.Info("[SessionService] AI rule generation unavailable: set ANTHROPIC_API_KEY or install claude/gemini/opencode CLI")
 		}
 	}
-	rulesSvc := NewRulesService(rulesStore, analyticsStore, classifierObj, promptBuilder, aiClientImpl)
+	rulesSvc := NewRulesService(rulesStore, NewConfigFileRulesStore(), analyticsStore, classifierObj, promptBuilder, aiClientImpl)
 
 	// Initialize capacity monitor.
 	var capCfg config.CapacityConfig
@@ -660,6 +664,31 @@ func (s *SessionService) SetReactiveQueueManager(mgr ReactiveQueueManager) {
 // Call this during server startup after the listen address is known.
 func (s *SessionService) SetMCPServerURL(url string) {
 	s.mcpServerURL = url
+}
+
+// SetRegistry wires the Registry into this service. Called during server startup after
+// the Registry is constructed in BuildServiceDeps.
+func (s *SessionService) SetRegistry(r *session.Registry) {
+	s.registry = r
+}
+
+// WireInstanceCallbacks is the onConstruct hook for Registry.Acquire. It wires all
+// per-session callbacks (review queue, status manager, rate limit, etc.) onto a freshly
+// constructed LiveInstance. Called exactly once per genuine construction in Acquire —
+// never on refcount++ hits, never on Register (CreateSession wires callbacks explicitly).
+func (s *SessionService) WireInstanceCallbacks(inst *session.LiveInstance) {
+	inst.SetReviewQueue(s.reviewQueueSvc.GetQueue())
+	if s.statusManager != nil {
+		inst.SetStatusManager(s.statusManager)
+	}
+	s.wireRateLimitCallbacks(inst.Instance)
+	s.wireStatusChangeCallback(inst.Instance)
+	s.wireClaudeSessionIDCallback(inst.Instance)
+	s.wireAutoArchiveCallback(inst.Instance)
+	s.wireSessionExitedPublisher(inst.Instance)
+	if inst.MCPServerURL == "" && s.mcpServerURL != "" {
+		inst.MCPServerURL = s.mcpServerURL
+	}
 }
 
 // SetBacklogLifecycleListener wires the listener to all sessions created via
@@ -1290,9 +1319,27 @@ func (s *SessionService) CreateSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("failed to create instance: %w", err))
 	}
 
+	// Register in the live-handle map BEFORE persisting to storage so there is never
+	// a window where the session is findable by storage.FindInstanceDataByID but has
+	// no live actor. ForceRelease (not the release closure) is used in the rollback
+	// path because a concurrent Acquire racing between Register and AddInstance failure
+	// could bump refcount to 2, making plain release() decrement 2→1 and leave a
+	// phantom entry alive.
+	if s.registry != nil {
+		live := session.NewLiveInstance(instance)
+		if _, regErr := s.registry.Register(live); regErr != nil {
+			live.Stop()
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to register instance: %w", regErr))
+		}
+		// Note: AddInstance failure rolls back via ForceRelease below.
+	}
+
 	// Save the instance to storage with Creating status immediately so the client
 	// can receive the session and show a spinner while initialization proceeds.
 	if err := s.storage.AddInstance(instance); err != nil {
+		if s.registry != nil {
+			s.registry.ForceRelease(instance.GetStableID())
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
 	}
 
@@ -4113,4 +4160,20 @@ func (s *SessionService) SetTokenStoreReader(store tokens.TokenStoreReader) {
 // GetInstances returns all managed (poller-tracked) live instances, satisfying InstancePoller.
 func (s *SessionService) GetInstances() []*session.Instance {
 	return s.allInstances()
+}
+
+// GetConfigFileRules returns all rules from the shared config YAML file.
+func (s *SessionService) GetConfigFileRules(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetConfigFileRulesRequest],
+) (*connect.Response[sessionv1.GetConfigFileRulesResponse], error) {
+	return s.rulesSvc.GetConfigFileRules(ctx, req)
+}
+
+// SaveRulesToConfigFile exports rules to the shared config YAML file.
+func (s *SessionService) SaveRulesToConfigFile(
+	ctx context.Context,
+	req *connect.Request[sessionv1.SaveRulesToConfigFileRequest],
+) (*connect.Response[sessionv1.SaveRulesToConfigFileResponse], error) {
+	return s.rulesSvc.SaveRulesToConfigFile(ctx, req)
 }
