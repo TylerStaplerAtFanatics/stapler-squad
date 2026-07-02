@@ -424,8 +424,10 @@ func (p *EscapeCodeParser) parseCSI(data []byte, offset int) (*ParsedEscapeCode,
 			end++
 			continue
 		}
-		// Terminator: letter
-		if (b >= 0x40 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A) {
+		// Terminator: final byte per ECMA-48 (0x40-0x7E), not just letters —
+		// e.g. '@' (Insert Character) and '~' (used by many real xterm
+		// sequences) are valid CSI final bytes outside the A-Z/a-z range.
+		if b >= 0x40 && b <= 0x7E {
 			end++
 			rawBytes := data[offset:end]
 			category, description := p.categorizeCSI(rawBytes, isPrivate, hasParams)
