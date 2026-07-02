@@ -18,32 +18,32 @@ import (
 // The controller enables automated idle detection and queue management.
 func (i *Instance) StartController() error {
 	// Check preconditions under lock
-	i.stateMutex.Lock()
+	i.mu.Lock()
 
 	// Only start if we have a status manager
 	if i.controllerManager.GetStatusManager() == nil {
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		log.Debug("no status manager set for instance, skipping controller", "session", i.Title)
 		return nil
 	}
 
 	// Don't create controller if instance isn't started
 	if !i.started {
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		log.Debug("instance not started yet, skipping controller", "session", i.Title)
 		return nil
 	}
 
 	// Don't recreate if already exists
 	if i.controllerManager.controller != nil {
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		log.Debug("controller already exists for instance", "session", i.Title)
 		return nil
 	}
 
 	// Release lock before creating/starting controller
 	// This prevents deadlock when Start() calls GetPTYReader() which acquires read lock
-	i.stateMutex.Unlock()
+	i.mu.Unlock()
 
 	// Create new controller (no lock needed - NewClaudeController doesn't access mutex-protected fields)
 	controller, err := NewClaudeController(i)
@@ -82,15 +82,15 @@ func (i *Instance) StartController() error {
 		return fmt.Errorf("failed to start controller: %w", err)
 	}
 
-	// Wire rate limit callbacks BEFORE re-acquiring stateMutex.
+	// Wire rate limit callbacks BEFORE re-acquiring mu.
 	// controller.Start() can launch goroutines that hold ctrl.mu and call back into
 	// Instance methods (which acquire stateMutex). wireRateLimitCallbacks acquires
 	// ctrl.mu.RLock(). Calling it inside stateMutex would create a lock-order cycle.
 	i.wireRateLimitCallbacks(controller)
 
 	// Re-acquire lock to update instance state
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 
 	// Double-check controller hasn't been set by another goroutine (defensive)
 	if i.controllerManager.controller != nil {
@@ -135,8 +135,8 @@ func (i *Instance) FireLifecycleEventForTest(event LifecycleEvent, reason string
 
 // StopController stops and cleans up the ClaudeController for this instance.
 func (i *Instance) StopController() {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 
 	if !i.controllerManager.HasController() {
 		return
@@ -159,8 +159,8 @@ func stopControllerLocked(s *instanceState) {
 
 // GetController returns the ClaudeController if one exists.
 func (i *Instance) GetController() *ClaudeController {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return i.controllerManager.GetController()
 }
 

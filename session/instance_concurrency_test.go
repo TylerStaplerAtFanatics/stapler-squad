@@ -73,9 +73,9 @@ func TestTransitionTo_ConcurrentPause(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Use the public-facing mutex pattern matching Approve/Deny
-			inst.stateMutex.Lock()
+			inst.mu.Lock()
 			err := inst.transitionTo(context.Background(), Paused)
-			inst.stateMutex.Unlock()
+			inst.mu.Unlock()
 
 			if err == nil {
 				atomic.AddInt32(&successCount, 1)

@@ -205,13 +205,13 @@ func (i *Instance) ForkFromCheckpoint(checkpointID, newTitle string, configDir s
 
 	// Export canonical turns if successfully parsed
 	if hasCanonicalForked {
-		newInst.stateMutex.Lock()
+		newInst.mu.Lock()
 		if newInst.claudeSession == nil {
 			newInst.claudeSession = &ClaudeSessionData{}
 		}
 		newInst.claudeSession.ConversationUUID = newConvUUID
 		newInst.claudeSession.ProjectName = newInst.Title
-		newInst.stateMutex.Unlock()
+		newInst.mu.Unlock()
 
 		var adapter HistoryAdapter
 		claude := NewClaudeAdapter()
@@ -249,8 +249,8 @@ func (i *Instance) ForkFromCheckpoint(checkpointID, newTitle string, configDir s
 // GetCheckpoints returns a snapshot copy of the checkpoint list, safe for
 // concurrent reads from outside the instance's lock domain.
 func (i *Instance) GetCheckpoints() CheckpointList {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	cp := make(CheckpointList, len(i.Checkpoints))
 	copy(cp, i.Checkpoints)
 	return cp
