@@ -315,10 +315,7 @@ func (s *SessionService) loadInstancesWithWiring() ([]*session.Instance, error) 
 			inst.SetStatusManager(s.statusManager)
 		}
 		s.wireRateLimitCallbacks(inst)
-		s.wireStatusChangeCallback(inst)
-		s.wireClaudeSessionIDCallback(inst)
-		s.wireAutoArchiveCallback(inst)
-		s.wireSessionExitedPublisher(inst)
+		s.wireInstanceCallbacks(inst)
 	}
 
 	return instances, nil
@@ -617,10 +614,7 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 	}
 	session.StartSessionDriver(instance, path)
 	s.wireRateLimitCallbacks(instance)
-	s.wireStatusChangeCallback(instance)
-	s.wireClaudeSessionIDCallback(instance)
-	s.wireAutoArchiveCallback(instance)
-	s.wireSessionExitedPublisher(instance)
+	s.wireInstanceCallbacks(instance)
 	if err := s.storage.AddInstance(instance); err != nil {
 		_ = instance.Destroy()
 		return nil, fmt.Errorf("CreateDirectorySession save: %w", err)
@@ -1163,10 +1157,7 @@ func (s *SessionService) CreateSession(
 	go func() {
 		// Wire callbacks before starting so rate-limit and status-change events fire.
 		s.wireRateLimitCallbacks(instance)
-		s.wireStatusChangeCallback(instance)
-		s.wireClaudeSessionIDCallback(instance)
-		s.wireAutoArchiveCallback(instance)
-		s.wireSessionExitedPublisher(instance)
+		s.wireInstanceCallbacks(instance)
 
 		instance.CreationProgress = "Starting session..."
 		s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"creation_progress"}))
@@ -1412,7 +1403,6 @@ func (s *SessionService) UpdateSession(
 			}
 		}
 	}
-
 
 	// Handle status change (pause/resume) LAST - after all metadata updates.
 	// This ensures that if Resume() fails, no partial metadata changes are persisted
@@ -3568,6 +3558,20 @@ func (s *SessionService) onAutonomousDriverComplete(instanceName string, outcome
 		int32(2), // NotificationPriority_MEDIUM
 		title, body, nil,
 	))
+}
+
+// wireInstanceCallbacks wires the standard set of instance-level callbacks and
+// lifecycle listeners (status-change, Claude session ID persistence, auto-archive,
+// and exited-session publishing) that every session-creation/load path must set up.
+// Consolidating these into one call prevents a future creation path from omitting
+// one of them, which would silently reintroduce a stuck-session-status bug (the
+// exact class of bug wireSessionExitedPublisher was added to fix). Callers are
+// still responsible for wireRateLimitCallbacks, which is wired separately.
+func (s *SessionService) wireInstanceCallbacks(inst *session.Instance) {
+	s.wireStatusChangeCallback(inst)
+	s.wireClaudeSessionIDCallback(inst)
+	s.wireAutoArchiveCallback(inst)
+	s.wireSessionExitedPublisher(inst)
 }
 
 // wireAutoArchiveCallback registers a lifecycle listener that auto-archives a
