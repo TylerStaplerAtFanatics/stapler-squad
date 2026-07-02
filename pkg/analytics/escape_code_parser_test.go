@@ -514,22 +514,22 @@ func TestEventWriterSequenceFields(t *testing.T) {
 // TestSetSessionIDOverridesConstructorSessionID is a regression test for BUG-025:
 // escape_event rows were stored under the tmux session name (the constructor arg)
 // instead of the stable session UUID, so the web UI (which queries by stable UUID)
-// never found them. SetSessionID must retroactively change what gets recorded.
+// never found them. SetStableSessionID must retroactively change what gets recorded.
 func TestSetSessionIDOverridesConstructorSessionID(t *testing.T) {
 	parser, _, spy := newParserWithSpy("summary", false, 1.0)
 
 	parser.Parse([]byte("\x1b[A"), 0)
 	if len(spy.events) != 1 {
-		t.Fatalf("expected 1 event before SetSessionID, got %d", len(spy.events))
+		t.Fatalf("expected 1 event before SetStableSessionID, got %d", len(spy.events))
 	}
 	if spy.events[0].SessionID != "test-session" {
 		t.Fatalf("SessionID before override = %q, want %q", spy.events[0].SessionID, "test-session")
 	}
 
-	parser.SetSessionID("stable-uuid-1234")
+	parser.SetStableSessionID("stable-uuid-1234")
 	parser.Parse([]byte("\x1b[B"), 0)
 	if len(spy.events) != 2 {
-		t.Fatalf("expected 2 events after SetSessionID, got %d", len(spy.events))
+		t.Fatalf("expected 2 events after SetStableSessionID, got %d", len(spy.events))
 	}
 	if spy.events[1].SessionID != "stable-uuid-1234" {
 		t.Errorf("SessionID after override = %q, want %q", spy.events[1].SessionID, "stable-uuid-1234")
@@ -631,6 +631,12 @@ func TestMangleCorrelationTotalsAreConcurrencySafe(t *testing.T) {
 	stats := parser.GetStats()
 	if stats.TotalSequences != 2*n {
 		t.Errorf("TotalSequences = %d, want %d", stats.TotalSequences, 2*n)
+	}
+	// Stage 1 and Stage 2 send byte-identical payloads in matching order, so nothing
+	// should ever be flagged mangled here — this is also touched by the same concurrent
+	// write pattern as TotalSequences, so it's worth asserting for free.
+	if stats.TotalMangled != 0 {
+		t.Errorf("TotalMangled = %d, want 0", stats.TotalMangled)
 	}
 }
 

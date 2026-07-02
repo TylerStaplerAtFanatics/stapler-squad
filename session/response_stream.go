@@ -145,7 +145,7 @@ func (rs *ResponseStream) SetOnOutput(fn func()) {
 // is still used for logging, PTY naming, and history keyed off the tmux name.
 func (rs *ResponseStream) SetStableSessionID(id string) {
 	if rs.escapeParser != nil && id != "" {
-		rs.escapeParser.SetSessionID(id)
+		rs.escapeParser.SetStableSessionID(id)
 	}
 }
 
@@ -170,9 +170,15 @@ func (rs *ResponseStream) Start(ctx context.Context) error {
 	rs.started = true
 
 	// Start the mangle-correlator eviction loop (no-op if no correlator is attached,
-	// e.g. capture_level=off). Tied to innerCtx so it stops when the stream stops.
+	// e.g. capture_level=off). Tied to innerCtx so it stops when the stream stops, and
+	// tracked by rs.wg like streamLoop so Stop() genuinely blocks until both have exited
+	// (Stop()'s doc comment promises full drain, not "everything but this one goroutine").
 	if rs.escapeParser != nil {
-		rs.escapeParser.StartCorrelatorEviction(innerCtx)
+		rs.wg.Add(1)
+		go func() {
+			defer rs.wg.Done()
+			rs.escapeParser.RunCorrelatorEviction(innerCtx)
+		}()
 	}
 
 	// Start the streaming goroutine

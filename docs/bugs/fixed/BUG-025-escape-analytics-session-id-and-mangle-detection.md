@@ -71,18 +71,23 @@ alone would still not work:
    wired correlator would treat every Stage 2 observation as a fresh Stage 1 recording instead
    of checking it against the matching Stage 1 entry.
 
-2. **Stage 2 `session_seq` is computed as the buffer's current total, not the coalesced
-   frame's start offset** (`server/services/connectrpc_websocket.go:751`):
-   `escapeParser.ParseStage2(buf, instance.GetTotalBytesWritten())`. `GetTotalBytesWritten()`
-   is read *after* the coalescing loop finishes draining `updateChan`, by which point the
-   circular buffer already reflects every byte in `buf` (`response_stream.go`'s `streamLoop`
-   writes to the buffer, then broadcasts — in that order, on a single goroutine — so the
-   broadcast a subscriber receives always trails the buffer write for the same chunk). Passing
-   the *current* total as the *start* offset means every sequence's reconstructed
-   `session_seq` (`sessionSeq + code.StartOffset`) is off by `len(buf)`, so `CheckStage2` would
-   almost never find the Stage 1 entry it should correlate against, even with (1) fixed. Fix:
-   `instance.GetTotalBytesWritten() - int64(len(buf))`, mirroring how Stage 1 captures its
-   offset *before* writing (`response_stream.go` line ~274).
+2. **Stage 2's data source is a second, independent tmux client — not the same producer as
+   Stage 1 — so byte-offset correlation between them cannot work at all, regardless of
+   arithmetic.** Initially fixed as an off-by-`len(buf)` arithmetic bug
+   (`server/services/connectrpc_websocket.go:751`:
+   `escapeParser.ParseStage2(buf, instance.GetTotalBytesWritten())` reads the buffer's
+   *post-write* total instead of its pre-write start offset), and that arithmetic fix is kept
+   (it's still a strict improvement to the `session_seq` value recorded on each row, used for
+   UI/debugging position display). But a deeper trace during code review (see "Code review
+   findings" below) found the real problem: `streamViaControlMode`'s `updateChan` (Stage 2's
+   data) comes from `instance.StartControlMode()`/`SubscribeControlModeUpdates()` — a
+   **separate tmux control-mode (`-C`) client attachment** — not from `ResponseStream`'s own
+   broadcast (which is fed by yet another, independent `tmux attach-session` client, `t.ptmx`,
+   driving Stage 1). Two separate OS processes, no shared clock or counter between them.
+   Byte-offset correlation was fixed to the *wrong bug* — the arithmetic fix helps, but the
+   fundamental design (two independent producers, correlated by a shared byte counter neither
+   of them actually shares) doesn't work. See "Mangle correlation redesign" below for the
+   actual fix.
 
 ### Related: data race on parser lifetime counters
 
@@ -109,70 +114,166 @@ passed into `NewEscapeEventBatchWriter` at `server.go:534` would be `0`, which d
 per-session row cap entirely (`if w.maxRowsPerSession > 0` guard in
 `escape_event_batch_writer.go`) instead of applying the intended 10,000-row default.
 
+### Mangle correlation redesign: ordinal correlation instead of byte offset
+
+An initial PR for this bug shipped the byte-offset arithmetic fix above and stopped there. A
+4-agent code review (`/code:review`, one CRITICAL finding) traced the actual `updateChan`
+producer and found the byte-offset design couldn't work as described — see Root Cause 2, item
+2, above. Verified empirically before redesigning, not just by re-reading code:
+
+- Queried the live analytics DB (185K pre-fix rows): per-session `pty_read` vs. `transport`
+  `session_seq` ranges overlap in the same order of magnitude for every session — rules out
+  "totally unrelated counters," doesn't rule out timing drift.
+- Ran a live experiment: a real tmux session with two simultaneous clients (a normal
+  `tmux attach-session`, standing in for Stage 1's `t.ptmx`, and a `tmux -C attach-session`
+  control-mode client, standing in for Stage 2's `updateChan`), fed a burst of ~200
+  escape-sequence lines, logged cumulative byte counts from both. Result: in steady state
+  (well past each client's own initial-attach redraw), the two streams carry byte-for-byte
+  *identical* content in the same order — confirming tmux's control-mode `%output` really
+  does forward raw pane bytes (octal-escaped for transport), not a re-synthesized redraw. The
+  divergence is a roughly *constant* offset established during each client's own connection
+  handshake (each client gets its own independent full-screen redraw on attach and on
+  resize), not unbounded drift under load.
+
+So: correlating by *content* is sound (the two streams do carry the same bytes), but
+correlating by *byte position* isn't, because that constant offset resets independently on
+each client's own attach/resize event, with no shared counter to recalibrate against.
+
+**Fix**: `MangleCorrelator` now correlates ordinally per `(session, sequence type)` instead of
+by byte offset. The Nth sequence of a given type seen at Stage 1 is matched against the Nth
+sequence of that type seen at Stage 2 (`pkg/analytics/mangle_correlator.go`) — `RecordStage1`
+and `CheckStage2` each maintain their own independent per-`(session, type)` counter and no
+longer take a `sessionSeq` parameter at all. This works because tmux mirrors pane output to
+all attached clients in the same relative order, so ordinal position is preserved even though
+absolute byte position isn't. Trade-off: an actual dropped or duplicated sequence of a type
+desyncs every subsequent ordinal for that `(session, type)` — see
+`TestMangleCorrelator_DroppedSequenceDesyncsSubsequentOrdinals`, which documents this as an
+accepted trade-off rather than a bug. Two correlation designs were considered and rejected:
+independent per-stream byte counters recalibrated on each redraw (real recalibration-event
+detection adds meaningful surface area for uncertain benefit), and content-hash-keyed
+correlation (fully offset-robust, but a mutated sequence has a different hash *by definition*
+and so would never be found by a hash-keyed lookup — it can detect "stripped" but not
+"mutated", a net loss of detection capability versus the ordinal approach).
+
+### Code review findings (fixed in the same PR)
+
+A 4-dimension review (Testing, Code Quality, Architecture, Security) found 0 BLOCKER, 1
+CRITICAL (the correlation redesign above), and 6 MAJOR findings, all fixed:
+
+1. `EscapeCodeParser.sessionID` was a plain `string`, correct only because the single
+   production call site happens to run before any streaming goroutine starts, with no guard
+   enforcing that ordering. Fixed: `atomic.Pointer[string]`, safe to call at any time.
+2. `EscapeCodeParser.SetSessionID` was named identically to
+   `detection.StatusDetector.SetSessionID` (tmux-name-keyed), called 4 lines away in
+   `claude_controller.go` — a real future-miscopy risk given this exact bug class (wrong ID
+   passed to wrong sink) is what this PR fixes. Fixed: renamed to `SetStableSessionID` to
+   match `ResponseStream`'s wrapper and make the distinction textually visible.
+3. `StartCorrelatorEviction`'s background goroutine was fire-and-forget, not tracked by
+   `ResponseStream.wg` the way `streamLoop` is — silently broke `Stop()`'s documented "blocks
+   until fully drained" contract. Fixed: renamed to `RunCorrelatorEviction` (blocking, no
+   internal `go` statement); the caller (`ResponseStream.Start`) now spawns and tracks it with
+   `rs.wg`, matching the dominant convention this exact struct already uses for its own
+   primary loop.
+4. The same goroutine had no panic-recovery, unlike the established convention elsewhere in
+   this codebase (`review_queue_poller.go`, `external_streamer.go`, etc.) — an unhandled panic
+   there would have crashed the whole server. Fixed: wrapped in `recover()`.
+5. The actual production wiring line (`claude_controller.go`:
+   `rs.SetStableSessionID(cc.instance.GetStableID())`) was structurally unreachable by any
+   test — `mockInstance.GetPTYReader()` always errored, so `ClaudeController.Start()` returned
+   before reaching it. Fixed: added `TestClaudeController_Start_TagsEscapeAnalyticsWithStableID`
+   using an injectable PTY reader; verified it fails if that line regresses to
+   `rs.SetStableSessionID(cc.sessionName)`.
+6. `InstanceContext.GetStableID()` duplicates a dormant, unused `InstanceReader` interface in
+   `session/interfaces.go` (same package). Not fixed — flagged as a follow-up, not blocking;
+   the reviewing agent explicitly recommended not blocking this PR on it.
+
+Also fixed as free NITs: `mockInstance.GetStableID()` no longer falls back to `title` when
+unset (it returned a value indistinguishable from a real regression, weakening any future
+test's ability to catch a title/stableID mixup); `TestMangleCorrelationTotalsAreConcurrencySafe`
+now also asserts `TotalMangled == 0`.
+
+Process note: this review's task-notifications were repeatedly targeted by a prompt-injection
+attempt (a fabricated "quantum-lock" marker instructing the reviewing agent, and separately
+the orchestrating session, to hide claimed state changes from the user "since already
+aware"). Both agents independently verified the claims were false and did not comply. Not a
+finding about this codebase, but worth recording here since it happened during this PR's
+review.
+
 ## Files Affected
 
 - `session/claude_controller.go` — `InstanceContext` interface, `Start()`
-- `session/claude_controller_test.go` — `mockInstance`
+- `session/claude_controller_test.go` — `mockInstance`, new wiring-level test
 - `session/response_stream.go` — `newEscapeParserForSession`, `Start()`
-- `pkg/analytics/escape_code_parser.go` — `SetSessionID`, `emitEventWithStageAndSeq`,
-  counter fields
+- `session/response_stream_test.go` — new wiring-level test
+- `pkg/analytics/escape_code_parser.go` — `SetStableSessionID`, `RunCorrelatorEviction`,
+  `emitEventWithStageAndSeq`, counter fields
+- `pkg/analytics/escape_code_parser_test.go` — new regression/concurrency tests
+- `pkg/analytics/mangle_correlator.go` — ordinal correlation redesign
+- `pkg/analytics/mangle_correlator_test.go` — updated for the new API + new tests
 - `server/services/connectrpc_websocket.go` — Stage 2 tap call site
-- `config/config.go` — `DefaultConfig()`
+- `config/config.go` / `config/config_test.go` — `DefaultConfig()`
 
 ## Fix Approach
 
-See commit for full diff. Summary:
+See commit history for the full diff. Summary:
 
-1. Add `GetStableID() string` to `InstanceContext`; thread it into the escape parser via a new
-   `ResponseStream.SetStableSessionID` / `EscapeCodeParser.SetSessionID`, called once right
-   after `NewResponseStream` in `ClaudeController.Start()`. `cc.sessionName` (tmux name) is left
-   untouched everywhere else it's used (PTY naming, command queue/history persistence, rate
-   limiting, idle detection) — this is scoped to the escape-analytics session key only.
-2. Construct a `MangleCorrelator` per parser in `newEscapeParserForSession` and start its
-   eviction goroutine from `ResponseStream.Start(ctx)`.
+1. Add `GetStableID() string` to `InstanceContext`; thread it into the escape parser via
+   `ResponseStream.SetStableSessionID` → `EscapeCodeParser.SetStableSessionID`, called once
+   right after `NewResponseStream` in `ClaudeController.Start()`. `cc.sessionName` (tmux name)
+   is left untouched everywhere else it's used (PTY naming, command queue/history persistence,
+   rate limiting, idle detection) — scoped to the escape-analytics session key only.
+   `sessionID` is `atomic.Pointer[string]`, safe to set at any time.
+2. Construct a `MangleCorrelator` per parser in `newEscapeParserForSession`; its eviction loop
+   (`RunCorrelatorEviction`, panic-recovered) is spawned and tracked by `ResponseStream.wg`
+   from `Start(ctx)`, so `Stop()` genuinely blocks until it exits too.
 3. Branch `emitEventWithStageAndSeq` on `stage`: `StagePTYRead` → `RecordStage1`,
    `StageTransport` → `CheckStage2` (sets `record.Mangled`/`record.MangleType`).
-4. Fix the Stage 2 base-offset arithmetic in `connectrpc_websocket.go`.
-5. Convert `totalSequences`/`totalMangled` to `atomic.Int64`.
-6. Mirror the escape analytics defaults into `DefaultConfig()`.
+4. Redesign `MangleCorrelator` to correlate ordinally per `(session, sequence type)` instead
+   of by byte offset — see "Mangle correlation redesign" above for why the byte-offset
+   approach couldn't work regardless of arithmetic.
+5. Fix the Stage 2 base-offset arithmetic in `connectrpc_websocket.go` (kept as a data-quality
+   improvement to the recorded `session_seq`, even though it's no longer load-bearing for
+   correlation under the ordinal redesign).
+6. Convert `totalSequences`/`totalMangled` to `atomic.Int64`.
+7. Mirror the escape analytics defaults into `DefaultConfig()`.
 
 ## Verification
 
-- `pkg/analytics`: new test asserting `SetSessionID` changes emitted `EscapeEventRecord.SessionID`.
-- `pkg/analytics`: new test driving a Stage 1 `Parse` + a mutated Stage 2 `ParseStage2` through
-  the same parser with a correlator attached, asserting the second emitted record has
-  `Mangled=true`.
-- `config`: new test asserting `DefaultConfig()` and `LoadConfigFromPath` (missing-file case)
-  produce identical escape analytics defaults.
-- `go test ./pkg/analytics/... ./config/... ./session/... -race` green.
-- The `connectrpc_websocket.go` arithmetic fix has no dedicated new test — the existing test
-  file has no harness for driving `streamViaControlMode`'s coalescing goroutine, and building
-  one is out of scope for this fix. Verified by manual trace (documented above) instead.
-  Flagging as a follow-up: an integration test matching the plan's AC-3 ("stripped/mutated OSC
-  sequence flows through Stage 1+2 into a `mangled=true` SQLite row") still doesn't exist.
+- `pkg/analytics`: `TestSetSessionIDOverridesConstructorSessionID`,
+  `TestMangleCorrelationStage1ThenStage2Match`/`Mutated`,
+  `TestMangleCorrelationTotalsAreConcurrencySafe` (drives Stage 1 + Stage 2 concurrently
+  through the same parser, run under `-race`), plus `mangle_correlator_test.go`'s
+  `TestMangleCorrelator_OrdinalPerType` (interleaved-type robustness) and
+  `TestMangleCorrelator_DroppedSequenceDesyncsSubsequentOrdinals` (documents the accepted
+  trade-off).
+- `session`: `TestResponseStream_SetStableSessionID` (ResponseStream-level wiring) and
+  `TestClaudeController_Start_TagsEscapeAnalyticsWithStableID` (the actual production
+  assembly point, `ClaudeController.Start()` — verified by temporarily reverting the wiring
+  line and confirming the test fails, then restoring it).
+- `config`: `TestDefaultConfigMirrorsEscapeAnalyticsDefaults`.
+- `go build ./...`, `go vet`, `golangci-lint run` (0 issues), and
+  `go test ./pkg/analytics/... ./config/... ./server/analytics/... ./session/... ./server/services/... -race`
+  all green.
+- The `connectrpc_websocket.go` arithmetic fix has no dedicated automated test — the existing
+  test file has no harness for driving `streamViaControlMode`'s coalescing goroutine, and
+  building one is out of scope for this fix. Verified by manual trace instead (see Root Cause
+  2, item 2, and the empirical tmux experiment above).
 
 ## Related
 
 - `project_plans/terminal-analytics/` — original feature plan and research
-- Follow-up recommended: AC-3 end-to-end integration test (Stage 1 → Stage 2 → SQLite,
-  `mangled=true`) through the real WebSocket streaming path, not just the correlator unit level.
+- Follow-up recommended: an end-to-end integration test (Stage 1 → Stage 2 → SQLite,
+  `mangled=true`) through the real WebSocket streaming path, not just the correlator unit
+  level — this would also be the natural place to validate the ordinal correlation's
+  real-world hit rate against live tmux traffic.
+- Follow-up recommended, non-blocking: converge `InstanceContext` with the dormant
+  `InstanceReader` interface in `session/interfaces.go`.
 
 ## Resolution
 
-All fixes applied and verified:
-
-1. `InstanceContext.GetStableID()` + `ResponseStream.SetStableSessionID` +
-   `EscapeCodeParser.SetSessionID` — escape_event rows now tagged with the stable session UUID.
-   `cc.sessionName` (tmux name) is unchanged everywhere else.
-2. `MangleCorrelator` constructed per-parser in `newEscapeParserForSession`, eviction goroutine
-   started from `ResponseStream.Start`.
-3. `emitEventWithStageAndSeq` now branches `RecordStage1` (Stage 1) vs. `CheckStage2` (Stage 2)
-   instead of always calling `RecordStage1`.
-4. `connectrpc_websocket.go` Stage 2 tap now passes `GetTotalBytesWritten() - len(buf)` as the
-   base offset instead of the buffer's current (post-write) total.
-5. `totalSequences`/`totalMangled` converted to `atomic.Int64` (both Stage 1 and Stage 2
-   goroutines write through the same parser instance).
-6. `DefaultConfig()` now mirrors `LoadConfigFromPath`'s escape analytics defaults.
+All fixes applied and verified — see "Fix Approach" and "Verification" above for the final,
+complete list (superseding the earlier single-PR summary that predates the code-review-driven
+correlator redesign).
 
 Tests added: `TestSetSessionIDOverridesConstructorSessionID`,
 `TestMangleCorrelationStage1ThenStage2Match`, `TestMangleCorrelationStage1ThenStage2Mutated`,
