@@ -112,7 +112,7 @@ export const checkboxLabel = style({
 export const checkboxHint = style({
   fontSize: vars.fontSize.xs,
   color: vars.color.textMuted,
-  marginLeft: "24px",
+  marginLeft: vars.space["6"],
 });
 
 export const acSection = style({

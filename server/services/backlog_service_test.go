@@ -275,6 +275,7 @@ func TestUpdateBacklogItem_GitHubResolveError_ReturnsInvalidArgument(t *testing.
 	var connErr *connect.Error
 	require.ErrorAs(t, err, &connErr)
 	assert.Equal(t, connect.CodeInvalidArgument, connErr.Code())
+	assert.Contains(t, connErr.Error(), "https://github.com/owner/does-not-exist")
 }
 
 // ─── ListBacklogItems ─────────────────────────────────────────────────────────

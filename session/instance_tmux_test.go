@@ -124,7 +124,10 @@ func TestBuildClaudeCommand_PromptWithShellMetacharactersIsSafe(t *testing.T) {
 
 	got := inst.buildLaunchCommand("")
 
-	wantSuffix := "-- " + shellQuote(dangerousPrompt)
+	// Hardcoded literal (not built by calling shellQuote, the function under
+	// test) so this assertion can actually catch a regression in shellQuote
+	// itself, not just confirm it was called.
+	wantSuffix := "-- '--- BACKLOG ITEM DATA ---\nSee `/backlog/status` and $(whoami) and $HOME'"
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Errorf("prompt not safely quoted after '--' separator.\ngot:  %q\nwant suffix: %q", got, wantSuffix)
 	}
@@ -141,7 +144,27 @@ func TestBuildClaudeCommand_AppendSystemPromptIsShellQuoted(t *testing.T) {
 
 	got := inst.buildLaunchCommand("")
 
-	want := "claude --append-system-prompt " + shellQuote("run `whoami` now")
+	// Hardcoded literal, not built via shellQuote, so a regression in
+	// shellQuote itself would actually fail this test.
+	want := "claude --append-system-prompt 'run `whoami` now'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// stapler-squad#148 follow-up: AllowedTools and PermissionMode carry the exact
+// same shell-injection risk as AppendSystemPrompt/Prompt (free-form RPC input
+// interpolated into the launch command) and must be shell-quoted too.
+func TestBuildClaudeCommand_AllowedToolsAndPermissionModeAreShellQuoted(t *testing.T) {
+	inst := &Instance{
+		Program:        "claude",
+		AllowedTools:   "read,write `whoami`",
+		PermissionMode: "$(whoami)",
+	}
+
+	got := inst.buildLaunchCommand("")
+
+	want := "claude --allowedTools 'read,write `whoami`' --permission-mode '$(whoami)'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

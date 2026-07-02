@@ -114,10 +114,13 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 		parts = append(parts, "--append-system-prompt", shellQuote(i.AppendSystemPrompt))
 	}
 	if i.AllowedTools != "" {
-		parts = append(parts, "--allowedTools", fmt.Sprintf("%q", i.AllowedTools))
+		// shellQuote (not %q): same shell-metacharacter hazard as the prompt
+		// fields above — this value comes directly from client RPC input with
+		// no character restrictions. See stapler-squad#148.
+		parts = append(parts, "--allowedTools", shellQuote(i.AllowedTools))
 	}
 	if i.PermissionMode != "" {
-		parts = append(parts, "--permission-mode", fmt.Sprintf("%q", i.PermissionMode))
+		parts = append(parts, "--permission-mode", shellQuote(i.PermissionMode))
 	}
 	if i.AutoYes {
 		parts = append(parts, "--dangerously-skip-permissions")

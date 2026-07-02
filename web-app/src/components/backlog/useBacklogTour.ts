@@ -27,6 +27,12 @@ export function useBacklogTour() {
     setShow(false);
   }, []);
 
+  // Hides the modal without marking the tour as permanently seen — used when
+  // the user explicitly unchecks "Don't show this again" and clicks "Got it".
+  const hideTour = useCallback(() => {
+    setShow(false);
+  }, []);
+
   const resetTour = useCallback(() => {
     try {
       localStorage.removeItem(BACKLOG_ONBOARDED_KEY);
@@ -36,5 +42,5 @@ export function useBacklogTour() {
     setShow(true);
   }, []);
 
-  return { showTour, setTourComplete, resetTour };
+  return { showTour, setTourComplete, hideTour, resetTour };
 }

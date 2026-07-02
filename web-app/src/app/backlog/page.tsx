@@ -196,7 +196,7 @@ function BacklogPageInner() {
   const [showForm, setShowForm] = useState(false);
 
   // First-visit walkthrough
-  const { showTour, setTourComplete, resetTour } = useBacklogTour();
+  const { showTour, setTourComplete, hideTour, resetTour } = useBacklogTour();
 
   // Vagueness prompt modal state
   const [vaguenessItem, setVaguenessItem] = useState<BacklogItem | null>(null);
@@ -504,7 +504,10 @@ function BacklogPageInner() {
       )}
 
       {/* First-visit walkthrough */}
-      <BacklogTourModal isOpen={showTour} onClose={setTourComplete} />
+      <BacklogTourModal
+        isOpen={showTour}
+        onComplete={(persist) => (persist ? setTourComplete() : hideTour())}
+      />
 
       {/* Vagueness Prompt Modal */}
       {vaguenessItem && (

@@ -3,14 +3,20 @@
 
 import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import * as styles from "@/components/onboarding/OnboardingModal.css";
+import * as styles from "@/components/ui/ModalTour.css";
 import * as tourStyles from "./BacklogTourModal.css";
 import { LifecycleDiagram } from "./BacklogEmptyState";
-import { BACKLOG_ONBOARDED_KEY } from "./useBacklogTour";
 
 interface BacklogTourModalProps {
   isOpen: boolean;
-  onClose: () => void;
+  /**
+   * Called whenever the modal closes, with whether the dismissal should be
+   * persisted (so the tour won't auto-show again). `persist` reflects the
+   * "Don't show this again" checkbox on the last step — Skip and the
+   * backdrop/Escape path always persist, matching the app-wide onboarding
+   * modal's behavior.
+   */
+  onComplete: (persist: boolean) => void;
 }
 
 type Step = 1 | 2 | 3 | 4;
@@ -33,23 +39,18 @@ function StepIndicator({ current, total }: { current: Step; total: number }) {
 
 /**
  * First-visit walkthrough for the backlog page. Mirrors the app-wide
- * OnboardingModal (same modal chrome/step-indicator styles, reused directly
- * from OnboardingModal.css to avoid duplicating that CSS), scoped to explain
- * the backlog lifecycle and the Repository Path field specifically — the
- * field that has confused first-time users into pasting a GitHub URL where a
- * local clone path was expected.
+ * OnboardingModal (same shared modal chrome/step-indicator styles from
+ * components/ui/ModalTour.css, not OnboardingModal's own CSS module), scoped
+ * to explain the backlog lifecycle and the Repository Path field specifically
+ * — the field that has confused first-time users into pasting a GitHub URL
+ * where a local clone path was expected.
  */
-export function BacklogTourModal({ isOpen, onClose }: BacklogTourModalProps) {
+export function BacklogTourModal({ isOpen, onComplete }: BacklogTourModalProps) {
   const [step, setStep] = useState<Step>(1);
   const [dontShowAgain, setDontShowAgain] = useState(true);
 
   const handleSkip = () => {
-    try {
-      localStorage.setItem(BACKLOG_ONBOARDED_KEY, "true");
-    } catch {
-      // ignore storage errors
-    }
-    onClose();
+    onComplete(true);
   };
 
   const handleNext = () => {
@@ -61,14 +62,7 @@ export function BacklogTourModal({ isOpen, onClose }: BacklogTourModalProps) {
   };
 
   const handleDone = () => {
-    if (dontShowAgain) {
-      try {
-        localStorage.setItem(BACKLOG_ONBOARDED_KEY, "true");
-      } catch {
-        // ignore storage errors
-      }
-    }
-    onClose();
+    onComplete(dontShowAgain);
   };
 
   const handleOpenChange = (open: boolean) => {
@@ -76,7 +70,7 @@ export function BacklogTourModal({ isOpen, onClose }: BacklogTourModalProps) {
       setStep(1);
       setDontShowAgain(true);
     } else {
-      onClose();
+      onComplete(dontShowAgain);
     }
   };
 

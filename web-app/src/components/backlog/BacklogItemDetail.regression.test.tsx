@@ -123,6 +123,14 @@ describe("BacklogItemDetail — background refresh must not unmount the view", (
     fireEvent.click(screen.getByRole("button", { name: "Edit item" }));
     expect(screen.getByTestId("backlog-repo-path-input")).toBeInTheDocument();
 
+    // Type an unsaved acceptance criterion — this is the actual data the
+    // original bug destroyed. Asserting it survives (not just the fetch call
+    // count) is the real behavioral concern, not an implementation detail.
+    fireEvent.click(screen.getByTestId("backlog-add-criterion"));
+    fireEvent.change(screen.getByTestId("backlog-criterion-text-1"), {
+      target: { value: "Encode Fix Version" },
+    });
+
     // The poll interval would normally fire here — it must not while editing.
     await act(async () => {
       jest.advanceTimersByTime(10_000);
@@ -130,5 +138,6 @@ describe("BacklogItemDetail — background refresh must not unmount the view", (
     });
 
     expect(getBacklogItem).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("backlog-criterion-text-1")).toHaveValue("Encode Fix Version");
   });
 });
