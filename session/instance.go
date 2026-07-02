@@ -628,9 +628,21 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 }
 
 // Snapshot returns the most recently published atomic snapshot of this Instance's
-// mutable fields. The returned pointer is never nil after construction. Callers
-// must not mutate the returned struct.
+// mutable fields. The returned pointer is never nil. Callers must not mutate
+// the returned struct.
+//
+// On the first call for an Instance that bypassed finishInstanceConstruction
+// (e.g. struct literals in tests), the snapshot is built lazily under stateMutex
+// and stored via CAS so concurrent first-callers converge on one value.
 func (i *Instance) Snapshot() *InstanceSnapshot {
+	if snap := i.snapshot.Load(); snap != nil {
+		return snap
+	}
+	// Rare slow path: publish an initial snapshot.
+	i.stateMutex.RLock()
+	snap := buildSnapshot(i)
+	i.stateMutex.RUnlock()
+	i.snapshot.CompareAndSwap(nil, snap)
 	return i.snapshot.Load()
 }
 

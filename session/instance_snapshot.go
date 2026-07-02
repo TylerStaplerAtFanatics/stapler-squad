@@ -7,6 +7,24 @@ package session
 // is the single authoritative place that "knows" every mutable field, replacing
 // the silently-drifting ad hoc read-allowlists that produced the unguarded-access
 // catalog described in architecture.md §1.2.
+//
+// PPROF VERIFICATION (IAC Epic 2):
+// After deploying the lock-free reader conversions in Epic 2, use the mutex/block
+// profile to confirm reduced contention:
+//
+//   curl -s http://localhost:8543/debug/pprof/mutex > mutex.prof
+//   go tool pprof -top mutex.prof
+//
+// Expected: stateMutex contention (RLock sites in instance_adapter.go,
+// capacity_monitor.go, review_queue_poller.go, pr_status_poller.go, and
+// connectrpc_websocket.go) no longer appears in the top lock holders.
+// Any remaining stateMutex entries should be write-side only (Update*, transition*).
+//
+//   curl -s http://localhost:8543/debug/pprof/block > block.prof
+//   go tool pprof -top block.prof
+//
+// Expected: goroutine blocking on (*deadlock.RWMutex).RLock should drop
+// proportionally to the reader-path traffic these callers generate.
 
 import (
 	"time"
