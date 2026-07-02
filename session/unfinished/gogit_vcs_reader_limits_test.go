@@ -254,8 +254,10 @@ func TestReadFileIfSmall_atOrAboveLimit(t *testing.T) {
 }
 
 // TestGoGitVCSReader_AheadBehind_SingleflightCollapsesParallelCallers verifies
-// that 4 concurrent callers receive consistent results when the cache is cold.
-// go test -race must pass.
+// result consistency and absence of data races when 4 goroutines call AheadBehind
+// concurrently with a cold cache. It does not assert call-count deduplication
+// (GoGitVCSReader has no invocation counter hook); race-detector clean is the
+// correctness gate.
 func TestGoGitVCSReader_AheadBehind_SingleflightCollapsesParallelCallers(t *testing.T) {
 	dir := initRepoInternal(t)
 
@@ -288,9 +290,11 @@ func TestGoGitVCSReader_AheadBehind_SingleflightCollapsesParallelCallers(t *test
 	}
 }
 
-// TestGoGitVCSReader_AheadBehind_PanicRecovery verifies that
-// a panic inside the singleflight Do body is caught and returned as an error.
-func TestGoGitVCSReader_AheadBehind_PanicRecovery(t *testing.T) {
+// TestGoGitVCSReader_AheadBehind_InvalidPath_ReturnsError verifies that
+// openRepoEntry failure inside the singleflight Do body is returned as an
+// error to the caller without panicking. True panic injection requires a
+// hook into the Do body which GoGitVCSReader does not expose.
+func TestGoGitVCSReader_AheadBehind_InvalidPath_ReturnsError(t *testing.T) {
 	// Use a non-existent path — openRepoEntry returns error, not panic,
 	// but confirms the caller handles Do errors without crashing.
 	r := &GoGitVCSReader{}
