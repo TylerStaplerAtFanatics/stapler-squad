@@ -261,6 +261,7 @@ func splitIntoBytesLines(output []byte) [][]byte {
 // visible characters. Used for calculating cursor position.
 func stripANSIBytes(b []byte) []byte {
 	var result bytes.Buffer
+	result.Grow(len(b))
 	for i := 0; i < len(b); {
 		if b[i] == '\x1b' {
 			i += scanEscapeSequence(b, i)

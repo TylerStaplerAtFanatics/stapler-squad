@@ -69,6 +69,23 @@ func TestParseCSISequences(t *testing.T) {
 			wantCat:  CategoryScroll,
 			wantDesc: "Set Scroll Region (1;24)",
 		},
+		{
+			// '@' (0x40) is a valid CSI final byte (Insert Character, ICH),
+			// not a letter — regression guard for the terminator range.
+			name:     "insert character",
+			input:    []byte("\x1b[5@"),
+			wantCat:  CategoryErase,
+			wantDesc: "Insert Characters (5)",
+		},
+		{
+			// '~' (0x7E) is a valid CSI final byte used by many real xterm
+			// sequences (Delete key, function keys, etc.) — regression
+			// guard for the terminator range extending past 'z' (0x7A).
+			name:     "tilde-terminated sequence",
+			input:    []byte("\x1b[3~"),
+			wantCat:  CategoryCSI,
+			wantDesc: "CSI ~ (3)",
+		},
 	}
 
 	for _, tt := range tests {

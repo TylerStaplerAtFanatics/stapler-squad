@@ -424,10 +424,9 @@ func TestStateGenerator_MonotonicSequencing(t *testing.T) {
 	}
 }
 
-// TestStateGenerator_StripANSIBytes tests ANSI escape sequence removal in StateGenerator
+// TestStateGenerator_StripANSIBytes tests ANSI escape sequence removal used by
+// StateGenerator (via the shared package-level stripANSIBytes).
 func TestStateGenerator_StripANSIBytes(t *testing.T) {
-	sg := NewStateGenerator(80, 24)
-
 	tests := []struct {
 		input    string
 		expected string
@@ -458,11 +457,26 @@ func TestStateGenerator_StripANSIBytes(t *testing.T) {
 			input:    "\x1b]0;my title\x07Hello",
 			expected: "Hello",
 		},
+		{
+			// OSC 8 hyperlink, terminated with ST (ESC \) instead of BEL.
+			input:    "\x1b]8;;https://example.com\x1b\\Link",
+			expected: "Link",
+		},
+		{
+			// DCS sequence terminated with ST.
+			input:    "\x1bPq#0;2;0;0;0\x1b\\Sixel",
+			expected: "Sixel",
+		},
+		{
+			// CSI final byte '@' (Insert Character) is not a letter.
+			input:    "\x1b[5@Hello",
+			expected: "Hello",
+		},
 	}
 
 	for i, tt := range tests {
 		t.Run("strip_test_"+string(rune('A'+i)), func(t *testing.T) {
-			result := sg.stripANSIBytes([]byte(tt.input))
+			result := stripANSIBytes([]byte(tt.input))
 			if string(result) != tt.expected {
 				t.Errorf("Expected %q, got %q", tt.expected, string(result))
 			}

@@ -248,7 +248,7 @@ func (sg *StateGenerator) calculateCursorPosition(lines []*sessionv1.TerminalLin
 		if !lines[i].Attributes.IsEmpty {
 			cursorRow = uint32(i)
 			// Calculate visual character width (strip ANSI codes, handle multi-byte UTF-8)
-			visibleContent := sg.stripANSIBytes(lines[i].Content)
+			visibleContent := stripANSIBytes(lines[i].Content)
 			// Use runewidth to get visual column count instead of byte length
 			// This properly handles multi-byte UTF-8, wide characters (CJK/emoji), and zero-width chars
 			cursorCol = uint32(runewidth.StringWidth(string(visibleContent)))
@@ -263,11 +263,6 @@ func (sg *StateGenerator) calculateCursorPosition(lines []*sessionv1.TerminalLin
 	}
 }
 
-// stripANSIBytes removes ANSI escape sequences for visible character counting
-func (sg *StateGenerator) stripANSIBytes(b []byte) []byte {
-	return stripANSIBytes(b)
-}
-
 // sanitizeUTF8Bytes converts raw bytes to valid UTF-8, preserving ANSI escape sequences
 // This prevents xterm.js parsing errors from invalid byte sequences while maintaining
 // terminal formatting and color information
@@ -279,6 +274,7 @@ func (sg *StateGenerator) sanitizeUTF8Bytes(rawBytes []byte) []byte {
 
 	// Convert to valid UTF-8 by replacing invalid sequences
 	var result bytes.Buffer
+	result.Grow(len(rawBytes))
 
 	for i := 0; i < len(rawBytes); {
 		// Escape sequence: consume and preserve the whole sequence at once,

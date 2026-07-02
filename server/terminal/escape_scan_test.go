@@ -107,6 +107,46 @@ func TestScanEscapeSequence(t *testing.T) {
 			start:     0,
 			seqPrefix: "",
 		},
+		{
+			// '@' (0x40) is a valid CSI final byte (Insert Character, ICH)
+			// but is not a letter — regression guard for the terminator range.
+			name:      "csi_insert_character_at_sign",
+			input:     "\x1b[5@Hello",
+			start:     0,
+			seqPrefix: "\x1b[5@",
+		},
+		{
+			// '~' (0x7E) is a valid CSI final byte used by many real xterm
+			// sequences (Delete key, function keys, etc.) — regression
+			// guard for the terminator range extending past 'z' (0x7A).
+			name:      "csi_tilde_final_byte",
+			input:     "\x1b[3~Hello",
+			start:     0,
+			seqPrefix: "\x1b[3~",
+		},
+		{
+			// An invalid byte mid-CSI (not a param/intermediate/final byte)
+			// gives up on the sequence, consuming only the ESC so the rest
+			// (including '[') is reprocessed as ordinary text.
+			name:      "csi_invalid_byte_mid_sequence",
+			input:     "\x1b[3\x01mHello",
+			start:     0,
+			seqPrefix: "\x1b",
+		},
+		{
+			// scanEscapeSequence must work correctly when start > 0 (a real
+			// sequence mid-buffer), not just at start == 0.
+			name:      "csi_mid_buffer_not_at_start",
+			input:     "xy\x1b[31mRed",
+			start:     2,
+			seqPrefix: "\x1b[31m",
+		},
+		{
+			name:      "osc_mid_buffer_not_at_start",
+			input:     "xy\x1b]8;;https://example.com\x1b\\Link",
+			start:     2,
+			seqPrefix: "\x1b]8;;https://example.com\x1b\\",
+		},
 	}
 
 	for _, tt := range tests {
@@ -123,6 +163,24 @@ func TestScanEscapeSequence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestScanUntilTerminator_SizeCap verifies an unterminated OSC/DCS payload
+// (e.g. truncated at a chunk boundary, or adversarial/untrusted PTY output)
+// doesn't force an unbounded scan — it gives up after maxUnterminatedScan
+// bytes rather than scanning to the end of an arbitrarily large buffer.
+func TestScanUntilTerminator_SizeCap(t *testing.T) {
+	payload := make([]byte, maxUnterminatedScan+1000)
+	payload[0] = '\x1b'
+	payload[1] = ']'
+	for i := 2; i < len(payload); i++ {
+		payload[i] = 'x' // never a BEL or ST terminator
+	}
+
+	got := scanEscapeSequence(payload, 0)
+	if got != maxUnterminatedScan {
+		t.Errorf("scanEscapeSequence on unterminated OSC longer than the cap = %d, want %d", got, maxUnterminatedScan)
 	}
 }
 

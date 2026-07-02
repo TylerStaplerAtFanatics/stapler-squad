@@ -327,6 +327,12 @@ func TestStripANSIBytes(t *testing.T) {
 			input:    "\x1bPq#0;2;0;0;0\x1b\\Sixel",
 			expected: "Sixel",
 		},
+		{
+			// '@' (Insert Character) and '~' (used by many real xterm
+			// sequences) are valid CSI final bytes that are not letters.
+			input:    "\x1b[5@Insert\x1b[3~Tilde",
+			expected: "InsertTilde",
+		},
 	}
 
 	for _, tt := range tests {
