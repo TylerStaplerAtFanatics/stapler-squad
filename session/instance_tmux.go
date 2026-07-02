@@ -102,7 +102,10 @@ func shellQuote(s string) string {
 func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 	parts := []string{base}
 	if claudeSessionID != "" {
-		parts = append(parts, "--resume", claudeSessionID)
+		// claudeSessionID traces back to the client-supplied resume_id RPC field
+		// (CreateSessionRequest) with no format validation, so it needs the same
+		// shell-quoting as the other interpolated flag values.
+		parts = append(parts, "--resume", shellQuote(claudeSessionID))
 	}
 	if i.MCPServerURL != "" {
 		parts = append(parts, i.claudeMCPConfigFlag())
@@ -131,11 +134,18 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 }
 
 // claudeMCPConfigFlag returns the --mcp-config flag string for this instance.
+// %q here escapes MCPServerURL/UUID as JSON string values, a distinct job
+// from shell-quoting; the whole JSON payload is then wrapped once with
+// shellQuote so the outer shell-quoting isn't a hand-rolled second
+// implementation of the same job shellQuote already does correctly.
 func (i *Instance) claudeMCPConfigFlag() string {
+	var cfg string
 	if i.UUID != "" {
-		return fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}'`, i.MCPServerURL, i.UUID)
+		cfg = fmt.Sprintf(`{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}`, i.MCPServerURL, i.UUID)
+	} else {
+		cfg = fmt.Sprintf(`{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}`, i.MCPServerURL)
 	}
-	return fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}'`, i.MCPServerURL)
+	return "--mcp-config " + shellQuote(cfg)
 }
 
 // initTmuxSession creates (or reuses) the tmux.TmuxSession object without starting it.

@@ -76,7 +76,7 @@ func TestBuildLaunchCommand_NonClaudeProgramUnmodified(t *testing.T) {
 func TestBuildLaunchCommand_ClaudeSessionResume(t *testing.T) {
 	inst := &Instance{Program: "claude"}
 	got := inst.buildLaunchCommand("conv-abc123")
-	expected := "claude --resume conv-abc123"
+	expected := "claude --resume 'conv-abc123'"
 	if got != expected {
 		t.Errorf("got %q, want %q", got, expected)
 	}
@@ -105,6 +105,9 @@ func TestShellQuote(t *testing.T) {
 		{"backtick", "run `whoami`", "'run `whoami`'"},
 		{"dollar_paren", "run $(whoami)", "'run $(whoami)'"},
 		{"dollar_var", "echo $HOME", "'echo $HOME'"},
+		{"only_single_quote", "'", `''\'''`},
+		{"newline", "line one\nline two", "'line one\nline two'"},
+		{"backtick_and_quote", "don't `touch /tmp/pwned`", "'don'\\''t `touch /tmp/pwned`'"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,11 +124,13 @@ func TestBuildClaudeCommand_PromptWithShellMetacharactersIsSafe(t *testing.T) {
 	// full of backtick-wrapped tokens and begins with "--- BACKLOG ITEM DATA ---".
 	// Both must be neutralized: single-quoting stops backtick/$()/$VAR expansion,
 	// and the "--" separator stops claude from parsing the leading "--" as a flag.
+	// want is a hand-written literal (not shellQuote(prompt)) so this test doesn't
+	// just re-verify shellQuote against itself.
 	prompt := "--- BACKLOG ITEM DATA ---\nRun `/backlog/done-0` when finished, or $(rm -rf /) if you dare."
 	inst := &Instance{Program: "claude", Prompt: prompt}
 	got := inst.buildLaunchCommand("")
 
-	want := "claude -- " + shellQuote(prompt)
+	want := "claude -- '" + prompt + "'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -143,7 +148,45 @@ func TestBuildClaudeCommand_AppendSystemPromptWithShellMetacharactersIsSafe(t *t
 		AppendSystemPrompt: "be `helpful` and $(honest)",
 	}
 	got := inst.buildLaunchCommand("")
-	want := "claude --append-system-prompt " + shellQuote(inst.AppendSystemPrompt)
+	// Hand-written literal, not shellQuote(inst.AppendSystemPrompt), for the same
+	// non-circularity reason as the Prompt test above.
+	want := "claude --append-system-prompt 'be `helpful` and $(honest)'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildClaudeCommand_AllowedToolsWithShellMetacharactersIsSafe(t *testing.T) {
+	inst := &Instance{
+		Program:      "claude",
+		AllowedTools: "Bash(`whoami`),Bash($(id))",
+	}
+	got := inst.buildLaunchCommand("")
+	want := "claude --allowedTools 'Bash(`whoami`),Bash($(id))'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildClaudeCommand_PermissionModeWithShellMetacharactersIsSafe(t *testing.T) {
+	inst := &Instance{
+		Program:        "claude",
+		PermissionMode: "plan; `touch /tmp/pwned`",
+	}
+	got := inst.buildLaunchCommand("")
+	want := "claude --permission-mode 'plan; `touch /tmp/pwned`'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildClaudeCommand_ResumeIdWithShellMetacharactersIsSafe(t *testing.T) {
+	// claudeSessionID comes from the client-supplied resume_id RPC field with no
+	// format validation, so it needs the same shell-quoting as any other
+	// interpolated flag value.
+	inst := &Instance{Program: "claude"}
+	got := inst.buildLaunchCommand("abc`touch /tmp/pwned`123")
+	want := "claude --resume 'abc`touch /tmp/pwned`123'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
