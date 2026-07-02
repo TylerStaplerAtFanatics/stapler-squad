@@ -78,11 +78,11 @@ func (r *Registry) Acquire(sessionID string) (*LiveInstance, ReleaseFunc, error)
 	r.mu.Unlock() // release before storage I/O — construction must not block unrelated Acquires
 
 	data, err := r.storage.FindInstanceDataByID(sessionID)
+	if errors.Is(err, ErrInstanceDataNotFound) {
+		return nil, nil, ErrSessionNotFound
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("registry: acquire %q: %w", sessionID, err)
-	}
-	if data == nil {
-		return nil, nil, ErrSessionNotFound
 	}
 	live, err := newLiveInstance(*data, r.storage)
 	if err != nil {

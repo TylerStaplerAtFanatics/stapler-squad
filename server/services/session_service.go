@@ -2734,6 +2734,22 @@ func (s *SessionService) BulkUpsertRules(
 	return s.rulesSvc.BulkUpsertRules(ctx, req)
 }
 
+// GetConfigFileRules returns all rules from the shared config YAML file.
+func (s *SessionService) GetConfigFileRules(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetConfigFileRulesRequest],
+) (*connect.Response[sessionv1.GetConfigFileRulesResponse], error) {
+	return s.rulesSvc.GetConfigFileRules(ctx, req)
+}
+
+// SaveRulesToConfigFile exports rules to the shared config YAML file.
+func (s *SessionService) SaveRulesToConfigFile(
+	ctx context.Context,
+	req *connect.Request[sessionv1.SaveRulesToConfigFileRequest],
+) (*connect.Response[sessionv1.SaveRulesToConfigFileResponse], error) {
+	return s.rulesSvc.SaveRulesToConfigFile(ctx, req)
+}
+
 // ListDatabases returns all discovered workspace databases with metadata.
 func (s *SessionService) ListDatabases(
 	ctx context.Context,
@@ -3984,20 +4000,4 @@ func (s *SessionService) SetTokenStoreReader(store tokens.TokenStoreReader) {
 // GetInstances returns all managed (poller-tracked) live instances, satisfying InstancePoller.
 func (s *SessionService) GetInstances() []*session.Instance {
 	return s.allInstances()
-}
-
-// GetConfigFileRules returns all rules from the shared config YAML file.
-func (s *SessionService) GetConfigFileRules(
-	ctx context.Context,
-	req *connect.Request[sessionv1.GetConfigFileRulesRequest],
-) (*connect.Response[sessionv1.GetConfigFileRulesResponse], error) {
-	return s.rulesSvc.GetConfigFileRules(ctx, req)
-}
-
-// SaveRulesToConfigFile exports rules to the shared config YAML file.
-func (s *SessionService) SaveRulesToConfigFile(
-	ctx context.Context,
-	req *connect.Request[sessionv1.SaveRulesToConfigFileRequest],
-) (*connect.Response[sessionv1.SaveRulesToConfigFileResponse], error) {
-	return s.rulesSvc.SaveRulesToConfigFile(ctx, req)
 }
