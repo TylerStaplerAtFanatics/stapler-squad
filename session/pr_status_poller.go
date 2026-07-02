@@ -213,24 +213,23 @@ func (p *PRStatusPoller) checkAllSessions() {
 	p.mu.RUnlock()
 
 	for _, inst := range instances {
-		if inst.GitHubOwner == "" || inst.GitHubRepo == "" {
+		// Lock-free snapshot replaces both the unguarded GitHubOwner/GitHubRepo reads and
+		// the explicit stateMutex.RLock() for GitHubPRStatusTerminal / GitHubIsFork.
+		instSnap := inst.Snapshot()
+
+		if instSnap.GitHubOwner == "" || instSnap.GitHubRepo == "" {
 			continue // no GitHub info for this session
 		}
 
-		inst.stateMutex.RLock()
-		isTerminal := inst.GitHubPRStatusTerminal
-		isFork := inst.GitHubIsFork
-		inst.stateMutex.RUnlock()
-
-		if isTerminal {
+		if instSnap.GitHubPRStatusTerminal {
 			continue // merged/closed; poller already marked it terminal
 		}
-		if isFork {
-			log.Info("PR status poller: skipping fork session (upstream PR lookup Phase 2)", "session", inst.Title)
+		if instSnap.GitHubIsFork {
+			log.Info("PR status poller: skipping fork session (upstream PR lookup Phase 2)", "session", instSnap.Title)
 			continue
 		}
 
-		if pollAfter, ok := noPRPollAfter[inst.Title]; ok && now.Before(pollAfter) {
+		if pollAfter, ok := noPRPollAfter[instSnap.Title]; ok && now.Before(pollAfter) {
 			continue // no-PR backoff still in effect
 		}
 
@@ -272,12 +271,13 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 	ctx, cancel := context.WithTimeout(p.ctx, p.config.CallTimeout)
 	defer cancel()
 
-	inst.stateMutex.RLock()
-	prNumber := inst.GitHubPRNumber
-	branch := inst.Branch
-	owner := inst.GitHubOwner
-	repo := inst.GitHubRepo
-	inst.stateMutex.RUnlock()
+	// Lock-free snapshot for the pre-fetch reads; the subsequent writes
+	// (GitHubPRNumber, LastPRStatusCheck) remain guarded by stateMutex.
+	prefetch := inst.Snapshot()
+	prNumber := prefetch.GitHubPRNumber
+	branch := prefetch.Branch
+	owner := prefetch.GitHubOwner
+	repo := prefetch.GitHubRepo
 
 	// Auto-discovery: find PR for branch when PR number not yet known
 	if prNumber == 0 {
@@ -380,10 +380,9 @@ func (p *PRStatusPoller) applyPRUpdate(inst *Instance, prInfo *github.PRInfo) {
 		isDraft = prInfo.IsDraft
 	}
 
-	// Check whether priority actually changed before notifying
-	inst.stateMutex.RLock()
-	oldPriority := inst.GitHubPRPriority
-	inst.stateMutex.RUnlock()
+	// Check whether priority actually changed before notifying.
+	// Lock-free snapshot read replaces the explicit stateMutex.RLock() here.
+	oldPriority := inst.Snapshot().GitHubPRPriority
 
 	inst.UpdatePRStatus(state, priority, checkConclusion, approvedCount, changesReqCount, isDraft, terminal)
 

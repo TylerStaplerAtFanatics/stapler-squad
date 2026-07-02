@@ -592,7 +592,10 @@ func (p *pollerContentProvider) GetContent(inst *Instance, statusInfo InstanceSt
 // Hidden (system/background) sessions are never shown in the review queue.
 // All other states proceed to status detection regardless of controller state.
 func (rqp *ReviewQueuePoller) shouldSkipSession(inst *Instance) bool {
-	return inst.Hidden || inst.IsStopped() || inst.Paused() || !inst.Started()
+	// Lock-free snapshot read for Hidden and Status; Started() reads inst.started
+	// (set once during construction, not in the snapshot).
+	snap := inst.Snapshot()
+	return snap.Hidden || snap.Status == Stopped || snap.Status == Paused || !inst.Started()
 }
 
 // checkSession checks a single session and adds/removes from queue as needed.
@@ -602,6 +605,11 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 	if rqp.shouldSkipSession(inst) {
 		return
 	}
+
+	// Lock-free snapshot for all read-only field accesses below.
+	// Write paths (inst.LastAddedToQueue = ...) and method calls (IsAcknowledgedAfterOutput,
+	// GetDiffStats, etc.) are left unchanged.
+	snap := inst.Snapshot()
 
 	// Get comprehensive status
 	statusInfo := rqp.statusManager.GetStatus(inst)
@@ -629,7 +637,7 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 		// Controller-active sessions: trust the controller — if it returns DetectionActionRemove
 		// for an approval item, the dialog is genuinely gone (e.g., user approved the tool use).
 		if !statusInfo.IsControllerActive {
-			if existing, exists := rqp.queue.Get(inst.Title); exists {
+			if existing, exists := rqp.queue.Get(snap.Title); exists {
 				isPromptReason := existing.Reason == ReasonApprovalPending ||
 					existing.Reason == ReasonInputRequired ||
 					existing.Reason == ReasonWaitingForUser
@@ -638,15 +646,15 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 				}
 			}
 		}
-		rqp.queue.Remove(inst.Title)
+		rqp.queue.Remove(snap.Title)
 		return
 	}
 
 	// If the determiner saw a clean worktree, remove any stale UncommittedChanges entry.
 	if result.CleanWorktree {
-		if existing, exists := rqp.queue.Get(inst.Title); exists && existing.Reason == ReasonUncommittedChanges {
-			log.Info("changes committed, removing UncommittedChanges entry", "session", inst.Title)
-			rqp.queue.Remove(inst.Title)
+		if existing, exists := rqp.queue.Get(snap.Title); exists && existing.Reason == ReasonUncommittedChanges {
+			log.Info("changes committed, removing UncommittedChanges entry", "session", snap.Title)
+			rqp.queue.Remove(snap.Title)
 		}
 	}
 
@@ -662,7 +670,7 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 	// positive and silently suppress a live blocking prompt.
 	isActiveHighPriority := shouldAdd && priority <= PriorityHigh
 	if !isActiveHighPriority && inst.IsAcknowledgedAfterOutput() {
-		rqp.queue.Remove(inst.Title)
+		rqp.queue.Remove(snap.Title)
 		return
 	}
 
@@ -672,11 +680,11 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 	// Only applied when shouldAdd is true: a Skip result should leave the queue unchanged,
 	// not trigger a removal through the grace-period path.
 	if shouldAdd && (priority == PriorityLow || !statusInfo.IsControllerActive) {
-		if !inst.LastAcknowledged.IsZero() {
+		if !snap.LastAcknowledged.IsZero() {
 			gracePeriod := 5 * time.Minute
-			timeSinceAck := time.Since(inst.LastAcknowledged)
+			timeSinceAck := time.Since(snap.LastAcknowledged)
 			if timeSinceAck < gracePeriod {
-				rqp.queue.Remove(inst.Title)
+				rqp.queue.Remove(snap.Title)
 				return
 			}
 		}
@@ -688,12 +696,12 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 	// must not block urgent prompts from re-appearing — the session should always be re-added.
 	if shouldAdd {
 		minReAddInterval := 2 * time.Minute
-		if !inst.LastAddedToQueue.IsZero() && time.Since(inst.LastAddedToQueue) < minReAddInterval {
-			if existingItem, exists := rqp.queue.Get(inst.Title); exists {
+		if !snap.LastAddedToQueue.IsZero() && time.Since(snap.LastAddedToQueue) < minReAddInterval {
+			if existingItem, exists := rqp.queue.Get(snap.Title); exists {
 				// Lower priority number = higher priority (Urgent=1 > High=2 > Medium=3 > Low=4)
 				isEscalation := priority < existingItem.Priority
 				if isEscalation {
-					log.Info("priority escalation, bypassing rate limit", "session", inst.Title, "from", existingItem.Priority.String(), "to", priority.String())
+					log.Info("priority escalation, bypassing rate limit", "session", snap.Title, "from", existingItem.Priority.String(), "to", priority.String())
 				} else {
 					return
 				}
@@ -711,13 +719,13 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 		return
 	}
 
-	log.Info("final decision", "session", inst.Title, "should_add", shouldAdd, "reason", reason.String(), "priority", priority.String(), "context", context)
+	log.Info("final decision", "session", snap.Title, "should_add", shouldAdd, "reason", reason.String(), "priority", priority.String(), "context", context)
 
 	if shouldAdd {
 		// Check if item already exists and preserve DetectedAt if status hasn't changed
 		detectedAt := time.Now()
 		isUpdate := false
-		if existingItem, exists := rqp.queue.Get(inst.Title); exists {
+		if existingItem, exists := rqp.queue.Get(snap.Title); exists {
 			isUpdate = true
 			// Preserve original timestamp if meaningful fields haven't changed
 			if existingItem.Reason == reason &&
@@ -732,26 +740,26 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 
 		// Use CreatedAt as fallback LastActivity when LastMeaningfulOutput hasn't been set yet
 		// (new sessions, sessions where StartController failed before the migration ran).
-		lastActivity := inst.LastMeaningfulOutput
+		lastActivity := snap.LastMeaningfulOutput
 		if lastActivity.IsZero() {
-			lastActivity = inst.CreatedAt
+			lastActivity = snap.CreatedAt
 		}
 
 		item := &ReviewItem{
-			SessionID:   inst.Title,
-			SessionName: inst.Title,
+			SessionID:   snap.Title,
+			SessionName: snap.Title,
 			Reason:      reason,
 			Priority:    priority,
 			DetectedAt:  detectedAt,
 			Context:     context,
 			// Populate session details for rich display
-			Program:      inst.Program,
-			Branch:       inst.Branch,
-			Path:         inst.Path,
-			WorkingDir:   inst.WorkingDir,
-			Status:       inst.Status.String(),
-			Tags:         inst.Tags,
-			Category:     inst.Category,
+			Program:      snap.Program,
+			Branch:       snap.Branch,
+			Path:         snap.Path,
+			WorkingDir:   snap.WorkingDir,
+			Status:       snap.Status.String(),
+			Tags:         snap.Tags,
+			Category:     snap.Category,
 			DiffStats:    inst.GetDiffStats(),
 			LastActivity: lastActivity,
 			// Populate idle state and raw detected status for WorkingState mapping.
@@ -761,7 +769,7 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 
 		// Enrich approval items with hook metadata from ApprovalStore (Story 3, Task 3.2).
 		if reason == ReasonApprovalPending && rqp.approvalProvider != nil {
-			if approvals := rqp.approvalProvider.GetApprovalMetadataBySession(inst.Title); len(approvals) > 0 {
+			if approvals := rqp.approvalProvider.GetApprovalMetadataBySession(snap.Title); len(approvals) > 0 {
 				a := approvals[0] // Use the most recent/first approval
 				if item.Metadata == nil {
 					item.Metadata = make(map[string]string)
@@ -780,16 +788,16 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 				if a.Orphaned {
 					item.Metadata["orphaned"] = "true"
 				}
-				log.Info("enriched approval item with hook metadata", "session", inst.Title, "tool", a.ToolName, "approval_id", a.ApprovalID)
+				log.Info("enriched approval item with hook metadata", "session", snap.Title, "tool", a.ToolName, "approval_id", a.ApprovalID)
 			}
 		}
 
-		log.Info("adding to queue", "session", inst.Title, "reason", reason.String(), "priority", priority.String(), "context", context)
+		log.Info("adding to queue", "session", snap.Title, "reason", reason.String(), "priority", priority.String(), "context", context)
 		rqp.queue.Add(item)
 
-		// Update spam prevention timestamp
+		// Update spam prevention timestamp (write path — direct field access is correct here).
 		inst.LastAddedToQueue = time.Now()
-		log.Info("updated LastAddedToQueue timestamp", "session", inst.Title, "timestamp", inst.LastAddedToQueue)
+		log.Info("updated LastAddedToQueue timestamp", "session", snap.Title, "timestamp", inst.LastAddedToQueue)
 
 		// CRITICAL: Persist LastAddedToQueue to database to prevent notification spam
 		// Without persistence, this timestamp resets on app restart or instance reload,
@@ -797,13 +805,13 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 		// NOTE: Use UpdateInstanceLastAddedToQueue instead of SaveInstances to avoid
 		// the merge logic which would restore deleted instances from disk.
 		if rqp.storage != nil {
-			if err := rqp.storage.UpdateInstanceLastAddedToQueue(inst.Title, inst.LastAddedToQueue); err != nil {
-				log.Error("failed to persist LastAddedToQueue", "session", inst.Title, "err", err)
+			if err := rqp.storage.UpdateInstanceLastAddedToQueue(snap.Title, inst.LastAddedToQueue); err != nil {
+				log.Error("failed to persist LastAddedToQueue", "session", snap.Title, "err", err)
 			}
 		}
 
 		if !isUpdate {
-			log.Info("successfully added to queue", "session", inst.Title, "reason", reason.String(), "priority", priority.String(), "context", context)
+			log.Info("successfully added to queue", "session", snap.Title, "reason", reason.String(), "priority", priority.String(), "context", context)
 		}
 	}
 }
