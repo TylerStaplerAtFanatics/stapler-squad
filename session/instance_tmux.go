@@ -88,10 +88,10 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 }
 
 // shellQuote POSIX-single-quotes s for safe interpolation into a shell command
-// line. Unlike Go's %q (which escapes for Go string-literal syntax), single
-// quotes suppress ALL shell expansion — backticks, $(...), and $VAR are passed
-// through literally instead of being executed/expanded by the shell that tmux
-// runs the launch command through. See stapler-squad#148.
+// string. tmux launches the assembled command through a shell, and Go's %q
+// produces double quotes, which do NOT suppress backtick/$(...)/$VAR
+// expansion. Single quotes do: the only special case is a literal single
+// quote, escaped by closing the quoted string, emitting \', and reopening.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -102,21 +102,18 @@ func shellQuote(s string) string {
 func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 	parts := []string{base}
 	if claudeSessionID != "" {
-		parts = append(parts, "--resume", claudeSessionID)
+		// claudeSessionID traces back to the client-supplied resume_id RPC field
+		// (CreateSessionRequest) with no format validation, so it needs the same
+		// shell-quoting as the other interpolated flag values.
+		parts = append(parts, "--resume", shellQuote(claudeSessionID))
 	}
 	if i.MCPServerURL != "" {
 		parts = append(parts, i.claudeMCPConfigFlag())
 	}
 	if i.AppendSystemPrompt != "" {
-		// shellQuote (not %q): the prompt is free-form text (often containing
-		// backtick-wrapped tokens like `/backlog/status`) that must reach claude
-		// literally, not be executed/expanded by the shell. See stapler-squad#148.
 		parts = append(parts, "--append-system-prompt", shellQuote(i.AppendSystemPrompt))
 	}
 	if i.AllowedTools != "" {
-		// shellQuote (not %q): same shell-metacharacter hazard as the prompt
-		// fields above — this value comes directly from client RPC input with
-		// no character restrictions. See stapler-squad#148.
 		parts = append(parts, "--allowedTools", shellQuote(i.AllowedTools))
 	}
 	if i.PermissionMode != "" {
@@ -130,20 +127,25 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 	}
 	if i.Prompt != "" && (claudeSessionID == "" || i.OneShot) {
 		// "--" stops claude from parsing a prompt that begins with "--" (e.g. the
-		// backlog prompt's "--- BACKLOG ITEM DATA ---") as CLI flags. shellQuote
-		// (not %q) keeps backticks/$(...) in the prompt from being shell-executed.
-		// See stapler-squad#148.
+		// backlog prompt's "--- BACKLOG ITEM DATA ---") as CLI flags.
 		parts = append(parts, "--", shellQuote(i.Prompt))
 	}
 	return strings.Join(parts, " ")
 }
 
 // claudeMCPConfigFlag returns the --mcp-config flag string for this instance.
+// %q here escapes MCPServerURL/UUID as JSON string values, a distinct job
+// from shell-quoting; the whole JSON payload is then wrapped once with
+// shellQuote so the outer shell-quoting isn't a hand-rolled second
+// implementation of the same job shellQuote already does correctly.
 func (i *Instance) claudeMCPConfigFlag() string {
+	var cfg string
 	if i.UUID != "" {
-		return fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}'`, i.MCPServerURL, i.UUID)
+		cfg = fmt.Sprintf(`{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}`, i.MCPServerURL, i.UUID)
+	} else {
+		cfg = fmt.Sprintf(`{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}`, i.MCPServerURL)
 	}
-	return fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}'`, i.MCPServerURL)
+	return "--mcp-config " + shellQuote(cfg)
 }
 
 // initTmuxSession creates (or reuses) the tmux.TmuxSession object without starting it.

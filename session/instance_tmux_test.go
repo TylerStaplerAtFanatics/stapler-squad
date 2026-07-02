@@ -76,7 +76,7 @@ func TestBuildLaunchCommand_NonClaudeProgramUnmodified(t *testing.T) {
 func TestBuildLaunchCommand_ClaudeSessionResume(t *testing.T) {
 	inst := &Instance{Program: "claude"}
 	got := inst.buildLaunchCommand("conv-abc123")
-	expected := "claude --resume conv-abc123"
+	expected := "claude --resume 'conv-abc123'"
 	if got != expected {
 		t.Errorf("got %q, want %q", got, expected)
 	}
@@ -93,78 +93,100 @@ func TestBuildLaunchCommand_ClaudeEnvWrapper(t *testing.T) {
 	}
 }
 
-// stapler-squad#148: prompts must reach claude literally, not be shell-executed.
 func TestShellQuote(t *testing.T) {
 	cases := []struct {
-		name string
-		in   string
-		want string
+		name  string
+		input string
+		want  string
 	}{
-		{"plain", "hello", "'hello'"},
-		{"embedded single quote", "it's", `'it'\''s'`},
 		{"empty", "", "''"},
+		{"plain", "do something", "'do something'"},
+		{"single_quote", "it's here", `'it'\''s here'`},
+		{"backtick", "run `whoami`", "'run `whoami`'"},
+		{"dollar_paren", "run $(whoami)", "'run $(whoami)'"},
+		{"dollar_var", "echo $HOME", "'echo $HOME'"},
+		{"only_single_quote", "'", `''\'''`},
+		{"newline", "line one\nline two", "'line one\nline two'"},
+		{"backtick_and_quote", "don't `touch /tmp/pwned`", "'don'\\''t `touch /tmp/pwned`'"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := shellQuote(tc.in); got != tc.want {
-				t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+			got := shellQuote(tc.input)
+			if got != tc.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
 	}
 }
 
-// stapler-squad#148: a backlog/triage prompt containing backtick-wrapped tokens
-// and a leading "--" must not be executed or rejected as CLI flags by the shell
-// tmux runs the launch command through. Single-quoting suppresses all shell
-// expansion (backticks, $(...), $VAR), and "--" stops claude from parsing the
-// prompt's leading "--- BACKLOG ITEM DATA ---" as flags.
 func TestBuildClaudeCommand_PromptWithShellMetacharactersIsSafe(t *testing.T) {
-	dangerousPrompt := "--- BACKLOG ITEM DATA ---\nSee `/backlog/status` and $(whoami) and $HOME"
-	inst := &Instance{Program: "claude", Prompt: dangerousPrompt}
-
+	// Regression test for the backlog/triage launch bug: the backlog prompt is
+	// full of backtick-wrapped tokens and begins with "--- BACKLOG ITEM DATA ---".
+	// Both must be neutralized: single-quoting stops backtick/$()/$VAR expansion,
+	// and the "--" separator stops claude from parsing the leading "--" as a flag.
+	// want is a hand-written literal (not shellQuote(prompt)) so this test doesn't
+	// just re-verify shellQuote against itself.
+	prompt := "--- BACKLOG ITEM DATA ---\nRun `/backlog/done-0` when finished, or $(rm -rf /) if you dare."
+	inst := &Instance{Program: "claude", Prompt: prompt}
 	got := inst.buildLaunchCommand("")
 
-	// Hardcoded literal (not built by calling shellQuote, the function under
-	// test) so this assertion can actually catch a regression in shellQuote
-	// itself, not just confirm it was called.
-	wantSuffix := "-- '--- BACKLOG ITEM DATA ---\nSee `/backlog/status` and $(whoami) and $HOME'"
-	if !strings.HasSuffix(got, wantSuffix) {
-		t.Errorf("prompt not safely quoted after '--' separator.\ngot:  %q\nwant suffix: %q", got, wantSuffix)
+	want := "claude -- '" + prompt + "'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
-	// The raw backtick/$(...) tokens must only appear inside the single-quoted
-	// span — i.e. the command must not contain them as a bare, shell-double-quoted
-	// substring (the old %q behavior), which is what let the shell execute them.
-	if strings.Contains(got, "\"--- BACKLOG") {
-		t.Error("prompt appears to be double-quoted (shell-unsafe) rather than single-quoted")
+	if !strings.Contains(got, " -- ") {
+		t.Errorf("expected a bare -- separator before the prompt, got %q", got)
+	}
+	if strings.Contains(got, "%!q") {
+		t.Errorf("prompt was not properly formatted: %q", got)
 	}
 }
 
-func TestBuildClaudeCommand_AppendSystemPromptIsShellQuoted(t *testing.T) {
-	inst := &Instance{Program: "claude", AppendSystemPrompt: "run `whoami` now"}
-
+func TestBuildClaudeCommand_AppendSystemPromptWithShellMetacharactersIsSafe(t *testing.T) {
+	inst := &Instance{
+		Program:            "claude",
+		AppendSystemPrompt: "be `helpful` and $(honest)",
+	}
 	got := inst.buildLaunchCommand("")
-
-	// Hardcoded literal, not built via shellQuote, so a regression in
-	// shellQuote itself would actually fail this test.
-	want := "claude --append-system-prompt 'run `whoami` now'"
+	// Hand-written literal, not shellQuote(inst.AppendSystemPrompt), for the same
+	// non-circularity reason as the Prompt test above.
+	want := "claude --append-system-prompt 'be `helpful` and $(honest)'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-// stapler-squad#148 follow-up: AllowedTools and PermissionMode carry the exact
-// same shell-injection risk as AppendSystemPrompt/Prompt (free-form RPC input
-// interpolated into the launch command) and must be shell-quoted too.
-func TestBuildClaudeCommand_AllowedToolsAndPermissionModeAreShellQuoted(t *testing.T) {
+func TestBuildClaudeCommand_AllowedToolsWithShellMetacharactersIsSafe(t *testing.T) {
+	inst := &Instance{
+		Program:      "claude",
+		AllowedTools: "Bash(`whoami`),Bash($(id))",
+	}
+	got := inst.buildLaunchCommand("")
+	want := "claude --allowedTools 'Bash(`whoami`),Bash($(id))'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildClaudeCommand_PermissionModeWithShellMetacharactersIsSafe(t *testing.T) {
 	inst := &Instance{
 		Program:        "claude",
-		AllowedTools:   "read,write `whoami`",
-		PermissionMode: "$(whoami)",
+		PermissionMode: "plan; `touch /tmp/pwned`",
 	}
-
 	got := inst.buildLaunchCommand("")
+	want := "claude --permission-mode 'plan; `touch /tmp/pwned`'"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
 
-	want := "claude --allowedTools 'read,write `whoami`' --permission-mode '$(whoami)'"
+func TestBuildClaudeCommand_ResumeIdWithShellMetacharactersIsSafe(t *testing.T) {
+	// claudeSessionID comes from the client-supplied resume_id RPC field with no
+	// format validation, so it needs the same shell-quoting as any other
+	// interpolated flag value.
+	inst := &Instance{Program: "claude"}
+	got := inst.buildLaunchCommand("abc`touch /tmp/pwned`123")
+	want := "claude --resume 'abc`touch /tmp/pwned`123'"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
