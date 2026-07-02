@@ -395,7 +395,7 @@ func (s *SessionService) loadInstancesWithWiring() ([]*session.Instance, error) 
 		// the Claude process restarts without a session UUID or MCP connection.
 		// Only applied in-memory; the DB value is updated lazily via SaveInstances.
 		if inst.MCPServerURL == "" && s.mcpServerURL != "" {
-			inst.MCPServerURL = s.mcpServerURL
+			inst.SetMCPServerURL(s.mcpServerURL)
 		}
 	}
 
@@ -687,7 +687,7 @@ func (s *SessionService) WireInstanceCallbacks(inst *session.LiveInstance) {
 	s.wireAutoArchiveCallback(inst.Instance)
 	s.wireSessionExitedPublisher(inst.Instance)
 	if inst.MCPServerURL == "" && s.mcpServerURL != "" {
-		inst.MCPServerURL = s.mcpServerURL
+		inst.SetMCPServerURL(s.mcpServerURL)
 	}
 }
 
@@ -822,8 +822,7 @@ func (s *SessionService) StopDriverForSession(sessionTitle string) {
 func (s *SessionService) buildTurnCallback(inst *session.Instance) session.TurnCallback {
 	return func(turn, maxTurns int, prompt string) {
 		if liveInst := s.FindLiveInstance(inst.Title); liveInst != nil {
-			liveInst.AutonomousTurn = int32(turn)
-			liveInst.AutonomousMaxTurns = int32(maxTurns)
+			liveInst.SetAutonomousTurn(int32(turn), int32(maxTurns))
 			s.eventBus.Publish(events.NewSessionUpdatedEvent(liveInst, []string{"autonomous_turn"}))
 		}
 		truncated := prompt
@@ -1362,8 +1361,8 @@ func (s *SessionService) CreateSession(
 	instanceTitle := instance.Title
 	instanceRootDir := instance.GetEffectiveRootDir()
 
-	// Snapshot the proto before spawning the goroutine to avoid a data race between
-	// the goroutine writing CreationProgress and the return statement reading instance.
+	// Pre-compute the Creating-state proto for the RPC response so the return
+	// statement below does not race with the goroutine's SetCreationProgress calls.
 	creatingProto := adapters.InstanceToProto(instance, s.workflowNames())
 
 	// Perform the actual initialization asynchronously so the RPC returns within milliseconds.
@@ -1375,14 +1374,14 @@ func (s *SessionService) CreateSession(
 		s.wireAutoArchiveCallback(instance)
 		s.wireSessionExitedPublisher(instance)
 
-		instance.CreationProgress = "Starting session..."
+		instance.SetCreationProgress("Starting session...")
 		s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"creation_progress"}))
 
 		// Start the session (initializes tmux + git worktree).
 		if startErr := instance.Start(true); startErr != nil {
 			log.Error("[CreateSession] async start failed", "session", instanceTitle, "err", startErr)
 			// Transition to Stopped on failure.
-			instance.CreationProgress = fmt.Sprintf("Startup failed: %s", startErr.Error())
+			instance.SetCreationProgress(fmt.Sprintf("Startup failed: %s", startErr.Error()))
 			instance.ForceStatus(session.Stopped)
 			_ = s.storage.SaveInstances([]*session.Instance{instance})
 			s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"status", "creation_progress"}))
@@ -1390,7 +1389,7 @@ func (s *SessionService) CreateSession(
 		}
 
 		// Clear progress message now that we are Active.
-		instance.CreationProgress = ""
+		instance.SetCreationProgress("")
 
 		// Inject Claude Code HTTP hook config for remote approval from the web UI.
 		// Non-fatal: session is fully functional even without this config.
@@ -1521,13 +1520,13 @@ func (s *SessionService) UpdateSession(
 				return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("session with title '%s' already exists", *req.Msg.Title))
 			}
 		}
-		instance.Title = *req.Msg.Title
+		instance.SetTitleDirect(*req.Msg.Title)
 		updatedFields = append(updatedFields, "title")
 	}
 
 	// Handle category update
 	if req.Msg.Category != nil {
-		instance.Category = *req.Msg.Category
+		instance.SetCategory(*req.Msg.Category)
 		updatedFields = append(updatedFields, "category")
 	}
 
@@ -1554,7 +1553,7 @@ func (s *SessionService) UpdateSession(
 			newProgram = config.LoadConfig().DefaultProgram
 		}
 		if instance.Program != newProgram {
-			instance.Program = newProgram
+			instance.SetProgram(newProgram)
 			updatedFields = append(updatedFields, "program")
 
 			// Port history if switching between Claude and Antigravity
@@ -1582,7 +1581,7 @@ func (s *SessionService) UpdateSession(
 
 	// Handle working directory update
 	if req.Msg.WorkingDir != nil {
-		instance.WorkingDir = *req.Msg.WorkingDir
+		instance.SetWorkingDir(*req.Msg.WorkingDir)
 		updatedFields = append(updatedFields, "working_dir")
 	}
 
@@ -1606,9 +1605,8 @@ func (s *SessionService) UpdateSession(
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
 				fmt.Errorf("autonomous mode requires a headless LLM to be configured"))
 		}
-		instance.AutonomousMode = *req.Msg.AutonomousMode
+		instance.SetAutonomousMode(*req.Msg.AutonomousMode, "")
 		if instance.AutonomousMode {
-			instance.AutonomousOutcome = ""
 			s.StartAutonomousDriverForInstance(instance)
 		} else {
 			s.stopAndDeregisterDriver(instance.Title)
@@ -1649,9 +1647,9 @@ func (s *SessionService) UpdateSession(
 		if targetStatus == session.Paused && instance.Status != session.Paused {
 			// Set pause reason before transitioning — mirrors HibernateSession pattern.
 			if req.Msg.PauseReason == nil || *req.Msg.PauseReason == "" {
-				instance.PauseReason = session.PauseReasonManual
+				instance.SetPauseReason(session.PauseReasonManual)
 			} else {
-				instance.PauseReason = *req.Msg.PauseReason
+				instance.SetPauseReason(*req.Msg.PauseReason)
 			}
 			if err := instance.Pause(); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to pause session: %w", err))
@@ -1659,7 +1657,7 @@ func (s *SessionService) UpdateSession(
 			updatedFields = append(updatedFields, "status")
 		} else if targetStatus != session.Paused && instance.Status == session.Paused {
 			// Clear pause reason on resume.
-			instance.PauseReason = ""
+			instance.SetPauseReason("")
 			// Resume from paused state
 			if err := instance.Resume(); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resume session: %w", err))
@@ -2584,7 +2582,7 @@ func (s *SessionService) RenameSession(
 	instances[instanceIndex] = instance
 	if err := s.storage.SaveInstances(instances); err != nil {
 		// Try to rollback the rename
-		instance.Title = oldTitle
+		instance.SetTitleDirect(oldTitle)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save renamed instance: %w", err))
 	}
 
@@ -3328,10 +3326,11 @@ func (s *SessionService) RunOneShot(
 	// Persist the PR URL (and number) back to the session record so the GitHub badge appears
 	// and the PRStatusPoller can use the direct-number path instead of branch-name discovery.
 	if prURL != "" {
-		inst.GitHubPRURL = prURL
+		prNumber := 0
 		if ref, parseErr := session.ParseGitHubURL(prURL); parseErr == nil && ref.PRNumber > 0 {
-			inst.GitHubPRNumber = ref.PRNumber
+			prNumber = ref.PRNumber
 		}
+		inst.SetGitHubPR(prURL, prNumber)
 		if err := s.storage.SaveInstances(s.allInstances()); err != nil {
 			log.Warn("RunOneShot: failed to persist PR URL", "session", inst.Title, "err", err)
 		} else {
@@ -3484,14 +3483,7 @@ func (s *SessionService) onAutonomousDriverComplete(instanceName string, outcome
 	sessionUUID := inst.UUID
 
 	// Clear autonomous_mode flag and set outcome on the instance so the badge updates.
-	inst.AutonomousMode = false
-	inst.AutonomousTurn = 0
-	inst.AutonomousMaxTurns = 0
-	if outcome.Done {
-		inst.AutonomousOutcome = "done"
-	} else {
-		inst.AutonomousOutcome = "stuck"
-	}
+	inst.SetAutonomousComplete(outcome.Done)
 	s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"autonomous_mode", "autonomous_outcome"}))
 
 	// Look up the backlog item linked to this session.
@@ -3938,7 +3930,7 @@ func (s *SessionService) ArchiveSession(
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
 	}
 	now := time.Now()
-	inst.ArchivedAt = &now
+	inst.SetArchivedAt(&now)
 	if err := s.storage.SaveInstances([]*session.Instance{inst}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save session: %w", err))
 	}
@@ -3958,7 +3950,7 @@ func (s *SessionService) UnarchiveSession(
 	if inst == nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
 	}
-	inst.ArchivedAt = nil
+	inst.SetArchivedAt(nil)
 	if err := s.storage.SaveInstances([]*session.Instance{inst}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save session: %w", err))
 	}
@@ -4126,7 +4118,7 @@ func (s *SessionService) UpdateSessionProgram(ctx context.Context, sessionID str
 	}
 
 	oldProgram := inst.Program
-	inst.Program = newProgram
+	inst.SetProgram(newProgram)
 
 	if (strings.Contains(oldProgram, "claude") && (strings.Contains(newProgram, "agy") || strings.Contains(newProgram, "antigravity"))) ||
 		((strings.Contains(oldProgram, "agy") || strings.Contains(oldProgram, "antigravity")) && strings.Contains(newProgram, "claude")) {

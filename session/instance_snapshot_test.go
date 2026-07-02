@@ -134,6 +134,76 @@ func TestSnapshotReflectsSetGitHubPRNumber(t *testing.T) {
 	}
 }
 
+// --- Story 5.1c: CreationProgress actor-routing regression ---
+
+// TestCreationProgressActorRouted verifies that SetCreationProgress routes through the
+// actor mailbox when a LiveInstance is running, preventing the data race between the
+// async-creation goroutine and any concurrent buildSnapshot call.
+func TestCreationProgressActorRouted(t *testing.T) {
+	inst := minimalInstance(t)
+	li := NewLiveInstance(inst)
+	defer li.Stop()
+
+	inst.SetCreationProgress("Starting session...")
+	// CreationProgress is not in InstanceSnapshot; read from the live field directly
+	// (this is safe here because SetCreationProgress completed before we read).
+	if inst.CreationProgress != "Starting session..." {
+		t.Fatalf("CreationProgress = %q, want %q", inst.CreationProgress, "Starting session...")
+	}
+
+	// Clear it and confirm.
+	inst.SetCreationProgress("")
+	if inst.CreationProgress != "" {
+		t.Fatalf("CreationProgress = %q after clear, want empty", inst.CreationProgress)
+	}
+}
+
+// --- Story 5.2c: Program-switch actor-routing regression ---
+
+// TestSetProgramActorRouted verifies that SetProgram routes through the actor and
+// the snapshot reflects the new program.  This is a regression guard for the fragile
+// program-switching path noted in the plan (recent git history: "fix(session): program
+// switching now saves correctly for all cases").
+func TestSetProgramActorRouted(t *testing.T) {
+	inst := minimalInstance(t)
+	li := NewLiveInstance(inst)
+	defer li.Stop()
+
+	inst.SetProgram("agy")
+	if inst.Program != "agy" {
+		t.Fatalf("inst.Program = %q, want %q", inst.Program, "agy")
+	}
+	snap := inst.Snapshot()
+	if snap.Program != "agy" {
+		t.Fatalf("Snapshot().Program = %q, want %q", snap.Program, "agy")
+	}
+}
+
+// TestSetAutonomousCompleteActorRouted verifies SetAutonomousComplete clears the mode
+// flag and sets the correct outcome through the actor.
+func TestSetAutonomousCompleteActorRouted(t *testing.T) {
+	inst := minimalInstance(t)
+	li := NewLiveInstance(inst)
+	defer li.Stop()
+
+	inst.AutonomousMode = true
+	inst.AutonomousTurn = 5
+	inst.snapshot.Store(buildSnapshot(inst))
+
+	inst.SetAutonomousComplete(true)
+
+	snap := inst.Snapshot()
+	if snap.AutonomousMode {
+		t.Fatal("Snapshot().AutonomousMode is true after SetAutonomousComplete, want false")
+	}
+	if snap.AutonomousTurn != 0 {
+		t.Fatalf("Snapshot().AutonomousTurn = %d, want 0", snap.AutonomousTurn)
+	}
+	if snap.AutonomousOutcome != "done" {
+		t.Fatalf("Snapshot().AutonomousOutcome = %q, want %q", snap.AutonomousOutcome, "done")
+	}
+}
+
 func TestSnapshotReflectsClearConversationState(t *testing.T) {
 	inst := minimalInstance(t)
 	inst.HistoryFilePath = "/some/path"
