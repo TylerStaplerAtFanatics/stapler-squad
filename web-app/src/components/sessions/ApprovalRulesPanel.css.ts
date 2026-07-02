@@ -892,7 +892,7 @@ export const configFileBadge = style({
   fontSize: 11,
   fontWeight: 500,
   background: "rgba(59, 130, 246, 0.12)",
-  color: "#60a5fa",
+  color: vars.color.primary,
   border: "1px solid rgba(59, 130, 246, 0.3)",
   whiteSpace: "nowrap",
 });
@@ -912,7 +912,7 @@ export const exportConfigButton = style({
   selectors: {
     "&:hover:not(:disabled)": {
       background: "rgba(59, 130, 246, 0.12)",
-      color: "#60a5fa",
+      color: vars.color.primary,
       borderColor: "rgba(59, 130, 246, 0.3)",
     },
     "&:disabled": {
