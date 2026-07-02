@@ -15,8 +15,11 @@ export CGO_ENABLED := 1
 
 # Version reported by `stapler-squad version`, injected via ldflags to match
 # GoReleaser's `-X main.version={{.Version}}`. Falls back to a dev marker
-# when building outside a git checkout (e.g. from a source tarball).
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
+# when building outside a git checkout (e.g. from a source tarball). Stripped
+# to a safe charset: git tag names may legally contain shell metacharacters
+# (e.g. `` ` `` or `$()`), and this value is later embedded in a
+# double-quoted shell argument, where those characters are NOT neutralized.
+VERSION := $(shell (git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev) | tr -cd 'A-Za-z0-9.+_-')
 LDFLAGS := -X main.version=$(VERSION)
 
 # File dependencies
@@ -266,11 +269,11 @@ build-tmux-embed: build-tmux ## Copy built tmux into the embed dir for go build 
 build-embedded: build-tmux-embed ## Build stapler-squad with tmux bundled inside the binary
 ifeq ($(UNAME_S),Darwin)
 	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/Info.plist" \
-		go build -tags embed_tmux -o stapler-squad .
+		go build -tags embed_tmux -ldflags "$(LDFLAGS)" -o stapler-squad .
 	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
 		(echo "ERROR: Info.plist was not embedded in embedded build." && exit 1)
 else
-	go build -tags embed_tmux -o stapler-squad .
+	go build -tags embed_tmux -ldflags "$(LDFLAGS)" -o stapler-squad .
 endif
 	@echo "✅ stapler-squad built with embedded tmux"
 
