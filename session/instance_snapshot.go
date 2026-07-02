@@ -119,7 +119,7 @@ type InstanceSnapshot struct {
 	AppendSystemPrompt  string
 	AllowedTools        string
 	PermissionMode      string
-	RateLimitAutoResume *bool  // copy of pointee — see buildSnapshot
+	RateLimitAutoResume *bool // copy of pointee — see buildSnapshot
 	PauseReason         string
 	WorkflowID          string
 	EnvVars             map[string]string // defensive deep copy — see buildSnapshot
@@ -189,9 +189,9 @@ func buildSnapshot(i *Instance) *InstanceSnapshot {
 			GitHubPRStatusTerminal: i.GitHubPRStatusTerminal,
 			LastPRStatusCheck:      i.LastPRStatusCheck,
 		},
-		Checkpoints:      append(CheckpointList(nil), i.Checkpoints...),
-		ActiveCheckpoint: i.ActiveCheckpoint,
-		ForkedFromID:     i.ForkedFromID,
+		Checkpoints:        append(CheckpointList(nil), i.Checkpoints...),
+		ActiveCheckpoint:   i.ActiveCheckpoint,
+		ForkedFromID:       i.ForkedFromID,
 		OneShot:            i.OneShot,
 		Hidden:             i.Hidden,
 		ProjectID:          i.ProjectID,
@@ -203,10 +203,10 @@ func buildSnapshot(i *Instance) *InstanceSnapshot {
 		PauseReason:        i.PauseReason,
 		WorkflowID:         i.WorkflowID,
 		CLIFlags:           i.CLIFlags,
-		ReviewState:  i.ReviewState,
-		InstanceType: i.InstanceType,
-		IsManaged:    i.IsManaged,
-		Artifacts:    i.Artifacts,
+		ReviewState:        i.ReviewState,
+		InstanceType:       i.InstanceType,
+		IsManaged:          i.IsManaged,
+		Artifacts:          i.Artifacts,
 	}
 
 	// Deep copy RateLimitAutoResume *bool

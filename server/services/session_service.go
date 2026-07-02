@@ -3371,7 +3371,6 @@ func (s *SessionService) AssignSessionsToProject(
 	return s.projectSvc.AssignSessionsToProject(ctx, req)
 }
 
-
 // GetTerminalSnapshot returns the last N lines of terminal output for a session.
 // Uses inst.Preview() for a read-only snapshot without requiring an active stream.
 func (s *SessionService) GetTerminalSnapshot(

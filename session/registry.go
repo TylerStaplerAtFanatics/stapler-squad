@@ -38,9 +38,9 @@ type registryEntry struct {
 // Its mutex guards map membership only — not per-field Instance state.
 // Construct with NewRegistry; the zero value is not usable.
 type Registry struct {
-	storage     *Storage
-	mu          sync.Mutex
-	entries     map[string]*registryEntry
+	storage *Storage
+	mu      sync.Mutex
+	entries map[string]*registryEntry
 	// onConstruct, if non-nil, is invoked exactly once per genuinely-new LiveInstance —
 	// i.e. only on the branch that installs a fresh entry into r.entries.
 	// NEVER invoked on a refcount++ of an already-live entry, NEVER on the losing side
