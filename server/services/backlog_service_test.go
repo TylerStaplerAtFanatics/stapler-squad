@@ -22,6 +22,7 @@ type fakeHeadlessPool struct {
 	mu       sync.Mutex
 	response string
 	err      error
+	delay    time.Duration // simulates a slow LLM call; see TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext
 	calls    []fakePoolCall
 }
 
@@ -30,10 +31,20 @@ type fakePoolCall struct {
 	workDir string
 }
 
-func (f *fakeHeadlessPool) CallBlockingWithOptions(_ context.Context, key headless.FeatureKey, _, _ string, opts headless.CallOptions) (string, error) {
+func (f *fakeHeadlessPool) CallBlockingWithOptions(ctx context.Context, key headless.FeatureKey, _, _ string, opts headless.CallOptions) (string, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, fakePoolCall{key: key, workDir: opts.WorkDir})
+	delay := f.delay
 	f.mu.Unlock()
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	return f.response, f.err
 }
 
@@ -371,6 +382,63 @@ func TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent(t *te
 	finalResp, err := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
 	require.NoError(t, err)
 	assert.Equal(t, "in_progress", finalResp.Msg.Item.Status)
+}
+
+// TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext is a regression test
+// for a live, 100%-reproducible bug found by manually observing a real triage
+// run in production (see project_plans/backlog-cross-platform-audit/gaps-and-risks.md
+// #1): TriggerTriage's cleanupCtx used to be created with a fixed timeout
+// BEFORE calling the headless LLM pool, not after. Real triage calls routinely
+// take 7-15 minutes (the prompt instructs 4 parallel research subagents), so
+// cleanupCtx's budget was always already expired by the time the post-call
+// persistence writes (triage result, plan_artifacts_path, idea->ready
+// transition) ran — every successful triage call would log "[TriggerTriage]
+// headless triage complete" while silently failing every single DB write that
+// was supposed to make the result visible, leaving the item stuck at "idea"
+// forever. This test simulates that exact shape (LLM call slower than the
+// cleanup budget) at test-friendly timescales.
+func TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext(t *testing.T) {
+	storage := createTestStorage(t)
+	// delay outlasts the cleanup timeout below — this is what the old code got
+	// wrong: a cleanupCtx created before this delay would already be expired by
+	// the time it's used afterward.
+	pool := &fakeHeadlessPool{response: validTriageJSON(), delay: 3 * time.Second}
+	svc := NewBacklogService(storage, nil, nil, nil)
+	svc.SetHeadlessPool(pool)
+	// Reduced but kept generous enough (2s) that the real SQLite writes below
+	// can't flake under CI load or a busy test machine — the bug being tested
+	// is about ORDERING (timeout starts before vs. after the slow call), not
+	// about needing a tiny timeout, so there's no reason to cut this closer to
+	// the wire. Set on this instance only — no shared global state, no risk to
+	// any other concurrently running test.
+	svc.SetTriageCleanupTimeout(2 * time.Second)
+
+	repoPath := t.TempDir()
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:      "slow triage item",
+		RepoPath:   repoPath,
+		SkipTriage: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	_, err = svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{ItemId: itemID}))
+	require.NoError(t, err)
+
+	var readyItem *sessionv1.BacklogItem
+	require.Eventually(t, func() bool {
+		getResp, getErr := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
+		if getErr != nil || getResp.Msg.Item.Status != "ready" {
+			return false
+		}
+		readyItem = getResp.Msg.Item
+		return true
+	}, 6*time.Second, 10*time.Millisecond,
+		"item must reach 'ready' even though the LLM call outlasted triageCleanupTimeout — "+
+			"with the pre-fix ordering this would time out here because every persistence "+
+			"write after the slow call would fail with context deadline exceeded")
+
+	require.NotEmpty(t, readyItem.PlanArtifactsPath, "plan_artifacts_path must be persisted, not silently dropped")
 }
 
 // ─── TriggerReReview ──────────────────────────────────────────────────────
