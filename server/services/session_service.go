@@ -1,8 +1,6 @@
 package services
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,7 +25,6 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/detection"
 	"github.com/tstapler/stapler-squad/session/ent"
-	entsession "github.com/tstapler/stapler-squad/session/ent/session"
 	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/namegen"
 	"github.com/tstapler/stapler-squad/session/prompts"
@@ -104,6 +101,15 @@ type SessionService struct {
 	// projectSvc handles Project CRUD RPCs.
 	projectSvc *ProjectService
 
+	// checkpointSvc handles CreateCheckpoint/ListCheckpoints/ClearConversationState RPCs.
+	checkpointSvc *CheckpointService
+
+	// featureFlagSvc handles GetFeatureFlags/UpdateFeatureFlag RPCs.
+	featureFlagSvc *FeatureFlagService
+
+	// terminalSvc handles GetTerminalSnapshot/WriteToSession RPCs.
+	terminalSvc *TerminalService
+
 	// promptStore persists prompt history for the "initial prompt" dropdown.
 	promptStore *prompts.PromptStore
 
@@ -115,9 +121,6 @@ type SessionService struct {
 	// When non-empty, passed to new sessions via InstanceOptions.MCPServerURL.
 	mcpServerURL string
 
-	// branchCache caches git branch lists per repo path. ADR-002.
-	branchCache sync.Map // map[string]branchCacheEntry
-
 	// errorRegistry persists deduplicated RPC errors to SQLite.
 	// May be nil when wired without an ent-backed storage (e.g. in tests).
 	errorRegistry *ErrorRegistry
@@ -125,11 +128,6 @@ type SessionService struct {
 	// backlogLifecycleListener is wired to each newly created session so that
 	// backlog item state transitions fire when the session exits.
 	backlogLifecycleListener *session.BacklogLifecycleListener
-
-	// featureControllers maps feature flag names to their runtime controllers.
-	// Wired via SetFeatureController. May be nil for features that only need
-	// config-file persistence (no in-process component to toggle).
-	featureControllers map[string]FeatureController
 
 	// capacityMonitor tracks rate limits and triggers transitions.
 	capacityMonitor *CapacityMonitor
@@ -181,6 +179,37 @@ type workflowMeta struct {
 type ScrollbackSequencer interface {
 	CurrentSequence(sessionID string) uint64
 }
+
+// Dependency-injection audit (ADR-001, Story 1.3):
+//
+// All Set* wiring methods on SessionService inject Phase 2 or Phase 3 dependencies —
+// none can be moved to constructor injection. Rationale by group:
+//
+//   Phase 2 (from server/dependencies.go after NewSessionService returns):
+//     SetErrorRegistry      — built from storage.GetEntClient() after storage is opened
+//     SetAnalyticsClient    — same ent client, pre-existing connection path
+//     SetNotificationStore  — built from config dir (lazy path resolution)
+//     SetConfigService      — thin wrapper, wired for test-overridability
+//     SetMCPServerURL       — env-var / config value, not available inside package
+//     SetBacklogLifecycleListener — depends on headless.Pool built after this service
+//     SetHistoryLinker      — depends on storage + ent client both resolved
+//     SetHeadlessPool       — constructed by BuildDependencies, not NewSessionService
+//
+//   Phase 3 (via warren.Set in BuildDependencies, after all Phase 2 deps):
+//     SetReviewQueuePoller   — circular: poller takes SessionService as param
+//     SetStatusManager       — built after reviewQueuePoller is available
+//     SetExternalDiscovery   — built after headless pool
+//     SetScrollbackManager   — built after storage is opened + log dir resolved
+//     SetMemoryCacheReader   — optional, provided by HibernationSweeper
+//     SetReactiveQueueManager — built after reviewQueuePoller + statusManager
+//     SetLifecycleContext    — application-level ctx not available at pkg init
+//     SetFeatureController   — one call per named flag (backlog), after backlog ctrl built
+//     SetWorkflowService     — WorkflowService depends on SessionService (circular)
+//     SetWorkflowRepository  — same cycle; repo available after workflowSvc constructed
+//     SetTokenStoreReader    — built after storage open, wired late by warren
+//
+// Conclusion: the two-param constructor (storage, eventBus) is the correct boundary.
+// All other deps are external to this package or have construction-order constraints.
 
 // NewSessionService creates a new SessionService with the given storage and event bus.
 // NOTE: Instances are NOT loaded here to prevent double-loading and initialization timing issues.
@@ -307,6 +336,9 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 		slashCommandSvc:   NewSlashCommandService(),
 		defaultsSvc:       NewDefaultsService(),
 		projectSvc:        NewProjectService(concStorage),
+		checkpointSvc:     NewCheckpointService(storage, eventBus),
+		featureFlagSvc:    NewFeatureFlagService(),
+		terminalSvc:       NewTerminalService(),
 		promptStore:       newPromptStore(),
 		capacityMonitor:   capacityMonitor,
 	}
@@ -319,6 +351,9 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 	// Wire the live-instance provider so ListClaudeHistory can populate
 	// session_status on history entries without a separate storage call.
 	svc.searchSvc.SetInstanceProvider(svc.allInstances)
+	// Wire CheckpointService's instance-load fallback to this service's own
+	// loadInstancesWithWiring so ClearConversationState gets properly-wired instances.
+	svc.checkpointSvc.SetLoadInstancesFn(svc.loadInstancesWithWiring)
 	return svc
 }
 
@@ -823,6 +858,11 @@ func (s *SessionService) SetReviewQueuePoller(poller *session.ReviewQueuePoller)
 	s.reviewQueueSvc.SetReviewQueuePoller(poller)
 	s.notificationSvc.SetReviewQueuePoller(poller)
 	s.utilitySvc.SetReviewQueuePoller(poller)
+	s.checkpointSvc.SetPoller(poller)
+	s.terminalSvc.SetPoller(poller)
+	if s.workflowSvc != nil {
+		s.workflowSvc.SetPoller(poller)
+	}
 }
 
 // SetMemoryCacheReader wires the HibernationSweeper so that ListSessions can
@@ -841,6 +881,8 @@ func (s *SessionService) SetStatusManager(mgr *session.InstanceStatusManager) {
 // SetExternalDiscovery sets the external session discovery for accessing mux-enabled sessions.
 func (s *SessionService) SetExternalDiscovery(discovery *session.ExternalSessionDiscovery) {
 	s.externalDiscovery = discovery
+	s.checkpointSvc.SetExternalDiscovery(discovery)
+	s.terminalSvc.SetExternalDiscovery(discovery)
 }
 
 // SetNotificationStore sets the notification history store for the notification history RPCs
@@ -861,13 +903,9 @@ func (s *SessionService) SetConfigService(svc *ConfigService) {
 }
 
 // SetFeatureController wires a runtime controller for the named feature flag.
-// When UpdateFeatureFlag is called for this name, the controller's Enable/Disable
-// methods are invoked in addition to persisting the flag to config.
+// Delegates to FeatureFlagService which owns the controller registry.
 func (s *SessionService) SetFeatureController(name string, c FeatureController) {
-	if s.featureControllers == nil {
-		s.featureControllers = make(map[string]FeatureController)
-	}
-	s.featureControllers[name] = c
+	s.featureFlagSvc.SetFeatureController(name, c)
 }
 
 // ListSessions returns all sessions with optional filtering.
@@ -2761,6 +2799,7 @@ func (s *SessionService) MergeDatabase(
 // SetScrollbackManager wires a scrollback sequence provider for checkpoint creation.
 func (s *SessionService) SetScrollbackManager(mgr ScrollbackSequencer) {
 	s.scrollbackMgr = mgr
+	s.checkpointSvc.SetScrollbackMgr(mgr)
 }
 
 // CreateCheckpoint captures the current state of a session as a named bookmark.
@@ -2768,35 +2807,7 @@ func (s *SessionService) CreateCheckpoint(
 	ctx context.Context,
 	req *connect.Request[sessionv1.CreateCheckpointRequest],
 ) (*connect.Response[sessionv1.CreateCheckpointResponse], error) {
-	if req.Msg.SessionId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
-	}
-	if req.Msg.Label == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("label is required"))
-	}
-
-	inst := s.findInstance(req.Msg.SessionId)
-	if inst == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
-	}
-
-	var scrollbackSeq uint64
-	if s.scrollbackMgr != nil {
-		scrollbackSeq = s.scrollbackMgr.CurrentSequence(inst.Title)
-	}
-
-	cp, err := inst.CreateCheckpoint(req.Msg.Label, scrollbackSeq)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
-	}
-
-	if err := s.storage.SaveInstances(s.allInstances()); err != nil {
-		log.Warn("CreateCheckpoint: failed to persist checkpoint", "session", inst.Title, "err", err)
-	}
-
-	return connect.NewResponse(&sessionv1.CreateCheckpointResponse{
-		Checkpoint: checkpointToProto(cp),
-	}), nil
+	return s.checkpointSvc.CreateCheckpoint(ctx, req)
 }
 
 // ListCheckpoints returns all checkpoints for the specified session.
@@ -2804,24 +2815,7 @@ func (s *SessionService) ListCheckpoints(
 	ctx context.Context,
 	req *connect.Request[sessionv1.ListCheckpointsRequest],
 ) (*connect.Response[sessionv1.ListCheckpointsResponse], error) {
-	if req.Msg.SessionId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
-	}
-
-	inst := s.findInstance(req.Msg.SessionId)
-	if inst == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
-	}
-
-	checkpoints := inst.GetCheckpoints()
-	protos := make([]*sessionv1.CheckpointProto, 0, len(checkpoints))
-	for i := range checkpoints {
-		protos = append(protos, checkpointToProto(&checkpoints[i]))
-	}
-
-	return connect.NewResponse(&sessionv1.ListCheckpointsResponse{
-		Checkpoints: protos,
-	}), nil
+	return s.checkpointSvc.ListCheckpoints(ctx, req)
 }
 
 // ForkSession creates a new independent session branched from a checkpoint on an existing session.
@@ -2897,40 +2891,7 @@ func (s *SessionService) ClearConversationState(
 	ctx context.Context,
 	req *connect.Request[sessionv1.ClearConversationStateRequest],
 ) (*connect.Response[sessionv1.ClearConversationStateResponse], error) {
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
-	}
-
-	instance := s.FindLiveInstance(req.Msg.Id)
-	if instance == nil {
-		instances, err := s.loadInstancesWithWiring()
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
-		}
-		for _, inst := range instances {
-			if inst.MatchesID(req.Msg.Id) {
-				instance = inst
-				break
-			}
-		}
-	}
-	if instance == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.Id))
-	}
-
-	instance.ClearConversationState()
-
-	if err := s.storage.SaveInstances([]*session.Instance{instance}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to persist cleared state: %w", err))
-	}
-
-	log.Info("cleared conversation state", "session", instance.Title)
-	s.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"claude_session"}))
-
-	return connect.NewResponse(&sessionv1.ClearConversationStateResponse{
-		Success: true,
-		Message: fmt.Sprintf("Conversation state cleared for session '%s'", instance.Title),
-	}), nil
+	return s.checkpointSvc.ClearConversationState(ctx, req)
 }
 
 // ListPathCompletions returns filesystem entries matching the given path prefix.
@@ -2956,127 +2917,14 @@ func (s *SessionService) ListWorktrees(
 	return s.pathCompletionSvc.ListWorktrees(ctx, req)
 }
 
-// branchCacheEntry holds a cached branch list for a repository path.
-type branchCacheEntry struct {
-	branches []string
-	cachedAt time.Time
-}
-
-const branchCacheTTL = 5 * time.Minute
-
 // ListBranches returns the git branches for a given repository path.
 // Results are cached per repo path with a 5-minute TTL. ADR-002.
+// Delegates to WorkspaceService (Story 1.4).
 func (s *SessionService) ListBranches(
 	ctx context.Context,
 	req *connect.Request[sessionv1.ListBranchesRequest],
 ) (*connect.Response[sessionv1.ListBranchesResponse], error) {
-	repoPath := req.Msg.GetRepoPath()
-	if repoPath == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_path is required"))
-	}
-
-	// Normalize and validate the path: must resolve within the user's home directory.
-	absPath, err := filepath.Abs(repoPath)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid repo_path: %w", err))
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("cannot determine home directory: %w", err))
-	}
-	if !strings.HasPrefix(absPath, homeDir+string(filepath.Separator)) && absPath != homeDir {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_path must be within the user home directory"))
-	}
-	if _, err := os.Stat(absPath); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_path does not exist: %w", err))
-	}
-
-	maxResults := int(req.Msg.GetMaxResults())
-	if maxResults <= 0 {
-		maxResults = 200
-	}
-	filter := req.Msg.GetFilter()
-
-	// Serve from cache if still fresh.
-	if entry, ok := s.branchCache.Load(absPath); ok {
-		cached := entry.(branchCacheEntry)
-		if time.Since(cached.cachedAt) < branchCacheTTL {
-			branches := filterBranches(cached.branches, filter, maxResults)
-			return connect.NewResponse(&sessionv1.ListBranchesResponse{
-				Branches:   branches,
-				TotalCount: int32(len(branches)),
-				Truncated:  false,
-			}), nil
-		}
-	}
-
-	// Run git for-each-ref with a 2-second timeout.
-	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	refSpec := "refs/heads"
-	if req.Msg.GetIncludeRemote() {
-		refSpec = "refs/"
-	}
-	cmd := safeexec.CommandContext(cmdCtx, "git", "-C", absPath, "for-each-ref", refSpec, "--format=%(refname:short)")
-
-	var out bytes.Buffer
-	cmd.Stdout = &out
-
-	start := time.Now()
-	runErr := cmd.Run()
-	latencyMs := time.Since(start).Milliseconds()
-	log.Info("[ListBranches] branch list", "latency_ms", latencyMs, "repo", absPath)
-
-	truncated := false
-	if runErr != nil {
-		if cmdCtx.Err() == context.DeadlineExceeded {
-			// Timeout: return whatever partial output was collected.
-			truncated = true
-		} else {
-			// git failed (not a git repo, etc.): return empty list, not an error.
-			log.Warn("[ListBranches] git for-each-ref failed", "repo", absPath, "err", runErr)
-			return connect.NewResponse(&sessionv1.ListBranchesResponse{
-				Branches:   []string{},
-				TotalCount: 0,
-				Truncated:  false,
-			}), nil
-		}
-	}
-
-	var all []string
-	scanner := bufio.NewScanner(&out)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" {
-			all = append(all, line)
-		}
-	}
-
-	// Cache the full unfiltered list.
-	s.branchCache.Store(absPath, branchCacheEntry{branches: all, cachedAt: time.Now()})
-
-	branches := filterBranches(all, filter, maxResults)
-	return connect.NewResponse(&sessionv1.ListBranchesResponse{
-		Branches:   branches,
-		TotalCount: int32(len(branches)),
-		Truncated:  truncated,
-	}), nil
-}
-
-// filterBranches applies a case-insensitive substring filter and caps results at maxResults.
-func filterBranches(all []string, filter string, maxResults int) []string {
-	lowerFilter := strings.ToLower(filter)
-	var result []string
-	for _, b := range all {
-		if filter == "" || strings.Contains(strings.ToLower(b), lowerFilter) {
-			result = append(result, b)
-			if len(result) >= maxResults {
-				break
-			}
-		}
-	}
-	return result
+	return s.workspaceSvc.ListBranches(ctx, req)
 }
 
 // findInstance finds an instance by title using the live in-memory poller.
@@ -3536,23 +3384,6 @@ func (s *SessionService) AssignSessionsToProject(
 	return s.projectSvc.AssignSessionsToProject(ctx, req)
 }
 
-// checkpointToProto converts a session.Checkpoint to a proto CheckpointProto.
-func checkpointToProto(cp *session.Checkpoint) *sessionv1.CheckpointProto {
-	if cp == nil {
-		return nil
-	}
-	return &sessionv1.CheckpointProto{
-		Id:             cp.ID,
-		SessionId:      cp.SessionID,
-		ParentId:       cp.ParentID,
-		Label:          cp.Label,
-		ScrollbackSeq:  cp.ScrollbackSeq,
-		ScrollbackPath: cp.ScrollbackPath,
-		ClaudeConvUuid: cp.ClaudeConvUUID,
-		GitCommitSha:   cp.GitCommitSHA,
-		Timestamp:      timestamppb.New(cp.Timestamp),
-	}
-}
 
 // GetTerminalSnapshot returns the last N lines of terminal output for a session.
 // Uses inst.Preview() for a read-only snapshot without requiring an active stream.
@@ -3560,44 +3391,7 @@ func (s *SessionService) GetTerminalSnapshot(
 	ctx context.Context,
 	req *connect.Request[sessionv1.GetTerminalSnapshotRequest],
 ) (*connect.Response[sessionv1.GetTerminalSnapshotResponse], error) {
-	if req.Msg.SessionId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
-	}
-
-	// Find the live instance via the poller (avoids loadInstancesWithWiring side effects)
-	var inst *session.Instance
-	if s.reviewQueuePoller != nil {
-		inst = s.reviewQueuePoller.FindInstance(req.Msg.SessionId)
-	}
-	if inst == nil && s.externalDiscovery != nil {
-		inst = s.externalDiscovery.GetSession(req.Msg.SessionId)
-	}
-	if inst == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
-	}
-
-	content, err := inst.Preview()
-	if err != nil {
-		// Non-fatal: return empty snapshot rather than error
-		log.Warn("[GetTerminalSnapshot] preview failed", "session", req.Msg.SessionId, "err", err)
-		content = ""
-	}
-
-	// Trim to last N lines
-	lastN := int(req.Msg.LastNLines)
-	if lastN <= 0 {
-		lastN = 20
-	}
-	lines := strings.Split(content, "\n")
-	if len(lines) > lastN {
-		lines = lines[len(lines)-lastN:]
-	}
-	content = strings.Join(lines, "\n")
-
-	return connect.NewResponse(&sessionv1.GetTerminalSnapshotResponse{
-		Content: content,
-		IsEmpty: strings.TrimSpace(content) == "",
-	}), nil
+	return s.terminalSvc.GetTerminalSnapshot(ctx, req)
 }
 
 // +api: session:log-client-events
@@ -3607,45 +3401,7 @@ func (s *SessionService) WriteToSession(
 	ctx context.Context,
 	req *connect.Request[sessionv1.WriteToSessionRequest],
 ) (*connect.Response[sessionv1.WriteToSessionResponse], error) {
-	if req.Msg.SessionId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
-	}
-	if req.Msg.Input == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("input is required"))
-	}
-
-	var inst *session.Instance
-	if s.reviewQueuePoller != nil {
-		inst = s.reviewQueuePoller.FindInstance(req.Msg.SessionId)
-	}
-	if inst == nil && s.externalDiscovery != nil {
-		inst = s.externalDiscovery.GetSession(req.Msg.SessionId)
-	}
-	if inst == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.SessionId))
-	}
-
-	text := req.Msg.Input
-	if req.Msg.PressEnter {
-		text += "\n"
-	}
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- inst.SendKeys(text) }()
-
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send keys failed: %w", err))
-		}
-	case <-timeoutCtx.Done():
-		return nil, connect.NewError(connect.CodeDeadlineExceeded, fmt.Errorf("timed out writing to session PTY"))
-	}
-
-	return connect.NewResponse(&sessionv1.WriteToSessionResponse{Success: true}), nil
+	return s.terminalSvc.WriteToSession(ctx, req)
 }
 
 // LogClientEvents receives batched browser console log entries from the web UI.
@@ -3967,51 +3723,13 @@ func (s *SessionService) AcknowledgeError(
 	return connect.NewResponse(&sessionv1.AcknowledgeErrorResponse{}), nil
 }
 
-// knownFeatureFlags is the authoritative list of feature flags exposed via the RPC API.
-var knownFeatureFlags = []struct {
-	name        string
-	description string
-}{
-	{
-		name:        "backlog",
-		description: "Backlog management with external sync sources and AI-driven triage",
-	},
-	{
-		name:        "browser-passthrough",
-		description: "Browser passthrough: stream Chrome/Chromium via CDP in the Browser tab",
-	},
-	{
-		name:        "backlog:conversation-view",
-		description: "Show JSONL conversation messages in the session monitor (default: terminal scrollback view)",
-	},
-}
-
 // +api: feature-flags:list
 // GetFeatureFlags returns all known feature flags and their current state.
 func (s *SessionService) GetFeatureFlags(
 	ctx context.Context,
 	req *connect.Request[sessionv1.GetFeatureFlagsRequest],
 ) (*connect.Response[sessionv1.GetFeatureFlagsResponse], error) {
-	cfg := config.LoadConfig()
-
-	flags := make([]*sessionv1.FeatureFlag, 0, len(knownFeatureFlags))
-	for _, kf := range knownFeatureFlags {
-		enabled := false
-		if cfg.FeatureFlags != nil {
-			enabled = cfg.FeatureFlags[kf.name]
-		}
-		// If a controller is wired, its live state is the source of truth.
-		if ctrl, ok := s.featureControllers[kf.name]; ok {
-			enabled = ctrl.IsEnabled()
-		}
-		flags = append(flags, &sessionv1.FeatureFlag{
-			Name:        kf.name,
-			Enabled:     enabled,
-			Description: kf.description,
-		})
-	}
-
-	return connect.NewResponse(&sessionv1.GetFeatureFlagsResponse{Flags: flags}), nil
+	return s.featureFlagSvc.GetFeatureFlags(ctx, req)
 }
 
 // +api: feature-flags:update
@@ -4020,60 +3738,7 @@ func (s *SessionService) UpdateFeatureFlag(
 	ctx context.Context,
 	req *connect.Request[sessionv1.UpdateFeatureFlagRequest],
 ) (*connect.Response[sessionv1.UpdateFeatureFlagResponse], error) {
-	name := req.Msg.GetName()
-	enabled := req.Msg.GetEnabled()
-
-	// Validate that the flag name is known.
-	known := false
-	var description string
-	for _, kf := range knownFeatureFlags {
-		if kf.name == name {
-			known = true
-			description = kf.description
-			break
-		}
-	}
-	if !known {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("unknown feature flag %q: valid flags are %v", name, func() []string {
-				names := make([]string, 0, len(knownFeatureFlags))
-				for _, kf := range knownFeatureFlags {
-					names = append(names, kf.name)
-				}
-				return names
-			}()))
-	}
-
-	// Persist to config. SetFeatureFlag handles its own map initialisation and
-	// calls SaveConfig atomically, avoiding a separate LoadConfig→modify→SaveConfig
-	// sequence that would race under concurrent UpdateFeatureFlag calls.
-	cfg := config.LoadConfig()
-	if err := cfg.SetFeatureFlag(name, enabled); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to persist feature flag: %w", err))
-	}
-
-	// Toggle the in-process controller if one is wired.
-	if ctrl, ok := s.featureControllers[name]; ok {
-		if enabled {
-			if err := ctrl.Enable(ctx); err != nil {
-				log.Warn("feature controller Enable failed", "feature", name, "err", err)
-			}
-		} else {
-			if err := ctrl.Disable(); err != nil {
-				log.Warn("feature controller Disable failed", "feature", name, "err", err)
-			}
-		}
-	}
-
-	log.Info("feature flag updated", "feature", name, "enabled", enabled)
-
-	return connect.NewResponse(&sessionv1.UpdateFeatureFlagResponse{
-		Flag: &sessionv1.FeatureFlag{
-			Name:        name,
-			Enabled:     enabled,
-			Description: description,
-		},
-	}), nil
+	return s.featureFlagSvc.UpdateFeatureFlag(ctx, req)
 }
 
 // SetWorkflowService injects the workflow sub-service using deferred setter injection.
@@ -4254,102 +3919,27 @@ func (s *SessionService) UnarchiveSession(
 }
 
 // +api: session:archive-workflow-sessions
-// ArchiveWorkflowSessions archives all non-active sessions for a given workflow.
-// Active, Creating, and Paused sessions are silently skipped.
+// ArchiveWorkflowSessions delegates to WorkflowService.
 func (s *SessionService) ArchiveWorkflowSessions(
 	ctx context.Context,
 	req *connect.Request[sessionv1.ArchiveWorkflowSessionsRequest],
 ) (*connect.Response[sessionv1.ArchiveWorkflowSessionsResponse], error) {
-	if req.Msg.WorkflowId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
+	if s.workflowSvc == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("workflow service not available"))
 	}
-
-	// Get the ent client via the concrete storage implementation.
-	concreteStorage, ok := s.storage.(*session.Storage)
-	if !ok || concreteStorage == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("bulk archive requires ent-backed storage"))
-	}
-	entClient := concreteStorage.GetEntClient()
-	if entClient == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("bulk archive requires ent client"))
-	}
-
-	// Query all non-active, non-archived sessions for this workflow.
-	// Status guard: use Go-layer DB values (Creating=0, Active=1, Paused=2), NOT proto wire values.
-	now := time.Now()
-	updated, err := entClient.Session.Update().
-		Where(
-			entsession.WorkflowID(req.Msg.WorkflowId),
-			entsession.ArchivedAtIsNil(),
-			entsession.StatusNotIn(int(session.Active), int(session.Creating), int(session.Paused)),
-		).
-		SetArchivedAt(now).
-		Save(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("bulk archive workflow sessions: %w", err))
-	}
-
-	// Update in-memory instances for any that are still in the poller.
-	if s.reviewQueuePoller != nil {
-		for _, inst := range s.reviewQueuePoller.GetInstances() {
-			if inst.WorkflowID == req.Msg.WorkflowId && inst.ArchivedAt == nil {
-				if !inst.IsActive() && !inst.IsCreating() && !inst.IsPaused() {
-					inst.ArchivedAt = &now
-				}
-			}
-		}
-	}
-
-	log.Info("[SessionService] ArchiveWorkflowSessions completed",
-		"workflow_id", req.Msg.WorkflowId, "archived_count", updated)
-
-	return connect.NewResponse(&sessionv1.ArchiveWorkflowSessionsResponse{
-		ArchivedCount: int32(updated),
-	}), nil
+	return s.workflowSvc.ArchiveWorkflowSessions(ctx, req)
 }
 
 // +api: session:delete-workflow-failed-sessions
-// DeleteWorkflowFailedSessions archives (soft-deletes) sessions that appear to have
-// failed — Stopped sessions with no meaningful terminal output for the given workflow.
+// DeleteWorkflowFailedSessions delegates to WorkflowService.
 func (s *SessionService) DeleteWorkflowFailedSessions(
 	ctx context.Context,
 	req *connect.Request[sessionv1.DeleteWorkflowFailedSessionsRequest],
 ) (*connect.Response[sessionv1.DeleteWorkflowFailedSessionsResponse], error) {
-	if req.Msg.WorkflowId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
+	if s.workflowSvc == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("workflow service not available"))
 	}
-
-	concreteStorage, ok := s.storage.(*session.Storage)
-	if !ok || concreteStorage == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("bulk delete requires ent-backed storage"))
-	}
-	entClient := concreteStorage.GetEntClient()
-	if entClient == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("bulk delete requires ent client"))
-	}
-
-	// "Failed" = Stopped sessions with no meaningful output.
-	// last_meaningful_output IS NULL indicates the session never produced useful work.
-	now := time.Now()
-	updated, err := entClient.Session.Update().
-		Where(
-			entsession.WorkflowID(req.Msg.WorkflowId),
-			entsession.StatusIn(int(session.Stopped)),
-			entsession.ArchivedAtIsNil(),
-			entsession.LastMeaningfulOutputIsNil(),
-		).
-		SetArchivedAt(now).
-		Save(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete workflow failed sessions: %w", err))
-	}
-
-	log.Info("[SessionService] DeleteWorkflowFailedSessions completed",
-		"workflow_id", req.Msg.WorkflowId, "archived_count", updated)
-
-	return connect.NewResponse(&sessionv1.DeleteWorkflowFailedSessionsResponse{
-		DeletedCount: int32(updated),
-	}), nil
+	return s.workflowSvc.DeleteWorkflowFailedSessions(ctx, req)
 }
 
 // maybeAutoArchive archives a workflow session that has just stopped.
