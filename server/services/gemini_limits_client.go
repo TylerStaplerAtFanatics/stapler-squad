@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
 type GeminiLimitsClient struct {

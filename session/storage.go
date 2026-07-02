@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -377,8 +378,11 @@ func (d InstanceData) MatchesID(id string) bool {
 	return d.Title == id || d.GetStableID() == id
 }
 
+// ErrInstanceDataNotFound is returned by FindInstanceDataByID when no match exists.
+var ErrInstanceDataNotFound = errors.New("instance data not found")
+
 // FindInstanceDataByID finds the first InstanceData whose stable ID or title matches id.
-// Returns (nil, nil) when not found so callers can distinguish "not found" from "error".
+// Returns ErrInstanceDataNotFound when no match exists.
 func (s *Storage) FindInstanceDataByID(id string) (*InstanceData, error) {
 	all, err := s.ListInstanceData()
 	if err != nil {
@@ -389,7 +393,7 @@ func (s *Storage) FindInstanceDataByID(id string) (*InstanceData, error) {
 			return &all[i], nil
 		}
 	}
-	return nil, nil
+	return nil, ErrInstanceDataNotFound
 }
 
 // ListInstanceIDs returns the stable ID (UUID if set, else Title) for every stored
