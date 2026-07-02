@@ -324,12 +324,17 @@ EOF
     sleep 0.5
 
     log_info "Starting updated service..."
-    if ! launchctl bootstrap "gui/$(id -u)" "$plist_file"; then
-        log_error "launchctl bootstrap failed — service may not start on login."
-        log_error "Try: launchctl bootstrap gui/$(id -u) $plist_file"
-        exit 1
+    if ! launchctl bootstrap "gui/$(id -u)" "$plist_file" 2>/dev/null; then
+        # bootstrap can fail with I/O error on some macOS versions; fall back to legacy load
+        if ! launchctl load "$plist_file" 2>/dev/null; then
+            log_error "launchctl bootstrap failed — service may not start on login."
+            log_error "Try: launchctl bootstrap gui/$(id -u) $plist_file"
+            exit 1
+        fi
+        log_success "Service started via launchctl load (bootstrap fallback)."
+    else
+        log_success "Service started via launchctl bootstrap."
     fi
-    log_success "Service started via launchctl bootstrap."
 
     echo ""
     log_info "Check status:  launchctl list | grep stapler-squad"
