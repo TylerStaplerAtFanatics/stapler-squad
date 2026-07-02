@@ -267,6 +267,31 @@ func TestGetConfigDir(t *testing.T) {
 	})
 
 	t.Run("uses test mode isolation for tests", func(t *testing.T) {
+		// GetConfigDir checks STAPLER_SQUAD_TEST_DIR (priority 1) and
+		// STAPLER_SQUAD_INSTANCE (priority 2) before falling through to test
+		// mode auto-detection (priority 3). Both can be set in the ambient
+		// environment this test process inherits (e.g. a stapler-squad
+		// session sets STAPLER_SQUAD_INSTANCE for its own tooling), which
+		// would otherwise short-circuit test mode detection and make this
+		// test order- and environment-dependent. Clear both explicitly so
+		// this test always exercises pure test mode auto-detection.
+		originalTestDir := os.Getenv("STAPLER_SQUAD_TEST_DIR")
+		originalInstance := os.Getenv("STAPLER_SQUAD_INSTANCE")
+		os.Unsetenv("STAPLER_SQUAD_TEST_DIR")
+		os.Unsetenv("STAPLER_SQUAD_INSTANCE")
+		defer func() {
+			if originalTestDir == "" {
+				os.Unsetenv("STAPLER_SQUAD_TEST_DIR")
+			} else {
+				os.Setenv("STAPLER_SQUAD_TEST_DIR", originalTestDir)
+			}
+			if originalInstance == "" {
+				os.Unsetenv("STAPLER_SQUAD_INSTANCE")
+			} else {
+				os.Setenv("STAPLER_SQUAD_INSTANCE", originalInstance)
+			}
+		}()
+
 		// This test itself triggers test mode auto-detection
 		configDir, err := GetConfigDir()
 

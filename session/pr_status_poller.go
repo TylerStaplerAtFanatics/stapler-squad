@@ -274,13 +274,14 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 
 	inst.stateMutex.RLock()
 	prNumber := inst.GitHubPRNumber
-	branch := inst.Branch
 	owner := inst.GitHubOwner
 	repo := inst.GitHubRepo
 	inst.stateMutex.RUnlock()
 
-	// Auto-discovery: find PR for branch when PR number not yet known
+	// Auto-discovery: find PR for branch when PR number not yet known.
+	// CurrentBranch() reads live from git for directory sessions (Branch field is empty).
 	if prNumber == 0 {
+		branch := inst.CurrentBranch()
 		if branch == "" {
 			return
 		}
