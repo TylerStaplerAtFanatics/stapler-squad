@@ -217,10 +217,10 @@ func (p *PRStatusPoller) checkAllSessions() {
 			continue // no GitHub info for this session
 		}
 
-		inst.stateMutex.RLock()
+		inst.mu.RLock()
 		isTerminal := inst.GitHubPRStatusTerminal
 		isFork := inst.GitHubIsFork
-		inst.stateMutex.RUnlock()
+		inst.mu.RUnlock()
 
 		if isTerminal {
 			continue // merged/closed; poller already marked it terminal
@@ -272,12 +272,12 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 	ctx, cancel := context.WithTimeout(p.ctx, p.config.CallTimeout)
 	defer cancel()
 
-	inst.stateMutex.RLock()
+	inst.mu.RLock()
 	prNumber := inst.GitHubPRNumber
 	branch := inst.Branch
 	owner := inst.GitHubOwner
 	repo := inst.GitHubRepo
-	inst.stateMutex.RUnlock()
+	inst.mu.RUnlock()
 
 	// Auto-discovery: find PR for branch when PR number not yet known
 	if prNumber == 0 {
@@ -298,9 +298,9 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 			return
 		}
 		// Persist discovered PR number and clear no-PR backoff.
-		inst.stateMutex.Lock()
+		inst.mu.Lock()
 		inst.GitHubPRNumber = prInfo.Number
-		inst.stateMutex.Unlock()
+		inst.mu.Unlock()
 		p.mu.Lock()
 		delete(p.noPRPollAfter, inst.Title)
 		p.mu.Unlock()
@@ -325,9 +325,9 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 
 	if !changed {
 		// 304 Not Modified — PR unchanged; just bump the check timestamp
-		inst.stateMutex.Lock()
+		inst.mu.Lock()
 		inst.LastPRStatusCheck = time.Now()
-		inst.stateMutex.Unlock()
+		inst.mu.Unlock()
 		return
 	}
 
@@ -381,9 +381,9 @@ func (p *PRStatusPoller) applyPRUpdate(inst *Instance, prInfo *github.PRInfo) {
 	}
 
 	// Check whether priority actually changed before notifying
-	inst.stateMutex.RLock()
+	inst.mu.RLock()
 	oldPriority := inst.GitHubPRPriority
-	inst.stateMutex.RUnlock()
+	inst.mu.RUnlock()
 
 	inst.UpdatePRStatus(state, priority, checkConclusion, approvedCount, changesReqCount, isDraft, terminal)
 

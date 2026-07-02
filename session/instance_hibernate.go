@@ -20,8 +20,8 @@ func (i *Instance) SetHibernateReason(reason string) {
 // The actual checkpoint write and process kill happen asynchronously via the
 // Active → Hibernated After hook (see state_machine.go).
 func (i *Instance) Hibernate(ctx context.Context) error {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	return i.transitionTo(ctx, Hibernated)
 }
 
@@ -91,8 +91,8 @@ func (i *Instance) scrollbackPath() string {
 // The actual process re-launch happens asynchronously via the
 // Hibernated → Active After hook (see state_machine.go).
 func (i *Instance) ResumeFromHibernation(ctx context.Context) error {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	return i.transitionTo(ctx, Active)
 }
 
@@ -106,9 +106,9 @@ func (i *Instance) resumeFromHibernation(ctx context.Context) {
 		log.Error("hibernation resume: failed to start session",
 			"session", i.Title, "err", err.Error())
 		// Roll back to Hibernated on failure
-		i.stateMutex.Lock()
+		i.mu.Lock()
 		i.loadStatus(Hibernated)
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		return
 	}
 	// Start the controller and session driver

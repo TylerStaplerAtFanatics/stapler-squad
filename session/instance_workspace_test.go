@@ -139,9 +139,9 @@ func TestSwitchWorkspace_GuardAllowsExtractionWhenIDMissing(t *testing.T) {
 }
 
 // TestSwitchWorkspace_DoesNotDeadlockOnStartCall is a regression test for a
-// reentrant-lock self-deadlock: SwitchWorkspace used to hold i.stateMutex.Lock()
+// reentrant-lock self-deadlock: SwitchWorkspace used to hold i.mu.Lock()
 // across its entire body, including its calls to i.Start(false). Start() itself
-// acquires i.stateMutex.Lock() (instance.go, in the Active-status transition near
+// acquires i.mu.Lock() (instance.go, in the Active-status transition near
 // the end of start()). sync.RWMutex/deadlock.RWMutex is not reentrant, so calling
 // Start() while still holding the lock deadlocks the calling goroutine forever.
 //

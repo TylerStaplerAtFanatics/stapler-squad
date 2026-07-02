@@ -284,12 +284,16 @@ type Instance struct {
 	// Claude Code session information for persistence and re-attachment
 	claudeSession *ClaudeSessionData
 
+	// claudeSessionMu protects claudeSession and claudeSessionIDSavedCallback.
+	// Separate from mu to avoid holding the instance write lock during persistence I/O.
+	claudeSessionMu sync.RWMutex
+
 	// Review queue integration for tracking sessions needing attention
 	reviewQueue *ReviewQueue
 
 	// ReviewState holds all review queue and terminal activity timestamps.
 	// Fields are embedded (promoted) so external code can still access inst.LastViewed etc.
-	// Protected by stateMutex.
+	// Protected by mu (via sendSyncErr / Snapshot).
 	ReviewState
 
 	// controllerManager owns the ClaudeController and InstanceStatusManager references.
@@ -328,8 +332,11 @@ type Instance struct {
 	// callers that read inst.Tags directly.
 	tagManager TagManager
 
-	// Mutex to protect concurrent access to instance state
-	stateMutex deadlock.RWMutex
+	// mu protects Instance's mutable data fields (Status, started, Tags,
+	// Checkpoints, ReviewState timestamps, GitHub PR fields, Artifacts, etc.).
+	// Use sendSyncErr / send for writes and Snapshot() for reads.
+	// Not reentrant: fn passed to sendSyncErr must not call sendSyncErr or Snapshot.
+	mu sync.RWMutex
 	// startMu prevents concurrent calls to start() from racing during session setup.
 	// Held for the full duration of start(); callers that lose the race return early.
 	startMu deadlock.Mutex
@@ -368,7 +375,7 @@ type Instance struct {
 	claudeSessionIDSavedCallback func()
 
 	// Artifacts holds structured artifacts extracted from the session's JSONL history.
-	// Populated asynchronously by ArtifactExtractor. Protected by stateMutex.
+	// Populated asynchronously by ArtifactExtractor. Protected by mu.
 	Artifacts *artifacts.SessionArtifactsBlob
 }
 
@@ -641,26 +648,26 @@ func (i *Instance) GetSessionGoal() *SessionGoalData {
 }
 
 // HasGitHubPR reports whether a GitHub PR has been associated with this session.
-// Safe for use from any goroutine; acquires stateMutex internally.
+// Safe for use from any goroutine.
 func (i *Instance) HasGitHubPR() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.GitHubPRNumber > 0
+	return i.Snapshot().GitHubPRNumber > 0
 }
 
 // SetArtifacts atomically updates the in-memory Artifacts cache.
 func (i *Instance) SetArtifacts(blob *artifacts.SessionArtifactsBlob) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
-	i.Artifacts = blob
+	i.sendSyncErr(func(s *instanceState) error { //nolint:errcheck
+		s.inst.Artifacts = blob
+		return nil
+	})
 }
 
 // SetGitHubPRNumber atomically updates the in-memory GitHubPRNumber field.
 // Call after a successful DB write so HasGitHubPR() reflects the update (M-3 fix).
 func (i *Instance) SetGitHubPRNumber(n int) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
-	i.GitHubPRNumber = n
+	i.sendSyncErr(func(s *instanceState) error { //nolint:errcheck
+		s.inst.GitHubPRNumber = n
+		return nil
+	})
 }
 
 // SetSessionGoalCached atomically updates the in-memory sessionGoal cache.
@@ -737,13 +744,13 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 	i.pm().SetOnExitCallback(func(reason string) {
 		log.Info("unexpected exit detected via control mode", "session", i.Title, "reason", reason)
 		log.ForSession(i.Title).Info("session exited unexpectedly", "reason", reason)
-		i.stateMutex.Lock()
+		i.mu.Lock()
 		if i.Status == Active {
 			if err := i.transitionTo(context.Background(), Stopped); err != nil {
 				log.Warn("exit callback transition failed", "session", i.Title, "err", err)
 			}
 		}
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		i.fireLifecycleEvent(EventExited, reason)
 	})
 
@@ -897,21 +904,20 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 		}
 	}
 
-	i.stateMutex.Lock()
+	i.mu.Lock()
 	// Only transition if not already Active (e.g., recovery/restart after KillSession
 	// preserves the Active status).
 	if i.Status != Active {
 		if err := i.transitionTo(context.Background(), Active); err != nil {
-			i.stateMutex.Unlock()
+			i.mu.Unlock()
 			setupErr = fmt.Errorf("failed to transition to Active: %w", err)
 			return setupErr
 		}
 	}
-	// started must be set while still holding stateMutex: every reader of this
-	// field (instance_tmux.go, instance_terminal.go, instance_workspace.go, etc.)
-	// takes stateMutex first, so writing it after Unlock() is a data race.
+	// started must be set while still holding mu so readers via Snapshot() observe
+	// a consistent Started+Status pair.
 	i.started = true
-	i.stateMutex.Unlock()
+	i.mu.Unlock()
 	i.fireLifecycleEvent(EventStarted, "")
 
 	// Phase 2: Start x11vnc and window tracker now that the tmux session is live.
@@ -1036,12 +1042,12 @@ func (i *Instance) Pause() error {
 		return err
 	}
 
-	i.stateMutex.Lock()
+	i.mu.Lock()
 	if err := i.transitionTo(context.Background(), Paused); err != nil {
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		return fmt.Errorf("failed to transition to Paused: %w", err)
 	}
-	i.stateMutex.Unlock()
+	i.mu.Unlock()
 	log.ForSession(i.Title).Info("session paused")
 	_ = clipboard.WriteAll(i.gitManager.GetBranchName())
 	return nil
@@ -1146,12 +1152,12 @@ func (i *Instance) Resume() error {
 		}
 	}
 
-	i.stateMutex.Lock()
+	i.mu.Lock()
 	if err := i.transitionTo(context.Background(), Active); err != nil {
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		return fmt.Errorf("failed to transition to Active on resume: %w", err)
 	}
-	i.stateMutex.Unlock()
+	i.mu.Unlock()
 	log.ForSession(i.Title).Info("session resumed")
 
 	// Start ClaudeController for idle detection and automation
@@ -1280,7 +1286,7 @@ func (i *Instance) Restart(preserveOutput bool) error {
 
 	// For paused sessions, transition to Active now that the new tmux session is live.
 	// For already-active sessions, preserve the existing status.
-	i.stateMutex.Lock()
+	i.mu.Lock()
 	if waspaused {
 		if err := i.transitionTo(context.Background(), Active); err != nil {
 			log.Warn("restart: failed to transition from paused to active", "session", i.Title, "err", err)
@@ -1289,7 +1295,7 @@ func (i *Instance) Restart(preserveOutput bool) error {
 		i.started = true
 	}
 	i.UpdatedAt = time.Now()
-	i.stateMutex.Unlock()
+	i.mu.Unlock()
 
 	log.Info("successfully restarted session", "session", i.Title)
 	return nil

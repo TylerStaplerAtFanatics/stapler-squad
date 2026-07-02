@@ -82,7 +82,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 		i.tryExtractConversationUUID()
 	}
 
-	i.stateMutex.Lock()
+	i.mu.Lock()
 	// unlocked tracks whether the lock has already been released early (see below).
 	// Start() acquires stateMutex itself during its Active-status transition, so it
 	// must never be called while this function still holds the lock - sync.RWMutex/deadlock.RWMutex is not
@@ -93,7 +93,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 	unlock := func() {
 		if !unlocked {
 			unlocked = true
-			i.stateMutex.Unlock()
+			i.mu.Unlock()
 		}
 	}
 	defer unlock()

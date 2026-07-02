@@ -294,8 +294,8 @@ func (i *Instance) TmuxAlive() bool {
 
 // GetPTYReader returns the PTY file handle for the tmux session.
 func (i *Instance) GetPTYReader() (*os.File, error) {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 
 	if !i.started {
 		return nil, fmt.Errorf("session not started")
@@ -306,8 +306,8 @@ func (i *Instance) GetPTYReader() (*os.File, error) {
 // WriteToPTY writes data to the PTY, sending input to the terminal session.
 // This is used for forwarding client input to the tmux session.
 func (i *Instance) WriteToPTY(data []byte) (int, error) {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 
 	if !i.started {
 		return 0, fmt.Errorf("session not started")
@@ -318,8 +318,8 @@ func (i *Instance) WriteToPTY(data []byte) (int, error) {
 // ResizePTY resizes the terminal dimensions.
 // This is used when clients resize their terminal windows.
 func (i *Instance) ResizePTY(cols, rows int) error {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 
 	if !i.started {
 		return fmt.Errorf("session not started")
@@ -334,8 +334,8 @@ func (i *Instance) ResizePTY(cols, rows int) error {
 // This is a simple wrapper around TmuxSession.CapturePaneContent() for compatibility
 // with the terminal WebSocket handlers.
 func (i *Instance) CapturePaneContent() (string, error) {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 
 	if !i.started || i.Status == Paused {
 		return "", fmt.Errorf("session not started or paused")
@@ -346,8 +346,8 @@ func (i *Instance) CapturePaneContent() (string, error) {
 // CapturePaneContentRaw captures pane content with ANSI codes preserved (no line joining).
 // Essential for hybrid streaming where cursor positioning codes must be preserved.
 func (i *Instance) CapturePaneContentRaw() (string, error) {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 
 	if !i.started || i.Status == Paused {
 		return "", fmt.Errorf("session not started or paused")
@@ -359,8 +359,8 @@ func (i *Instance) CapturePaneContentRaw() (string, error) {
 // GetCurrentPaneContent captures the current visible tmux pane content.
 // Delegates to processManager.CaptureViewport.
 func (i *Instance) GetCurrentPaneContent(lines int) (string, error) {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	content, err := i.pm().CaptureViewport(lines)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture current pane content: %w", err)
@@ -371,16 +371,16 @@ func (i *Instance) GetCurrentPaneContent(lines int) (string, error) {
 // GetPaneCursorPosition gets the current cursor position in the tmux pane.
 // Returns cursor X (column) and Y (row) coordinates, both 0-based.
 func (i *Instance) GetPaneCursorPosition() (x, y int, err error) {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return i.pm().GetCursorPosition()
 }
 
 // GetPaneDimensions gets the current dimensions of the tmux pane.
 // Returns width (columns) and height (rows).
 func (i *Instance) GetPaneDimensions() (width, height int, err error) {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return i.pm().GetPaneDimensions()
 }
 
@@ -389,8 +389,8 @@ func (i *Instance) GetPaneDimensions() (width, height int, err error) {
 // startLine and endLine follow tmux conventions: negative numbers go back from current position,
 // use "-" for the start/end of history.
 func (i *Instance) GetScrollbackHistory(startLine, endLine string) (string, error) {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return i.pm().CapturePaneContentWithOptions(startLine, endLine)
 }
 
@@ -405,8 +405,8 @@ func (i *Instance) SendPrompt(prompt string) error {
 // GetTmuxSession returns the underlying tmux session for direct access.
 // Returns nil if the session hasn't been started yet or if the backend is not tmux.
 func (i *Instance) GetTmuxSession() *tmux.TmuxSession {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	tb, ok := i.processManager.(*TmuxBackend)
 	if !ok {
 		return nil

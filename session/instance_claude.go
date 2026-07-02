@@ -251,24 +251,24 @@ func (i *Instance) findAndAttachToProjectSession(sessionManager *ClaudeSessionMa
 // GetClaudeSession returns the Claude session data for this instance.
 // Thread-safe: acquires stateMutex read lock.
 func (i *Instance) GetClaudeSession() *ClaudeSessionData {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.claudeSessionMu.RLock()
+	defer i.claudeSessionMu.RUnlock()
 	return i.claudeSession
 }
 
 // SetClaudeSession sets the Claude session data for this instance.
 // Thread-safe: acquires stateMutex write lock.
 func (i *Instance) SetClaudeSession(sessionData *ClaudeSessionData) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.claudeSessionMu.Lock()
+	defer i.claudeSessionMu.Unlock()
 	i.claudeSession = sessionData
 }
 
 // HasClaudeSession returns true if this instance has Claude session data.
 // Thread-safe: acquires stateMutex read lock.
 func (i *Instance) HasClaudeSession() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.claudeSessionMu.RLock()
+	defer i.claudeSessionMu.RUnlock()
 	return i.claudeSession != nil && i.claudeSession.ConversationUUID != ""
 }
 
@@ -276,8 +276,8 @@ func (i *Instance) HasClaudeSession() bool {
 // file path so that the next Resume starts a fresh conversation rather than
 // attempting --resume with a potentially stale or path-mismatched UUID.
 func (i *Instance) ClearConversationState() {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.claudeSessionMu.Lock()
+	defer i.claudeSessionMu.Unlock()
 	if i.claudeSession != nil {
 		i.claudeSession.ConversationUUID = ""
 	}
@@ -354,8 +354,8 @@ func (i *Instance) tryExtractConversationUUID() {
 // GetConversationUUID returns the Claude conversation UUID, or "" if not linked.
 // Thread-safe: acquires stateMutex read lock.
 func (i *Instance) GetConversationUUID() string {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.claudeSessionMu.RLock()
+	defer i.claudeSessionMu.RUnlock()
 	if i.claudeSession == nil {
 		return ""
 	}
@@ -365,8 +365,8 @@ func (i *Instance) GetConversationUUID() string {
 // GetClaudeConversationUUID returns the stored Claude conversation UUID, empty if none.
 // Thread-safe: acquires stateMutex read lock.
 func (i *Instance) GetClaudeConversationUUID() string {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.claudeSessionMu.RLock()
+	defer i.claudeSessionMu.RUnlock()
 	if i.claudeSession == nil {
 		return ""
 	}
@@ -416,17 +416,17 @@ func (i *Instance) RunWithResume(ctx context.Context, message string) (string, e
 // in subsequent --resume flags. Fires the claudeSessionIDSavedCallback if set.
 // No-op (including callback) if uuid is unchanged.
 func (i *Instance) SetClaudeConversationUUID(uuid string) {
-	i.stateMutex.Lock()
+	i.claudeSessionMu.Lock()
 	if i.claudeSession == nil {
 		i.claudeSession = &ClaudeSessionData{}
 	}
 	if i.claudeSession.ConversationUUID == uuid {
-		i.stateMutex.Unlock()
+		i.claudeSessionMu.Unlock()
 		return // no change, skip callback
 	}
 	i.claudeSession.ConversationUUID = uuid
 	cb := i.claudeSessionIDSavedCallback
-	i.stateMutex.Unlock()
+	i.claudeSessionMu.Unlock()
 	if cb != nil {
 		cb()
 	}
@@ -436,8 +436,8 @@ func (i *Instance) SetClaudeConversationUUID(uuid string) {
 // SetClaudeConversationUUID is called. Used by the service layer to trigger
 // a storage save when the session_id is discovered.
 func (i *Instance) SetClaudeSessionIDSavedCallback(fn func()) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.claudeSessionMu.Lock()
+	defer i.claudeSessionMu.Unlock()
 	i.claudeSessionIDSavedCallback = fn
 }
 
@@ -445,8 +445,8 @@ func (i *Instance) SetClaudeSessionIDSavedCallback(fn func()) {
 // Thread-safe: acquires stateMutex write lock.
 // No-op if the UUID is already set to the same value.
 func (i *Instance) SetHistoryInfo(conversationUUID, historyFilePath string) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.claudeSessionMu.Lock()
+	defer i.claudeSessionMu.Unlock()
 
 	currentUUID := ""
 	if i.claudeSession != nil {

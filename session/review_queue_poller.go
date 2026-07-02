@@ -439,14 +439,14 @@ func (rqp *ReviewQueuePoller) reconcileSessions() {
 			// Active but tmux session gone — mark Stopped.
 			if !liveSessions[sessionName] {
 				log.Warn("reconcileSessions: managed session not found in live sessions, transitioning to Stopped", "session", inst.Title, "tmux", sessionName)
-				inst.stateMutex.Lock()
+				inst.mu.Lock()
 				if inst.Status == Active {
 					if err := inst.transitionTo(context.Background(), Stopped); err != nil {
 						log.Warn("reconcileSessions: transition to Stopped failed, using loadStatus", "session", inst.Title, "err", err)
 						inst.loadStatus(Stopped)
 					}
 				}
-				inst.stateMutex.Unlock()
+				inst.mu.Unlock()
 				rqp.queue.Remove(inst.Title)
 				inst.fireLifecycleEvent(EventExited, "reconcile-session-missing")
 			}
@@ -454,13 +454,13 @@ func (rqp *ReviewQueuePoller) reconcileSessions() {
 			// Stopped but tmux session is alive — revive to Active.
 			if liveSessions[sessionName] {
 				log.Info("reconcileSessions: stopped session found alive, reviving to Active", "session", inst.Title, "tmux", sessionName)
-				inst.stateMutex.Lock()
+				inst.mu.Lock()
 				if inst.Status == Stopped {
 					if err := inst.transitionTo(context.Background(), Active); err != nil {
 						log.Warn("reconcileSessions: revival to Active failed", "session", inst.Title, "err", err)
 					}
 				}
-				inst.stateMutex.Unlock()
+				inst.mu.Unlock()
 				inst.fireLifecycleEvent(EventStarted, "reconcile-session-revived")
 			}
 		}

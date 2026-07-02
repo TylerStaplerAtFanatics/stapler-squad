@@ -72,8 +72,8 @@ func (i *Instance) Rename(newTitle string) error {
 	}
 
 	// Use mutex for thread safety
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 
 	// Update the title
 	oldTitle := i.Title
@@ -170,8 +170,8 @@ func (i *Instance) CaptureCurrentState() error {
 	if path == "" {
 		return nil
 	}
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.WorkingDir = path
 	return nil
 }
@@ -245,8 +245,8 @@ func (i *Instance) IsGitHubSession() bool { return i.GitHub().IsGitHubSession() 
 // UpdatePRStatus atomically updates the PR status fields on this instance.
 // Called by PRStatusPoller on each successful fetch.
 func (i *Instance) UpdatePRStatus(state, priority, checkConclusion string, approvedCount, changesReqCount int, isDraft, terminal bool) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.GitHubPRState = state
 	i.GitHubPRPriority = priority
 	i.GitHubPRIsDraft = isDraft
