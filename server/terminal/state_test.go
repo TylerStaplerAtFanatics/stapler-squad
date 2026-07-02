@@ -452,6 +452,12 @@ func TestStateGenerator_StripANSIBytes(t *testing.T) {
 			input:    "\x1b[38;5;208mOrange\x1b[0m",
 			expected: "Orange",
 		},
+		{
+			// OSC sequence with a letter in the payload before its BEL
+			// terminator must not be split mid-payload.
+			input:    "\x1b]0;my title\x07Hello",
+			expected: "Hello",
+		},
 	}
 
 	for i, tt := range tests {
@@ -596,6 +602,18 @@ func TestStateGenerator_SanitizeUTF8Bytes(t *testing.T) {
 			input:    []byte("Text\x07Bell\x08Backspace"),
 			expected: "Text\x07Bell\x08Backspace",
 			desc:     "Bell and backspace characters should be preserved",
+		},
+		{
+			name:     "osc_title_with_letter_in_payload",
+			input:    []byte("\x1b]0;my title\x07Hello"),
+			expected: "\x1b]0;my title\x07Hello",
+			desc:     "OSC title sequence must be preserved intact even though its payload contains a letter before the BEL terminator",
+		},
+		{
+			name:     "osc_hyperlink_terminated_by_st",
+			input:    []byte("\x1b]8;;https://example.com\x1b\\Link\x1b]8;;\x1b\\"),
+			expected: "\x1b]8;;https://example.com\x1b\\Link\x1b]8;;\x1b\\",
+			desc:     "OSC 8 hyperlink sequences terminated by ST (ESC \\\\) must be preserved intact",
 		},
 	}
 
