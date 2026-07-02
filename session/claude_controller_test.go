@@ -591,11 +591,18 @@ func TestHashString_EmptyString(t *testing.T) {
 // mockInstance is a minimal InstanceContext that returns a controllable Preview.
 type mockInstance struct {
 	title      string
+	stableID   string
 	preview    string
 	previewErr error
 }
 
-func (m *mockInstance) GetTitle() string                    { return m.title }
+func (m *mockInstance) GetTitle() string { return m.title }
+func (m *mockInstance) GetStableID() string {
+	if m.stableID != "" {
+		return m.stableID
+	}
+	return m.title
+}
 func (m *mockInstance) GetPTYReader() (*os.File, error)     { return nil, fmt.Errorf("no PTY in mock") }
 func (m *mockInstance) Preview() (string, error)            { return m.preview, m.previewErr }
 func (m *mockInstance) LastMeaningfulOutputTime() time.Time { return time.Time{} }

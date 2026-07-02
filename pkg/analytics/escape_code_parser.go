@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -53,11 +54,14 @@ type EscapeCodeParser struct {
 	captureLevel      string // "full", "summary", "off"
 	redactOSCPayloads bool
 	samplingRate      float64
-	chunkSeqNum       int64 // incremented per Parse call (Stage 1)
-	stage2ChunkSeqNum int64 // incremented per ParseStage2 call (Stage 2, independent counter)
+	chunkSeqNum       int64 // incremented per Parse call (Stage 1 goroutine only)
+	stage2ChunkSeqNum int64 // incremented per ParseStage2 call (Stage 2 goroutine only)
 	correlator        *MangleCorrelator
-	totalSequences    int64 // total escape sequences emitted
-	totalMangled      int64 // total sequences flagged as mangled
+	// totalSequences/totalMangled are written from both the Stage 1 (PTY read) and
+	// Stage 2 (WebSocket output) goroutines via emitEventWithStageAndSeq, so they
+	// must be atomic rather than plain int64.
+	totalSequences atomic.Int64 // total escape sequences emitted
+	totalMangled   atomic.Int64 // total sequences flagged as mangled
 }
 
 // ParserStats holds lifetime counters for a parser session.
@@ -70,8 +74,8 @@ type ParserStats struct {
 // GetStats returns lifetime counters for this parser.
 func (p *EscapeCodeParser) GetStats() ParserStats {
 	return ParserStats{
-		TotalSequences: p.totalSequences,
-		TotalMangled:   p.totalMangled,
+		TotalSequences: p.totalSequences.Load(),
+		TotalMangled:   p.totalMangled.Load(),
 	}
 }
 
@@ -93,9 +97,29 @@ func (p *EscapeCodeParser) SetEventWriter(w EscapeEventWriter, captureLevel stri
 	p.samplingRate = samplingRate
 }
 
+// SetSessionID overrides the session identifier recorded on emitted events.
+// Used to switch from the tmux session name (used at construction time) to
+// the stable session UUID once it is known, so escape_event rows can be
+// correlated with the same session identifier the rest of the app uses.
+// Must be called before the parser is used from a streaming goroutine (i.e.
+// before ResponseStream.Start) — sessionID is read without synchronization.
+func (p *EscapeCodeParser) SetSessionID(id string) {
+	p.sessionID = id
+}
+
 // SetCorrelator attaches a MangleCorrelator to this parser for Stage 1/2 mangle detection.
 func (p *EscapeCodeParser) SetCorrelator(c *MangleCorrelator) {
 	p.correlator = c
+}
+
+// StartCorrelatorEviction starts the attached correlator's background eviction
+// loop, tied to ctx's lifetime. No-op if no correlator or writer is configured
+// (e.g. capture_level=off).
+func (p *EscapeCodeParser) StartCorrelatorEviction(ctx context.Context) {
+	if p.correlator == nil || p.writer == nil {
+		return
+	}
+	go p.correlator.StartEviction(ctx, p.writer)
 }
 
 // SetEnabled enables or disables escape code parsing
@@ -224,14 +248,23 @@ func (p *EscapeCodeParser) emitEventWithStageAndSeq(code ParsedEscapeCode, sessi
 		}
 	}
 
-	// Record Stage 1 observation for mangle correlation
+	// Mangle correlation: Stage 1 observations are recorded for later comparison;
+	// Stage 2 observations are checked against the matching Stage 1 record (if any).
+	// A record with no payload hash (redacted OSC payloads) can't be correlated.
 	if p.correlator != nil && record.PayloadHash != "" {
-		p.correlator.RecordStage1(record.SessionID, record.SessionSeq, record.PayloadHash, record.ByteLen)
+		switch stage {
+		case StagePTYRead:
+			p.correlator.RecordStage1(record.SessionID, record.SessionSeq, record.PayloadHash, record.ByteLen)
+		case StageTransport:
+			mangled, mangleType := p.correlator.CheckStage2(record.SessionID, record.SessionSeq, record.PayloadHash, record.ByteLen)
+			record.Mangled = mangled
+			record.MangleType = mangleType
+		}
 	}
 
-	p.totalSequences++
+	p.totalSequences.Add(1)
 	if record.Mangled {
-		p.totalMangled++
+		p.totalMangled.Add(1)
 	}
 
 	p.writer.WriteEscapeEvent(context.Background(), record)
