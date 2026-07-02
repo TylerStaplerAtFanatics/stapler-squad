@@ -178,9 +178,34 @@ type GoGitVCSReader struct {
 	diffStatSF singleflight.Group //nolint:exhaustruct
 	// hasUncommittedSF deduplicates concurrent HasUncommitted calls for the same path.
 	hasUncommittedSF singleflight.Group //nolint:exhaustruct
+	// commitMessagesSF deduplicates concurrent CommitMessages calls for the same key.
+	commitMessagesSF singleflight.Group //nolint:exhaustruct
 }
 
 var _ VCSReader = (*GoGitVCSReader)(nil)
+
+// sfDo calls sf.Do(key, fn) and catches any panic fn produces, returning it
+// as an error. The result is type-asserted to T; callers must ensure fn only
+// returns a non-nil value of type T when err is nil.
+func sfDo[T any](sf *singleflight.Group, key string, fn func() (T, error)) (T, error) {
+	val, err, _ := sf.Do(key, func() (v any, doErr error) {
+		defer func() {
+			if r := recover(); r != nil {
+				doErr = fmt.Errorf("go-git panic: %v", r)
+			}
+		}()
+		result, fnErr := fn()
+		if fnErr != nil {
+			return result, fnErr
+		}
+		return result, nil
+	})
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return val.(T), nil
+}
 
 func (g *GoGitVCSReader) ListWorktrees(repoPath string) ([]WorktreeInfo, error) {
 	repo, err := g.openWorktree(repoPath)
@@ -318,13 +343,13 @@ func (g *GoGitVCSReader) hasUncommittedGoGitPhase(entry *cachedRepo, worktreePat
 		// loads only tree objects, which are orders of magnitude smaller.
 		headHashes := make(map[string]plumbing.Hash, len(headTree.Entries))
 		tw := object.NewTreeWalker(headTree, true, nil)
+		defer tw.Close()
 		for {
 			name, te, twErr := tw.Next()
 			if errors.Is(twErr, io.EOF) {
 				break
 			}
 			if twErr != nil {
-				tw.Close()
 				return nil, false, false, fmt.Errorf("walk head tree: %w", twErr)
 			}
 			if te.Mode == filemode.Dir {
@@ -332,7 +357,6 @@ func (g *GoGitVCSReader) hasUncommittedGoGitPhase(entry *cachedRepo, worktreePat
 			}
 			headHashes[name] = te.Hash
 		}
-		tw.Close()
 
 		indexNames := make(map[string]bool, len(idx.Entries))
 		for _, idxEntry := range idx.Entries {
@@ -381,14 +405,7 @@ func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
 		}
 	}
 
-	val, sfErr, _ := g.hasUncommittedSF.Do(worktreePath, func() (val any, doErr error) {
-		// Named returns required: recover defer sets doErr as the function's return value.
-		defer func() {
-			if r := recover(); r != nil {
-				doErr = fmt.Errorf("go-git panic in HasUncommitted: %v", r)
-			}
-		}()
-
+	result, sfErr := sfDo(&g.hasUncommittedSF, worktreePath, func() (bool, error) {
 		entry, err := g.openRepoEntry(worktreePath)
 		if err != nil {
 			return false, fmt.Errorf("open repo %s: %w", worktreePath, err)
@@ -407,55 +424,55 @@ func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
 		}
 
 		// Phase 2: OS stat walk — entry.mu is NOT held here (released by hasUncommittedGoGitPhase).
-		indexedMap := make(map[string]bool, len(tracked))
+		indexedMap := make(map[string]struct{}, len(tracked))
 		for _, tf := range tracked {
-			indexedMap[tf.name] = true
+			indexedMap[tf.name] = struct{}{}
 			info, serr := os.Lstat(filepath.Join(worktreePath, tf.name))
 			if serr != nil {
 				if os.IsNotExist(serr) {
-					result := true // tracked file deleted
+					r := true // tracked file deleted
 					g.hasUncommittedCache.Store(worktreePath, hasUncommittedEntry{
-						result: result, expiry: time.Now().Add(diffStatCacheTTL),
+						result: r, expiry: time.Now().Add(diffStatCacheTTL),
 					})
-					return result, nil
+					return r, nil
 				}
 				continue
 			}
 			if info.Size() != int64(tf.size) ||
 				!info.ModTime().Truncate(time.Second).Equal(tf.modifiedAt.Truncate(time.Second)) {
-				result := true
+				r := true
 				g.hasUncommittedCache.Store(worktreePath, hasUncommittedEntry{
-					result: result, expiry: time.Now().Add(diffStatCacheTTL),
+					result: r, expiry: time.Now().Add(diffStatCacheTTL),
 				})
-				return result, nil
+				return r, nil
 			}
 		}
 
 		// Phase 3: untracked files walk — no lock held
-		result, err := hasUntrackedFiles(worktreePath, indexedMap)
+		r, err := hasUntrackedFiles(worktreePath, indexedMap)
 		if err != nil {
 			return false, err
 		}
 		g.hasUncommittedCache.Store(worktreePath, hasUncommittedEntry{
-			result: result, expiry: time.Now().Add(diffStatCacheTTL),
+			result: r, expiry: time.Now().Add(diffStatCacheTTL),
 		})
-		return result, nil
+		return r, nil
 	})
 	if sfErr != nil {
 		return false, sfErr
 	}
-	return val.(bool), nil
+	return result, nil
 }
 
 // hasUntrackedFiles reports whether any file under root is absent from the indexed set.
 // It skips the .git directory and respects the .gitignore convention by not reading
 // .gitignore files (callers that need full .gitignore support should use wt.Status()).
 // For the mtime-stat approach this is a best-effort check sufficient for typical use.
-func hasUntrackedFiles(root string, indexed map[string]bool) (bool, error) {
+func hasUntrackedFiles(root string, indexed map[string]struct{}) (bool, error) {
 	return hasUntrackedFilesRec(root, root, indexed)
 }
 
-func hasUntrackedFilesRec(root, dir string, indexed map[string]bool) (bool, error) {
+func hasUntrackedFilesRec(root, dir string, indexed map[string]struct{}) (bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false, err
@@ -479,7 +496,7 @@ func hasUntrackedFilesRec(root, dir string, indexed map[string]bool) (bool, erro
 			if found {
 				return true, nil
 			}
-		} else if !indexed[rel] {
+		} else if _, tracked := indexed[rel]; !tracked {
 			return true, nil // untracked file
 		}
 	}
@@ -501,14 +518,7 @@ func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error
 	}
 
 	type abResult struct{ ahead, behind int }
-	val, err, _ := g.aheadBehindSF.Do(cacheKey, func() (val any, doErr error) {
-		// Named returns so recover() can set doErr on panic.
-		defer func() {
-			if r := recover(); r != nil {
-				doErr = fmt.Errorf("go-git panic in AheadBehind: %v", r)
-			}
-		}()
-
+	result, err := sfDo(&g.aheadBehindSF, cacheKey, func() (abResult, error) {
 		entry, openErr := g.openRepoEntry(worktreePath)
 		if openErr != nil {
 			return abResult{}, fmt.Errorf("open repo %s: %w", worktreePath, openErr)
@@ -548,8 +558,7 @@ func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error
 	if err != nil {
 		return 0, 0, err
 	}
-	r := val.(abResult)
-	return r.ahead, r.behind, nil
+	return result.ahead, result.behind, nil
 }
 
 func (g *GoGitVCSReader) CommitMessages(worktreePath, base string, max int) ([]string, error) {
@@ -560,60 +569,66 @@ func (g *GoGitVCSReader) CommitMessages(worktreePath, base string, max int) ([]s
 		}
 	}
 
-	entry, err := g.openRepoEntry(worktreePath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Phase 1: snapshot HEAD and base as plain hash values under a brief lock.
-	// These are cheap reference-store reads; holding the lock only here avoids
-	// keeping it across the far more expensive graph walks below.
-	entry.mu.Lock()
-	headRef, err := entry.repo.Head()
-	if err != nil {
-		entry.mu.Unlock()
-		return nil, err
-	}
-	headHash := headRef.Hash() // plumbing.Hash is a plain [20]byte value type
-	baseHash, err := resolveRef(entry.repo, base)
-	entry.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-
-	// Phase 2: reachable set for base. cachedReachableSet acquires entry.mu
-	// only on a cache miss, so repeated calls within the TTL window skip the
-	// O(N) walk entirely and return the cached map without touching the mutex.
-	baseReachable, err := g.cachedReachableSet(entry, baseHash)
-	if err != nil {
-		return nil, err
-	}
-
-	// Phase 3: log walk from HEAD. go-git's packfile reader requires the lock.
-	entry.mu.Lock()
-	iter, err := entry.repo.Log(&git.LogOptions{From: headHash})
-	if err != nil {
-		entry.mu.Unlock()
-		return nil, err
-	}
-
-	var msgs []string
-	err = iter.ForEach(func(c *object.Commit) error {
-		if baseReachable[c.Hash] {
-			return storer.ErrStop
+	msgs, err := sfDo(&g.commitMessagesSF, cacheKey, func() ([]string, error) {
+		entry, openErr := g.openRepoEntry(worktreePath)
+		if openErr != nil {
+			return nil, openErr
 		}
-		if len(msgs) < max {
-			// Mimic `git log --oneline`: short hash + first line of message.
-			msgs = append(msgs, c.Hash.String()[:7]+" "+firstLine(c.Message))
+
+		// Phase 1: snapshot HEAD and base as plain hash values under a brief lock.
+		// These are cheap reference-store reads; holding the lock only here avoids
+		// keeping it across the far more expensive graph walks below.
+		var headHash plumbing.Hash
+		var baseHash plumbing.Hash
+		if err := func() error {
+			entry.mu.Lock()
+			defer entry.mu.Unlock()
+			headRef, headErr := entry.repo.Head()
+			if headErr != nil {
+				return headErr
+			}
+			headHash = headRef.Hash() // plumbing.Hash is a plain [20]byte value type
+			var baseErr error
+			baseHash, baseErr = resolveRef(entry.repo, base)
+			return baseErr
+		}(); err != nil {
+			return nil, err
 		}
-		return nil
+
+		// Phase 2: reachable set for base. cachedReachableSet acquires entry.mu
+		// only on a cache miss, so repeated calls within the TTL window skip the
+		// O(N) walk entirely and return the cached map without touching the mutex.
+		baseReachable, reachErr := g.cachedReachableSet(entry, baseHash)
+		if reachErr != nil {
+			return nil, reachErr
+		}
+
+		// Phase 3: log walk from HEAD. go-git's packfile reader requires the lock.
+		entry.mu.Lock()
+		defer entry.mu.Unlock()
+		iter, iterErr := entry.repo.Log(&git.LogOptions{From: headHash})
+		if iterErr != nil {
+			return nil, iterErr
+		}
+		defer iter.Close()
+
+		var result []string
+		walkErr := iter.ForEach(func(c *object.Commit) error {
+			if baseReachable[c.Hash] {
+				return storer.ErrStop
+			}
+			if len(result) < max {
+				// Mimic `git log --oneline`: short hash + first line of message.
+				result = append(result, c.Hash.String()[:7]+" "+firstLine(c.Message))
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return nil, walkErr
+		}
+		g.commitMessagesCache.Store(cacheKey, commitMessagesEntry{msgs: result, expiry: time.Now().Add(diffStatCacheTTL)})
+		return result, nil
 	})
-	iter.Close()
-	entry.mu.Unlock()
-
-	if err == nil {
-		g.commitMessagesCache.Store(cacheKey, commitMessagesEntry{msgs: msgs, expiry: time.Now().Add(diffStatCacheTTL)})
-	}
 	return msgs, err
 }
 
@@ -648,27 +663,23 @@ func (g *GoGitVCSReader) DiffShortstat(worktreePath string) (DiffStat, error) {
 			return e.result, nil
 		}
 	}
-	val, err, _ := g.diffStatSF.Do(worktreePath, func() (val any, doErr error) {
-		// Named returns required: recover defer sets doErr, which becomes the function's return value.
-		defer func() {
-			if r := recover(); r != nil {
-				doErr = fmt.Errorf("go-git panic in DiffShortstat: %v", r)
-			}
-		}()
-		result, uncachedErr := g.diffShortstatUncached(worktreePath)
+	result, err := sfDo(&g.diffStatSF, worktreePath, func() (DiffStat, error) {
+		// diffShortstatUncached acquires entry.mu internally — do NOT add an outer lock here.
+		// It does not call DiffShortstat, so there is no recursive sfDo path for this key.
+		stat, uncachedErr := g.diffShortstatUncached(worktreePath)
 		if uncachedErr != nil {
 			return DiffStat{}, uncachedErr
 		}
 		g.diffStatCache.Store(worktreePath, diffStatEntry{
-			result: result,
+			result: stat,
 			expiry: time.Now().Add(diffStatCacheTTL),
 		})
-		return result, nil
+		return stat, nil
 	})
 	if err != nil {
 		return DiffStat{}, err
 	}
-	return val.(DiffStat), nil
+	return result, nil
 }
 
 // diffShortstatUncached computes a DiffStat for worktreePath using index metadata
@@ -705,13 +716,16 @@ func (g *GoGitVCSReader) diffShortstatUncached(worktreePath string) (DiffStat, e
 	if headRef, headErr := repo.Head(); headErr == nil {
 		if headCommit, cerr := repo.CommitObject(headRef.Hash()); cerr == nil {
 			if headTree, terr := headCommit.Tree(); terr == nil {
+				var twWalkErr error
 				tw := object.NewTreeWalker(headTree, true, nil)
+				defer tw.Close()
 				for {
 					name, te, twErr := tw.Next()
 					if errors.Is(twErr, io.EOF) {
 						break
 					}
 					if twErr != nil {
+						twWalkErr = twErr
 						break
 					}
 					if te.Mode == filemode.Dir {
@@ -719,7 +733,10 @@ func (g *GoGitVCSReader) diffShortstatUncached(worktreePath string) (DiffStat, e
 					}
 					headHashes[name] = te.Hash
 				}
-				tw.Close()
+				if twWalkErr != nil {
+					entry.mu.Unlock()
+					return DiffStat{}, fmt.Errorf("walk head tree: %w", twWalkErr)
+				}
 			}
 		}
 	}
