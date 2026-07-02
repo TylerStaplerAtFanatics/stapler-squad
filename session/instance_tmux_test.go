@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -89,6 +90,62 @@ func TestBuildLaunchCommand_ClaudeEnvWrapper(t *testing.T) {
 	}
 	if len(got) == 0 {
 		t.Error("expected non-empty command")
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", "''"},
+		{"plain", "do something", "'do something'"},
+		{"single_quote", "it's here", `'it'\''s here'`},
+		{"backtick", "run `whoami`", "'run `whoami`'"},
+		{"dollar_paren", "run $(whoami)", "'run $(whoami)'"},
+		{"dollar_var", "echo $HOME", "'echo $HOME'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shellQuote(tc.input)
+			if got != tc.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildClaudeCommand_PromptWithShellMetacharactersIsSafe(t *testing.T) {
+	// Regression test for the backlog/triage launch bug: the backlog prompt is
+	// full of backtick-wrapped tokens and begins with "--- BACKLOG ITEM DATA ---".
+	// Both must be neutralized: single-quoting stops backtick/$()/$VAR expansion,
+	// and the "--" separator stops claude from parsing the leading "--" as a flag.
+	prompt := "--- BACKLOG ITEM DATA ---\nRun `/backlog/done-0` when finished, or $(rm -rf /) if you dare."
+	inst := &Instance{Program: "claude", Prompt: prompt}
+	got := inst.buildLaunchCommand("")
+
+	want := "claude -- " + shellQuote(prompt)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if !strings.Contains(got, " -- ") {
+		t.Errorf("expected a bare -- separator before the prompt, got %q", got)
+	}
+	if strings.Contains(got, "%!q") {
+		t.Errorf("prompt was not properly formatted: %q", got)
+	}
+}
+
+func TestBuildClaudeCommand_AppendSystemPromptWithShellMetacharactersIsSafe(t *testing.T) {
+	inst := &Instance{
+		Program:            "claude",
+		AppendSystemPrompt: "be `helpful` and $(honest)",
+	}
+	got := inst.buildLaunchCommand("")
+	want := "claude --append-system-prompt " + shellQuote(inst.AppendSystemPrompt)
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

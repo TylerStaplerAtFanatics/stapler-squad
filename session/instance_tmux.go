@@ -87,6 +87,15 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 	return cmd
 }
 
+// shellQuote POSIX-single-quotes s for safe interpolation into a shell command
+// string. tmux launches the assembled command through a shell, and Go's %q
+// produces double quotes, which do NOT suppress backtick/$(...)/$VAR
+// expansion. Single quotes do: the only special case is a literal single
+// quote, escaped by closing the quoted string, emitting \', and reopening.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // buildClaudeCommand assembles the full claude invocation with all instance flags.
 // It is only called when the program is proven to be claude (via programKind),
 // so no isClaude guards are needed here.
@@ -99,13 +108,13 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 		parts = append(parts, i.claudeMCPConfigFlag())
 	}
 	if i.AppendSystemPrompt != "" {
-		parts = append(parts, "--append-system-prompt", fmt.Sprintf("%q", i.AppendSystemPrompt))
+		parts = append(parts, "--append-system-prompt", shellQuote(i.AppendSystemPrompt))
 	}
 	if i.AllowedTools != "" {
-		parts = append(parts, "--allowedTools", fmt.Sprintf("%q", i.AllowedTools))
+		parts = append(parts, "--allowedTools", shellQuote(i.AllowedTools))
 	}
 	if i.PermissionMode != "" {
-		parts = append(parts, "--permission-mode", fmt.Sprintf("%q", i.PermissionMode))
+		parts = append(parts, "--permission-mode", shellQuote(i.PermissionMode))
 	}
 	if i.AutoYes {
 		parts = append(parts, "--dangerously-skip-permissions")
@@ -114,7 +123,9 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 		parts = append(parts, "-p", "--output-format", "json")
 	}
 	if i.Prompt != "" && (claudeSessionID == "" || i.OneShot) {
-		parts = append(parts, fmt.Sprintf("%q", i.Prompt))
+		// "--" stops claude from parsing a prompt that begins with "--" (e.g. the
+		// backlog prompt's "--- BACKLOG ITEM DATA ---") as CLI flags.
+		parts = append(parts, "--", shellQuote(i.Prompt))
 	}
 	return strings.Join(parts, " ")
 }
