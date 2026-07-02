@@ -49,6 +49,52 @@ func (i *Instance) transitionTo(ctx context.Context, to Status) error {
 	return nil
 }
 
+// transitionToLocked executes a state transition from within an actor command.
+// Does NOT invoke def.After hooks; hibernate/resume side-effects are handled
+// inline by hibernateProcessLocked/resumeFromHibernationLocked so that heavy
+// I/O is dispatched to goroutines without blocking the actor.
+// Must only be called from within sendSyncErr/send/sendCtx closures.
+func transitionToLocked(s *instanceState, ctx context.Context, to Status) error {
+	i := s.inst
+	def, ok := transitionIndex[transitionKey{i.Status, to}]
+	if !ok {
+		return ErrInvalidTransition{From: i.Status, To: to}
+	}
+	if def.Guard != nil {
+		if err := def.Guard(ctx, i); err != nil {
+			return fmt.Errorf("transition %s → %s blocked: %w", i.Status, to, err)
+		}
+	}
+	from := i.Status
+	i.Status = to
+	i.snapshot.Store(buildSnapshot(i))
+	// Trigger side-effects inline instead of via def.After so the actor goroutine
+	// doesn't block waiting for the hook to complete.
+	switch (transitionKey{from, to}) {
+	case transitionKey{Active, Hibernated}:
+		hibernateProcessLocked(s, ctx)
+	case transitionKey{Hibernated, Active}:
+		resumeFromHibernationLocked(s, ctx)
+	}
+	return nil
+}
+
+// approveLocked transitions the instance to Active from within an actor command.
+func approveLocked(s *instanceState) error {
+	if err := transitionToLocked(s, context.Background(), Active); err != nil {
+		return fmt.Errorf("approve: %w", err)
+	}
+	return nil
+}
+
+// denyLocked transitions the instance to Paused from within an actor command.
+func denyLocked(s *instanceState) error {
+	if err := transitionToLocked(s, context.Background(), Paused); err != nil {
+		return fmt.Errorf("deny: %w", err)
+	}
+	return nil
+}
+
 // IsCreating returns true if the instance is in the Creating state.
 func (i *Instance) IsCreating() bool {
 	i.stateMutex.RLock()
@@ -217,23 +263,13 @@ func (i *Instance) GetDetectedContext() string {
 // Approve transitions the instance to Active (approval granted).
 // Returns an error if the current state does not allow this transition.
 func (i *Instance) Approve() error {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
-	if err := i.transitionTo(context.Background(), Active); err != nil {
-		return fmt.Errorf("approve: %w", err)
-	}
-	return nil
+	return i.sendSyncErr(func(s *instanceState) error { return approveLocked(s) })
 }
 
 // Deny transitions the instance to Paused (approval denied).
 // Returns an error if the current state does not allow this transition.
 func (i *Instance) Deny() error {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
-	if err := i.transitionTo(context.Background(), Paused); err != nil {
-		return fmt.Errorf("deny: %w", err)
-	}
-	return nil
+	return i.sendSyncErr(func(s *instanceState) error { return denyLocked(s) })
 }
 
 // Paused returns true if the instance is paused.

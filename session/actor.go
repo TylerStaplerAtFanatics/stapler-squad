@@ -1,8 +1,9 @@
 package session
 
-// actor.go implements the per-Instance actor goroutine plumbing (IAC Epic 3).
+// actor.go implements the per-Instance actor goroutine plumbing (IAC Epics 3–4).
 //
 // Architecture:
+//   - instanceState: capability token proving a closure runs inside an actor command.
 //   - command: a closure executed by the actor goroutine on the owning *Instance.
 //   - runActor: the actor goroutine; drains li.mailbox, re-publishes the atomic
 //     snapshot after every command, exits when li.ctx is cancelled.
@@ -10,13 +11,94 @@ package session
 //     the actor goroutine. Called by NewLiveInstance.
 //   - sendSync: synchronous command-send helper (blocks until the actor executes
 //     the command or ctx is cancelled).
-//
-// NOTE (Epic 3 scope): commands executed here during Epic 3 are test-only probes.
-// Real state-machine mutations are migrated to the actor in Epics 4 and 5.
+//   - sendSyncErr/send/sendCtx: Epic 4 helpers for routing state mutations.
+
+import "context"
 
 // command is a closure executed by the actor goroutine on the owning Instance.
 // All Instance field mutations must happen inside a command once Epics 4–5 land.
 type command func(i *Instance)
+
+// instanceState is a capability token that proves a function is executing
+// inside an actor command (or the nil-actor fallback path used by tests).
+// Only constructed inside sendSyncErr/send/sendCtx closures — never copied out.
+// Functions that accept *instanceState ("Locked" twins) access Instance fields
+// directly without stateMutex.
+type instanceState struct {
+	inst *Instance
+}
+
+// sendSyncErr enqueues fn on the actor mailbox and blocks until it executes.
+// If liveInstance is nil (e.g. before NewLiveInstance, or in tests), fn runs
+// directly on the calling goroutine without locking.
+func (i *Instance) sendSyncErr(fn func(*instanceState) error) error {
+	li := i.liveInstance.Load()
+	if li == nil {
+		return fn(&instanceState{inst: i})
+	}
+	var cmdErr error
+	reply := make(chan struct{}, 1)
+	cmd := func(inst *Instance) {
+		cmdErr = fn(&instanceState{inst: inst})
+		close(reply)
+	}
+	select {
+	case <-li.ctx.Done():
+		return li.ctx.Err()
+	case li.mailbox <- cmd:
+	}
+	select {
+	case <-li.ctx.Done():
+		return li.ctx.Err()
+	case <-reply:
+		return cmdErr
+	}
+}
+
+// send enqueues fn on the actor mailbox in a fire-and-forget goroutine.
+// If liveInstance is nil, fn runs directly on the calling goroutine.
+// Used for callbacks that must not block the caller (e.g. PTY reader, tmux exit).
+func (i *Instance) send(fn func(*instanceState)) {
+	li := i.liveInstance.Load()
+	if li == nil {
+		fn(&instanceState{inst: i})
+		return
+	}
+	cmd := func(inst *Instance) { fn(&instanceState{inst: inst}) }
+	go func() {
+		select {
+		case <-li.ctx.Done():
+		case li.mailbox <- cmd:
+		}
+	}()
+}
+
+// sendCtx enqueues fn on the actor mailbox and blocks with caller-supplied timeout.
+// If liveInstance is nil, fn runs directly and returns nil.
+func (i *Instance) sendCtx(ctx context.Context, fn func(*instanceState)) error {
+	li := i.liveInstance.Load()
+	if li == nil {
+		fn(&instanceState{inst: i})
+		return nil
+	}
+	reply := make(chan struct{}, 1)
+	cmd := func(inst *Instance) { fn(&instanceState{inst: inst}); close(reply) }
+	select {
+	case <-li.ctx.Done():
+		return li.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	case li.mailbox <- cmd:
+	}
+	select {
+	case <-li.ctx.Done():
+		return li.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-reply:
+		return nil
+	}
+}
 
 // runActor is the main actor goroutine for a LiveInstance.  It processes commands
 // from li.mailbox and republishes the atomic snapshot after each one.  It exits
