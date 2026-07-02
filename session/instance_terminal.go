@@ -72,8 +72,8 @@ func (i *Instance) Rename(newTitle string) error {
 	}
 
 	// Use mutex for thread safety
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 
 	// Update the title
 	oldTitle := i.Title
@@ -171,8 +171,8 @@ func (i *Instance) CaptureCurrentState() error {
 	if path == "" {
 		return nil
 	}
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.WorkingDir = path
 	i.snapshot.Store(buildSnapshot(i))
 	return nil

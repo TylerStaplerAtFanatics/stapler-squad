@@ -144,17 +144,17 @@ func (i *Instance) resumeFromHibernation(ctx context.Context) {
 	// Guard the started=false write with stateMutex: buildSnapshot() reads started
 	// while holding the lock, and this goroutine runs concurrently with the parent's
 	// lock release — the write must be serialized.
-	i.stateMutex.Lock()
+	i.mu.Lock()
 	i.started = false
-	i.stateMutex.Unlock()
+	i.mu.Unlock()
 	if err := i.Start(false); err != nil {
 		log.Error("hibernation resume: failed to start session",
 			"session", i.Title, "err", err.Error())
 		// Roll back to Hibernated on failure
-		i.stateMutex.Lock()
+		i.mu.Lock()
 		i.loadStatus(Hibernated)
 		i.snapshot.Store(buildSnapshot(i))
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		return
 	}
 	// Start the controller and session driver
