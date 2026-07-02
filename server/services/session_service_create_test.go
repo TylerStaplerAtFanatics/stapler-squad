@@ -167,6 +167,34 @@ func TestCreateSession_EmptyPath_Autonomous_PassesPathValidation(t *testing.T) {
 	}
 }
 
+// TestCreateSession_Autonomous_ExplicitPath_DoesNotGenerateScratchDir guards the
+// asymmetry between the path guard (which exempts AutonomousMode unconditionally)
+// and the directory-generation block (which only fires when resolvedPath == "").
+// An autonomous request that supplies its own path must use that path as-is, not
+// have it silently replaced by a generated ~/oneoff scratch directory.
+func TestCreateSession_Autonomous_ExplicitPath_DoesNotGenerateScratchDir(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := newCreateTestService(t, storage)
+
+	baseDir := t.TempDir()
+	t.Setenv("HOME", baseDir)
+	explicitPath := t.TempDir()
+	oneOffDir := filepath.Join(baseDir, "oneoff")
+
+	resp, err := svc.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
+		Title:          "autonomous-explicit-path-test",
+		Path:           explicitPath,
+		SessionType:    sessionv1.SessionType_SESSION_TYPE_DIRECTORY,
+		AutonomousMode: true,
+	}))
+	if err == nil {
+		destroyCreatedSession(t, svc, resp.Msg.Session.Id)
+	}
+
+	_, statErr := os.Stat(oneOffDir)
+	assert.True(t, os.IsNotExist(statErr), "autonomous session with an explicit path must not generate a scratch directory")
+}
+
 func TestCreateSession_DuplicateTitle_ReturnsAlreadyExists(t *testing.T) {
 	storage := createTestStorage(t)
 	svc := newCreateTestService(t, storage)

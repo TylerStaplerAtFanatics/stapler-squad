@@ -987,6 +987,8 @@ func (s *SessionService) CreateSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
 	}
 	if req.Msg.SessionType != sessionv1.SessionType_SESSION_TYPE_ONE_OFF &&
+		// AutonomousMode: the omnibar always submits an empty path for autonomous
+		// sessions; see the directory-generation block below.
 		!req.Msg.AutonomousMode &&
 		req.Msg.AliasName == "" &&
 		req.Msg.SessionType != sessionv1.SessionType_SESSION_TYPE_NEW_PROJECT &&
