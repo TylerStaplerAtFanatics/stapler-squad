@@ -680,6 +680,31 @@ func TestEscapeAnalyticsDefaults(t *testing.T) {
 	})
 }
 
+// TestDefaultConfigMirrorsEscapeAnalyticsDefaults is a regression test for BUG-025:
+// DefaultConfig() must produce the same escape analytics defaults as
+// LoadConfigFromPath's post-decode defaulting (see the comment above the
+// SessionDefaults init in DefaultConfig — the two code paths must be
+// equivalent). Before this fix, DefaultConfig() left these fields at their Go
+// zero values, so a fresh install's very first LoadConfig() call (which
+// returns DefaultConfig() directly, before any config.json exists) would pass
+// EscapeAnalyticsMaxRowsPerSession=0 into the batch writer at server startup —
+// disabling the per-session row cap instead of applying the intended default.
+func TestDefaultConfigMirrorsEscapeAnalyticsDefaults(t *testing.T) {
+	fresh := DefaultConfig()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{}`), 0600))
+	loaded, err := LoadConfigFromPath(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, loaded.EscapeAnalyticsCaptureLevel, fresh.EscapeAnalyticsCaptureLevel)
+	require.NotNil(t, fresh.EscapeAnalyticsSamplingRate)
+	require.NotNil(t, loaded.EscapeAnalyticsSamplingRate)
+	assert.Equal(t, *loaded.EscapeAnalyticsSamplingRate, *fresh.EscapeAnalyticsSamplingRate)
+	assert.Equal(t, loaded.EscapeAnalyticsMaxRowsPerSession, fresh.EscapeAnalyticsMaxRowsPerSession)
+	assert.Equal(t, loaded.EscapeAnalyticsRetentionDays, fresh.EscapeAnalyticsRetentionDays)
+}
+
 // TestEscapeAnalyticsCaptureLevel_Validation verifies that invalid capture level values
 // are reset to "summary".
 func TestEscapeAnalyticsCaptureLevel_Validation(t *testing.T) {
