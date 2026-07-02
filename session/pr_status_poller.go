@@ -298,9 +298,7 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 			return
 		}
 		// Persist discovered PR number and clear no-PR backoff.
-		inst.stateMutex.Lock()
-		inst.GitHubPRNumber = prInfo.Number
-		inst.stateMutex.Unlock()
+		inst.SetGitHubPRNumber(prInfo.Number)
 		p.mu.Lock()
 		delete(p.noPRPollAfter, inst.Title)
 		p.mu.Unlock()
@@ -325,9 +323,7 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 
 	if !changed {
 		// 304 Not Modified — PR unchanged; just bump the check timestamp
-		inst.stateMutex.Lock()
-		inst.LastPRStatusCheck = time.Now()
-		inst.stateMutex.Unlock()
+		inst.SetLastPRStatusCheck(time.Now())
 		return
 	}
 

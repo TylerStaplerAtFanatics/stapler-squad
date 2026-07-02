@@ -694,15 +694,6 @@ func (i *Instance) SetArtifacts(blob *artifacts.SessionArtifactsBlob) {
 	i.snapshot.Store(buildSnapshot(i))
 }
 
-// SetGitHubPRNumber atomically updates the in-memory GitHubPRNumber field.
-// Call after a successful DB write so HasGitHubPR() reflects the update (M-3 fix).
-func (i *Instance) SetGitHubPRNumber(n int) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
-	i.GitHubPRNumber = n
-	i.snapshot.Store(buildSnapshot(i))
-}
-
 // SetSessionGoalCached atomically updates the in-memory sessionGoal cache.
 func (i *Instance) SetSessionGoalCached(g *SessionGoalData) {
 	i.sessionGoal.Write(func(sg **SessionGoalData) {

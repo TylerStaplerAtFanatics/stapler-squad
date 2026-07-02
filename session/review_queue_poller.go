@@ -799,9 +799,11 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 		log.Info("adding to queue", "session", snap.Title, "reason", reason.String(), "priority", priority.String(), "context", context)
 		rqp.queue.Add(item)
 
-		// Update spam prevention timestamp (write path — direct field access is correct here).
-		inst.LastAddedToQueue = time.Now()
-		log.Info("updated LastAddedToQueue timestamp", "session", snap.Title, "timestamp", inst.LastAddedToQueue)
+		// Update spam prevention timestamp via actor command so the write is
+		// serialised with buildSnapshot and does not race.
+		now := time.Now()
+		inst.SetLastAddedToQueue(now)
+		log.Info("updated LastAddedToQueue timestamp", "session", snap.Title, "timestamp", now)
 
 		// CRITICAL: Persist LastAddedToQueue to database to prevent notification spam
 		// Without persistence, this timestamp resets on app restart or instance reload,
@@ -809,7 +811,7 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[stri
 		// NOTE: Use UpdateInstanceLastAddedToQueue instead of SaveInstances to avoid
 		// the merge logic which would restore deleted instances from disk.
 		if rqp.storage != nil {
-			if err := rqp.storage.UpdateInstanceLastAddedToQueue(snap.Title, inst.LastAddedToQueue); err != nil {
+			if err := rqp.storage.UpdateInstanceLastAddedToQueue(snap.Title, now); err != nil {
 				log.Error("failed to persist LastAddedToQueue", "session", snap.Title, "err", err)
 			}
 		}
