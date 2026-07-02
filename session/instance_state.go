@@ -315,4 +315,3 @@ func (i *Instance) ForceStatus(s Status) {
 	i.loadStatus(s)
 	i.snapshot.Store(buildSnapshot(i))
 }
-
