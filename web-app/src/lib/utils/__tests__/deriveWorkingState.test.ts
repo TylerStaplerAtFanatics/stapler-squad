@@ -112,6 +112,31 @@ describe("deriveWorkingState — detectedStatus fallback (SubStatus.UNSPECIFIED)
 });
 
 // ---------------------------------------------------------------------------
+// Defensive handling of a missing subStatus (exhaustiveness fix regression guard)
+// ---------------------------------------------------------------------------
+
+describe("deriveWorkingState — subStatus is undefined at runtime", () => {
+  it("deriveWorkingState_should_behaveLikeUnspecified_When_subStatus_is_undefined", () => {
+    // subStatus is typed as required, but some callers (e.g. partially-typed
+    // test fixtures) construct objects without it. This must fall through to
+    // the detectedStatus-based fallback exactly like SubStatus.UNSPECIFIED,
+    // not throw — see the `case undefined` guard in deriveWorkingState.
+    expect(
+      deriveWorkingState({
+        subStatus: undefined as unknown as SubStatus,
+        detectedStatus: DetectedStatus.EXECUTING,
+      })
+    ).toBe(WorkingState.ACTIVE);
+  });
+
+  it("deriveWorkingState_should_returnUNSPECIFIED_When_subStatus_is_undefined_and_detectedStatus_absent", () => {
+    expect(
+      deriveWorkingState({ subStatus: undefined as unknown as SubStatus })
+    ).toBe(WorkingState.UNSPECIFIED);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SubStatus takes precedence over detectedStatus
 // ---------------------------------------------------------------------------
 

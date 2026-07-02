@@ -12,6 +12,14 @@ interface StatusInfo {
   variant: ReasonVariant;
 }
 
+// This pair of functions is the single canonical source of truth for the display
+// strings used across the app for AttentionReason/DetectedStatus values. Other
+// files (e.g. ReviewQueuePanel.tsx) must call into these rather than re-declaring
+// their own copies of these literals — that duplication is exactly what the
+// "no-raw-status-strings" no-restricted-syntax rule in .eslintrc.json guards
+// against. The literals below are intentionally exempt since this is where they
+// are defined, not duplicated.
+/* eslint-disable no-restricted-syntax -- canonical definition site, see comment above */
 export function getAttentionReasonInfo(reason: AttentionReason): StatusInfo {
   switch (reason) {
     case AttentionReason.APPROVAL_PENDING:
@@ -31,6 +39,8 @@ export function getAttentionReasonInfo(reason: AttentionReason): StatusInfo {
       return { label: "Stale", icon: "⌛", variant: "stale" };
     case AttentionReason.WAITING_FOR_USER:
       return { label: "Your Input Needed", icon: "✏️", variant: "input" };
+    case AttentionReason.TESTS_FAILING:
+      return { label: "Tests Failing", icon: "❌", variant: "testsFailing" };
     default:
       return { label: "Unknown", icon: "●", variant: "unknown" };
   }
@@ -66,6 +76,7 @@ export function getDetectedStatusInfo(status: DetectedStatus): StatusInfo | null
       return assertNever(status);
   }
 }
+/* eslint-enable no-restricted-syntax */
 
 interface StatusBadgeProps {
   reason?: AttentionReason;

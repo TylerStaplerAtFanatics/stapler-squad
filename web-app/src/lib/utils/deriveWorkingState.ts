@@ -37,8 +37,15 @@ export function deriveWorkingState(session: {
     case SubStatus.SUCCESS:
       return WorkingState.IDLE;
     case SubStatus.UNSPECIFIED:
-      // fall through to detectedStatus-based fallback
+    case undefined:
+      // Fall through to detectedStatus-based fallback intentionally. `undefined`
+      // is handled defensively alongside UNSPECIFIED even though subStatus is
+      // typed as required — some callers (e.g. partially-typed test fixtures)
+      // may omit it, and it should behave identically to an unset/UNSPECIFIED
+      // sub-status rather than throwing.
       break;
+    default:
+      return assertNever(session.subStatus);
   }
 
   // detectedStatus-based fallback (used when subStatus is UNSPECIFIED)
