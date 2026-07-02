@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -89,6 +90,60 @@ func TestBuildLaunchCommand_ClaudeEnvWrapper(t *testing.T) {
 	}
 	if len(got) == 0 {
 		t.Error("expected non-empty command")
+	}
+}
+
+// stapler-squad#148: prompts must reach claude literally, not be shell-executed.
+func TestShellQuote(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "hello", "'hello'"},
+		{"embedded single quote", "it's", `'it'\''s'`},
+		{"empty", "", "''"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shellQuote(tc.in); got != tc.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// stapler-squad#148: a backlog/triage prompt containing backtick-wrapped tokens
+// and a leading "--" must not be executed or rejected as CLI flags by the shell
+// tmux runs the launch command through. Single-quoting suppresses all shell
+// expansion (backticks, $(...), $VAR), and "--" stops claude from parsing the
+// prompt's leading "--- BACKLOG ITEM DATA ---" as flags.
+func TestBuildClaudeCommand_PromptWithShellMetacharactersIsSafe(t *testing.T) {
+	dangerousPrompt := "--- BACKLOG ITEM DATA ---\nSee `/backlog/status` and $(whoami) and $HOME"
+	inst := &Instance{Program: "claude", Prompt: dangerousPrompt}
+
+	got := inst.buildLaunchCommand("")
+
+	wantSuffix := "-- " + shellQuote(dangerousPrompt)
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Errorf("prompt not safely quoted after '--' separator.\ngot:  %q\nwant suffix: %q", got, wantSuffix)
+	}
+	// The raw backtick/$(...) tokens must only appear inside the single-quoted
+	// span — i.e. the command must not contain them as a bare, shell-double-quoted
+	// substring (the old %q behavior), which is what let the shell execute them.
+	if strings.Contains(got, "\"--- BACKLOG") {
+		t.Error("prompt appears to be double-quoted (shell-unsafe) rather than single-quoted")
+	}
+}
+
+func TestBuildClaudeCommand_AppendSystemPromptIsShellQuoted(t *testing.T) {
+	inst := &Instance{Program: "claude", AppendSystemPrompt: "run `whoami` now"}
+
+	got := inst.buildLaunchCommand("")
+
+	want := "claude --append-system-prompt " + shellQuote("run `whoami` now")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

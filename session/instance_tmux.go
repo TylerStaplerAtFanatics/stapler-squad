@@ -87,6 +87,15 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 	return cmd
 }
 
+// shellQuote POSIX-single-quotes s for safe interpolation into a shell command
+// line. Unlike Go's %q (which escapes for Go string-literal syntax), single
+// quotes suppress ALL shell expansion — backticks, $(...), and $VAR are passed
+// through literally instead of being executed/expanded by the shell that tmux
+// runs the launch command through. See stapler-squad#148.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // buildClaudeCommand assembles the full claude invocation with all instance flags.
 // It is only called when the program is proven to be claude (via programKind),
 // so no isClaude guards are needed here.
@@ -99,7 +108,10 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 		parts = append(parts, i.claudeMCPConfigFlag())
 	}
 	if i.AppendSystemPrompt != "" {
-		parts = append(parts, "--append-system-prompt", fmt.Sprintf("%q", i.AppendSystemPrompt))
+		// shellQuote (not %q): the prompt is free-form text (often containing
+		// backtick-wrapped tokens like `/backlog/status`) that must reach claude
+		// literally, not be executed/expanded by the shell. See stapler-squad#148.
+		parts = append(parts, "--append-system-prompt", shellQuote(i.AppendSystemPrompt))
 	}
 	if i.AllowedTools != "" {
 		parts = append(parts, "--allowedTools", fmt.Sprintf("%q", i.AllowedTools))
@@ -114,7 +126,11 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 		parts = append(parts, "-p", "--output-format", "json")
 	}
 	if i.Prompt != "" && (claudeSessionID == "" || i.OneShot) {
-		parts = append(parts, fmt.Sprintf("%q", i.Prompt))
+		// "--" stops claude from parsing a prompt that begins with "--" (e.g. the
+		// backlog prompt's "--- BACKLOG ITEM DATA ---") as CLI flags. shellQuote
+		// (not %q) keeps backticks/$(...) in the prompt from being shell-executed.
+		// See stapler-squad#148.
+		parts = append(parts, "--", shellQuote(i.Prompt))
 	}
 	return strings.Join(parts, " ")
 }
