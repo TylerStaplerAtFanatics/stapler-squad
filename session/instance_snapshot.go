@@ -12,16 +12,16 @@ package session
 // After deploying the lock-free reader conversions in Epic 2, use the mutex/block
 // profile to confirm reduced contention:
 //
-//   curl -s http://localhost:8543/debug/pprof/mutex > mutex.prof
-//   go tool pprof -top mutex.prof
+//	curl -s http://localhost:8543/debug/pprof/mutex > mutex.prof
+//	go tool pprof -top mutex.prof
 //
 // Expected: stateMutex contention (RLock sites in instance_adapter.go,
 // capacity_monitor.go, review_queue_poller.go, pr_status_poller.go, and
 // connectrpc_websocket.go) no longer appears in the top lock holders.
 // Any remaining stateMutex entries should be write-side only (Update*, transition*).
 //
-//   curl -s http://localhost:8543/debug/pprof/block > block.prof
-//   go tool pprof -top block.prof
+//	curl -s http://localhost:8543/debug/pprof/block > block.prof
+//	go tool pprof -top block.prof
 //
 // Expected: goroutine blocking on (*deadlock.RWMutex).RLock should drop
 // proportionally to the reader-path traffic these callers generate.
@@ -31,6 +31,40 @@ import (
 
 	"github.com/tstapler/stapler-squad/session/artifacts"
 )
+
+// GitHubIntegration groups all GitHub PR / URL integration fields within
+// InstanceSnapshot (CDD Epic 3, Task 3.1a). Access via snap.GitHub.GitHubPRURL etc.
+type GitHubIntegration struct {
+	// Repository identity and PR linkage
+	GitHubPRNumber  int
+	GitHubPRURL     string
+	GitHubOwner     string
+	GitHubRepo      string
+	GitHubSourceRef string
+	ClonedRepoPath  string
+	MainRepoPath    string
+	IsWorktree      bool
+	GitHubIsFork    bool
+
+	// PR status fields (populated by PRStatusPoller)
+	GitHubPRState          string
+	GitHubPRIsDraft        bool
+	GitHubPRPriority       string
+	GitHubApprovedCount    int
+	GitHubChangesReqCount  int
+	GitHubCheckConclusion  string
+	GitHubPRStatusTerminal bool
+	LastPRStatusCheck      time.Time
+}
+
+// AutonomousModeState groups all autonomous-mode fields within InstanceSnapshot
+// (CDD Epic 3, Task 3.1b). Access via snap.Autonomous.AutonomousMode etc.
+type AutonomousModeState struct {
+	AutonomousMode     bool
+	AutonomousTurn     int32
+	AutonomousMaxTurns int32
+	AutonomousOutcome  string
+}
 
 // InstanceSnapshot is a point-in-time, read-safe copy of all mutable Instance
 // fields. Published via Instance.snapshot (atomic.Pointer) inside stateMutex
@@ -65,32 +99,11 @@ type InstanceSnapshot struct {
 	TmuxServerSocket string
 	Tags             []string // defensive deep copy — see buildSnapshot
 
-	// Autonomous mode
-	AutonomousMode     bool
-	AutonomousTurn     int32
-	AutonomousMaxTurns int32
-	AutonomousOutcome  string
+	// Autonomous mode (grouped — access as snap.Autonomous.AutonomousMode)
+	Autonomous AutonomousModeState
 
-	// GitHub PR / URL integration
-	GitHubPRNumber  int
-	GitHubPRURL     string
-	GitHubOwner     string
-	GitHubRepo      string
-	GitHubSourceRef string
-	ClonedRepoPath  string
-	MainRepoPath    string
-	IsWorktree      bool
-	GitHubIsFork    bool
-
-	// PR status fields (populated by PRStatusPoller)
-	GitHubPRState          string
-	GitHubPRIsDraft        bool
-	GitHubPRPriority       string
-	GitHubApprovedCount    int
-	GitHubChangesReqCount  int
-	GitHubCheckConclusion  string
-	GitHubPRStatusTerminal bool
-	LastPRStatusCheck      time.Time
+	// GitHub PR / URL integration (grouped — access as snap.GitHub.GitHubPRURL)
+	GitHub GitHubIntegration
 
 	// Checkpoints
 	Checkpoints      CheckpointList // defensive deep copy — see buildSnapshot
@@ -98,20 +111,20 @@ type InstanceSnapshot struct {
 	ForkedFromID     string
 
 	// Misc config
-	OneShot            bool
-	Hidden             bool
-	ProjectID          string
-	HistoryFilePath    string
-	MCPServerURL       string
-	AppendSystemPrompt string
-	AllowedTools       string
-	PermissionMode     string
+	OneShot             bool
+	Hidden              bool
+	ProjectID           string
+	HistoryFilePath     string
+	MCPServerURL        string
+	AppendSystemPrompt  string
+	AllowedTools        string
+	PermissionMode      string
 	RateLimitAutoResume *bool  // copy of pointee — see buildSnapshot
-	PauseReason        string
-	WorkflowID         string
-	EnvVars            map[string]string // defensive deep copy — see buildSnapshot
-	CLIFlags           string
-	ArchivedAt         *time.Time // copy of pointee — see buildSnapshot
+	PauseReason         string
+	WorkflowID          string
+	EnvVars             map[string]string // defensive deep copy — see buildSnapshot
+	CLIFlags            string
+	ArchivedAt          *time.Time // copy of pointee — see buildSnapshot
 
 	// Review queue / activity state (embedded value — copied by value)
 	ReviewState
@@ -151,27 +164,31 @@ func buildSnapshot(i *Instance) *InstanceSnapshot {
 		TmuxPrefix:       i.TmuxPrefix,
 		TmuxServerSocket: i.TmuxServerSocket,
 		Tags:             append([]string(nil), i.Tags...),
-		AutonomousMode:   i.AutonomousMode,
-		AutonomousTurn:   i.AutonomousTurn,
-		AutonomousMaxTurns: i.AutonomousMaxTurns,
-		AutonomousOutcome:  i.AutonomousOutcome,
-		GitHubPRNumber:         i.GitHubPRNumber,
-		GitHubPRURL:            i.GitHubPRURL,
-		GitHubOwner:            i.GitHubOwner,
-		GitHubRepo:             i.GitHubRepo,
-		GitHubSourceRef:        i.GitHubSourceRef,
-		ClonedRepoPath:         i.ClonedRepoPath,
-		MainRepoPath:           i.MainRepoPath,
-		IsWorktree:             i.IsWorktree,
-		GitHubIsFork:           i.GitHubIsFork,
-		GitHubPRState:          i.GitHubPRState,
-		GitHubPRIsDraft:        i.GitHubPRIsDraft,
-		GitHubPRPriority:       i.GitHubPRPriority,
-		GitHubApprovedCount:    i.GitHubApprovedCount,
-		GitHubChangesReqCount:  i.GitHubChangesReqCount,
-		GitHubCheckConclusion:  i.GitHubCheckConclusion,
-		GitHubPRStatusTerminal: i.GitHubPRStatusTerminal,
-		LastPRStatusCheck:      i.LastPRStatusCheck,
+		Autonomous: AutonomousModeState{
+			AutonomousMode:     i.AutonomousMode,
+			AutonomousTurn:     i.AutonomousTurn,
+			AutonomousMaxTurns: i.AutonomousMaxTurns,
+			AutonomousOutcome:  i.AutonomousOutcome,
+		},
+		GitHub: GitHubIntegration{
+			GitHubPRNumber:         i.GitHubPRNumber,
+			GitHubPRURL:            i.GitHubPRURL,
+			GitHubOwner:            i.GitHubOwner,
+			GitHubRepo:             i.GitHubRepo,
+			GitHubSourceRef:        i.GitHubSourceRef,
+			ClonedRepoPath:         i.ClonedRepoPath,
+			MainRepoPath:           i.MainRepoPath,
+			IsWorktree:             i.IsWorktree,
+			GitHubIsFork:           i.GitHubIsFork,
+			GitHubPRState:          i.GitHubPRState,
+			GitHubPRIsDraft:        i.GitHubPRIsDraft,
+			GitHubPRPriority:       i.GitHubPRPriority,
+			GitHubApprovedCount:    i.GitHubApprovedCount,
+			GitHubChangesReqCount:  i.GitHubChangesReqCount,
+			GitHubCheckConclusion:  i.GitHubCheckConclusion,
+			GitHubPRStatusTerminal: i.GitHubPRStatusTerminal,
+			LastPRStatusCheck:      i.LastPRStatusCheck,
+		},
 		Checkpoints:      append(CheckpointList(nil), i.Checkpoints...),
 		ActiveCheckpoint: i.ActiveCheckpoint,
 		ForkedFromID:     i.ForkedFromID,
@@ -186,10 +203,10 @@ func buildSnapshot(i *Instance) *InstanceSnapshot {
 		PauseReason:        i.PauseReason,
 		WorkflowID:         i.WorkflowID,
 		CLIFlags:           i.CLIFlags,
-		ReviewState:      i.ReviewState,
-		InstanceType:     i.InstanceType,
-		IsManaged:        i.IsManaged,
-		Artifacts:        i.Artifacts,
+		ReviewState:  i.ReviewState,
+		InstanceType: i.InstanceType,
+		IsManaged:    i.IsManaged,
+		Artifacts:    i.Artifacts,
 	}
 
 	// Deep copy RateLimitAutoResume *bool

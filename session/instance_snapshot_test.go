@@ -129,8 +129,8 @@ func TestSnapshotReflectsRemoveTag(t *testing.T) {
 func TestSnapshotReflectsSetGitHubPRNumber(t *testing.T) {
 	inst := minimalInstance(t)
 	inst.SetGitHubPRNumber(42)
-	if inst.Snapshot().GitHubPRNumber != 42 {
-		t.Fatalf("Snapshot().GitHubPRNumber = %d, want 42", inst.Snapshot().GitHubPRNumber)
+	if inst.Snapshot().GitHub.GitHubPRNumber != 42 {
+		t.Fatalf("Snapshot().GitHub.GitHubPRNumber = %d, want 42", inst.Snapshot().GitHub.GitHubPRNumber)
 	}
 }
 
@@ -193,14 +193,14 @@ func TestSetAutonomousCompleteActorRouted(t *testing.T) {
 	inst.SetAutonomousComplete(true)
 
 	snap := inst.Snapshot()
-	if snap.AutonomousMode {
-		t.Fatal("Snapshot().AutonomousMode is true after SetAutonomousComplete, want false")
+	if snap.Autonomous.AutonomousMode {
+		t.Fatal("Snapshot().Autonomous.AutonomousMode is true after SetAutonomousComplete, want false")
 	}
-	if snap.AutonomousTurn != 0 {
-		t.Fatalf("Snapshot().AutonomousTurn = %d, want 0", snap.AutonomousTurn)
+	if snap.Autonomous.AutonomousTurn != 0 {
+		t.Fatalf("Snapshot().Autonomous.AutonomousTurn = %d, want 0", snap.Autonomous.AutonomousTurn)
 	}
-	if snap.AutonomousOutcome != "done" {
-		t.Fatalf("Snapshot().AutonomousOutcome = %q, want %q", snap.AutonomousOutcome, "done")
+	if snap.Autonomous.AutonomousOutcome != "done" {
+		t.Fatalf("Snapshot().Autonomous.AutonomousOutcome = %q, want %q", snap.Autonomous.AutonomousOutcome, "done")
 	}
 }
 
