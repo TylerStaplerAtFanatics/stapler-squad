@@ -895,7 +895,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	var workflowScheduler *workflows.Scheduler
 	if workflowRepo != nil {
 		workflowScheduler = workflows.NewScheduler(workflowRepo, sessionService, eventBus)
-		workflowSvc := services.NewWorkflowService(workflowRepo, workflowScheduler)
+		workflowSvc := services.NewWorkflowService(workflowRepo, workflowScheduler, storage)
 		sessionService.SetWorkflowService(workflowSvc)
 		sessionService.SetWorkflowRepository(workflowRepo)
 		log.Info("WorkflowService and WorkflowScheduler initialized")
