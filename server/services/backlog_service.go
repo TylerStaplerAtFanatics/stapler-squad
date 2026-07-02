@@ -84,6 +84,11 @@ type BacklogService struct {
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 	triageSem      chan struct{}
+
+	// resolveGitHubInput resolves a GitHub URL/shorthand to a local clone path,
+	// cloning it if necessary. Defaults to session.ResolveGitHubInput; overridable
+	// via SetGitHubResolver so tests don't need real network/git access.
+	resolveGitHubInput func(input string) (string, *session.GitHubRef, error)
 }
 
 // NewBacklogService creates a BacklogService with all optional dependencies.
@@ -99,14 +104,15 @@ func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *co
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &BacklogService{
-		storage:        storage,
-		sourceBackend:  storage,
-		sessionCreator: creator,
-		cfg:            cfg,
-		engine:         engine,
-		shutdownCtx:    ctx,
-		shutdownCancel: cancel,
-		triageSem:      make(chan struct{}, 8),
+		storage:            storage,
+		sourceBackend:      storage,
+		sessionCreator:     creator,
+		cfg:                cfg,
+		engine:             engine,
+		shutdownCtx:        ctx,
+		shutdownCancel:     cancel,
+		triageSem:          make(chan struct{}, 8),
+		resolveGitHubInput: session.ResolveGitHubInput,
 	}
 }
 
@@ -130,6 +136,27 @@ func (s *BacklogService) SetSessionStopper(stopper SessionStopper) {
 // When set, SpawnSessionFromItem with autonomous=true will start an AutonomousDriver on the spawned instance.
 func (s *BacklogService) SetAutonomousDriverStarter(starter AutonomousDriverStarter) {
 	s.autonomousStarter = starter
+}
+
+// SetGitHubResolver overrides how GitHub URLs are resolved to local clone paths.
+// Used by tests to avoid real network/git access; production wiring uses the
+// session.ResolveGitHubInput default set in NewBacklogService.
+func (s *BacklogService) SetGitHubResolver(fn func(input string) (string, *session.GitHubRef, error)) {
+	s.resolveGitHubInput = fn
+}
+
+// resolveRepoPathInput resolves a GitHub URL/shorthand repo_path to a local clone
+// path, cloning it if necessary (mirrors SessionService.CreateSession's handling
+// of GitHub URLs). Plain filesystem paths pass through unchanged.
+func (s *BacklogService) resolveRepoPathInput(input string) (string, error) {
+	if input == "" || !session.IsGitHubURL(input) {
+		return input, nil
+	}
+	localPath, _, err := s.resolveGitHubInput(input)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve GitHub URL %q: %w", input, err)
+	}
+	return localPath, nil
 }
 
 // encryptAndMergeToken produces a token config JSON string suitable for storage.
@@ -419,13 +446,18 @@ func (s *BacklogService) CreateBacklogItem(
 		priority = session.DefaultBacklogPriority
 	}
 
+	repoPath, err := s.resolveRepoPathInput(req.Msg.RepoPath)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	data := session.BacklogItemData{
 		Title:              req.Msg.Title,
 		Description:        req.Msg.Description,
 		AcceptanceCriteria: acJSON,
 		Priority:           priority,
 		Status:             string(session.BacklogStatusIdea),
-		RepoPath:           req.Msg.RepoPath,
+		RepoPath:           repoPath,
 		SkipReviewGate:     req.Msg.SkipReviewGate,
 		SkipPlanning:       req.Msg.SkipPlanning,
 		Notes:              req.Msg.Notes,
@@ -569,7 +601,10 @@ func (s *BacklogService) UpdateBacklogItem(
 		update.Priority = &prio
 	}
 	if req.Msg.RepoPath != "" {
-		rp := req.Msg.RepoPath
+		rp, resolveErr := s.resolveRepoPathInput(req.Msg.RepoPath)
+		if resolveErr != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, resolveErr)
+		}
 		update.RepoPath = &rp
 	}
 	skipRG := req.Msg.SkipReviewGate
