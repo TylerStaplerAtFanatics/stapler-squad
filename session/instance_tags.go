@@ -18,7 +18,11 @@ func (i *Instance) AddTag(tag string) error {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.ensureTagManager()
-	return i.tagManager.Add(tag)
+	err := i.tagManager.Add(tag)
+	if err == nil {
+		i.snapshot.Store(buildSnapshot(i))
+	}
+	return err
 }
 
 // RemoveTag removes a tag from the instance. Delegates to TagManager.Remove.
@@ -27,6 +31,7 @@ func (i *Instance) RemoveTag(tag string) {
 	defer i.stateMutex.Unlock()
 	i.ensureTagManager()
 	i.tagManager.Remove(tag)
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // HasTag returns true if the instance has the specified tag. Delegates to TagManager.Has.
@@ -64,5 +69,9 @@ func (i *Instance) SetTags(tags []string) error {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.ensureTagManager()
-	return i.tagManager.Set(tags)
+	err := i.tagManager.Set(tags)
+	if err == nil {
+		i.snapshot.Store(buildSnapshot(i))
+	}
+	return err
 }

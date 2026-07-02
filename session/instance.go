@@ -328,6 +328,11 @@ type Instance struct {
 	// callers that read inst.Tags directly.
 	tagManager TagManager
 
+	// snapshot is a lock-free atomic copy of all mutable Instance fields, published
+	// by every mutator before it releases stateMutex. Readers can call Snapshot()
+	// without acquiring any lock. Load() is guaranteed non-nil after construction.
+	snapshot atomic.Pointer[InstanceSnapshot]
+
 	// Mutex to protect concurrent access to instance state
 	stateMutex deadlock.RWMutex
 	// startMu prevents concurrent calls to start() from racing during session setup.
@@ -618,7 +623,23 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	// Initialize the CDP manager (noop when Chrome is absent on any platform).
 	instance.initCDPManager(cfg)
 
+	finishInstanceConstruction(instance)
 	return instance, nil
+}
+
+// Snapshot returns the most recently published atomic snapshot of this Instance's
+// mutable fields. The returned pointer is never nil after construction. Callers
+// must not mutate the returned struct.
+func (i *Instance) Snapshot() *InstanceSnapshot {
+	return i.snapshot.Load()
+}
+
+// finishInstanceConstruction publishes the initial snapshot so that Load() is
+// guaranteed non-nil by the time the *Instance is visible to any other goroutine.
+// This is the single choke-point called by every construction site — Epic 3
+// will extend this helper to also spawn the actor goroutine.
+func finishInstanceConstruction(i *Instance) {
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // SetShellRepository injects the shell persistence backend. Called by Storage after
@@ -653,6 +674,7 @@ func (i *Instance) SetArtifacts(blob *artifacts.SessionArtifactsBlob) {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.Artifacts = blob
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // SetGitHubPRNumber atomically updates the in-memory GitHubPRNumber field.
@@ -661,6 +683,7 @@ func (i *Instance) SetGitHubPRNumber(n int) {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.GitHubPRNumber = n
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // SetSessionGoalCached atomically updates the in-memory sessionGoal cache.
@@ -911,6 +934,7 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 	// field (instance_tmux.go, instance_terminal.go, instance_workspace.go, etc.)
 	// takes stateMutex first, so writing it after Unlock() is a data race.
 	i.started = true
+	i.snapshot.Store(buildSnapshot(i))
 	i.stateMutex.Unlock()
 	i.fireLifecycleEvent(EventStarted, "")
 
@@ -1289,6 +1313,7 @@ func (i *Instance) Restart(preserveOutput bool) error {
 		i.started = true
 	}
 	i.UpdatedAt = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 	i.stateMutex.Unlock()
 
 	log.Info("successfully restarted session", "session", i.Title)

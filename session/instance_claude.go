@@ -282,6 +282,7 @@ func (i *Instance) ClearConversationState() {
 		i.claudeSession.ConversationUUID = ""
 	}
 	i.HistoryFilePath = ""
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // tryExtractConversationUUID attempts to detect the Claude conversation UUID
@@ -461,5 +462,6 @@ func (i *Instance) SetHistoryInfo(conversationUUID, historyFilePath string) {
 	}
 	i.claudeSession.ConversationUUID = conversationUUID
 	i.HistoryFilePath = historyFilePath
+	i.snapshot.Store(buildSnapshot(i))
 	log.ForSession(i.Title).Info("conversation uuid set", "uuid", conversationUUID, "history", historyFilePath)
 }

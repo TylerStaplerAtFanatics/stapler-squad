@@ -377,5 +377,6 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		}
 	}
 
+	finishInstanceConstruction(instance)
 	return instance, nil
 }

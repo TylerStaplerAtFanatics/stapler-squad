@@ -79,6 +79,7 @@ func (i *Instance) Rename(newTitle string) error {
 	oldTitle := i.Title
 	i.Title = newTitle
 	i.UpdatedAt = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 
 	log.Info("renamed session", "from", oldTitle, "to", newTitle)
 	return nil
@@ -173,6 +174,7 @@ func (i *Instance) CaptureCurrentState() error {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.WorkingDir = path
+	i.snapshot.Store(buildSnapshot(i))
 	return nil
 }
 
@@ -255,4 +257,5 @@ func (i *Instance) UpdatePRStatus(state, priority, checkConclusion string, appro
 	i.GitHubCheckConclusion = checkConclusion
 	i.GitHubPRStatusTerminal = terminal
 	i.LastPRStatusCheck = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 }
