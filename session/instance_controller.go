@@ -55,16 +55,17 @@ func (i *Instance) StartController() error {
 	// explicit Stop(), transition the instance to Stopped and notify listeners.
 	// If the exit tail contains a stale --resume error, auto-recover by clearing
 	// the UUID and restarting fresh (no --resume on the next attempt).
+	// Route through the actor mailbox to prevent TOCTOU races on i.Status.
 	controller.SetOnEOFCallback(func() {
 		log.Info("pty eof received from response stream", "session", i.Title)
 		exitContent := controller.GetExitContent()
-		i.stateMutex.Lock()
-		if i.Status == Active {
-			if err := i.transitionTo(context.Background(), Stopped); err != nil {
-				log.Warn("exit callback transition failed", "session", i.Title, "err", err)
+		i.send(func(s *instanceState) {
+			if s.inst.Status == Active {
+				if err := transitionToLocked(s, context.Background(), Stopped); err != nil {
+					log.Warn("exit callback transition failed", "session", i.Title, "err", err)
+				}
 			}
-		}
-		i.stateMutex.Unlock()
+		})
 		i.fireLifecycleEvent(EventExited, "pty-eof")
 
 		if isStaleResumeExit(exitContent) {
@@ -143,6 +144,16 @@ func (i *Instance) StopController() {
 
 	i.controllerManager.UnregisterController(i.Title)
 
+	log.Info("stopped claudecontroller for instance", "session", i.Title)
+}
+
+// stopControllerLocked stops the ClaudeController from within an actor command.
+func stopControllerLocked(s *instanceState) {
+	i := s.inst
+	if !i.controllerManager.HasController() {
+		return
+	}
+	i.controllerManager.UnregisterController(i.Title)
 	log.Info("stopped claudecontroller for instance", "session", i.Title)
 }
 

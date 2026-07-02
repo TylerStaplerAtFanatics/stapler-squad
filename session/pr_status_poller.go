@@ -380,11 +380,7 @@ func (p *PRStatusPoller) applyPRUpdate(inst *Instance, prInfo *github.PRInfo) {
 		isDraft = prInfo.IsDraft
 	}
 
-	// Check whether priority actually changed before notifying.
-	// Lock-free snapshot read replaces the explicit stateMutex.RLock() here.
-	oldPriority := inst.Snapshot().GitHubPRPriority
-
-	inst.UpdatePRStatus(state, priority, checkConclusion, approvedCount, changesReqCount, isDraft, terminal)
+	result := inst.UpdatePRStatus(state, priority, checkConclusion, approvedCount, changesReqCount, isDraft, terminal)
 
 	if p.storage != nil {
 		if err := p.storage.UpdateInstancePRStatus(inst.Title, state, priority, checkConclusion,
@@ -393,13 +389,13 @@ func (p *PRStatusPoller) applyPRUpdate(inst *Instance, prInfo *github.PRInfo) {
 		}
 	}
 
-	if priority != oldPriority {
+	if result.PriorityChanged {
 		p.mu.RLock()
 		onUpdated := p.onUpdated
 		p.mu.RUnlock()
 		if onUpdated != nil {
 			onUpdated(inst)
 		}
-		log.Info("PR status poller: PR priority changed", "session", inst.Title, "old", oldPriority, "new", priority)
+		log.Info("PR status poller: PR priority changed", "session", inst.Title, "new", priority)
 	}
 }

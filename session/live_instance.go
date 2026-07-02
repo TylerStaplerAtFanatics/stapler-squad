@@ -42,6 +42,11 @@ func NewLiveInstance(inst *Instance) *LiveInstance {
 		done:     make(chan struct{}),
 		mailbox:  make(chan command, mailboxCapacity),
 	}
+	// Store the back-pointer so *Instance methods can route through the actor mailbox
+	// via sendSyncErr/send/sendCtx. Must happen before finishLiveInstanceConstruction
+	// starts the actor goroutine so the pointer is visible to any commands dispatched
+	// immediately after construction.
+	inst.liveInstance.Store(li)
 	finishLiveInstanceConstruction(li)
 	return li
 }
