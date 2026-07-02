@@ -54,6 +54,14 @@ type hasUncommittedEntry struct {
 	expiry time.Time
 }
 
+// trackedFile holds the index metadata for a single tracked file needed by the
+// OS stat phase of HasUncommitted.
+type trackedFile struct {
+	name       string
+	size       uint32
+	modifiedAt time.Time
+}
+
 type aheadBehindEntry struct {
 	ahead  int
 	behind int
@@ -273,26 +281,16 @@ func (g *GoGitVCSReader) ResolveDefaultBranch(repoPath string) string {
 	return ""
 }
 
-// HasUncommitted reports whether the worktree has any staged or unstaged changes.
-//
-// Strategy (no subprocess, low allocations):
-//  1. Staged changes: compare index entry hashes against HEAD tree hashes — O(n)
-//     hash comparisons, zero file I/O.
-//  2. Working-tree changes: stat each tracked file and compare mtime/size against
-//     the index record — O(n) stat calls, no file reads.
-//
-// This avoids the 1.85 GB allocation caused by wt.Status(), which hashes every
-// modified file in full.
 // hasUncommittedGoGitPhase runs the go-git index phase of HasUncommitted.
-// Acquires and releases entry.mu via defer. Returns indexed file set + dirty flag.
+// Acquires and releases entry.mu via defer. Returns tracked file slice + dirty flag.
 // MUST NOT be called with entry.mu already held — Go mutexes are not reentrant.
 //
 // Returns:
-//   - indexed: map of tracked file names → bool (for the OS stat phase)
+//   - tracked: slice of index entries needed for the OS stat phase (lock released before caller uses these)
 //   - dirty: true if dirty was determined from go-git alone
 //   - dirtyKnown: true if dirty result is definitive (caller should skip OS phase)
 //   - err: any error encountered
-func (g *GoGitVCSReader) hasUncommittedGoGitPhase(entry *cachedRepo, worktreePath string) (indexed map[string]bool, dirty bool, dirtyKnown bool, err error) {
+func (g *GoGitVCSReader) hasUncommittedGoGitPhase(entry *cachedRepo, worktreePath string) (tracked []trackedFile, dirty bool, dirtyKnown bool, err error) {
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
@@ -356,37 +354,25 @@ func (g *GoGitVCSReader) hasUncommittedGoGitPhase(entry *cachedRepo, worktreePat
 	}
 
 	// Capture index entries needed for the OS phase as plain value types.
-	type trackedFile struct {
-		name       string
-		size       uint32
-		modifiedAt time.Time
-	}
-	tracked := make([]trackedFile, len(idx.Entries))
+	// entry.mu is released by defer when this function returns — OS stat work
+	// must happen in the caller after this function returns.
+	result := make([]trackedFile, len(idx.Entries))
 	for i, idxEntry := range idx.Entries {
-		tracked[i] = trackedFile{idxEntry.Name, idxEntry.Size, idxEntry.ModifiedAt}
+		result[i] = trackedFile{idxEntry.Name, idxEntry.Size, idxEntry.ModifiedAt}
 	}
-	// defer releases the lock here — all go-git work is done.
-
-	// Build the indexed map and perform OS stat checks.
-	// Note: the lock is still held here (deferred unlock fires on return), but OS
-	// stat calls are fine under the lock since they don't call back into go-git.
-	indexedMap := make(map[string]bool, len(tracked))
-	for _, tf := range tracked {
-		indexedMap[tf.name] = true
-		info, serr := os.Lstat(filepath.Join(worktreePath, tf.name))
-		if serr != nil {
-			if os.IsNotExist(serr) {
-				return nil, true, true, nil // tracked file deleted
-			}
-			continue
-		}
-		if info.Size() != int64(tf.size) ||
-			!info.ModTime().Truncate(time.Second).Equal(tf.modifiedAt.Truncate(time.Second)) {
-			return nil, true, true, nil
-		}
-	}
-	return indexedMap, false, false, nil
+	return result, false, false, nil
 }
+
+// HasUncommitted reports whether the worktree has any staged or unstaged changes.
+//
+// Strategy (no subprocess, low allocations):
+//  1. Staged changes: compare index entry hashes against HEAD tree hashes — O(n)
+//     hash comparisons, zero file I/O.
+//  2. Working-tree changes: stat each tracked file and compare mtime/size against
+//     the index record — O(n) stat calls, no file reads.
+//
+// This avoids the 1.85 GB allocation caused by wt.Status(), which hashes every
+// modified file in full.
 
 func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
 	if v, ok := g.hasUncommittedCache.Load(worktreePath); ok {
@@ -405,12 +391,13 @@ func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
 
 		entry, err := g.openRepoEntry(worktreePath)
 		if err != nil {
-			return nil, fmt.Errorf("open repo %s: %w", worktreePath, err)
+			return false, fmt.Errorf("open repo %s: %w", worktreePath, err)
 		}
 
-		indexed, dirty, dirtyKnown, err := g.hasUncommittedGoGitPhase(entry, worktreePath)
+		// Phase 1: go-git index phase — entry.mu is held only inside this call.
+		tracked, dirty, dirtyKnown, err := g.hasUncommittedGoGitPhase(entry, worktreePath)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 		if dirtyKnown {
 			g.hasUncommittedCache.Store(worktreePath, hasUncommittedEntry{
@@ -419,10 +406,35 @@ func (g *GoGitVCSReader) HasUncommitted(worktreePath string) (bool, error) {
 			return dirty, nil
 		}
 
-		// Phase 2: OS-only untracked files walk — no lock held
-		result, err := hasUntrackedFiles(worktreePath, indexed)
+		// Phase 2: OS stat walk — entry.mu is NOT held here (released by hasUncommittedGoGitPhase).
+		indexedMap := make(map[string]bool, len(tracked))
+		for _, tf := range tracked {
+			indexedMap[tf.name] = true
+			info, serr := os.Lstat(filepath.Join(worktreePath, tf.name))
+			if serr != nil {
+				if os.IsNotExist(serr) {
+					result := true // tracked file deleted
+					g.hasUncommittedCache.Store(worktreePath, hasUncommittedEntry{
+						result: result, expiry: time.Now().Add(diffStatCacheTTL),
+					})
+					return result, nil
+				}
+				continue
+			}
+			if info.Size() != int64(tf.size) ||
+				!info.ModTime().Truncate(time.Second).Equal(tf.modifiedAt.Truncate(time.Second)) {
+				result := true
+				g.hasUncommittedCache.Store(worktreePath, hasUncommittedEntry{
+					result: result, expiry: time.Now().Add(diffStatCacheTTL),
+				})
+				return result, nil
+			}
+		}
+
+		// Phase 3: untracked files walk — no lock held
+		result, err := hasUntrackedFiles(worktreePath, indexedMap)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 		g.hasUncommittedCache.Store(worktreePath, hasUncommittedEntry{
 			result: result, expiry: time.Now().Add(diffStatCacheTTL),
@@ -499,7 +511,7 @@ func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error
 
 		entry, openErr := g.openRepoEntry(worktreePath)
 		if openErr != nil {
-			return nil, fmt.Errorf("open repo %s: %w", worktreePath, openErr)
+			return abResult{}, fmt.Errorf("open repo %s: %w", worktreePath, openErr)
 		}
 
 		entry.mu.Lock()
@@ -508,11 +520,11 @@ func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error
 		repo := entry.repo
 		headRef, headErr := repo.Head()
 		if headErr != nil {
-			return nil, fmt.Errorf("head: %w", headErr)
+			return abResult{}, fmt.Errorf("head: %w", headErr)
 		}
 		baseHash, baseErr := resolveRef(repo, base)
 		if baseErr != nil {
-			return nil, fmt.Errorf("resolve base %q: %w", base, baseErr)
+			return abResult{}, fmt.Errorf("resolve base %q: %w", base, baseErr)
 		}
 		if headRef.Hash() == baseHash {
 			g.aheadBehindCache.Store(cacheKey, aheadBehindEntry{expiry: time.Now().Add(diffStatCacheTTL)})
@@ -520,15 +532,15 @@ func (g *GoGitVCSReader) AheadBehind(worktreePath, base string) (int, int, error
 		}
 		mb, mbErr := findMergeBase(repo, headRef.Hash(), baseHash)
 		if mbErr != nil {
-			return nil, fmt.Errorf("merge base: %w", mbErr)
+			return abResult{}, fmt.Errorf("merge base: %w", mbErr)
 		}
 		ahead, aheadErr := countCommitsTo(repo, headRef.Hash(), mb)
 		if aheadErr != nil {
-			return nil, aheadErr
+			return abResult{}, aheadErr
 		}
 		behind, behindErr := countCommitsTo(repo, baseHash, mb)
 		if behindErr != nil {
-			return nil, behindErr
+			return abResult{}, behindErr
 		}
 		g.aheadBehindCache.Store(cacheKey, aheadBehindEntry{ahead: ahead, behind: behind, expiry: time.Now().Add(diffStatCacheTTL)})
 		return abResult{ahead, behind}, nil
