@@ -987,6 +987,9 @@ func (s *SessionService) CreateSession(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
 	}
 	if req.Msg.SessionType != sessionv1.SessionType_SESSION_TYPE_ONE_OFF &&
+		// AutonomousMode: the omnibar always submits an empty path for autonomous
+		// sessions; see the directory-generation block below.
+		!req.Msg.AutonomousMode &&
 		req.Msg.AliasName == "" &&
 		req.Msg.SessionType != sessionv1.SessionType_SESSION_TYPE_NEW_PROJECT &&
 		req.Msg.Path == "" {
@@ -1055,7 +1058,10 @@ func (s *SessionService) CreateSession(
 	cfg := config.LoadConfig()
 
 	// One-off session: generate a fresh directory and override resolvedPath.
-	if req.Msg.SessionType == sessionv1.SessionType_SESSION_TYPE_ONE_OFF {
+	// Autonomous sessions created without an explicit path (the omnibar's normal
+	// flow) get the same treatment — the agent needs somewhere to run.
+	if req.Msg.SessionType == sessionv1.SessionType_SESSION_TYPE_ONE_OFF ||
+		(req.Msg.AutonomousMode && resolvedPath == "") {
 		baseDir, err := cfg.OneOffBaseDirOrDefault()
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve one_off_base_dir: %w", err))
