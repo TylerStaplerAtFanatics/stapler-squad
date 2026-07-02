@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.33.0](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.32.0...v1.33.0) (2026-07-02)
+
+
+### Features
+
+* **pr-status:** show PR badge in row mode and use go-git for branch detection ([664fbfb](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/664fbfb118d036a7ef52e0519a05d9e8368f22ca))
+
+
+### Bug Fixes
+
+* **codesign:** correct otool byte-order in verify-codesign plist decode ([ca60c0a](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/ca60c0ae893ba542a62cc46c5789af38fb57da4c))
+* **css:** enable scroll on unfinished tab container ([fa5f37e](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/fa5f37e25607ca094858655a57cbc0ca9202f368))
+* **lint:** suppress norawexec on lookPathOnlyExecutor stub ([d054495](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/d054495cb49d5a4151475df6fa0fe2e8cb99edc2))
+* **lint:** use correct nolint directives for lookPathOnlyExecutor stub ([8987673](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/898767374dad24c5c6ab8e30aecf4ec5c96c5c29))
+* repair broken release pipeline and build-from-source path ([#147](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/147)) ([1fc2ff6](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/1fc2ff6c90fe88af32f14fa600bdfc03a63fcf54))
+* review queue auto-advance respects preference after approve/deny ([c63886a](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/c63886aa90a2354e41140a51280ad86eadfc06df))
+* **unfinished:** stack GitHub auth banner vertically so Connect button is always visible ([750d252](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/750d252092abf455d7c20ad8ad143486e28674d2))
+
 ## [1.32.0](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.31.1...v1.32.0) (2026-07-01)
 
 
