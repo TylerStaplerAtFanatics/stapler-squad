@@ -217,14 +217,14 @@ func (p *PRStatusPoller) checkAllSessions() {
 		// the explicit stateMutex.RLock() for GitHubPRStatusTerminal / GitHubIsFork.
 		instSnap := inst.Snapshot()
 
-		if instSnap.GitHubOwner == "" || instSnap.GitHubRepo == "" {
+		if instSnap.GitHub.GitHubOwner == "" || instSnap.GitHub.GitHubRepo == "" {
 			continue // no GitHub info for this session
 		}
 
-		if instSnap.GitHubPRStatusTerminal {
+		if instSnap.GitHub.GitHubPRStatusTerminal {
 			continue // merged/closed; poller already marked it terminal
 		}
-		if instSnap.GitHubIsFork {
+		if instSnap.GitHub.GitHubIsFork {
 			log.Info("PR status poller: skipping fork session (upstream PR lookup Phase 2)", "session", instSnap.Title)
 			continue
 		}
@@ -274,10 +274,10 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 	// Lock-free snapshot for the pre-fetch reads; the subsequent writes
 	// (GitHubPRNumber, LastPRStatusCheck) remain guarded by stateMutex.
 	prefetch := inst.Snapshot()
-	prNumber := prefetch.GitHubPRNumber
+	prNumber := prefetch.GitHub.GitHubPRNumber
 	branch := prefetch.Branch
-	owner := prefetch.GitHubOwner
-	repo := prefetch.GitHubRepo
+	owner := prefetch.GitHub.GitHubOwner
+	repo := prefetch.GitHub.GitHubRepo
 
 	// Auto-discovery: find PR for branch when PR number not yet known
 	if prNumber == 0 {
