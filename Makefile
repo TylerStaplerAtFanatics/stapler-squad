@@ -147,7 +147,7 @@ web-app/node_modules/.modules.yaml: web-app/package.json web-app/pnpm-lock.yaml
 	@cd web-app && pnpm install --frozen-lockfile
 
 # Build Next.js app to web-app/out
-web-app/out: ensure-tools web-app/node_modules/.modules.yaml $(WEB_FILES) web-app/next.config.ts
+web-app/out: ensure-tools proto-gen web-app/node_modules/.modules.yaml $(WEB_FILES) web-app/next.config.ts
 	@# Guard: re-install if node_modules was wiped by external tools without touching pnpm-lock.yaml
 	@test -d web-app/node_modules/next || { \
 		echo "⚠️  node_modules incomplete, re-installing..."; \
