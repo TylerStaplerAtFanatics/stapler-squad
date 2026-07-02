@@ -118,6 +118,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 		}
 		result.Success = true
 		result.ChangesHandled = "none (directory change only)"
+		i.snapshot.Store(buildSnapshot(i))
 		return result, nil
 	}
 
@@ -158,6 +159,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 			i.started = false
 
 			log.Info("restarting session in new directory", "path", repoPath)
+			i.snapshot.Store(buildSnapshot(i))
 			unlock() // Start() acquires stateMutex itself - must not be held here.
 			if err := i.Start(false); err != nil {
 				result.Error = fmt.Errorf("failed to restart session: %w", err)
@@ -208,6 +210,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 	if switchErr != nil {
 		// Try to recover by restarting at original location
 		log.Warn("switch failed, attempting recovery", "err", switchErr)
+		i.snapshot.Store(buildSnapshot(i))
 		unlock() // Start() acquires stateMutex itself - must not be held here.
 		if err := i.Start(false); err != nil {
 			log.Error("recovery failed", "err", err)
@@ -218,6 +221,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 
 	// 7. Restart Claude (ClaudeCommandBuilder adds --resume automatically)
 	log.Info("restarting session with claude --resume")
+	i.snapshot.Store(buildSnapshot(i))
 	unlock() // Start() acquires stateMutex itself - must not be held here.
 	if err := i.Start(false); err != nil {
 		result.Error = fmt.Errorf("failed to restart session: %w", err)

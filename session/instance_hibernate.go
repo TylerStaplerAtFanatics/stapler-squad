@@ -100,14 +100,20 @@ func (i *Instance) ResumeFromHibernation(ctx context.Context) error {
 // Called from the Hibernated → Active After hook in a goroutine.
 // Must NOT hold stateMutex.
 func (i *Instance) resumeFromHibernation(ctx context.Context) {
-	// Re-launch via the cold-restore path
+	// Re-launch via the cold-restore path.
+	// Guard the started=false write with stateMutex: buildSnapshot() reads started
+	// while holding the lock, and this goroutine runs concurrently with the parent's
+	// lock release — the write must be serialized.
+	i.stateMutex.Lock()
 	i.started = false
+	i.stateMutex.Unlock()
 	if err := i.Start(false); err != nil {
 		log.Error("hibernation resume: failed to start session",
 			"session", i.Title, "err", err.Error())
 		// Roll back to Hibernated on failure
 		i.stateMutex.Lock()
 		i.loadStatus(Hibernated)
+		i.snapshot.Store(buildSnapshot(i))
 		i.stateMutex.Unlock()
 		return
 	}

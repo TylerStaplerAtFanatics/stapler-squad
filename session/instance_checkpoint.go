@@ -119,6 +119,7 @@ func (i *Instance) CreateCheckpoint(label string, scrollbackSeq uint64) (*Checkp
 
 	i.Checkpoints = append(i.Checkpoints, cp)
 	i.ActiveCheckpoint = cp.ID
+	i.snapshot.Store(buildSnapshot(i))
 
 	return &cp, nil
 }
