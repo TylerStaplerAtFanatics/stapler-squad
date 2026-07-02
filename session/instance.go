@@ -977,10 +977,6 @@ func (i *Instance) Pause() error {
 		return fmt.Errorf("instance is already paused")
 	}
 
-	// Invalidate the IsDirty cache regardless of whether the pause succeeds,
-	// so the UI does not show stale dirty state if pause is retried.
-	defer i.gitManager.InvalidateDirtyCache()
-
 	// Stop the controller when pausing
 	i.StopController()
 
@@ -1043,6 +1039,7 @@ func (i *Instance) Pause() error {
 		return fmt.Errorf("failed to transition to Paused: %w", err)
 	}
 	i.stateMutex.Unlock()
+	i.gitManager.InvalidateDirtyCache()
 	log.ForSession(i.Title).Info("session paused")
 	_ = clipboard.WriteAll(i.gitManager.GetBranchName())
 	return nil
