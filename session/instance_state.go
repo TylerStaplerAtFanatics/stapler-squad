@@ -40,6 +40,9 @@ func (i *Instance) transitionTo(ctx context.Context, to Status) error {
 		}
 	}
 	i.Status = to
+	// Store before calling After: After hooks may spawn goroutines that race with
+	// a post-After snapshot read of the same fields.
+	i.snapshot.Store(buildSnapshot(i))
 	if def.After != nil {
 		def.After(ctx, i)
 	}
@@ -109,6 +112,7 @@ func (i *Instance) MarkViewed() {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.LastViewed = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // MarkUserResponded records that the user has responded to this session.
@@ -117,6 +121,7 @@ func (i *Instance) MarkUserResponded() time.Time {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.LastUserResponse = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 	return i.LastUserResponse
 }
 
@@ -125,6 +130,7 @@ func (i *Instance) MarkAcknowledged() {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.LastAcknowledged = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // MarkNeedsApproval is a no-op: NeedsApproval is no longer a lifecycle state.
@@ -146,6 +152,7 @@ func (i *Instance) SetLastMeaningfulOutput(t time.Time) {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.LastMeaningfulOutput = t
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // GetEffectiveStatus returns the most accurate status for this instance,
@@ -258,6 +265,7 @@ func (i *Instance) RecoverFromStopped() {
 	if i.Status == Stopped {
 		i.loadStatus(Creating)
 		i.started = false
+		i.snapshot.Store(buildSnapshot(i))
 	}
 }
 
@@ -269,6 +277,7 @@ func (i *Instance) ForceStatus(s Status) {
 	i.stateMutex.Lock()
 	defer i.stateMutex.Unlock()
 	i.loadStatus(s)
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // SetArchivedAtIfNil sets ArchivedAt to t only if it is currently nil.
@@ -280,5 +289,6 @@ func (i *Instance) SetArchivedAtIfNil(t time.Time) bool {
 		return false
 	}
 	i.ArchivedAt = &t
+	i.snapshot.Store(buildSnapshot(i))
 	return true
 }
