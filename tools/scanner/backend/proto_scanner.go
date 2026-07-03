@@ -193,6 +193,13 @@ var methodToID = map[string]string{
 	"GetGitHubAuthState": "github-user:get-auth-state",
 	// Provider limits RPCs
 	"GetProviderLimits": "session:get-provider-limits",
+	// Hooks RPCs
+	"GetHookStatus": "hooks:status",
+	"InstallHooks":  "hooks:install",
+	// GitHub user RPCs
+	"ListUserPRs":       "github-user:list-prs",
+	"WatchUserPRs":      "github-user:watch-prs",
+	"GetGitHubAuthState": "github-user:get-auth-state",
 }
 
 // rpcPattern matches lines like:   rpc MethodName(  (indented or not)

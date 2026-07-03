@@ -1243,6 +1243,8 @@ func pauseLocked(s *instanceState) error {
 	if err := transitionToLocked(s, context.Background(), Paused); err != nil {
 		return fmt.Errorf("failed to transition to Paused: %w", err)
 	}
+	i.stateMutex.Unlock()
+	i.gitManager.InvalidateDirtyCache()
 	log.ForSession(i.Title).Info("session paused")
 	_ = clipboard.WriteAll(i.gitManager.GetBranchName())
 	return nil
@@ -1352,7 +1354,8 @@ func (i *Instance) Resume() error {
 		i.mu.Unlock()
 		return fmt.Errorf("failed to transition to Active on resume: %w", err)
 	}
-	i.mu.Unlock()
+	i.stateMutex.Unlock()
+	i.gitManager.InvalidateDirtyCache()
 	log.ForSession(i.Title).Info("session resumed")
 
 	// Start ClaudeController for idle detection and automation

@@ -416,6 +416,16 @@ service SessionService {
   // ~/.claude/settings.json. Idempotent per hook.
   // +api: hooks:install
   rpc InstallHooks(InstallHooksRequest) returns (InstallHooksResponse) {}
+
+  // GetHookStatus reports whether the global Claude Code hooks (rule enforcement
+  // and notifications) are installed in ~/.claude/settings.json.
+  // +api: hooks:status
+  rpc GetHookStatus(GetHookStatusRequest) returns (GetHookStatusResponse) {}
+
+  // InstallHooks installs the requested global Claude Code hooks into
+  // ~/.claude/settings.json. Idempotent per hook.
+  // +api: hooks:install
+  rpc InstallHooks(InstallHooksRequest) returns (InstallHooksResponse) {}
 }
 
 // ListSessionsRequest allows filtering sessions by various criteria.
