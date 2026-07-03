@@ -814,6 +814,13 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	if headlessPool != nil {
 		backlogSvc.SetHeadlessPool(headlessPool)
 	}
+	// Reuse the same registry/keyFunc backlogCtrl's periodic SyncLoop uses, so a
+	// manual TriggerSync call decrypts tokens and dispatches to plugins identically.
+	backlogSvc.SetPluginRegistry(syncRegistry)
+	backlogSvc.SetSyncKeyFunc(keyFunc)
+	// Refuse manual syncs while the backlog feature is toggled off, matching
+	// the periodic SyncLoop's behavior.
+	backlogSvc.SetSyncFeatureEnabledCheck(backlogCtrl.IsEnabled)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
