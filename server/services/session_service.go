@@ -287,7 +287,7 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 			log.Info("[SessionService] AI rule generation unavailable: set ANTHROPIC_API_KEY or install claude/gemini/opencode CLI")
 		}
 	}
-	rulesSvc := NewRulesService(rulesStore, analyticsStore, classifierObj, promptBuilder, aiClientImpl)
+	rulesSvc := NewRulesService(rulesStore, nil, analyticsStore, classifierObj, promptBuilder, aiClientImpl)
 
 	// Initialize capacity monitor.
 	var capCfg config.CapacityConfig
@@ -4007,4 +4007,20 @@ func (s *SessionService) SetTokenStoreReader(store tokens.TokenStoreReader) {
 // GetInstances returns all managed (poller-tracked) live instances, satisfying InstancePoller.
 func (s *SessionService) GetInstances() []*session.Instance {
 	return s.allInstances()
+}
+
+// GetConfigFileRules delegates to RulesService.
+func (s *SessionService) GetConfigFileRules(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetConfigFileRulesRequest],
+) (*connect.Response[sessionv1.GetConfigFileRulesResponse], error) {
+	return s.rulesSvc.GetConfigFileRules(ctx, req)
+}
+
+// SaveRulesToConfigFile delegates to RulesService.
+func (s *SessionService) SaveRulesToConfigFile(
+	ctx context.Context,
+	req *connect.Request[sessionv1.SaveRulesToConfigFileRequest],
+) (*connect.Response[sessionv1.SaveRulesToConfigFileResponse], error) {
+	return s.rulesSvc.SaveRulesToConfigFile(ctx, req)
 }
