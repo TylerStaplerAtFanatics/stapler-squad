@@ -149,6 +149,7 @@
         "src/components/**/*.ts",
         "src/components/**/*.tsx"
       ],
+      "excludedFiles": ["**/*.test.ts", "**/*.test.tsx", "**/__tests__/**"],
       "rules": {
         "no-restricted-syntax": [
           "error",
