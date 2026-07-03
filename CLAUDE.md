@@ -34,14 +34,9 @@ fswatch -o web-app/src | xargs -n1 -I{} make install-service
 See `.claude/docs/profiling.md` for full pprof/goroutine dump instructions.
 OpenTelemetry (Datadog/OTLP) setup: `.claude/docs/opentelemetry.md`
 
-### Bundling tmux (single-binary deployment)
+### Bundling tmux
 
-```bash
-git submodule update --init third_party/tmux
-make build-tmux             # Compile pinned tmux 3.4 (~30s)
-make build-embedded         # Build stapler-squad with tmux embedded
-make test-with-pinned-tmux  # Tests against pinned tmux (reproducible)
-```
+Single-binary deployment with embedded tmux: `.claude/docs/bundling-tmux.md`
 
 ### Testing
 
@@ -78,22 +73,7 @@ Nil safety and static analysis tool reference: `.claude/docs/nil-safety.md`
 
 ### Go Concurrency Patterns
 
-**Double-checked locking — always return the locally-computed value:**
-In the pattern `read-lock → cache miss → compute → write-lock → conditional store`, always return the locally-computed value, not the cache slot. Re-reading the slot after a lost write race returns another goroutine's observation, which may contradict the current goroutine's computation.
-
-```go
-// WRONG: returns g.cache (another goroutine may have stored a different value)
-g.mu.Lock()
-if cacheExpired { g.cache = computed }
-g.mu.Unlock()
-return g.cache, nil
-
-// CORRECT: always return locally-computed value
-g.mu.Lock()
-if cacheExpired { g.cache = computed }
-g.mu.Unlock()
-return computed, nil
-```
+Subtle patterns (double-checked locking, etc.): `.claude/docs/concurrency-patterns.md`
 
 ## Application Data
 
@@ -104,17 +84,8 @@ State and logs live in `~/.stapler-squad/`:
 
 **Key log patterns:** `Starting tmux session`, `timed out waiting for tmux session`, `DoesSessionExist()` polling
 
-**State isolation** (workspace-based by default — per git directory):
-```bash
-STAPLER_SQUAD_INSTANCE=work ./stapler-squad       # Named instance
-STAPLER_SQUAD_INSTANCE=shared ./stapler-squad     # Legacy global shared state
-STAPLER_SQUAD_WORKSPACE_MODE=false ./stapler-squad
-```
-Full isolation reference: `.claude/docs/state-isolation.md`
-
-**External session monitoring** (ssq-mux PTY multiplexer for IntelliJ/VS Code terminals):
-install via `./scripts/install-mux.sh` then `alias claude='ssq-mux claude'`.
-Full guide: `.claude/docs/pty-multiplexing.md`
+State isolation (workspace-based by default): `.claude/docs/state-isolation.md`
+External session monitoring (ssq-mux for IDE terminals): `.claude/docs/pty-multiplexing.md`
 
 ## Architecture Overview
 
@@ -237,6 +208,8 @@ make e2e-lighthouse
 | Tag-based session organization | `.claude/docs/tag-organization.md` |
 | Benchmark reference | `.claude/docs/benchmarks.md` |
 | Nil safety & static analysis tools | `.claude/docs/nil-safety.md` |
+| Go concurrency patterns | `.claude/docs/concurrency-patterns.md` |
+| Bundling tmux (single-binary) | `.claude/docs/bundling-tmux.md` |
 | CSS architecture (vanilla-extract) | `.claude/rules/css-architecture.md` |
 | Feature registry rules | `.claude/rules/feature-registry.md` |
 | Omnibar feature testing registry | `.claude/rules/feature-testing-registry.md` |
