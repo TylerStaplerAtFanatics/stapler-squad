@@ -1953,13 +1953,22 @@ func (s *SessionService) StreamTerminal(
 	// Channel for errors from goroutines
 	errCh := make(chan error, 2)
 
+	// wg tracks both goroutines below so the handler never returns (letting
+	// Connect close the underlying stream) while either might still be
+	// calling stream.Send/stream.Receive — doing so races with Connect's own
+	// end-of-stream write. See BUG-025 follow-up: caught by -race under a
+	// real PTY-backed StreamTerminal test.
+	var wg sync.WaitGroup
+
 	// Flow control state for backpressure management
 	// Reference: https://xtermjs.org/docs/guides/flowcontrol/
 	pauseCh := make(chan bool, 1) // Buffered channel for pause/resume signals
 	var ptyPaused bool            // Current PTY pause state
 
 	// Goroutine 1: Read from PTY and send deltas to client (terminal output)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				errCh <- fmt.Errorf("panic in output goroutine: %v", r)
@@ -1990,12 +1999,28 @@ func (s *SessionService) StreamTerminal(
 					log.Info("[FlowControl] PTY reading PAUSED", "session", initialMsg.SessionId)
 				}
 			default:
-
+				// ptyFile is shared with the instance's own internal PTY
+				// consumers (response stream, command executor), which may
+				// already have a read in flight. Deliberately not setting a
+				// read deadline here: os.File.SetReadDeadline mutates shared
+				// poll.FD state on that *os.File — calling it concurrently
+				// from here would race with (and could corrupt the timing
+				// of) those other readers' own blocking Reads on the same
+				// file. Cancellation is instead handled by the streamCtx
+				// check immediately below, right before Send, plus the
+				// bounded wg.Wait() after the outer select at the bottom of
+				// StreamTerminal.
 				n, readErr := ptyFile.Read(buf)
 				if n > 0 {
 					// Update terminal activity timestamps with the output content
 					// This ensures LastMeaningfulOutput reflects web UI viewing activity
 					instance.UpdateTerminalTimestamps(string(buf[:n]), true)
+
+					select {
+					case <-streamCtx.Done():
+						return
+					default:
+					}
 
 					outputMsg := &sessionv1.TerminalData{
 						SessionId: initialMsg.SessionId,
@@ -2023,7 +2048,9 @@ func (s *SessionService) StreamTerminal(
 	}()
 
 	// Goroutine 2: Receive from client and forward to PTY (terminal input + resize)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				errCh <- fmt.Errorf("panic in input goroutine: %v", r)
@@ -2150,14 +2177,48 @@ func (s *SessionService) StreamTerminal(
 		}
 	}()
 
-	// Wait for either context cancellation or error
+	// Wait for either context cancellation or error, then wait (bounded) for
+	// both goroutines to actually stop before returning. Returning early lets
+	// Connect close the underlying HTTP/2 stream; if either goroutine is
+	// still mid-Send/Receive when that happens, the concurrent writes to the
+	// same connection race. The bound guards against goroutine 2's
+	// stream.Receive() blocking indefinitely if it's mid-read on a client
+	// connection that outlives streamCtx without actually disconnecting
+	// (e.g. the error came from goroutine 1, not a real client hangup).
+	const shutdownWaitTimeout = 2 * time.Second
 	select {
 	case <-streamCtx.Done():
 		log.Info("StreamTerminal: context done", "session", initialMsg.SessionId)
+		if !waitWithTimeout(&wg, shutdownWaitTimeout) {
+			log.Warn("StreamTerminal: goroutines did not exit within timeout after context done", "session", initialMsg.SessionId)
+		}
 		return nil // Clean shutdown
 	case err := <-errCh:
 		log.Error("StreamTerminal error", "session", initialMsg.SessionId, "err", err)
+		cancel() // streamCtx.Done() wasn't otherwise closed on this path; signal both goroutines to stop.
+		if !waitWithTimeout(&wg, shutdownWaitTimeout) {
+			log.Warn("StreamTerminal: goroutines did not exit within timeout after error", "session", initialMsg.SessionId)
+		}
 		return connect.NewError(connect.CodeInternal, err)
+	}
+}
+
+// waitWithTimeout waits for wg to complete, returning true if it did so
+// within timeout and false if the timeout elapsed first. The goroutine
+// spawned to call wg.Wait() is intentionally leaked on timeout — it will
+// still complete and call the (now-unused) done channel's close, which is
+// harmless since nothing reads from it after this function returns.
+func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 

@@ -907,8 +907,11 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 			return setupErr
 		}
 	}
-	i.stateMutex.Unlock()
+	// Set under stateMutex so it's visible atomically with the Active transition
+	// above to readers going through Started() (also lock-protected) — see BUG-025
+	// follow-up, caught by -race via a concurrent Started() poll during startup.
 	i.started = true
+	i.stateMutex.Unlock()
 	i.fireLifecycleEvent(EventStarted, "")
 
 	// Phase 2: Start x11vnc and window tracker now that the tmux session is live.

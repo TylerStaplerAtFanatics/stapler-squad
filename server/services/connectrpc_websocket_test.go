@@ -735,3 +735,26 @@ func TestAnsiSnapshotPrefixContainsRequiredSequences(t *testing.T) {
 			dIdx, eIdx, cIdx, ansiSnapshotPrefix)
 	}
 }
+
+// TestStripAnsiCodesHandlesNonLetterCSITerminators verifies stripAnsiCodes (used by
+// detectContentWidth to count visible characters) strips CSI sequences terminated by
+// a non-letter final byte. The CSI final-byte range is 0x40-0x7E per ECMA-48, not just
+// A-Z/a-z; a letter-only class would leave these bytes in the "visible" count.
+func TestStripAnsiCodesHandlesNonLetterCSITerminators(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "insert_character_at_sign", input: "\x1b[5@Hello", want: "Hello"},
+		{name: "tilde_terminator", input: "\x1b[3~Hello", want: "Hello"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripAnsiCodes(tt.input)
+			if got != tt.want {
+				t.Errorf("stripAnsiCodes(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

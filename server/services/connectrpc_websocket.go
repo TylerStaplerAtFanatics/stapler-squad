@@ -18,6 +18,7 @@ import (
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/gen/proto/go/session/v1/sessionv1connect"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/pkg/ansi"
 	"github.com/tstapler/stapler-squad/server/protocol"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/scrollback"
@@ -66,8 +67,6 @@ func isAllowedOrigin(r *http.Request) bool {
 // These sequences (absolute cursor positioning, screen clears, alternate-screen switches)
 // assume a specific prior terminal state that doesn't exist on initial load.
 // SGR color sequences (ESC[nm) are intentionally NOT matched and are preserved.
-var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-
 var rePositionCodes = regexp.MustCompile(
 	`\x1b\[\d*;?\d*[Hf]` + // Absolute cursor: ESC[H, ESC[n;mH, ESC[n;mf
 		`|\x1b\[\d*J` + // Screen clear: ESC[J, ESC[1J, ESC[2J, ESC[3J
@@ -1509,5 +1508,5 @@ func detectContentWidth(content string) int {
 
 // stripAnsiCodes removes ANSI escape sequences from a string to count visible characters.
 func stripAnsiCodes(s string) string {
-	return ansiEscapeRe.ReplaceAllString(s, "")
+	return ansi.StripCSI(s)
 }

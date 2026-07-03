@@ -245,6 +245,8 @@ func (i *Instance) Hibernated() bool {
 
 // Started returns true if the instance has been started.
 func (i *Instance) Started() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
 	return i.started
 }
 
