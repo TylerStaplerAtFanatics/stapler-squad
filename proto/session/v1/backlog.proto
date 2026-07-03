@@ -390,6 +390,12 @@ service BacklogService {
 
   // ImportGitHubIssue creates a backlog item pre-populated from a GitHub issue.
   rpc ImportGitHubIssue(ImportGitHubIssueRequest) returns (ImportGitHubIssueResponse) {}
+
+  // SearchGitHubRepos returns GitHub repos accessible to the authenticated user.
+  rpc SearchGitHubRepos(SearchGitHubReposRequest) returns (SearchGitHubReposResponse) {}
+
+  // ListGitHubIssues returns issues for a specific GitHub repo.
+  rpc ListGitHubIssues(ListGitHubIssuesRequest) returns (ListGitHubIssuesResponse) {}
 }
 
 message ImportGitHubIssueRequest {
@@ -412,4 +418,42 @@ message CancelTriageRequest {
 
 message CancelTriageResponse {
   bool cancelled = 1;
+}
+
+message GitHubRepoEntry {
+  string owner = 1;
+  string repo = 2;
+  bool is_local = 3;
+  string local_path = 4;
+  string description = 5;
+}
+
+message GitHubIssueEntry {
+  int32 number = 1;
+  string title = 2;
+  string state = 3;
+  string url = 4;
+  repeated string labels = 5;
+  string body = 6;
+}
+
+message SearchGitHubReposRequest {
+  string query = 1;
+  int32 limit = 2;
+}
+
+message SearchGitHubReposResponse {
+  repeated GitHubRepoEntry repos = 1;
+}
+
+message ListGitHubIssuesRequest {
+  string owner = 1;
+  string repo = 2;
+  string state = 3;
+  string search = 4;
+  int32 limit = 5;
+}
+
+message ListGitHubIssuesResponse {
+  repeated GitHubIssueEntry issues = 1;
 }
