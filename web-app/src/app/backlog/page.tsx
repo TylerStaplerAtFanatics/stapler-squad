@@ -13,6 +13,7 @@ import { BacklogEmptyState, FilterZeroState, FooterNudge } from "@/components/ba
 import { VaguenessPromptModal } from "@/components/backlog/VaguenessPromptModal";
 import { BacklogTourModal } from "@/components/backlog/BacklogTourModal";
 import { useBacklogTour } from "@/components/backlog/useBacklogTour";
+import { GitHubIssuePicker } from "@/components/backlog/GitHubIssuePicker";
 import {
   useBacklogService,
   type BacklogItem,
@@ -308,6 +309,21 @@ function BacklogPageInner() {
     [githubIssueUrl, importGitHubIssue, load, router, searchParams]
   );
 
+  const handlePickerSelect = useCallback(
+    async (owner: string, repo: string, issue: { number: number; title: string; url: string }) => {
+      const url = issue.url || `https://github.com/${owner}/${repo}/issues/${issue.number}`;
+      setShowForm(false);
+      const result = await importGitHubIssue(url.trim());
+      if (result) {
+        await load();
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("item", result.item.id);
+        router.push(`/backlog?${params.toString()}`);
+      }
+    },
+    [importGitHubIssue, load, router, searchParams]
+  );
+
   const sortIndicator = (col: SortColumn) => {
     if (sortCol !== col) return null;
     return sortAsc ? " ↑" : " ↓";
@@ -570,67 +586,30 @@ function BacklogPageInner() {
                 onCancel={() => setShowForm(false)}
               />
             ) : (
+              <GitHubIssuePicker
+                onSelect={handlePickerSelect}
+                onCancel={() => { setShowForm(false); setGithubIssueUrl(""); setGithubImportError(null); }}
+              />
+            )}
+
+            {false && (
               <form onSubmit={handleImportGitHubIssue} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                  <label style={{ fontSize: "13px", fontWeight: 500, color: "var(--text-secondary)" }}>
-                    GitHub Issue URL <span style={{ color: "var(--error)", fontSize: "11px" }}>*</span>
-                  </label>
                   <input
                     type="url"
                     value={githubIssueUrl}
                     onChange={(e) => setGithubIssueUrl(e.target.value)}
                     placeholder="https://github.com/owner/repo/issues/123"
                     required
-                    style={{
-                      width: "100%",
-                      padding: "8px 12px",
-                      background: "var(--input-background)",
-                      color: "var(--input-text)",
-                      border: "1px solid var(--input-border)",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      outline: "none",
-                      boxSizing: "border-box",
-                    }}
-                    autoFocus
                   />
-                  <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: 0 }}>
-                    The issue title and body will be imported. Triage will run automatically if a repo path is detected.
-                  </p>
                 </div>
                 {githubImportError && (
                   <p style={{ fontSize: "12px", color: "var(--error)", margin: 0 }}>{githubImportError}</p>
                 )}
-                <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end", borderTop: "1px solid var(--border-color)", paddingTop: "12px" }}>
-                  <button
-                    type="button"
-                    onClick={() => { setShowForm(false); setGithubIssueUrl(""); setGithubImportError(null); }}
-                    style={{
-                      padding: "8px 16px",
-                      background: "transparent",
-                      color: "var(--text-secondary)",
-                      border: "1px solid var(--border-color)",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Cancel
-                  </button>
+                <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
                   <button
                     type="submit"
                     disabled={githubImporting || !githubIssueUrl.trim()}
-                    style={{
-                      padding: "8px 16px",
-                      background: "var(--primary)",
-                      color: "var(--primary-text)",
-                      border: "none",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      fontWeight: 500,
-                      cursor: githubImporting ? "not-allowed" : "pointer",
-                      opacity: githubImporting ? 0.6 : 1,
-                    }}
                   >
                     {githubImporting ? "Importing…" : "Import Issue"}
                   </button>

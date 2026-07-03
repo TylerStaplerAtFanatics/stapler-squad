@@ -17,6 +17,7 @@ import (
 	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/executor/safeexec"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
+	"github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/ent"
@@ -1687,6 +1688,9 @@ var issueURLPattern = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/
 // issueShorthandPattern matches owner/repo#N
 var issueShorthandPattern = regexp.MustCompile(`^([a-zA-Z0-9_-]+)/([a-zA-Z0-9_.-]+)#(\d+)$`)
 
+// ownerRepoPattern validates GitHub owner and repo name segments.
+var ownerRepoPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+
 // parseIssueRef extracts owner, repo, and issue number from a GitHub issue URL or shorthand.
 func parseIssueRef(input string) (owner, repo, number string, err error) {
 	input = strings.TrimSpace(input)
@@ -1799,4 +1803,104 @@ func (s *BacklogService) ImportGitHubIssue(
 		Item:            backlogItemToProto(created),
 		TriageTriggered: triageTriggered,
 	}), nil
+}
+
+// SearchGitHubRepos returns GitHub repos accessible to the authenticated user.
+// +api: backlog:search-github-repos
+func (s *BacklogService) SearchGitHubRepos(
+	ctx context.Context,
+	req *connect.Request[sessionv1.SearchGitHubReposRequest],
+) (*connect.Response[sessionv1.SearchGitHubReposResponse], error) {
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+
+	limit := int(req.Msg.Limit)
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	results, err := github.SearchUserRepos(ctx, req.Msg.Query, limit)
+	if err != nil {
+		if errors.Is(err, github.ErrNotAuthenticated) {
+			log.WarningLog.Printf("[SearchGitHubRepos] GitHub token unavailable; returning CodeUnavailable")
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("GitHub not authenticated: set GITHUB_TOKEN or run 'gh auth login'"))
+		}
+		log.WarningLog.Printf("[SearchGitHubRepos] GitHub API request failed: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("GitHub API request failed: %w", err))
+	}
+
+	entries := make([]*sessionv1.GitHubRepoEntry, 0, len(results))
+	for _, r := range results {
+		if !ownerRepoPattern.MatchString(r.Owner) || !ownerRepoPattern.MatchString(r.Repo) {
+			continue
+		}
+		entries = append(entries, &sessionv1.GitHubRepoEntry{
+			Owner:       r.Owner,
+			Repo:        r.Repo,
+			IsLocal:     false,
+			Description: r.Description,
+		})
+	}
+
+	return connect.NewResponse(&sessionv1.SearchGitHubReposResponse{Repos: entries}), nil
+}
+
+// ListGitHubIssues returns issues for a specific GitHub repo.
+// +api: backlog:list-github-issues
+func (s *BacklogService) ListGitHubIssues(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ListGitHubIssuesRequest],
+) (*connect.Response[sessionv1.ListGitHubIssuesResponse], error) {
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+
+	owner := req.Msg.Owner
+	repo := req.Msg.Repo
+	if owner == "" || repo == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("owner and repo are required"))
+	}
+	if !ownerRepoPattern.MatchString(owner) || !ownerRepoPattern.MatchString(repo) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("owner and repo must match [a-zA-Z0-9_.-]+"))
+	}
+
+	state := req.Msg.State
+	if state == "" {
+		state = "open"
+	}
+
+	limit := int(req.Msg.Limit)
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	results, err := github.ListRepoIssues(ctx, owner, repo, state, req.Msg.Search, limit)
+	if err != nil {
+		if errors.Is(err, github.ErrNotAuthenticated) {
+			log.WarningLog.Printf("[ListGitHubIssues] GitHub token unavailable; returning CodeUnavailable")
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("GitHub not authenticated: set GITHUB_TOKEN or run 'gh auth login'"))
+		}
+		log.WarningLog.Printf("[ListGitHubIssues] GitHub API request failed for %s/%s: %v", owner, repo, err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("GitHub API request failed: %w", err))
+	}
+
+	entries := make([]*sessionv1.GitHubIssueEntry, 0, len(results))
+	for _, r := range results {
+		entries = append(entries, &sessionv1.GitHubIssueEntry{
+			Number: int32(r.Number),
+			Title:  r.Title,
+			State:  strings.ToUpper(r.State),
+			Url:    r.URL,
+			Labels: r.Labels,
+		})
+	}
+
+	return connect.NewResponse(&sessionv1.ListGitHubIssuesResponse{Issues: entries}), nil
 }
