@@ -153,7 +153,7 @@ function PriorityFilterChips({
 function BacklogPageInner() {
   usePageView();
   const { track } = useAnalytics();
-  const { listBacklogItems, createBacklogItem, triggerTriage } = useBacklogService();
+  const { listBacklogItems, createBacklogItem, importGitHubIssue, triggerTriage } = useBacklogService();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -194,6 +194,10 @@ function BacklogPageInner() {
 
   // New-item modal
   const [showForm, setShowForm] = useState(false);
+  const [formMode, setFormMode] = useState<"manual" | "github">("manual");
+  const [githubIssueUrl, setGithubIssueUrl] = useState("");
+  const [githubImporting, setGithubImporting] = useState(false);
+  const [githubImportError, setGithubImportError] = useState<string | null>(null);
 
   // First-visit walkthrough
   const { showTour, setTourComplete, hideTour, resetTour } = useBacklogTour();
@@ -277,6 +281,33 @@ function BacklogPageInner() {
     [createBacklogItem, load, router, searchParams]
   );
 
+  const handleImportGitHubIssue = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!githubIssueUrl.trim()) return;
+      setGithubImportError(null);
+      setGithubImporting(true);
+      try {
+        const result = await importGitHubIssue(githubIssueUrl.trim());
+        if (result) {
+          setShowForm(false);
+          setGithubIssueUrl("");
+          await load();
+          const params = new URLSearchParams(searchParams.toString());
+          params.set("item", result.item.id);
+          router.push(`/backlog?${params.toString()}`);
+        } else {
+          setGithubImportError("Import failed. Check the URL and try again.");
+        }
+      } catch (err) {
+        setGithubImportError(err instanceof Error ? err.message : "Import failed.");
+      } finally {
+        setGithubImporting(false);
+      }
+    },
+    [githubIssueUrl, importGitHubIssue, load, router, searchParams]
+  );
+
   const sortIndicator = (col: SortColumn) => {
     if (sortCol !== col) return null;
     return sortAsc ? " ↑" : " ↓";
@@ -298,7 +329,7 @@ function BacklogPageInner() {
           </button>
           <button
             className={styles.newItemButton}
-            onClick={() => { track({ name: "backlog_new_item", category: "user_action", component: "BacklogPage" }); setShowForm(true); }}
+            onClick={() => { track({ name: "backlog_new_item", category: "user_action", component: "BacklogPage" }); setFormMode("manual"); setShowForm(true); }}
             aria-label="Create new backlog item"
             data-testid="backlog-new-item-button"
           >
@@ -489,16 +520,123 @@ function BacklogPageInner() {
           aria-modal="true"
           aria-label="Create new backlog item"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setShowForm(false);
+            if (e.target === e.currentTarget) { setShowForm(false); setGithubIssueUrl(""); setGithubImportError(null); }
           }}
           data-testid="backlog-form-modal"
         >
           <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
             <h2 className={styles.modalTitle}>New Backlog Item</h2>
-            <BacklogItemForm
-              onSubmit={handleCreateItem}
-              onCancel={() => setShowForm(false)}
-            />
+            {/* Mode toggle */}
+            <div style={{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+              <button
+                type="button"
+                onClick={() => setFormMode("manual")}
+                style={{
+                  padding: "6px 16px",
+                  borderRadius: "6px",
+                  border: "1px solid",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  fontWeight: formMode === "manual" ? 600 : 400,
+                  background: formMode === "manual" ? "var(--primary)" : "transparent",
+                  color: formMode === "manual" ? "var(--primary-text)" : "var(--text-secondary)",
+                  borderColor: formMode === "manual" ? "var(--primary)" : "var(--border-color)",
+                }}
+              >
+                Manual
+              </button>
+              <button
+                type="button"
+                onClick={() => setFormMode("github")}
+                style={{
+                  padding: "6px 16px",
+                  borderRadius: "6px",
+                  border: "1px solid",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  fontWeight: formMode === "github" ? 600 : 400,
+                  background: formMode === "github" ? "var(--primary)" : "transparent",
+                  color: formMode === "github" ? "var(--primary-text)" : "var(--text-secondary)",
+                  borderColor: formMode === "github" ? "var(--primary)" : "var(--border-color)",
+                }}
+              >
+                Import from GitHub Issue
+              </button>
+            </div>
+
+            {formMode === "manual" ? (
+              <BacklogItemForm
+                onSubmit={handleCreateItem}
+                onCancel={() => setShowForm(false)}
+              />
+            ) : (
+              <form onSubmit={handleImportGitHubIssue} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "13px", fontWeight: 500, color: "var(--text-secondary)" }}>
+                    GitHub Issue URL <span style={{ color: "var(--error)", fontSize: "11px" }}>*</span>
+                  </label>
+                  <input
+                    type="url"
+                    value={githubIssueUrl}
+                    onChange={(e) => setGithubIssueUrl(e.target.value)}
+                    placeholder="https://github.com/owner/repo/issues/123"
+                    required
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      background: "var(--input-background)",
+                      color: "var(--input-text)",
+                      border: "1px solid var(--input-border)",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      outline: "none",
+                      boxSizing: "border-box",
+                    }}
+                    autoFocus
+                  />
+                  <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: 0 }}>
+                    The issue title and body will be imported. Triage will run automatically if a repo path is detected.
+                  </p>
+                </div>
+                {githubImportError && (
+                  <p style={{ fontSize: "12px", color: "var(--error)", margin: 0 }}>{githubImportError}</p>
+                )}
+                <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end", borderTop: "1px solid var(--border-color)", paddingTop: "12px" }}>
+                  <button
+                    type="button"
+                    onClick={() => { setShowForm(false); setGithubIssueUrl(""); setGithubImportError(null); }}
+                    style={{
+                      padding: "8px 16px",
+                      background: "transparent",
+                      color: "var(--text-secondary)",
+                      border: "1px solid var(--border-color)",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={githubImporting || !githubIssueUrl.trim()}
+                    style={{
+                      padding: "8px 16px",
+                      background: "var(--primary)",
+                      color: "var(--primary-text)",
+                      border: "none",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      fontWeight: 500,
+                      cursor: githubImporting ? "not-allowed" : "pointer",
+                      opacity: githubImporting ? 0.6 : 1,
+                    }}
+                  >
+                    {githubImporting ? "Importing…" : "Import Issue"}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
@@ -515,6 +653,7 @@ function BacklogPageInner() {
           itemTitle={vaguenessItem.title}
           onRefine={() => {
             setVaguenessItem(null);
+            setFormMode("manual");
             setShowForm(true);
           }}
           onProceed={() => {

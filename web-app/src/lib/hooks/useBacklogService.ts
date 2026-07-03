@@ -278,6 +278,7 @@ interface UseBacklogServiceReturn {
   listBacklogItems: (filter?: ListBacklogItemsFilter) => Promise<BacklogItem[]>;
   getBacklogItem: (id: string) => Promise<BacklogItem | null>;
   createBacklogItem: (data: BacklogItemInput) => Promise<{ item: BacklogItem; triageTriggered: boolean } | null>;
+  importGitHubIssue: (issueUrl: string, options?: { repoPath?: string; skipPlanning?: boolean }) => Promise<{ item: BacklogItem; triageTriggered: boolean } | null>;
   updateBacklogItem: (id: string, data: Partial<BacklogItemInput>) => Promise<BacklogItem | null>;
   archiveBacklogItem: (id: string) => Promise<boolean>;
   deleteBacklogItem: (id: string) => Promise<boolean>;
@@ -543,6 +544,31 @@ export function useBacklogService(): UseBacklogServiceReturn {
     }
   }, []);
 
+  const importGitHubIssue = useCallback(
+    async (
+      issueUrl: string,
+      options?: { repoPath?: string; skipPlanning?: boolean }
+    ): Promise<{ item: BacklogItem; triageTriggered: boolean } | null> => {
+      if (!clientRef.current) return null;
+      try {
+        setLastError(null);
+        const resp = await clientRef.current.importGitHubIssue({
+          issueUrl,
+          repoPath: options?.repoPath ?? "",
+          skipPlanning: options?.skipPlanning ?? false,
+        });
+        return resp.item
+          ? { item: mapBacklogItem(resp.item), triageTriggered: resp.triageTriggered }
+          : null;
+      } catch (err) {
+        console.error("[useBacklogService] importGitHubIssue:", err);
+        setLastError(err instanceof Error ? err : new Error(String(err)));
+        return null;
+      }
+    },
+    []
+  );
+
   // Stable object reference: all methods are useCallback(fn,[]) — only lastError changes.
   // Without useMemo, every render creates a new object, making callers' useCallback deps
   // fire on every render and causing infinite reload loops.
@@ -551,6 +577,7 @@ export function useBacklogService(): UseBacklogServiceReturn {
       listBacklogItems,
       getBacklogItem,
       createBacklogItem,
+      importGitHubIssue,
       updateBacklogItem,
       archiveBacklogItem,
       deleteBacklogItem,
