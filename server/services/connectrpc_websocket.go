@@ -151,7 +151,6 @@ type sessionSnapshot struct {
 type ConnectRPCWebSocketHandler struct {
 	sessionService    *SessionService
 	scrollbackManager *scrollback.ScrollbackManager
-	streamingMode     string // "raw", "state", or "hybrid"
 
 	// External session support (for unified WebSocket streaming)
 	externalDiscovery   *session.ExternalSessionDiscovery
@@ -164,17 +163,11 @@ type ConnectRPCWebSocketHandler struct {
 
 // NewConnectRPCWebSocketHandler creates a new ConnectRPC WebSocket handler
 // tmuxStreamerManager is required for ALL sessions (managed and external) since they all use tmux capture-pane polling
-func NewConnectRPCWebSocketHandler(sessionService *SessionService, scrollbackManager *scrollback.ScrollbackManager, tmuxStreamerManager *session.ExternalTmuxStreamerManager, streamingMode string) *ConnectRPCWebSocketHandler {
-	// Default to raw-compressed if not specified or invalid
-	if streamingMode != "raw" && streamingMode != "raw-compressed" && streamingMode != "state" && streamingMode != "hybrid" {
-		streamingMode = "raw-compressed"
-	}
-
+func NewConnectRPCWebSocketHandler(sessionService *SessionService, scrollbackManager *scrollback.ScrollbackManager, tmuxStreamerManager *session.ExternalTmuxStreamerManager) *ConnectRPCWebSocketHandler {
 	return &ConnectRPCWebSocketHandler{
 		sessionService:      sessionService,
 		scrollbackManager:   scrollbackManager,
 		tmuxStreamerManager: tmuxStreamerManager,
-		streamingMode:       streamingMode,
 		snapshotCache:       make(map[string]sessionSnapshot),
 	}
 }
@@ -423,10 +416,6 @@ func (h *ConnectRPCWebSocketHandler) streamTerminal(stream *connectWebSocketStre
 	sessionID := terminalData.SessionId
 	log.Info("StreamTerminal called", "session", sessionID)
 
-	// Extract streaming mode from initial request (will be overridden by CurrentPaneRequest if provided)
-	streamingMode := h.streamingMode // Use handler's default
-	log.Info("initial streaming mode", "session", sessionID, "mode", streamingMode)
-
 	// Resolve session using unified resolution strategy
 	// This checks ReviewQueuePoller, Storage, and ExternalDiscovery in priority order
 	instance, _ := h.resolveSession(sessionID)
@@ -440,7 +429,7 @@ func (h *ConnectRPCWebSocketHandler) streamTerminal(stream *connectWebSocketStre
 	useControlMode := os.Getenv("STAPLER_SQUAD_USE_CONTROL_MODE")
 	if (useControlMode == "" || useControlMode == "true") && instance.IsManaged {
 		log.Info("[WebSocket] routing managed session to control mode streaming", "session", sessionID)
-		return h.streamViaControlMode(stream, instance, streamingMode)
+		return h.streamViaControlMode(stream, instance)
 	}
 
 	// CRITICAL FIX: Use capture-pane polling for ALL tmux sessions (managed and external)
@@ -454,7 +443,7 @@ func (h *ConnectRPCWebSocketHandler) streamTerminal(stream *connectWebSocketStre
 	// - It detects content changes and only sends deltas
 	// - It works reliably for both managed and external tmux sessions
 	log.Info("[WebSocket] routing session to capture-pane polling", "session", sessionID)
-	return h.streamViaTmuxCapturePane(stream, instance, streamingMode)
+	return h.streamViaTmuxCapturePane(stream, instance)
 }
 
 // streamViaControlMode handles WebSocket streaming using tmux control mode (-C flag).
@@ -469,7 +458,7 @@ func (h *ConnectRPCWebSocketHandler) streamTerminal(stream *connectWebSocketStre
 // - Native tmux feature (not a hack)
 //
 // See: https://github.com/tmux/tmux/wiki/Control-Mode
-func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSocketStream, instance *session.Instance, streamingMode string) error {
+func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSocketStream, instance *session.Instance) error {
 	sessionID := instance.Title
 	tmuxPrefix := instance.TmuxPrefix
 	if tmuxPrefix == "" {
@@ -477,7 +466,7 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 	}
 	tmuxSessionName := tmuxPrefix + instance.Title
 
-	log.Info("[streamViaControlMode] starting", "session", sessionID, "tmux", tmuxSessionName, "mode", streamingMode)
+	log.Info("[streamViaControlMode] starting", "session", sessionID, "tmux", tmuxSessionName)
 
 	// Update LastViewed timestamp - user is viewing this session
 	instance.MarkViewed()
@@ -1012,7 +1001,7 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 // 3. Works identically for managed sessions (prefix "staplersquad_<name>") and external sessions
 //
 // This function polls tmux's pane buffer at regular intervals and sends content deltas to clients.
-func (h *ConnectRPCWebSocketHandler) streamViaTmuxCapturePane(stream *connectWebSocketStream, instance *session.Instance, streamingMode string) error {
+func (h *ConnectRPCWebSocketHandler) streamViaTmuxCapturePane(stream *connectWebSocketStream, instance *session.Instance) error {
 	// Determine tmux session name based on session type
 	var tmuxSessionName string
 	if instance.ExternalMetadata != nil && instance.ExternalMetadata.TmuxSessionName != "" {
@@ -1028,7 +1017,7 @@ func (h *ConnectRPCWebSocketHandler) streamViaTmuxCapturePane(stream *connectWeb
 	}
 	sessionID := instance.Title
 
-	log.Info("[streamViaTmuxCapture] starting", "session", sessionID, "tmux", tmuxSessionName, "managed", instance.IsManaged, "mode", streamingMode)
+	log.Info("[streamViaTmuxCapture] starting", "session", sessionID, "tmux", tmuxSessionName, "managed", instance.IsManaged)
 
 	// Get or create tmux streamer for this session
 	if h.tmuxStreamerManager == nil {

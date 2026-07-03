@@ -204,11 +204,11 @@ message CurrentPaneRequest {
   optional int32 target_cols = 3;  // Target columns (width)
   optional int32 target_rows = 4;  // Target rows (height)
 
-  // Streaming mode for terminal output (optional)
-  // Options: "raw" (direct PTY bytes), "raw-compressed" (PTY bytes with LZMA),
-  //          "state" (MOSH-style state sync), "hybrid" (both raw and state)
-  // Default: "raw" if not specified
-  optional string streaming_mode = 5;
+  // Field 5 (streaming_mode) removed — the selectable streaming-mode feature
+  // (raw/raw-compressed/state/hybrid) was never fully wired up server-side
+  // and has been removed. Reserved to prevent accidental reuse.
+  reserved 5;
+  reserved "streaming_mode";
 }
 
 // CurrentPaneResponse contains the current visible tmux pane content

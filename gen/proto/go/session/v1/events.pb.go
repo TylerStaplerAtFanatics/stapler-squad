@@ -1419,15 +1419,8 @@ type CurrentPaneRequest struct {
 	// Target terminal dimensions (optional)
 	// If provided, server will resize tmux pane to match BEFORE capturing content
 	// This prevents size mismatches between client's browser terminal and server's tmux pane
-	TargetCols *int32 `protobuf:"varint,3,opt,name=target_cols,json=targetCols,proto3,oneof" json:"target_cols,omitempty"` // Target columns (width)
-	TargetRows *int32 `protobuf:"varint,4,opt,name=target_rows,json=targetRows,proto3,oneof" json:"target_rows,omitempty"` // Target rows (height)
-	// Streaming mode for terminal output (optional)
-	// Options: "raw" (direct PTY bytes), "raw-compressed" (PTY bytes with LZMA),
-	//
-	//	"state" (MOSH-style state sync), "hybrid" (both raw and state)
-	//
-	// Default: "raw" if not specified
-	StreamingMode *string `protobuf:"bytes,5,opt,name=streaming_mode,json=streamingMode,proto3,oneof" json:"streaming_mode,omitempty"`
+	TargetCols    *int32 `protobuf:"varint,3,opt,name=target_cols,json=targetCols,proto3,oneof" json:"target_cols,omitempty"` // Target columns (width)
+	TargetRows    *int32 `protobuf:"varint,4,opt,name=target_rows,json=targetRows,proto3,oneof" json:"target_rows,omitempty"` // Target rows (height)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1488,13 +1481,6 @@ func (x *CurrentPaneRequest) GetTargetRows() int32 {
 		return *x.TargetRows
 	}
 	return 0
-}
-
-func (x *CurrentPaneRequest) GetStreamingMode() string {
-	if x != nil && x.StreamingMode != nil {
-		return *x.StreamingMode
-	}
-	return ""
 }
 
 // CurrentPaneResponse contains the current visible tmux pane content
@@ -3712,18 +3698,16 @@ const file_session_v1_events_proto_rawDesc = "" +
 	"\x0fScrollbackChunk\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12!\n" +
-	"\ftimestamp_ms\x18\x03 \x01(\x03R\vtimestampMs\"\xfe\x01\n" +
+	"\ftimestamp_ms\x18\x03 \x01(\x03R\vtimestampMs\"\xd5\x01\n" +
 	"\x12CurrentPaneRequest\x12\x14\n" +
 	"\x05lines\x18\x01 \x01(\x05R\x05lines\x12'\n" +
 	"\x0finclude_escapes\x18\x02 \x01(\bR\x0eincludeEscapes\x12$\n" +
 	"\vtarget_cols\x18\x03 \x01(\x05H\x00R\n" +
 	"targetCols\x88\x01\x01\x12$\n" +
 	"\vtarget_rows\x18\x04 \x01(\x05H\x01R\n" +
-	"targetRows\x88\x01\x01\x12*\n" +
-	"\x0estreaming_mode\x18\x05 \x01(\tH\x02R\rstreamingMode\x88\x01\x01B\x0e\n" +
+	"targetRows\x88\x01\x01B\x0e\n" +
 	"\f_target_colsB\x0e\n" +
-	"\f_target_rowsB\x11\n" +
-	"\x0f_streaming_mode\"\xa5\x01\n" +
+	"\f_target_rowsJ\x04\b\x05\x10\x06R\x0estreaming_mode\"\xa5\x01\n" +
 	"\x13CurrentPaneResponse\x12\x18\n" +
 	"\acontent\x18\x01 \x01(\fR\acontent\x12\x19\n" +
 	"\bcursor_x\x18\x02 \x01(\x05R\acursorX\x12\x19\n" +

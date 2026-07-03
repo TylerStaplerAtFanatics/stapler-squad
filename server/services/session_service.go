@@ -1875,10 +1875,16 @@ func (s *SessionService) WatchSessions(
 	}
 }
 
-// StreamTerminal provides bidirectional streaming for terminal I/O with delta compression.
+// StreamTerminal provides bidirectional streaming for terminal I/O.
 // Implements bidirectional streaming where:
 // - Client sends: terminal input and resize events
-// - Server sends: terminal deltas (compressed output) or raw output (fallback)
+// - Server sends: raw terminal output
+//
+// NOTE: browser clients never reach this method directly — the WebSocket
+// handler (connectrpc_websocket.go) intercepts StreamTerminal calls made
+// over its custom websocket transport before they reach here. This handler
+// exists to satisfy the ConnectRPC service interface and could be used by
+// non-browser gRPC/Connect clients.
 func (s *SessionService) StreamTerminal(
 	ctx context.Context,
 	stream *connect.BidiStream[sessionv1.TerminalData, sessionv1.TerminalData],
@@ -1947,10 +1953,6 @@ func (s *SessionService) StreamTerminal(
 	// Channel for errors from goroutines
 	errCh := make(chan error, 2)
 
-	// Initialize terminal state for MOSH-style state synchronization (default 80x25)
-	// Will be resized when client sends first resize message
-	terminalState := session.NewTerminalState(25, 80)
-
 	// Flow control state for backpressure management
 	// Reference: https://xtermjs.org/docs/guides/flowcontrol/
 	pauseCh := make(chan bool, 1) // Buffered channel for pause/resume signals
@@ -1995,32 +1997,16 @@ func (s *SessionService) StreamTerminal(
 					// This ensures LastMeaningfulOutput reflects web UI viewing activity
 					instance.UpdateTerminalTimestamps(string(buf[:n]), true)
 
-					// Process PTY output through terminal state
-					if processErr := terminalState.ProcessOutput(buf[:n]); processErr != nil {
-						log.Warn("failed to process terminal output", "err", processErr)
-						// Fallback to raw output on parse errors
-						outputMsg := &sessionv1.TerminalData{
-							SessionId: initialMsg.SessionId,
-							Data: &sessionv1.TerminalData_Output{
-								Output: &sessionv1.TerminalOutput{
-									Data: buf[:n],
-								},
+					outputMsg := &sessionv1.TerminalData{
+						SessionId: initialMsg.SessionId,
+						Data: &sessionv1.TerminalData_Output{
+							Output: &sessionv1.TerminalOutput{
+								Data: buf[:n],
 							},
-						}
-						if sendErr := stream.Send(outputMsg); sendErr != nil {
-							errCh <- fmt.Errorf("failed to send output: %w", sendErr)
-							return
-						}
-						continue
+						},
 					}
-
-					// Generate complete terminal state (MOSH-style)
-					stateMsg := terminalState.GenerateState()
-					stateMsg.SessionId = initialMsg.SessionId
-
-					// Send state to client
-					if sendErr := stream.Send(stateMsg); sendErr != nil {
-						errCh <- fmt.Errorf("failed to send state: %w", sendErr)
+					if sendErr := stream.Send(outputMsg); sendErr != nil {
+						errCh <- fmt.Errorf("failed to send output: %w", sendErr)
 						return
 					}
 				}
@@ -2104,7 +2090,7 @@ func (s *SessionService) StreamTerminal(
 					))
 
 				case *sessionv1.TerminalData_Resize:
-					// Handle terminal resize - update both PTY and terminal state
+					// Handle terminal resize
 					cols := int(data.Resize.Cols)
 					rows := int(data.Resize.Rows)
 
@@ -2122,9 +2108,7 @@ func (s *SessionService) StreamTerminal(
 						_ = stream.Send(errorMsg) // Best effort
 						// Don't return on resize errors, they're not fatal
 					} else {
-						// Also resize terminal state to match
-						terminalState.Resize(rows, cols)
-						log.Info("resized terminal state", "cols", cols, "rows", rows, "session", msg.SessionId)
+						log.Info("resized terminal", "cols", cols, "rows", rows, "session", msg.SessionId)
 					}
 
 				case *sessionv1.TerminalData_FlowControl:
