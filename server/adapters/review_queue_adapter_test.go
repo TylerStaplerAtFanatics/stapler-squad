@@ -141,7 +141,7 @@ func TestSubStatusFromItem_AllDetectedStatuses(t *testing.T) {
 		{"StatusIdle", detection.StatusIdle, sessionv1.SubStatus_SUB_STATUS_IDLE},
 		{"StatusExecuting", detection.StatusExecuting, sessionv1.SubStatus_SUB_STATUS_PROCESSING},
 		{"StatusSuccess", detection.StatusSuccess, sessionv1.SubStatus_SUB_STATUS_SUCCESS},
-		{"StatusWaitingForAgent", detection.StatusWaitingForAgent, sessionv1.SubStatus_SUB_STATUS_PROCESSING},
+		{"StatusWaitingForAgent", detection.StatusWaitingForAgent, sessionv1.SubStatus_SUB_STATUS_WAITING_FOR_AGENT},
 	}
 
 	for _, tc := range tests {

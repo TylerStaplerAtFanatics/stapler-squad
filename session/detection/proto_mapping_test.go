@@ -75,7 +75,7 @@ func TestDetectedStatusToSubStatus(t *testing.T) {
 		{"StatusIdle", StatusIdle, sessionv1.SubStatus_SUB_STATUS_IDLE},
 		{"StatusExecuting", StatusExecuting, sessionv1.SubStatus_SUB_STATUS_PROCESSING},
 		{"StatusSuccess", StatusSuccess, sessionv1.SubStatus_SUB_STATUS_SUCCESS},
-		{"StatusWaitingForAgent", StatusWaitingForAgent, sessionv1.SubStatus_SUB_STATUS_PROCESSING},
+		{"StatusWaitingForAgent", StatusWaitingForAgent, sessionv1.SubStatus_SUB_STATUS_WAITING_FOR_AGENT},
 	}
 
 	for _, tt := range tests {

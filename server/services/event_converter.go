@@ -63,6 +63,28 @@ func convertEventToProto(event *events.Event) *sessionv1.SessionEvent {
 			},
 		}
 
+	case events.EventSessionAcknowledged:
+		protoEvent.Event = &sessionv1.SessionEvent_SessionAcknowledged{
+			SessionAcknowledged: &sessionv1.SessionAcknowledgedEvent{
+				SessionId:      event.SessionID,
+				AcknowledgedAt: timestamppb.New(event.Timestamp),
+				Reason:         event.Context,
+			},
+		}
+
+	case events.EventUserInteraction:
+		interactionType := sessionv1.UserInteractionEvent_INTERACTION_TYPE_UNSPECIFIED
+		if v, ok := sessionv1.UserInteractionEvent_InteractionType_value[event.InteractionType]; ok {
+			interactionType = sessionv1.UserInteractionEvent_InteractionType(v)
+		}
+		protoEvent.Event = &sessionv1.SessionEvent_UserInteraction{
+			UserInteraction: &sessionv1.UserInteractionEvent{
+				SessionId: event.SessionID,
+				Type:      interactionType,
+				Context:   event.Context,
+			},
+		}
+
 	case events.EventApprovalResponse:
 		protoEvent.Event = &sessionv1.SessionEvent_ApprovalResponse{
 			ApprovalResponse: &sessionv1.ApprovalResponseEvent{

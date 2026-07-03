@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ReviewItem } from "@/gen/session/v1/types_pb";
 import { useAuditLog } from "@/lib/hooks/useAuditLog";
 import { NotificationData } from "@/lib/types/notification";
@@ -32,6 +31,7 @@ import {
   viewButton,
   dismissButton,
   minimizeHint,
+  undoButton,
 } from "./NotificationToast.css";
 
 export type { NotificationData };
@@ -79,8 +79,7 @@ export function NotificationToast({
   const [isMinimized, setIsMinimized] = useState(false);
   const [relativeTime, setRelativeTime] = useState(() => getRelativeTime(notification.timestamp));
   const auditLog = useAuditLog();
-  const router = useRouter();
-  const backlogItemId = notification.metadata?.["item_id"];
+  const undoButtonRef = useRef<HTMLButtonElement>(null);
 
   // Tick every second to keep relative time live
   useEffect(() => {
@@ -94,6 +93,13 @@ export function NotificationToast({
   useEffect(() => {
     const timer = setTimeout(() => setIsVisible(true), 10);
     return () => clearTimeout(timer);
+  }, []);
+
+  // WCAG 2.4.3: move focus to Undo button when undo toast mounts
+  useEffect(() => {
+    if (notification.notificationType === "undo") {
+      undoButtonRef.current?.focus();
+    }
   }, []);
 
   const handleClose = useCallback((shouldAcknowledge: boolean = false) => {
@@ -131,13 +137,6 @@ export function NotificationToast({
   const handleView = () => {
     auditLog.logNotificationSessionViewed(notification.id, notification.sessionId);
     notification.onView?.();
-    handleClose();
-  };
-
-  const handleViewBacklog = () => {
-    if (!backlogItemId) return;
-    auditLog.logNotificationBacklogItemViewed(notification.id, backlogItemId);
-    router.push(`/backlog?item=${encodeURIComponent(backlogItemId)}`);
     handleClose();
   };
 
@@ -226,15 +225,20 @@ export function NotificationToast({
             ✗ Deny
           </button>
         )}
-        {backlogItemId ? (
-          <button className={viewButton} onClick={handleViewBacklog}>
-            View Backlog
-          </button>
-        ) : (
-          <button className={viewButton} onClick={handleView}>
-            View Session
+        {notification.notificationType === "undo" && notification.onUndo && (
+          <button
+            ref={undoButtonRef}
+            className={undoButton}
+            data-testid="undo-toast-button"
+            aria-label="Undo the last bulk delete"
+            onClick={() => { notification.onUndo?.(); handleClose(false); }}
+          >
+            Undo
           </button>
         )}
+        <button className={viewButton} onClick={handleView}>
+          View Session
+        </button>
         <button className={dismissButton} onClick={() => handleClose(true)}>
           Dismiss
         </button>

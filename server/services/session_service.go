@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,7 +21,6 @@ import (
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/pkg/classifier"
 	"github.com/tstapler/stapler-squad/server/adapters"
-	serveranalytics "github.com/tstapler/stapler-squad/server/analytics"
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/server/notifications"
 	"github.com/tstapler/stapler-squad/session"
@@ -132,10 +132,6 @@ type SessionService struct {
 	// analyticsClient is the ent client for the analytics database (escape events, etc.).
 	// May be nil when escape analytics is disabled or in tests that don't need it.
 	analyticsClient *ent.Client
-
-	// analyticsProvider is the analytics provider used for event recording.
-	// Populated asynchronously when the analytics DB opens; may remain nil in tests.
-	analyticsProvider serveranalytics.AnalyticsProvider
 
 	// memoryCacheReader provides per-session RSS and system memory percentage.
 	// Wired to the HibernationSweeper after startup. May be nil (fields default to 0).
@@ -316,6 +312,13 @@ func (s *SessionService) loadInstancesWithWiring() ([]*session.Instance, error) 
 		}
 		s.wireRateLimitCallbacks(inst)
 		s.wireInstanceCallbacks(inst)
+		// Backfill MCP server URL for sessions created before MCP integration was
+		// wired up. Without this, buildLaunchCommand omits --mcp-config entirely and
+		// the Claude process restarts without a session UUID or MCP connection.
+		// Only applied in-memory; the DB value is updated lazily via SaveInstances.
+		if inst.MCPServerURL == "" && s.mcpServerURL != "" {
+			inst.MCPServerURL = s.mcpServerURL
+		}
 	}
 
 	return instances, nil
@@ -451,6 +454,31 @@ func stapleSquadTmuxName(title string) string {
 	return "staplersquad_" + sanitized
 }
 
+// expandTildePath replaces a leading ~ with the user's home directory.
+func expandTildePath(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		} else {
+			log.Warn("expandTildePath: failed to resolve home directory", "err", err)
+		}
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			expanded := filepath.Join(home, path[2:])
+			// Guard against path traversal: reject any result that escapes the home directory.
+			if !strings.HasPrefix(expanded, home+string(filepath.Separator)) && expanded != home {
+				log.Warn("expandTildePath: path traversal rejected", "input", path)
+				return path
+			}
+			return expanded
+		} else {
+			log.Warn("expandTildePath: failed to resolve home directory", "err", err)
+		}
+	}
+	return path
+}
+
 // GetApprovalStore returns the approval store for wiring up the HTTP hook handler.
 func (s *SessionService) GetApprovalStore() *ApprovalStore {
 	return s.approvalStore
@@ -482,12 +510,6 @@ func (s *SessionService) SetErrorRegistry(r *ErrorRegistry) {
 // Must be called before the first QueryEscapeAnalytics or GetEscapeAnalyticsSummary RPC.
 func (s *SessionService) SetAnalyticsClient(c *ent.Client) {
 	s.analyticsClient = c
-}
-
-// SetAnalyticsProvider wires the analytics provider. Called asynchronously once
-// the analytics DB opens; stores the provider for future use.
-func (s *SessionService) SetAnalyticsProvider(p serveranalytics.AnalyticsProvider) {
-	s.analyticsProvider = p
 }
 
 // maybeAutoMigrateToEnt checks whether state.json exists in the config directory and the
@@ -958,7 +980,8 @@ func (s *SessionService) CreateSession(
 	if req.Msg.Title == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
 	}
-	if !req.Msg.OneOff &&
+	if req.Msg.SessionType != sessionv1.SessionType_SESSION_TYPE_ONE_OFF &&
+		req.Msg.AliasName == "" &&
 		req.Msg.SessionType != sessionv1.SessionType_SESSION_TYPE_NEW_PROJECT &&
 		req.Msg.Path == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("path is required"))
@@ -999,7 +1022,7 @@ func (s *SessionService) CreateSession(
 	}
 
 	// Resolve GitHub URLs to local paths (GOPATH-style: ~/.stapler-squad/repos/github.com/owner/repo)
-	resolvedPath := req.Msg.Path
+	resolvedPath := expandTildePath(req.Msg.Path)
 	branch := req.Msg.Branch
 	var gitHubRef *session.GitHubRef
 	var clonedRepoPath string
@@ -1022,9 +1045,11 @@ func (s *SessionService) CreateSession(
 		log.Info("[CreateSession] resolved to local path", "path", resolvedPath, "branch", branch)
 	}
 
+	// Load config once; used by both the one-off path and the defaults/alias path below.
+	cfg := config.LoadConfig()
+
 	// One-off session: generate a fresh directory and override resolvedPath.
-	if req.Msg.OneOff {
-		cfg := config.LoadConfig()
+	if req.Msg.SessionType == sessionv1.SessionType_SESSION_TYPE_ONE_OFF {
 		baseDir, err := cfg.OneOffBaseDirOrDefault()
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve one_off_base_dir: %w", err))
@@ -1040,24 +1065,80 @@ func (s *SessionService) CreateSession(
 	// skip_defaults bypasses this for scripted or explicit-empty sessions.
 	program := req.Msg.Program
 	autoYes := req.Msg.AutoYes
+	instanceEnvVars := make(map[string]string)
+	instanceCLIFlags := ""
+	aliasSessionType := config.SessionTypeDefault // session type from alias config (empty = no override)
 	if !req.Msg.SkipDefaults {
-		cfg := config.LoadConfig()
-		workingDir := req.Msg.WorkingDir
-		if workingDir == "" {
-			workingDir = resolvedPath
-		}
-		resolved := config.ResolveDefaults(cfg, workingDir, req.Msg.Profile)
-		// Apply resolved defaults only for fields not explicitly set in the request.
-		if program == "" {
-			program = resolved.Program
-		}
-		if !autoYes && resolved.AutoYes {
-			autoYes = true
+		if req.Msg.AliasName != "" {
+			resolved, err := config.ResolveAlias(cfg, req.Msg.AliasName, req.Msg.Branch, req.Msg.Title, "")
+			if err != nil {
+				if errors.Is(err, config.ErrAliasNotFound) {
+					return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("alias %q not found: %w", req.Msg.AliasName, err))
+				}
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to resolve alias %q: %w", req.Msg.AliasName, err))
+			}
+			if program == "" {
+				program = resolved.Program
+			}
+			if !autoYes && resolved.AutoYes {
+				autoYes = true
+			}
+			for k, v := range resolved.EnvVars {
+				instanceEnvVars[k] = v
+			}
+			instanceCLIFlags = resolved.CLIFlags
+			if resolvedPath == "" && resolved.Path != "" {
+				resolvedPath = expandTildePath(resolved.Path)
+			}
+			// Read session type directly from the alias config — it is an alias-specific
+			// property, not a cascading default, so it is not part of ResolvedDefaults.
+			if alias := config.FindAlias(cfg, req.Msg.AliasName); alias != nil {
+				aliasSessionType = alias.SessionType
+			}
+		} else {
+			workingDir := req.Msg.WorkingDir
+			if workingDir == "" {
+				workingDir = resolvedPath
+			}
+			resolved := config.ResolveDefaults(cfg, workingDir, req.Msg.Profile)
+			if program == "" {
+				program = resolved.Program
+			}
+			if !autoYes && resolved.AutoYes {
+				autoYes = true
+			}
+			for k, v := range resolved.EnvVars {
+				instanceEnvVars[k] = v
+			}
+			instanceCLIFlags = resolved.CLIFlags
 		}
 	}
 
-	// Determine session type - use explicit session_type if provided, otherwise infer from fields
+	// Merge explicit request env_vars on top of resolved defaults.
+	for k, v := range req.Msg.EnvVars {
+		instanceEnvVars[k] = v
+	}
+	// Append explicit request cli_flags on top of resolved defaults.
+	if req.Msg.CliFlags != "" {
+		if instanceCLIFlags != "" {
+			instanceCLIFlags += " " + req.Msg.CliFlags
+		} else {
+			instanceCLIFlags = req.Msg.CliFlags
+		}
+	}
+
+	// Determine session type - use explicit session_type if provided, otherwise infer from fields.
+	// If the session was created via alias and the alias specifies a session type,
+	// use it as the fallback when the request itself didn't set one.
 	sessionType := resolveSessionType(req.Msg, branch)
+	if aliasSessionType != config.SessionTypeDefault && req.Msg.SessionType == sessionv1.SessionType_SESSION_TYPE_UNSPECIFIED {
+		sessionType = aliasSessionType
+	}
+
+	// One-off sessions run as directory sessions — the path was already generated above.
+	if sessionType == session.SessionTypeOneOff {
+		sessionType = session.SessionTypeDirectory
+	}
 
 	// For resume sessions, force DIRECTORY type — we must not create a new worktree
 	// that would produce a different project path and break the --resume lookup.
@@ -1105,6 +1186,8 @@ func (s *SessionService) CreateSession(
 		PermissionMode:   req.Msg.PermissionMode,
 		AutonomousMode:   req.Msg.AutonomousMode,
 		WorkflowID:       req.Msg.WorkflowId,
+		EnvVars:          instanceEnvVars,
+		CLIFlags:         instanceCLIFlags,
 	}
 
 	// Add GitHub metadata if this was a GitHub URL
@@ -1226,34 +1309,33 @@ func (s *SessionService) CreateSession(
 }
 
 // resolveSessionType maps a CreateSessionRequest + resolved branch to a session.SessionType.
-// Priority: one_off (always directory) > explicit session_type > inference from branch/existing_worktree.
+// Priority: explicit session_type > inference from branch/existing_worktree.
+// ONE_OFF is returned as SessionTypeOneOff; callers are responsible for converting it to
+// SessionTypeDirectory after the one-off directory has been generated.
 func resolveSessionType(msg *sessionv1.CreateSessionRequest, branch string) session.SessionType {
-	var st session.SessionType
 	if msg.SessionType != sessionv1.SessionType_SESSION_TYPE_UNSPECIFIED {
 		switch msg.SessionType {
 		case sessionv1.SessionType_SESSION_TYPE_DIRECTORY:
-			st = session.SessionTypeDirectory
+			return session.SessionTypeDirectory
 		case sessionv1.SessionType_SESSION_TYPE_NEW_WORKTREE:
-			st = session.SessionTypeNewWorktree
+			return session.SessionTypeNewWorktree
 		case sessionv1.SessionType_SESSION_TYPE_EXISTING_WORKTREE:
-			st = session.SessionTypeExistingWorktree
+			return session.SessionTypeExistingWorktree
 		case sessionv1.SessionType_SESSION_TYPE_NEW_PROJECT:
-			st = session.SessionTypeNewProject
+			return session.SessionTypeNewProject
+		case sessionv1.SessionType_SESSION_TYPE_ONE_OFF:
+			return session.SessionTypeOneOff
 		default:
-			st = session.SessionTypeDirectory
-		}
-	} else {
-		st = session.SessionTypeDirectory
-		if msg.ExistingWorktree != "" {
-			st = session.SessionTypeExistingWorktree
-		} else if branch != "" {
-			st = session.SessionTypeNewWorktree
+			return session.SessionTypeDirectory
 		}
 	}
-	if msg.OneOff {
-		st = session.SessionTypeDirectory
+	if msg.ExistingWorktree != "" {
+		return session.SessionTypeExistingWorktree
 	}
-	return st
+	if branch != "" {
+		return session.SessionTypeNewWorktree
+	}
+	return session.SessionTypeDirectory
 }
 
 // UpdateSession modifies session properties (pause/resume, category, title).
@@ -1617,6 +1699,37 @@ func (s *SessionService) DeleteSession(
 				log.Warn("failed to cleanup session resources", "session", req.Msg.Id, "err", err)
 			}
 		}()
+	} else {
+		// Instance is not in the live in-memory poller (e.g. the server restarted
+		// since this session was created). Fall back to killing the tmux session by
+		// its deterministic name so the Claude process inside it doesn't survive as
+		// an orphan after the DB record is gone.
+		go func() {
+			if err := s.KillTmuxSessionByTitle(context.Background(), sessionTitle); err != nil {
+				log.Warn("failed to kill tmux session for non-live instance", "session", req.Msg.Id, "err", err)
+			}
+		}()
+	}
+
+	// Cancel any pending approvals BEFORE deleting from storage, so blocked
+	// approval-hook goroutines can exit cleanly while the session still exists.
+	// Non-fatal: log at warn and continue even if there are no pending approvals.
+	if cancelled := s.approvalStore.CancelSession(sessionUUID); len(cancelled) > 0 {
+		log.Warn("cancelled pending approvals for deleted session", "session", req.Msg.Id, "count", len(cancelled))
+	}
+
+	// Cancel any pending approvals BEFORE deleting from storage, so blocked
+	// approval-hook goroutines can exit cleanly while the session still exists.
+	// Non-fatal: log at warn and continue even if there are no pending approvals.
+	if cancelled := s.approvalStore.CancelSession(sessionUUID); len(cancelled) > 0 {
+		log.Warn("cancelled pending approvals for deleted session", "session", req.Msg.Id, "count", len(cancelled))
+	}
+
+	// Cancel any pending approvals BEFORE deleting from storage, so blocked
+	// approval-hook goroutines can exit cleanly while the session still exists.
+	// Non-fatal: log at warn and continue even if there are no pending approvals.
+	if cancelled := s.approvalStore.CancelSession(sessionUUID); len(cancelled) > 0 {
+		log.Warn("cancelled pending approvals for deleted session", "session", req.Msg.Id, "count", len(cancelled))
 	}
 
 	// Delete from storage using Title (the storage key), not the client-supplied ID which may be a UUID.
@@ -2977,6 +3090,21 @@ func (s *SessionService) DeleteDirectoryRule(ctx context.Context, req *connect.R
 	return s.defaultsSvc.DeleteDirectoryRule(ctx, req)
 }
 
+// ListAliases returns all configured alias presets.
+func (s *SessionService) ListAliases(ctx context.Context, req *connect.Request[sessionv1.ListAliasesRequest]) (*connect.Response[sessionv1.ListAliasesResponse], error) {
+	return s.defaultsSvc.ListAliases(ctx, req)
+}
+
+// UpsertAlias creates or updates a named alias preset.
+func (s *SessionService) UpsertAlias(ctx context.Context, req *connect.Request[sessionv1.UpsertAliasRequest]) (*connect.Response[sessionv1.UpsertAliasResponse], error) {
+	return s.defaultsSvc.UpsertAlias(ctx, req)
+}
+
+// DeleteAlias removes an alias preset by name.
+func (s *SessionService) DeleteAlias(ctx context.Context, req *connect.Request[sessionv1.DeleteAliasRequest]) (*connect.Response[sessionv1.DeleteAliasResponse], error) {
+	return s.defaultsSvc.DeleteAlias(ctx, req)
+}
+
 // SearchFiles performs a recursive name-substring search in a session's worktree.
 func (s *SessionService) SearchFiles(
 	ctx context.Context,
@@ -3233,13 +3361,17 @@ func (s *SessionService) RunOneShot(
 	prURL := extractPRURL(outputStr)
 	branchDiverged := checkBranchDivergence(workDir)
 
-	// Persist the PR URL back to the session record so the GitHub badge appears.
+	// Persist the PR URL (and number) back to the session record so the GitHub badge appears
+	// and the PRStatusPoller can use the direct-number path instead of branch-name discovery.
 	if prURL != "" {
 		inst.GitHubPRURL = prURL
+		if ref, parseErr := session.ParseGitHubURL(prURL); parseErr == nil && ref.PRNumber > 0 {
+			inst.GitHubPRNumber = ref.PRNumber
+		}
 		if err := s.storage.SaveInstances(s.allInstances()); err != nil {
 			log.Warn("RunOneShot: failed to persist PR URL", "session", inst.Title, "err", err)
 		} else {
-			s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"github_pr_url"}))
+			s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"github_pr_url", "github_pr_number"}))
 		}
 	}
 

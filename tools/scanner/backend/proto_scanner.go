@@ -101,9 +101,18 @@ var methodToID = map[string]string{
 	"GetSessionDefaults":   "defaults:get",
 	"UpdateGlobalDefaults": "defaults:update-global",
 	"ResolveDefaults":      "defaults:resolve",
+	// Alias RPCs
+	"UpsertAlias": "alias:upsert",
+	"DeleteAlias": "alias:delete",
+	"ListAliases": "alias:list",
 	// Directory rules RPCs
 	"UpsertDirectoryRule": "directory-rule:upsert",
 	"DeleteDirectoryRule": "directory-rule:delete",
+	// Detection RPCs
+	"GetDetectionEvents": "session:get-detection-events",
+	// Workflow session management RPCs
+	"ArchiveWorkflowSessions":      "session:archive-workflow",
+	"DeleteWorkflowFailedSessions": "session:delete-workflow-failed",
 	// Unfinished work RPCs (UnfinishedWorkService in unfinished.proto)
 	"ListUnfinishedWork":         "unfinished:list",
 	"WatchUnfinishedWork":        "unfinished:watch",
@@ -132,6 +141,7 @@ var methodToID = map[string]string{
 	"SpawnSessionFromItem":        "backlog:spawn-session",
 	"AttachSessionToItem":         "backlog:attach-session",
 	"TriggerTriage":               "backlog:trigger-triage",
+	"CancelTriage":                "backlog:cancel-triage",
 	"ApprovePlan":                 "backlog:approve-plan",
 	"SuggestNextItem":             "backlog:suggest-next",
 	"OverrideVerdict":             "backlog:override-verdict",
@@ -142,6 +152,41 @@ var methodToID = map[string]string{
 	"UpdateItemSource":            "backlog:update-source",
 	"DeleteItemSource":            "backlog:delete-source",
 	"GetSyncHistory":              "backlog:get-sync-history",
+	// Session lifecycle RPCs
+	"ArchiveSession":          "session:archive",
+	"UnarchiveSession":        "session:unarchive",
+	"HibernateSession":        "session:hibernate",
+	"ResumeHibernatedSession": "session:resume-hibernated",
+	"WriteToSession":          "session:write",
+	// Shell RPCs
+	"SpawnShell":   "shell:spawn",
+	"DeleteShell":  "shell:delete",
+	"ListShells":   "shell:list",
+	"RestartShell": "shell:restart",
+	"StopShell":    "shell:stop",
+	// Slash commands RPCs
+	"ListSlashCommands": "slash-command:list",
+	// Workflow RPCs
+	"CreateWorkflow": "workflow:create",
+	"DeleteWorkflow": "workflow:delete",
+	"ListWorkflows":  "workflow:list",
+	"UpdateWorkflow": "workflow:update",
+	"RunWorkflow":    "workflow:run",
+	// Approval rules RPCs
+	"BulkUpsertRules":       "approval:bulk-upsert-rules",
+	"ExportRules":           "approval:export-rules",
+	"GenerateSuggestedRule": "approval:generate-suggested-rule",
+	"ValidateRules":         "approval:validate-rules",
+	// Analytics RPCs
+	"GetEscapeAnalyticsSummary": "analytics:get-escape-summary",
+	"GetProgramAnalytics":       "analytics:get-program",
+	"QueryEscapeAnalytics":      "analytics:query-escape",
+	// Feature flags RPCs
+	"GetFeatureFlags":   "feature-flag:get",
+	"UpdateFeatureFlag": "feature-flag:update",
+	// Hooks RPCs
+	"GetHookStatus": "hooks:status",
+	"InstallHooks":  "hooks:install",
 }
 
 // rpcPattern matches lines like:   rpc MethodName(  (indented or not)

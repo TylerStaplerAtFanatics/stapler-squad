@@ -43,9 +43,9 @@ func DetectedStatusToProto(s DetectedStatus) sessionv1.DetectedStatus {
 // reimplementing the DetectedStatus switch itself.
 func DetectedStatusToSubStatus(s DetectedStatus) sessionv1.SubStatus {
 	switch s {
-	case StatusProcessing, StatusExecuting, StatusWaitingForAgent:
-		// StatusWaitingForAgent maps to PROCESSING — no distinct proto value exists yet;
-		// the UI shows the same "Thinking…" chip, which is correct while agents run.
+	case StatusWaitingForAgent:
+		return sessionv1.SubStatus_SUB_STATUS_WAITING_FOR_AGENT
+	case StatusProcessing, StatusExecuting:
 		return sessionv1.SubStatus_SUB_STATUS_PROCESSING
 	case StatusNeedsApproval:
 		return sessionv1.SubStatus_SUB_STATUS_NEEDS_APPROVAL

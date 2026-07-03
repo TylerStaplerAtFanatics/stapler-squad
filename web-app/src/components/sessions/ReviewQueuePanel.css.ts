@@ -409,11 +409,11 @@ export const visuallyHidden = style({
 export const oldestCallout = style({
   marginTop: vars.space["2"],
   padding: `${vars.space["1"]} ${vars.space["3"]}`,
-  background: vars.color.warningBg,
-  border: `1px solid ${vars.color.warning}`,
+  background: vars.color.surfaceSubtle,
+  border: `1px solid ${vars.color.borderColor}`,
   borderRadius: vars.radii.md,
   fontSize: vars.fontSize.sm,
-  color: vars.color.textPrimary,
+  color: vars.color.textSecondary,
   fontWeight: 500,
 });
 
@@ -439,6 +439,23 @@ export const newItemsBanner = style({
   },
 });
 
+export const autoAdvanceToggle = style({
+  display: "flex",
+  alignItems: "center",
+  gap: "0.375rem",
+  fontSize: vars.fontSize.sm,
+  color: vars.color.textSecondary,
+  cursor: "pointer",
+  userSelect: "none",
+  whiteSpace: "nowrap",
+});
+
+export const savedIndicator = style({
+  fontSize: vars.fontSize.xs,
+  color: vars.color.success,
+  fontWeight: 500,
+});
+
 export const filterToggleRow = style({
   display: "flex",
   alignItems: "center",
@@ -462,6 +479,12 @@ export const filterToggle = style({
       borderColor: vars.color.borderHover,
     },
   },
+  "@media": {
+    "(max-width: 768px)": {
+      minHeight: "44px",
+      padding: "10px 14px",
+    },
+  },
 });
 
 export const filterToggleActive = style({
@@ -483,6 +506,12 @@ export const filterClear = style({
     "&:hover": {
       background: vars.color.hoverBackground,
       color: vars.color.textPrimary,
+    },
+  },
+  "@media": {
+    "(max-width: 768px)": {
+      minHeight: "44px",
+      padding: "10px 12px",
     },
   },
 });

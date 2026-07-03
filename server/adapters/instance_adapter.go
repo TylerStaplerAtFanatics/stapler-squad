@@ -64,6 +64,17 @@ func InstanceToProto(inst *session.Instance, workflowNames map[string]string) *s
 		LastPrStatusCheck:     timestamppb.New(inst.LastPRStatusCheck),
 	}
 
+	// Convert artifact data if available
+	if inst.Artifacts != nil {
+		a := inst.Artifacts
+		protoSession.Artifacts = &sessionv1.SessionArtifacts{
+			PrUrls:        a.PRURLs,
+			CommitShas:    a.CommitSHAs,
+			ExternalUrls:  a.ExternalURLs,
+			LastScannedAt: timestamppb.New(a.LastScannedAt),
+		}
+	}
+
 	// Convert git worktree data if available
 	wt, err := inst.GetGitWorktree()
 	if err == nil && wt != nil {
@@ -284,10 +295,6 @@ func StatusStringToProto(status string) sessionv1.SessionStatus {
 		return sessionv1.SessionStatus_SESSION_STATUS_CREATING
 	case "Stopped":
 		return sessionv1.SessionStatus_SESSION_STATUS_STOPPED
-	case "Hibernated":
-		return sessionv1.SessionStatus_SESSION_STATUS_HIBERNATED
-	case "Restoring":
-		return sessionv1.SessionStatus_SESSION_STATUS_RESTORING
 	default:
 		return sessionv1.SessionStatus_SESSION_STATUS_UNSPECIFIED
 	}
@@ -329,6 +336,8 @@ func ProtoToStatus(status sessionv1.SessionStatus) session.Status {
 		return session.Stopped
 	case sessionv1.SessionStatus_SESSION_STATUS_HIBERNATED:
 		return session.Hibernated
+	case sessionv1.SessionStatus_SESSION_STATUS_RESTORING:
+		return session.Restoring
 	default:
 		return session.Creating // Default to Creating for unknown statuses
 	}

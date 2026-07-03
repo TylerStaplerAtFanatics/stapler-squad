@@ -145,16 +145,29 @@ EOF
 # 1 otherwise (not granted, denied, or DB unreadable without FDA itself).
 # sqlite3 is pre-installed on macOS; we try both the system DB and the
 # per-user DB so the check works regardless of whether the calling terminal
-# has FDA.  If neither DB is readable we conservatively return 1 so the
-# FDA prompt is shown — safe default for a fresh install.
+# has FDA.
+#
+# Non-admin users cannot read either TCC database (authorization denied).
+# In that case, if the binary is already installed and cert-signed (not
+# ad-hoc), we assume FDA was previously granted — the TCC grant is tied
+# to the signing identity (com.stapler-squad + cert), which is stable across
+# rebuilds, so re-installs don't need a new grant.
 fda_is_granted() {
     local bin_path="$1"
     local result
+    local any_db_found=false
+    local all_denied=true
     for tcc_db in \
         "/Library/Application Support/com.apple.TCC/TCC.db" \
         "$HOME/Library/Application Support/com.apple.TCC/TCC.db"
     do
-        [ -r "$tcc_db" ] || continue
+        [ -f "$tcc_db" ] || continue
+        any_db_found=true
+        if [ ! -r "$tcc_db" ]; then
+            # DB exists but unreadable — likely non-admin user; note it and skip.
+            continue
+        fi
+        all_denied=false
         # auth_value=2  → kTCCAuthorizationRightAllow (macOS 11+)
         # allowed=1     → legacy boolean schema (macOS 10.x)
         result=$(sqlite3 "$tcc_db" \
@@ -163,6 +176,20 @@ fda_is_granted() {
                AND client='$bin_path'" 2>/dev/null)
         [ "$result" = "2" ] || [ "$result" = "1" ] && return 0
     done
+
+    # If at least one TCC DB existed but none were readable (non-admin user),
+    # fall back to a heuristic: assume FDA is already granted if the binary
+    # exists at the install path and is signed with our cert (not ad-hoc).
+    # Ad-hoc signatures embed a cdhash that changes every build; cert-signed
+    # binaries keep a stable designated requirement, so their TCC grant persists.
+    if $any_db_found && $all_denied && [ -f "$bin_path" ]; then
+        local dr
+        dr=$(codesign -d --requirements - "$bin_path" 2>/dev/null)
+        if echo "$dr" | grep -q "certificate root"; then
+            return 0
+        fi
+    fi
+
     return 1
 }
 

@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,29 +66,12 @@ func TestResolveSessionType_UnspecifiedExistingWorktreeInfersExistingWorktree(t 
 	assert.Equal(t, session.SessionTypeExistingWorktree, resolveSessionType(msg, "feat/branch"))
 }
 
-func TestResolveSessionType_OneOffOverridesExplicitNewWorktree(t *testing.T) {
-	// one_off flag wins over any explicit SessionType.
+func TestResolveSessionType_OneOff_ReturnsSessionTypeOneOff(t *testing.T) {
+	// SESSION_TYPE_ONE_OFF maps to SessionTypeOneOff (caller converts to directory after path gen).
 	msg := &sessionv1.CreateSessionRequest{
-		SessionType: sessionv1.SessionType_SESSION_TYPE_NEW_WORKTREE,
-		OneOff:      true,
+		SessionType: sessionv1.SessionType_SESSION_TYPE_ONE_OFF,
 	}
-	assert.Equal(t, session.SessionTypeDirectory, resolveSessionType(msg, "some-branch"))
-}
-
-func TestResolveSessionType_OneOffOverridesExistingWorktree(t *testing.T) {
-	msg := &sessionv1.CreateSessionRequest{
-		SessionType:      sessionv1.SessionType_SESSION_TYPE_EXISTING_WORKTREE,
-		ExistingWorktree: "/worktree",
-		OneOff:           true,
-	}
-	assert.Equal(t, session.SessionTypeDirectory, resolveSessionType(msg, ""))
-}
-
-func TestResolveSessionType_OneOffUnspecifiedIsDirectory(t *testing.T) {
-	msg := &sessionv1.CreateSessionRequest{
-		OneOff: true,
-	}
-	assert.Equal(t, session.SessionTypeDirectory, resolveSessionType(msg, ""))
+	assert.Equal(t, session.SessionTypeOneOff, resolveSessionType(msg, "some-branch"))
 }
 
 func TestResolveSessionType_UnknownExplicitTypeDefaultsToDirectory(t *testing.T) {
@@ -123,9 +105,8 @@ func TestCreateSession_EmptyPath_NonOneOff_ReturnsInvalidArgument(t *testing.T) 
 	svc := newCreateTestService(t, storage)
 
 	_, err := svc.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
-		Title:  "my-session",
-		Path:   "",
-		OneOff: false,
+		Title: "my-session",
+		Path:  "",
 	}))
 
 	require.Error(t, err)
@@ -144,9 +125,9 @@ func TestCreateSession_EmptyPath_OneOff_PassesPathValidation(t *testing.T) {
 	t.Setenv("HOME", baseDir)
 
 	resp, err := svc.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
-		Title:  "scratch-session",
-		Path:   "",
-		OneOff: true,
+		Title:       "scratch-session",
+		Path:        "",
+		SessionType: sessionv1.SessionType_SESSION_TYPE_ONE_OFF,
 	}))
 
 	if err != nil {
@@ -206,9 +187,9 @@ func TestCreateSession_OneOff_CreatesDirectoryInBaseDir(t *testing.T) {
 	expectedBase := filepath.Join(baseDir, "oneoff")
 
 	resp, err := svc.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
-		Title:  "my-scratch",
-		Path:   "",
-		OneOff: true,
+		Title:       "my-scratch",
+		Path:        "",
+		SessionType: sessionv1.SessionType_SESSION_TYPE_ONE_OFF,
 	}))
 	if err == nil {
 		destroyCreatedSession(t, svc, resp.Msg.Session.Id)
@@ -237,8 +218,8 @@ func TestCreateSession_OneOff_TwoCallsCreateTwoDistinctDirectories(t *testing.T)
 
 	for i, title := range []string{"session-a", "session-b"} {
 		resp, err := svc.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
-			Title:  title,
-			OneOff: true,
+			Title:       title,
+			SessionType: sessionv1.SessionType_SESSION_TYPE_ONE_OFF,
 		}))
 		if err == nil {
 			destroyCreatedSession(t, svc, resp.Msg.Session.Id)
@@ -269,8 +250,8 @@ func TestCreateSession_OneOff_BadBaseDir_ReturnsInternalError(t *testing.T) {
 	t.Setenv("HOME", bogusHome)
 
 	_, err = svc.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
-		Title:  "cant-make-dir",
-		OneOff: true,
+		Title:       "cant-make-dir",
+		SessionType: sessionv1.SessionType_SESSION_TYPE_ONE_OFF,
 	}))
 
 	require.Error(t, err)
@@ -294,21 +275,6 @@ func TestCreateSession_OneOff_BadBaseDir_ReturnsInternalError(t *testing.T) {
 //
 // Requires tmux to be installed; skipped automatically otherwise.
 func TestCreateSession_StatusManagerWiredBeforeDriver(t *testing.T) {
-	// This regression test exercises the tmux-available wiring path, which requires
-	// BOTH tmux and the launch program (claude) to be present. When claude is absent
-	// (e.g. CI), `tmux new-session ... claude` still returns 0 — the program-not-found
-	// failure happens inside the pane afterward — so instance.Start() returns nil and
-	// Status never becomes Stopped. That makes the runtime Stopped-skip below unreachable,
-	// and the test would spuriously fail at the deadline. Guard up front with the same
-	// exec.LookPath pattern used by the other tmux/claude integration tests
-	// (see session/mcp_integration_test.go).
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not in PATH")
-	}
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not in PATH")
-	}
-
 	storage := createTestStorage(t)
 	bus := events.NewEventBus(16)
 	t.Cleanup(bus.Close)
@@ -325,8 +291,9 @@ func TestCreateSession_StatusManagerWiredBeforeDriver(t *testing.T) {
 	// handles the failure and sets Status=Stopped. A sync error here means a
 	// pre-goroutine validation failure (storage, config) which should never be silently skipped.
 	resp, err := svc.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
-		Title: "status-wiring-regression",
-		Path:  t.TempDir(),
+		Title:   "status-wiring-regression",
+		Path:    t.TempDir(),
+		Program: "claude",
 	}))
 	require.NoError(t, err)
 	t.Cleanup(func() { destroyCreatedSession(t, svc, resp.Msg.Session.Id) })

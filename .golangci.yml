@@ -50,11 +50,11 @@ linters:
       exclude-godoc-examples: true
   exclusions:
     paths:
+      - "^\\.\\."
       - session/tmux/tmux_windows
       - web-app
       - \.stapler-squad
       - \.claude-squad
-      - \.claude
     rules:
       # exhaustive enforces DetectedStatus switch coverage in session/detection/ only.
       # All other packages use iota types with intentional default: clauses.

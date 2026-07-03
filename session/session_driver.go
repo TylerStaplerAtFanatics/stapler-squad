@@ -122,6 +122,16 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 	ticker := time.NewTicker(driverPollInterval)
 	defer ticker.Stop()
 
+	// Cooldown after answering a startup dialog: prevents the same tick-detected
+	// buffer from firing a second "1\n" before the terminal clears the dialog.
+	var lastDialogAnsweredAt time.Time
+	const dialogCooldown = 5 * time.Second
+
+	// Once a PR URL is found in terminal output we stop scanning.
+	// Pre-seed from the current in-memory state so we don't re-scan for sessions
+	// that already have a linked PR (e.g. created from a PR URL in the omnibar).
+	prURLLinked := inst.GitHubPRNumber > 0
+
 	// No initial prompt configured — skip the send step; driver still handles
 	// startup dialogs, auto-approval, and monitoring.
 	sentInitial := initialPrompt == ""
@@ -200,13 +210,14 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 		// machine reaches NeedsApproval — e.g. the trust-folder safety check.
 		output, previewErr := inst.Preview()
 		if previewErr == nil && output != "" {
-			if isStartupDialog(output) {
+			if shouldAnswerStartupDialog(output, lastDialogAnsweredAt, dialogCooldown) {
 				if err := inst.SendKeys("1\n"); err != nil {
 					log.Warn("SessionDriver: failed to answer startup dialog",
 						"session", inst.Title,
 						"err", err,
 					)
 				} else {
+					lastDialogAnsweredAt = time.Now()
 					log.Info("SessionDriver: answered startup dialog",
 						"session", inst.Title,
 					)
@@ -343,6 +354,22 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 						)
 					}
 				}
+			}
+		}
+
+		// Scan terminal output for a GitHub PR URL printed by git push.
+		// This auto-links the PR to the session so PRStatusPoller can track it
+		// without relying on branch-name discovery (which fails when the omnibar
+		// branch name differs from the PR head branch).
+		if sentInitial && !prURLLinked && inst.GitHubOwner != "" && previewErr == nil && output != "" {
+			if prURL, prNum := scanTerminalForPRURL(output); prURL != "" {
+				inst.stateMutex.Lock()
+				inst.GitHubPRURL = prURL
+				inst.GitHubPRNumber = prNum
+				inst.stateMutex.Unlock()
+				log.Info("SessionDriver: auto-linked PR from terminal push output",
+					"session", inst.Title, "pr", prNum, "url", prURL)
+				prURLLinked = true
 			}
 		}
 	}
@@ -506,6 +533,35 @@ func isStartupDialog(output string) bool {
 		// Must have a numbered option to select — avoids false positives on
 		// non-interactive output that merely mentions trust.
 		(strings.Contains(output, "1.") || strings.Contains(output, "❯ 1"))
+}
+
+// shouldAnswerStartupDialog returns true when the terminal output shows a startup
+// dialog and the cooldown since the last answer has elapsed. Extracted to make
+// the double-fire guard directly unit-testable.
+func shouldAnswerStartupDialog(output string, lastAnsweredAt time.Time, cooldown time.Duration) bool {
+	return isStartupDialog(output) && time.Since(lastAnsweredAt) > cooldown
+}
+
+// scanTerminalForPRURL searches terminal scrollback output for a GitHub PR URL
+// of the form https://github.com/owner/repo/pull/NNN (as printed by git push).
+// Returns ("", 0) if not found.
+func scanTerminalForPRURL(output string) (string, int) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-30; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.Contains(line, "github.com/") || !strings.Contains(line, "/pull/") {
+			continue
+		}
+		for _, word := range strings.Fields(line) {
+			word = strings.Trim(word, ".,;:\"'()")
+			if strings.Contains(word, "github.com/") && strings.Contains(word, "/pull/") {
+				if ref, err := ParseGitHubURL(word); err == nil && ref.PRNumber > 0 {
+					return word, ref.PRNumber
+				}
+			}
+		}
+	}
+	return "", 0
 }
 
 // parseJSONField extracts a string field value from a JSON blob.

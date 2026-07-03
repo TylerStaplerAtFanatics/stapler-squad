@@ -1,6 +1,7 @@
 "use client";
 
 import { SubStatus } from "@/gen/session/v1/types_pb";
+import { assertNever } from "@/lib/utils/assertNever";
 import {
   chipNeedsApproval,
   chipInputRequired,
@@ -11,6 +12,7 @@ import {
   chipIdle,
   chipReady,
   chipSuccess,
+  chipWaitingForAgent,
   spinner,
 } from "./SubStatusChip.css";
 
@@ -28,6 +30,18 @@ interface SubStatusChipProps {
  */
 export function SubStatusChip({ subStatus }: SubStatusChipProps) {
   switch (subStatus) {
+    case SubStatus.WAITING_FOR_AGENT:
+      return (
+        <span
+          className={chipWaitingForAgent}
+          role="status"
+          aria-label="Waiting for agents"
+          title="Claude is waiting for background agents to finish"
+        >
+          ⏳ Waiting for Agents
+        </span>
+      );
+
     case SubStatus.PROCESSING:
       return (
         <span
@@ -138,7 +152,14 @@ export function SubStatusChip({ subStatus }: SubStatusChipProps) {
       );
 
     case SubStatus.UNSPECIFIED:
+    case undefined:
+      // `undefined` is handled defensively alongside UNSPECIFIED even though
+      // subStatus is typed as required — some callers (e.g. partially-typed
+      // test fixtures) may omit it, and it should render no chip rather than
+      // throw. See the same guard in deriveWorkingState.ts.
+      return null;
     default:
+      assertNever(subStatus);
       return null;
   }
 }

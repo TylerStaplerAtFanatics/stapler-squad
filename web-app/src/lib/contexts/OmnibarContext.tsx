@@ -9,12 +9,14 @@ import { useAuth } from "@/lib/contexts/AuthContext";
 import { SessionType } from "@/gen/session/v1/types_pb";
 import { getDefaultRegistry } from "@/lib/omnibar/detector";
 import { WorkflowDetector, type WorkflowEntry } from "@/lib/omnibar/detectors/WorkflowDetector";
+import { useAliases } from "@/lib/hooks/useAliases";
+import { AliasDetector } from "@/lib/omnibar/detectors/AliasDetector";
 
 const sessionTypeMap: Record<string, SessionType> = {
   directory: SessionType.DIRECTORY,
   new_worktree: SessionType.NEW_WORKTREE,
   existing_worktree: SessionType.EXISTING_WORKTREE,
-  one_off: SessionType.DIRECTORY, // one-off is a directory session; type overridden server-side
+  one_off: SessionType.ONE_OFF,
   new_project: SessionType.NEW_PROJECT, // new-project mode: backend initializes git repo
   autonomous: SessionType.DIRECTORY, // autonomous reuses DIRECTORY; server handles autonomous flag
 };
@@ -84,6 +86,24 @@ export function OmnibarProvider({ children }: OmnibarProviderProps) {
       workflowDetectorRef.current = null;
     };
   }, [workflowEntries]);
+
+  const { aliases } = useAliases();
+
+  // Dynamically register/unregister AliasDetector whenever the alias list changes.
+  const aliasDetectorRef = useRef<AliasDetector | null>(null);
+  useEffect(() => {
+    const registry = getDefaultRegistry();
+    if (aliasDetectorRef.current) {
+      registry.unregister(aliasDetectorRef.current);
+    }
+    const detector = new AliasDetector(aliases);
+    registry.register(detector);
+    aliasDetectorRef.current = detector;
+    return () => {
+      registry.unregister(detector);
+      aliasDetectorRef.current = null;
+    };
+  }, [aliases]);
 
   const open = useCallback(() => {
     setInitialMode("discovery");
@@ -177,11 +197,12 @@ export function OmnibarProvider({ children }: OmnibarProviderProps) {
         workingDir: data.workingDir,
         existingWorktree: data.existingWorktree,
         sessionType: effectiveSessionType,
-        oneOff: data.oneOff ?? false,
         createIfMissing: data.createIfMissing ?? false,
         initialPrompt: data.initialPrompt,
         autonomousMode: data.autonomousMode ?? false,
         permissionMode: data.permissionMode ?? "",
+        aliasName: data.aliasName ?? "",
+        cliFlags: data.extraCliFlags ?? "",
       });
 
       if (session) {

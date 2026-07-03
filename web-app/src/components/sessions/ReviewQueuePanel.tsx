@@ -64,6 +64,8 @@ import {
   filterToggle,
   filterToggleActive,
   filterClear,
+  autoAdvanceToggle,
+  savedIndicator,
   modalOverlay,
   modalContent,
   ruleModalContent,
@@ -79,6 +81,8 @@ interface ReviewQueuePanelProps {
   onItemsChange?: (items: ReviewItem[]) => void; // Callback to expose queue items for navigation
   onAcknowledged?: (sessionId: string) => void; // Notifies parent when a session is acknowledged (for auto-advance)
   onRunOneShot?: (sessionId: string, prompt: string) => Promise<{ prUrl?: string; error?: string } | null>; // S3-3
+  autoAdvance?: boolean;
+  onAutoAdvanceChange?: (value: boolean) => void;
 }
 
 /**
@@ -108,6 +112,8 @@ export function ReviewQueuePanel({
   onItemsChange,
   onAcknowledged,
   onRunOneShot,
+  autoAdvance,
+  onAutoAdvanceChange,
 }: ReviewQueuePanelProps) {
   // S3-3: PR creation modal state
   const [prModal, setPrModal] = useState<{ sessionId: string; prompt: string } | null>(null);
@@ -133,6 +139,8 @@ export function ReviewQueuePanel({
   const [liveAnnouncement, setLiveAnnouncement] = useState('');
   // Prevent announcement on initial mount
   const hasMountedRef = useRef(false);
+  // "Saved" flash for auto-advance toggle
+  const [autoAdvanceSaved, setAutoAdvanceSaved] = useState(false);
 
   const {
     items: allItems,
@@ -177,11 +185,16 @@ export function ReviewQueuePanel({
   // ─────────────────────────────────────────────────────────────────────────
 
   // Separate working sessions from waiting sessions for count display.
+  // Items with INPUT_REQUIRED or APPROVAL_PENDING reason need user action — exclude from "working" count.
   const workingCount = useMemo(
     () =>
       allItems.filter((item) => {
         const ws = deriveWorkingState(item);
-        return ws === WorkingState.ACTIVE || ws === WorkingState.PROCESSING;
+        return (
+          (ws === WorkingState.ACTIVE || ws === WorkingState.PROCESSING) &&
+          item.reason !== AttentionReason.INPUT_REQUIRED &&
+          item.reason !== AttentionReason.APPROVAL_PENDING
+        );
       }).length,
     [allItems]
   );
@@ -195,10 +208,18 @@ export function ReviewQueuePanel({
 
   // Apply client-side filtering to all live items, excluding actively-working sessions
   // so the queue only shows sessions that need user attention.
+  // Exception: INPUT_REQUIRED and APPROVAL_PENDING items always show — they need immediate action
+  // even though deriveWorkingState maps their subStatus to WorkingState.PROCESSING.
   const allFilteredItems = useMemo(() => {
     let filtered = allItems.filter((item) => {
       const ws = deriveWorkingState(item);
-      return ws !== WorkingState.ACTIVE && ws !== WorkingState.PROCESSING;
+      if (ws === WorkingState.ACTIVE || ws === WorkingState.PROCESSING) {
+        return (
+          item.reason === AttentionReason.INPUT_REQUIRED ||
+          item.reason === AttentionReason.APPROVAL_PENDING
+        );
+      }
+      return true;
     });
     if (priorityFilter !== undefined) {
       filtered = filtered.filter((item) => item.priority === priorityFilter);
@@ -346,20 +367,20 @@ export function ReviewQueuePanel({
 
   const summaryCount = useMemo(() => {
     const parts: string[] = [];
-    const reasonEntries: [AttentionReason, string][] = [
-      [AttentionReason.APPROVAL_PENDING, "approval"],
-      [AttentionReason.INPUT_REQUIRED, "input needed"],
-      [AttentionReason.ERROR_STATE, "error"],
-      [AttentionReason.IDLE_TIMEOUT, "timed out"],
-      [AttentionReason.IDLE, "idle"],
-      [AttentionReason.STALE, "stale"],
-      [AttentionReason.TASK_COMPLETE, "complete"],
-      [AttentionReason.WAITING_FOR_USER, "waiting"],
-      [AttentionReason.TESTS_FAILING, "tests failing"],
+    const reasonFormatters: [AttentionReason, (n: number) => string][] = [
+      [AttentionReason.APPROVAL_PENDING, (n) => `${n} approval${n !== 1 ? "s" : ""}`],
+      [AttentionReason.INPUT_REQUIRED, (n) => `${n} input${n !== 1 ? "s" : ""} needed`],
+      [AttentionReason.ERROR_STATE, (n) => `${n} error${n !== 1 ? "s" : ""}`],
+      [AttentionReason.IDLE_TIMEOUT, (n) => `${n} timed out`],
+      [AttentionReason.IDLE, (n) => `${n} idle`],
+      [AttentionReason.STALE, (n) => `${n} stale`],
+      [AttentionReason.TASK_COMPLETE, (n) => `${n} complete`],
+      [AttentionReason.WAITING_FOR_USER, (n) => `${n} waiting`],
+      [AttentionReason.TESTS_FAILING, (n) => `${n} test${n !== 1 ? "s" : ""} failing`],
     ];
-    for (const [reason, label] of reasonEntries) {
-      const count = byReason.get(reason) ?? 0;
-      if (count > 0) parts.push(`${count} ${label}${count !== 1 ? "s" : ""}`);
+    for (const [reason, format] of reasonFormatters) {
+      const n = byReason.get(reason) ?? 0;
+      if (n > 0) parts.push(format(n));
     }
     return parts.join(", ");
   }, [byReason]);
@@ -397,6 +418,21 @@ export function ReviewQueuePanel({
               {totalItems}
             </span>
           </h2>
+          {onAutoAdvanceChange !== undefined && (
+            <label className={autoAdvanceToggle}>
+              <input
+                type="checkbox"
+                checked={autoAdvance ?? true}
+                onChange={(e) => {
+                  onAutoAdvanceChange(e.target.checked);
+                  setAutoAdvanceSaved(true);
+                  setTimeout(() => setAutoAdvanceSaved(false), 2000);
+                }}
+              />
+              Auto-advance
+              {autoAdvanceSaved && <span className={savedIndicator}>Saved</span>}
+            </label>
+          )}
           <button
             onClick={refreshSnapshot}
             className={refreshButton}
@@ -441,7 +477,7 @@ export function ReviewQueuePanel({
         )}
       </div>
 
-      {totalItems > 0 && (
+      {allItems.length > 0 && (
         <div className={filterToggleRow}>
           <button
             className={`${filterToggle} ${hasActiveFilter ? filterToggleActive : ""}`}
@@ -539,7 +575,21 @@ export function ReviewQueuePanel({
         {loading && items.length === 0 ? (
           <div className={loadingClass}>Loading review queue...</div>
         ) : items.length === 0 ? (
-          hadItems ? (
+          hasActiveFilter ? (
+            <div className={emptyClass}>
+              <p>No items match the current filter.</p>
+              <p className={emptySubtext}>
+                {totalItems} {totalItems === 1 ? "item" : "items"} in queue
+              </p>
+              <Button
+                intent="secondary"
+                size="md"
+                onClick={() => { setPriorityFilter(undefined); setReasonFilter(undefined); }}
+              >
+                Clear filter
+              </Button>
+            </div>
+          ) : hadItems ? (
             <div className={`${emptyClass} ${completionState}`}>
               <p className={completionIcon}>[✓]</p>
               <p>All done! 0 items remaining.</p>

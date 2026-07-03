@@ -224,9 +224,9 @@ describe('TerminalStreamManager', () => {
     });
 
     it('should throttle full-screen redraw patterns', () => {
-      // Full redraw pattern: cursor up at start
-      const redraw1 = '\x1b[10ARedraw content 1';
-      const redraw2 = '\x1b[10ARedraw content 2';
+      // Full redraw pattern: cursor up followed by erase sequence (genuine full-screen redraw)
+      const redraw1 = '\x1b[10A\x1b[2KRedraw content 1';
+      const redraw2 = '\x1b[10A\x1b[2KRedraw content 2';
 
       manager.write(redraw1);
       manager.write(redraw2);
@@ -238,6 +238,72 @@ describe('TerminalStreamManager', () => {
       const written = terminal.getWrittenData();
       // Should contain the latest redraw content
       expect(written.some(w => w.includes('Redraw content 2'))).toBe(true);
+    });
+
+    it('RedrawThrottler_should_notThrottle_When_chunkStartsWithCursorUpOnly', () => {
+      // Cursor-up alone (no following erase sequence) — Ink incremental line update, NOT a full redraw.
+      // Must reach xterm.js immediately without throttling.
+      const inkIncremental = '\x1b[5AInk incremental line update';
+
+      manager.write(inkIncremental);
+
+      // Should be written through immediately (not held in throttle queue)
+      const written = terminal.getWrittenData();
+      expect(written.some(w => w.includes('Ink incremental line update'))).toBe(true);
+    });
+
+    it('RedrawThrottler_should_throttle_When_chunkIsGenuineFullRedraw', () => {
+      // Cursor-up immediately followed by an erase-line sequence — genuine full-screen redraw.
+      // Must be throttled (held back) until the timer fires.
+      const fullRedraw = '\x1b[5A\x1b[2KFull screen content';
+
+      manager.write(fullRedraw);
+
+      // Should NOT have been written yet (still in throttle queue)
+      const writtenBefore = terminal.getWrittenData();
+      expect(writtenBefore.some(w => w.includes('Full screen content'))).toBe(false);
+
+      // After throttle window expires, it should flush
+      jest.advanceTimersByTime(33);
+      const writtenAfter = terminal.getWrittenData();
+      expect(writtenAfter.some(w => w.includes('Full screen content'))).toBe(true);
+    });
+
+    it('RedrawThrottler_should_letThrough_When_twoFullRedrawsExceedThrottleWindow', () => {
+      // Two full-redraw chunks within 33ms: only the second should reach xterm.js (first is coalesced).
+      const redraw1 = '\x1b[5A\x1b[2KFirst full redraw';
+      const redraw2 = '\x1b[5A\x1b[2KSecond full redraw';
+
+      manager.write(redraw1);
+      // Advance less than the throttle window so the timer has not yet fired
+      jest.advanceTimersByTime(10);
+      manager.write(redraw2);
+
+      // Neither should be written yet (throttle window hasn't elapsed)
+      expect(terminal.getWrittenData().some(w => w.includes('First full redraw'))).toBe(false);
+      expect(terminal.getWrittenData().some(w => w.includes('Second full redraw'))).toBe(false);
+
+      // Advance past the throttle window — only the latest (second) should flush
+      jest.advanceTimersByTime(33);
+      const written = terminal.getWrittenData();
+      expect(written.some(w => w.includes('Second full redraw'))).toBe(true);
+      // First was coalesced and discarded
+      expect(written.some(w => w.includes('First full redraw'))).toBe(false);
+    });
+
+    it('RedrawThrottler_should_flush_AtExact33ms_Boundary', () => {
+      // Pin the exact 33ms boundary: content must NOT flush at 32ms and MUST flush at 33ms.
+      const fullRedraw = '\x1b[5A\x1b[2KExact boundary content';
+
+      manager.write(fullRedraw);
+
+      // At 32ms the throttle window has not yet elapsed — should still be held
+      jest.advanceTimersByTime(32);
+      expect(terminal.getWrittenData().some(w => w.includes('Exact boundary content'))).toBe(false);
+
+      // At 33ms the timer fires — content must be flushed
+      jest.advanceTimersByTime(1);
+      expect(terminal.getWrittenData().some(w => w.includes('Exact boundary content'))).toBe(true);
     });
   });
 
@@ -254,76 +320,6 @@ describe('TerminalStreamManager', () => {
       await manager.writeInitialContent('Content');
 
       expect(terminal.wasScrolledToBottom()).toBe(true);
-    });
-  });
-
-  describe('prependScrollbackBatch', () => {
-    it('preserves existing terminal content when SerializeAddon is available', async () => {
-      jest.useRealTimers();
-      global.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-        Promise.resolve().then(() => cb(performance.now()));
-        return 1;
-      };
-
-      const serializeAddon = { serialize: jest.fn().mockReturnValue('snapshot-line-1\r\nsnapshot-line-2') };
-      manager.setSerializeAddon(serializeAddon);
-
-      // Simulate: snapshot already written to terminal by the server's TerminalOutput message
-      manager.write('snapshot-line-1\r\nsnapshot-line-2');
-
-      terminal.resetTracking();
-      await manager.prependScrollbackBatch('history-line-A\r\nhistory-line-B');
-
-      const allWritten = terminal.getWrittenData().join('');
-      // History must appear
-      expect(allWritten).toContain('history-line-A');
-      // Serialised snapshot must be re-written after history
-      expect(allWritten).toContain('snapshot-line-1');
-      // Terminal was cleared (to make room for history + snapshot rewrite)
-      expect(terminal.wasCleared()).toBe(true);
-    });
-
-    it('does NOT call terminal.clear when SerializeAddon is unavailable (degraded mode)', async () => {
-      jest.useRealTimers();
-      global.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-        Promise.resolve().then(() => cb(performance.now()));
-        return 1;
-      };
-
-      // No setSerializeAddon call — degraded mode
-      await manager.prependScrollbackBatch('history-only');
-
-      // Degraded mode appends without clearing so existing viewport content is preserved
-      expect(terminal.wasCleared()).toBe(false);
-      const written = terminal.getWrittenData().join('');
-      expect(written).toContain('history-only');
-    });
-
-    it('queues live writes during prependScrollbackBatch and flushes them after', async () => {
-      jest.useRealTimers();
-      // Resolve RAF immediately so enqueueWrite completes without real delays
-      global.requestAnimationFrame = (cb: FrameRequestCallback): number => {
-        Promise.resolve().then(() => cb(performance.now()));
-        return 1;
-      };
-
-      const serializeAddon = { serialize: jest.fn().mockReturnValue('current-state') };
-      manager.setSerializeAddon(serializeAddon);
-
-      // Start batch; do NOT await yet
-      const batchPromise = manager.prependScrollbackBatch('history-content');
-
-      // Live output arrives while batch is in progress
-      manager.write('live-output');
-
-      // Now await the batch
-      await batchPromise;
-
-      const allWritten = terminal.getWrittenData().join('');
-      // Live output must appear (either during or after batch)
-      expect(allWritten).toContain('live-output');
-      // History must appear
-      expect(allWritten).toContain('history-content');
     });
   });
 

@@ -378,6 +378,15 @@ service SessionService {
   // merging both with a small set of built-in Claude Code commands.
   rpc ListSlashCommands(ListSlashCommandsRequest) returns (ListSlashCommandsResponse) {}
 
+  // ListAliases returns all configured alias presets from config.json.
+  rpc ListAliases(ListAliasesRequest) returns (ListAliasesResponse) {}
+
+  // UpsertAlias creates or updates a named alias preset (matched by name).
+  rpc UpsertAlias(UpsertAliasRequest) returns (UpsertAliasResponse) {}
+
+  // DeleteAlias removes an alias preset by name.
+  rpc DeleteAlias(DeleteAliasRequest) returns (DeleteAliasResponse) {}
+
   // ArchiveSession soft-archives a session by setting archived_at.
   // Archived sessions are excluded from the default session list.
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse) {}
@@ -394,6 +403,16 @@ service SessionService {
   // failed — specifically: Stopped sessions with no meaningful terminal output.
   // Returns the count of sessions that were archived.
   rpc DeleteWorkflowFailedSessions(DeleteWorkflowFailedSessionsRequest) returns (DeleteWorkflowFailedSessionsResponse) {}
+
+  // GetHookStatus reports whether the global Claude Code hooks (rule enforcement
+  // and notifications) are installed in ~/.claude/settings.json.
+  // +api: hooks:status
+  rpc GetHookStatus(GetHookStatusRequest) returns (GetHookStatusResponse) {}
+
+  // InstallHooks installs the requested global Claude Code hooks into
+  // ~/.claude/settings.json. Idempotent per hook.
+  // +api: hooks:install
+  rpc InstallHooks(InstallHooksRequest) returns (InstallHooksResponse) {}
 }
 
 // ListSessionsRequest allows filtering sessions by various criteria.
@@ -483,9 +502,10 @@ message CreateSessionRequest {
   // If not specified, backend will infer from other fields (branch, existing_worktree).
   SessionType session_type = 13;
 
-  // Optional: If true, ignore the path field and generate a fresh directory
-  // under one_off_base_dir. The session title is still required.
-  bool one_off = 14;
+  // Deprecated: use session_type = SESSION_TYPE_ONE_OFF instead.
+  // Field 14 is reserved for backward compatibility; server ignores it.
+  reserved 14;
+  reserved "one_off";
 
   // Optional: Initial prompt to inject via CLAUDE.md (no size limit; shell-safe).
   string initial_prompt = 15;
@@ -526,6 +546,17 @@ message CreateSessionRequest {
   // workflow_id associates the new session with a workflow.
   // Set by the scheduler when firing a workflow; not intended for direct client use.
   string workflow_id = 24;
+
+  // env_vars are additional environment variables passed to the new session.
+  // Applied on top of any defaults-resolved env vars.
+  map<string, string> env_vars = 25;
+  // cli_flags are additional CLI flags appended to the program launch command.
+  // Applied on top of any defaults-resolved flags.
+  string cli_flags = 26;
+
+  // alias_name, when non-empty, resolves session defaults via the named alias preset.
+  // Path and profile are resolved from the alias config; path from req is used as override if non-empty.
+  string alias_name = 27;
 }
 
 message CreateSessionResponse {
@@ -1756,6 +1787,46 @@ message DeleteDirectoryRuleRequest {
 
 message DeleteDirectoryRuleResponse {}
 
+// AliasProto represents a named session preset configured in config.json.
+message AliasProto {
+  string name = 1;
+  string group = 2;
+  string path = 3;
+  string description = 4;
+  string profile = 5;
+  string program = 6;
+  bool auto_yes = 7;
+  repeated string tags = 8;
+  map<string, string> env_vars = 9;
+  string cli_flags = 10;
+  // session_type overrides the default session creation mode for this alias.
+  // Unspecified means the default (directory) is used.
+  SessionType session_type = 11;
+  // name_prefix is prepended to the user-supplied session label when naming sessions.
+  // For example, prefix "ssq-" + label "my-feature" → session name "ssq-my-feature".
+  string name_prefix = 12;
+}
+
+message ListAliasesRequest {}
+
+message ListAliasesResponse {
+  repeated AliasProto aliases = 1;
+}
+
+message UpsertAliasRequest {
+  AliasProto alias = 1;
+}
+
+message UpsertAliasResponse {
+  AliasProto alias = 1;
+}
+
+message DeleteAliasRequest {
+  string name = 1;
+}
+
+message DeleteAliasResponse {}
+
 message ListWorktreesRequest {
   // Absolute path to the git repository root. Supports ~ expansion.
   string repo_path = 1;
@@ -2048,6 +2119,33 @@ message GetFeatureFlagsRequest {}
 
 message GetFeatureFlagsResponse {
   repeated FeatureFlag flags = 1;
+}
+
+message GetHookStatusRequest {}
+
+message GetHookStatusResponse {
+  // Whether the PreToolUse rule-enforcement hook (ssq-hooks check) is installed globally.
+  bool rules_installed = 1;
+  // Whether the Notification/Stop notification hooks (ssq-hook-handler) are installed globally.
+  bool notifications_installed = 2;
+  // True when the ssq-hooks binary is available to install the rules hook.
+  bool rules_available = 3;
+  // True when the ssq-hook-handler is available to install the notification hooks.
+  bool notifications_available = 4;
+}
+
+message InstallHooksRequest {
+  // Install the PreToolUse rule-enforcement hook.
+  bool install_rules = 1;
+  // Install the Notification/Stop notification hooks.
+  bool install_notifications = 2;
+}
+
+message InstallHooksResponse {
+  // Hook status after the install attempt.
+  GetHookStatusResponse status = 1;
+  // Human-readable per-hook result messages (e.g. a manual fallback command when a binary is missing).
+  repeated string messages = 2;
 }
 
 message UpdateFeatureFlagRequest {

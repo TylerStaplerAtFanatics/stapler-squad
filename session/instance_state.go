@@ -47,22 +47,46 @@ func (i *Instance) transitionTo(ctx context.Context, to Status) error {
 }
 
 // IsCreating returns true if the instance is in the Creating state.
-func (i *Instance) IsCreating() bool { return i.Status == Creating }
+func (i *Instance) IsCreating() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
+	return i.Status == Creating
+}
 
 // IsActive returns true if the instance has a live AI process.
-func (i *Instance) IsActive() bool { return i.Status == Active }
+func (i *Instance) IsActive() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
+	return i.Status == Active
+}
 
 // IsPaused returns true if the instance is paused (worktree removed, branch preserved).
-func (i *Instance) IsPaused() bool { return i.Status == Paused }
+func (i *Instance) IsPaused() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
+	return i.Status == Paused
+}
 
 // IsStopped returns true if the instance is in the terminal Stopped state.
-func (i *Instance) IsStopped() bool { return i.Status == Stopped }
+func (i *Instance) IsStopped() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
+	return i.Status == Stopped
+}
 
 // IsHibernated returns true if the instance has been hibernated (checkpoint written, tmux killed).
-func (i *Instance) IsHibernated() bool { return i.Status == Hibernated }
+func (i *Instance) IsHibernated() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
+	return i.Status == Hibernated
+}
 
 // GetLifecycleStatus returns the current lifecycle status as a typed Status value.
-func (i *Instance) GetLifecycleStatus() Status { return i.Status }
+func (i *Instance) GetLifecycleStatus() Status {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
+	return i.Status
+}
 
 // GetCategoryPath returns the category path as a slice of strings for nested category support
 // Supports "Work/Frontend" syntax by splitting on "/" delimiter
@@ -131,11 +155,17 @@ func (i *Instance) SetLastMeaningfulOutput(t time.Time) {
 func (i *Instance) GetEffectiveStatus() Status {
 	mgr := i.GetStatusManager()
 	if mgr == nil {
-		return i.Status
+		i.stateMutex.RLock()
+		s := i.Status
+		i.stateMutex.RUnlock()
+		return s
 	}
 	statusInfo := mgr.GetStatus(i)
 	if !statusInfo.IsControllerActive || statusInfo.ClaudeStatus == 0 { // 0 = StatusUnknown
-		return i.Status
+		i.stateMutex.RLock()
+		s := i.Status
+		i.stateMutex.RUnlock()
+		return s
 	}
 	return StatusFromDetected(statusInfo.ClaudeStatus)
 }
@@ -143,6 +173,8 @@ func (i *Instance) GetEffectiveStatus() Status {
 // GetStatus returns the current lifecycle status of this instance as an int.
 // This is intentionally returns int to implement the SessionAccessor interface.
 func (i *Instance) GetStatus() int {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
 	return int(i.Status)
 }
 
@@ -199,11 +231,15 @@ func (i *Instance) Deny() error {
 
 // Paused returns true if the instance is paused.
 func (i *Instance) Paused() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
 	return i.Status == Paused
 }
 
 // Hibernated returns true if the instance is hibernated.
 func (i *Instance) Hibernated() bool {
+	i.stateMutex.RLock()
+	defer i.stateMutex.RUnlock()
 	return i.Status == Hibernated
 }
 

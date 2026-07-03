@@ -10,6 +10,8 @@ import { useNotificationHistory } from "@/lib/hooks/useNotificationHistory";
 import { groupNotifications } from "@/lib/utils/notificationGrouping";
 import { mapNotificationType, mapPriority } from "@/lib/utils/notificationMapping";
 import { TOAST_STALE_MS, ACTIONABLE_TOAST_STALE_MS, isActionable } from "@/lib/notification-policy";
+import { createNotificationSyncChannel } from "@/lib/utils/broadcastChannel";
+import { markAcknowledged } from "@/lib/utils/notificationStorage";
 
 export type { NotificationData, NotificationHistoryItem };
 
@@ -58,6 +60,13 @@ interface NotificationContextValue {
   loadMoreHistory: () => Promise<void>;
   /** Re-fetch the full notification history from the server (e.g. after a stream reconnect). */
   refreshHistory: () => Promise<void>;
+  /**
+   * Show an undo-variant toast. Returns the notification ID so the caller can
+   * dismiss it when the undo window expires (e.g. via removeNotification).
+   * Default duration is 5000ms (passed as durationMs for callers that want to
+   * schedule their own dismissal; the toast itself auto-closes via the normal policy).
+   */
+  showUndoToast: (message: string, onUndo: () => void, durationMs?: number) => string;
 }
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
@@ -222,6 +231,28 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     [addNotification]
   );
 
+  const showUndoToast = useCallback(
+    (message: string, onUndo: () => void, durationMs: number = 5000): string => {
+      const id = `notification-${Date.now()}-${Math.random()}`;
+      const newNotification: NotificationData = {
+        id,
+        sessionId: "",
+        sessionName: "",
+        message,
+        timestamp: Date.now(),
+        notificationType: "undo",
+        onUndo,
+      };
+      setNotifications((prev) => [...prev, newNotification]);
+      // Auto-dismiss after durationMs
+      setTimeout(() => {
+        setNotifications((prev) => prev.filter((n) => n.id !== id));
+      }, durationMs);
+      return id;
+    },
+    []
+  );
+
   // Remove stale toasts every minute.
   // Non-actionable: removed after TOAST_STALE_MS (5 min).
   // Actionable (approval_needed, question): removed after ACTIONABLE_TOAST_STALE_MS (6 min).
@@ -238,6 +269,24 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       );
     }, 60_000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Cross-tab sync: when another tab dismisses a notification, reflect it locally.
+  useEffect(() => {
+    const syncChannel = createNotificationSyncChannel();
+    const unsubscribe = syncChannel.subscribe((message) => {
+      if (message.type === "NOTIFICATION_DISMISSED") {
+        const { notificationId } = message;
+        setNotifications((prev) => prev.filter((n) => n.id !== notificationId));
+        setNotificationHistory((prev) =>
+          prev.map((n) => (n.id === notificationId ? { ...n, isRead: true } : n))
+        );
+      }
+      // NOTIFICATION_ACKNOWLEDGED is intentionally not handled here.
+      // Cross-tab session acknowledgement is driven by the sessionAcknowledged
+      // event from the server stream (useSessionService), not BroadcastChannel.
+    });
+    return unsubscribe;
   }, []);
 
   const togglePanel = useCallback(() => {
@@ -270,7 +319,16 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const acknowledgeNotification = useCallback((id: string | string[]) => {
     const ids = Array.isArray(id) ? id : [id];
     const idSet = new Set(ids);
-    setNotifications((prev) => prev.filter((n) => !idSet.has(n.id)));
+    const syncChannel = createNotificationSyncChannel();
+    setNotifications((prev) => {
+      prev.forEach((n) => {
+        if (idSet.has(n.id)) {
+          syncChannel.broadcast({ type: "NOTIFICATION_DISMISSED", notificationId: n.id });
+          if (n.sessionId) markAcknowledged(n.sessionId);
+        }
+      });
+      return prev.filter((n) => !idSet.has(n.id));
+    });
     markAsRead(ids);
   }, [markAsRead]);
 
@@ -354,6 +412,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         historyHasMore: history.hasMore,
         loadMoreHistory: history.loadMore,
         refreshHistory: history.refresh,
+        showUndoToast,
       }}
     >
       {children}

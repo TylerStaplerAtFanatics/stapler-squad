@@ -4,11 +4,13 @@
 import { useState, useEffect, useCallback } from "react";
 import type { BacklogItem, AcCriterion, BacklogItemInput } from "@/lib/hooks/useBacklogService";
 import { useBacklogService } from "@/lib/hooks/useBacklogService";
+import { useSessionService } from "@/lib/hooks/useSessionService";
 import { getStatusLabel } from "@/lib/backlog/status";
 import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
 import { SessionMonitor } from "./SessionMonitor";
 import { GateVerdictBox } from "./GateVerdictBox";
+import { InlineError } from "./InlineError";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import { TriageReviewPanel } from "./TriageReviewPanel";
 import * as styles from "./BacklogItemDetail.css";
@@ -48,6 +50,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     getBacklogItem,
     transitionStatus,
     triggerTriage,
+    cancelTriage,
     spawnSessionFromItem,
     approvePlan,
     overrideVerdict,
@@ -56,11 +59,13 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     updateBacklogItem,
     lastError,
   } = useBacklogService();
+  const { deleteSession } = useSessionService();
   const [item, setItem] = useState<BacklogItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
 
   // Notes inline editing
   const [editingNotes, setEditingNotes] = useState(false);
@@ -197,10 +202,31 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   );
 
   const handleCancelTriage = useCallback(async () => {
-    // TODO: implement cancel triage RPC call (if backend supports it)
-    // For now, just reload the item to reflect the current state
-    await load();
-  }, [load]);
+    if (!item) return;
+    setActionLoading(true);
+    try {
+      await cancelTriage(item.id);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Cancel failed.");
+    } finally {
+      setActionLoading(false);
+    }
+  }, [item, cancelTriage, load]);
+
+  const handleRetriggerTriage = useCallback(async () => {
+    if (!item) return;
+    setActionLoading(true);
+    try {
+      await triggerTriage(item.id);
+      await load();
+    } catch (e) {
+      console.error("[BacklogItemDetail] retrigger triage failed", e);
+      setError(e instanceof Error ? e.message : "Triage re-trigger failed.");
+    } finally {
+      setActionLoading(false);
+    }
+  }, [item, triggerTriage, load]);
 
   const handleApplyTriageSuggestions = useCallback(
     async (preApplyCriteria: AcCriterion[]) => {
@@ -472,7 +498,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             <TriageLoadingIndicator
               elapsedSeconds={triageElapsedSeconds}
               context="item"
-              onCancel={handleCancelTriage}
+              onCancel={actionLoading ? () => {} : handleCancelTriage}
               compact={false}
             />
           </div>
@@ -517,9 +543,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         {/* Triage failed banner */}
         {item.triageStatus === "failed" && item.status === "idea" && (
           <div className={styles.section}>
-            <div role="alert" style={{ color: "var(--error)", fontSize: "0.875rem" }}>
-              Triage encountered an error. Trigger triage manually to retry.
-            </div>
+            <InlineError type="permanent" onRetry={handleRetriggerTriage} />
           </div>
         )}
 
@@ -577,7 +601,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 <button
                   className={styles.actionButton}
                   onClick={() => handleAction("trigger_triage")}
-                  disabled={actionLoading}
+                  disabled={actionLoading || !item.repoPath}
+                  aria-disabled={!item.repoPath}
+                  title={!item.repoPath ? "Set repository path first" : undefined}
                   data-testid="backlog-action-trigger-triage"
                 >
                   Trigger Triage
@@ -590,7 +616,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 <button
                   className={styles.actionButton}
                   onClick={() => handleAction("trigger_triage")}
-                  disabled={actionLoading}
+                  disabled={actionLoading || !item.repoPath}
+                  aria-disabled={!item.repoPath}
+                  title={!item.repoPath ? "Set repository path first" : undefined}
                   data-testid="backlog-action-trigger-triage"
                 >
                   Trigger Triage
@@ -713,25 +741,46 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 };
                 const isOrphan = !s.endedAt && s.role !== statusToRole[item.status];
                 return (
-                  <a
+                  <div
                     key={s.sessionId}
                     className={styles.sessionRow}
-                    href={`/?session=${s.sessionId}`}
                     role="listitem"
-                    title="Open in terminal"
-                    style={{ textDecoration: "none" }}
                   >
-                    <span className={styles.sessionId} title={s.sessionId}>
-                      {s.sessionId}
-                    </span>
-                    <span className={styles.sessionRole}>{s.role}</span>
-                    {s.startedAt && (
-                      <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
-                    )}
-                    {isOrphan && (
-                      <span className={styles.sessionEndedBadge}>ended</span>
-                    )}
-                  </a>
+                    <a
+                      className={styles.sessionLink}
+                      href={`/?session=${s.sessionId}`}
+                      title="Open in terminal"
+                    >
+                      <span className={styles.sessionId} title={s.sessionId}>
+                        {s.sessionId}
+                      </span>
+                      <span className={styles.sessionRole}>{s.role}</span>
+                      {s.startedAt && (
+                        <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
+                      )}
+                      {isOrphan && (
+                        <span className={styles.sessionEndedBadge}>ended</span>
+                      )}
+                    </a>
+                    <button
+                      className={styles.sessionDeleteBtn}
+                      disabled={deletingSessionId === s.sessionId}
+                      aria-label="Delete session"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        if (!confirm("Delete this session? This cannot be undone.")) return;
+                        setDeletingSessionId(s.sessionId);
+                        try {
+                          await deleteSession(s.sessionId, true);
+                          await load();
+                        } finally {
+                          setDeletingSessionId(null);
+                        }
+                      }}
+                    >
+                      {deletingSessionId === s.sessionId ? "…" : "Delete"}
+                    </button>
+                  </div>
                 );
               })}
             </div>

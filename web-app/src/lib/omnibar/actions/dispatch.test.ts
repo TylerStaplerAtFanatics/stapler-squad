@@ -65,7 +65,7 @@ describe("dispatchOmnibarAction", () => {
   });
 
   describe("create_session (one-off)", () => {
-    it("dispatchOmnibarAction_should_setOneOffTrue_When_sessionTypeIsOneOff", () => {
+    it("dispatchOmnibarAction_should_passOneOffSessionType_When_sessionTypeIsOneOff", () => {
       const deps = makeDeps();
       const action: OmnibarAction = {
         type: "create_session",
@@ -76,7 +76,7 @@ describe("dispatchOmnibarAction", () => {
       };
       dispatchOmnibarAction(action, deps);
       expect(deps.createSession).toHaveBeenCalledWith(
-        expect.objectContaining({ oneOff: true, sessionType: undefined })
+        expect.objectContaining({ sessionType: "one_off" })
       );
       expect(deps.close).toHaveBeenCalled();
     });
@@ -267,6 +267,33 @@ describe("dispatchOmnibarAction", () => {
       };
       // Should not throw even with missing runWorkflow dep
       expect(() => dispatchOmnibarAction(action, deps)).not.toThrow();
+      expect(deps.close).toHaveBeenCalled();
+    });
+  });
+
+  describe("create_alias_session", () => {
+    it("dispatchOmnibarAction_should_callCreateSession_When_createAliasSessionAction", () => {
+      const deps = makeDeps();
+      dispatchOmnibarAction({ type: "create_alias_session", aliasName: "myproj", branch: "feat", label: "work" }, deps);
+      expect(deps.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ aliasName: "myproj", branch: "feat" })
+      );
+    });
+
+    it("dispatchOmnibarAction_should_passLabelAsTitle_When_createAliasSessionHasLabel", () => {
+      const deps = makeDeps();
+      dispatchOmnibarAction({ type: "create_alias_session", aliasName: "myproj", label: "working on auth" }, deps);
+      expect(deps.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "working on auth" })
+      );
+    });
+
+    it("dispatchOmnibarAction_should_callCreateSession_When_minimalAliasAction", () => {
+      const deps = makeDeps();
+      dispatchOmnibarAction({ type: "create_alias_session", aliasName: "myproj" }, deps);
+      expect(deps.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ aliasName: "myproj" })
+      );
       expect(deps.close).toHaveBeenCalled();
     });
   });
