@@ -36,6 +36,8 @@ const (
 	FieldUpdatedAt = "updated_at"
 	// FieldAutoYes holds the string denoting the auto_yes field in the database.
 	FieldAutoYes = "auto_yes"
+	// FieldAutonomousMode holds the string denoting the autonomous_mode field in the database.
+	FieldAutonomousMode = "autonomous_mode"
 	// FieldPrompt holds the string denoting the prompt field in the database.
 	FieldPrompt = "prompt"
 	// FieldProgram holds the string denoting the program field in the database.
@@ -88,6 +90,10 @@ const (
 	FieldGithubPrURL = "github_pr_url"
 	// FieldGithubPrNumber holds the string denoting the github_pr_number field in the database.
 	FieldGithubPrNumber = "github_pr_number"
+	// FieldGithubOwner holds the string denoting the github_owner field in the database.
+	FieldGithubOwner = "github_owner"
+	// FieldGithubRepo holds the string denoting the github_repo field in the database.
+	FieldGithubRepo = "github_repo"
 	// FieldSessionArtifacts holds the string denoting the session_artifacts field in the database.
 	FieldSessionArtifacts = "session_artifacts"
 	// EdgeWorktree holds the string denoting the worktree edge name in mutations.
@@ -167,6 +173,7 @@ var Columns = []string{
 	FieldCreatedAt,
 	FieldUpdatedAt,
 	FieldAutoYes,
+	FieldAutonomousMode,
 	FieldPrompt,
 	FieldProgram,
 	FieldExistingWorktree,
@@ -193,6 +200,8 @@ var Columns = []string{
 	FieldArchivedAt,
 	FieldGithubPrURL,
 	FieldGithubPrNumber,
+	FieldGithubOwner,
+	FieldGithubRepo,
 	FieldSessionArtifacts,
 }
 
@@ -241,6 +250,8 @@ var (
 	UpdateDefaultUpdatedAt func() time.Time
 	// DefaultAutoYes holds the default value on creation for the "auto_yes" field.
 	DefaultAutoYes bool
+	// DefaultAutonomousMode holds the default value on creation for the "autonomous_mode" field.
+	DefaultAutonomousMode bool
 	// ProgramValidator is a validator for the "program" field. It is called by the builders before save.
 	ProgramValidator func(string) error
 	// DefaultIsExpanded holds the default value on creation for the "is_expanded" field.
@@ -316,6 +327,11 @@ func ByUpdatedAt(opts ...sql.OrderTermOption) OrderOption {
 // ByAutoYes orders the results by the auto_yes field.
 func ByAutoYes(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldAutoYes, opts...).ToFunc()
+}
+
+// ByAutonomousMode orders the results by the autonomous_mode field.
+func ByAutonomousMode(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAutonomousMode, opts...).ToFunc()
 }
 
 // ByPrompt orders the results by the prompt field.
@@ -446,6 +462,16 @@ func ByGithubPrURL(opts ...sql.OrderTermOption) OrderOption {
 // ByGithubPrNumber orders the results by the github_pr_number field.
 func ByGithubPrNumber(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldGithubPrNumber, opts...).ToFunc()
+}
+
+// ByGithubOwner orders the results by the github_owner field.
+func ByGithubOwner(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGithubOwner, opts...).ToFunc()
+}
+
+// ByGithubRepo orders the results by the github_repo field.
+func ByGithubRepo(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldGithubRepo, opts...).ToFunc()
 }
 
 // BySessionArtifacts orders the results by the session_artifacts field.

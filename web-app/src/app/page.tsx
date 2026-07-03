@@ -196,14 +196,19 @@ function HomeContent() {
     }
   }, [searchParams, sessions, findSessionById, router]);
 
-  // Detect ?new=true, ?duplicate=<id>, or ?worktree=<path>&branch=<branch> query params
+  // Detect ?new=true, ?pr=<url>, ?duplicate=<id>, or ?worktree=<path>&branch=<branch> query params
   useEffect(() => {
     const newParam = searchParams.get("new");
+    const prUrl = searchParams.get("pr");
     const duplicateId = searchParams.get("duplicate");
     const worktreePath = searchParams.get("worktree");
     const worktreeBranch = searchParams.get("branch");
+    const title = searchParams.get("title");
 
-    if (newParam === "true") {
+    if (prUrl) {
+      router.replace("/", { scroll: false });
+      openOmnibar(prUrl);
+    } else if (newParam === "true") {
       router.replace("/", { scroll: false });
       openOmnibar();
     } else if (duplicateId) {
@@ -217,7 +222,10 @@ function HomeContent() {
     } else if (worktreePath) {
       router.replace("/", { scroll: false });
       // Pass path@branch so the PathWithBranch detector pre-fills both fields
-      openOmnibar(worktreeBranch ? `${worktreePath}@${worktreeBranch}` : worktreePath);
+      openOmnibar(
+        worktreeBranch ? `${worktreePath}@${worktreeBranch}` : worktreePath,
+        title || undefined
+      );
     }
   }, [searchParams, getSession, openOmnibar, router, track]);
 

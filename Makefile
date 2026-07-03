@@ -13,6 +13,15 @@ else
 endif
 export CGO_ENABLED := 1
 
+# Version reported by `stapler-squad version`, injected via ldflags to match
+# GoReleaser's `-X main.version={{.Version}}`. Falls back to a dev marker
+# when building outside a git checkout (e.g. from a source tarball). Stripped
+# to a safe charset: git tag names may legally contain shell metacharacters
+# (e.g. `` ` `` or `$()`), and this value is later embedded in a
+# double-quoted shell argument, where those characters are NOT neutralized.
+VERSION := $(shell (git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev) | tr -cd 'A-Za-z0-9.+_-')
+LDFLAGS := -X main.version=$(VERSION)
+
 # File dependencies
 GO_FILES := $(shell find . -maxdepth 3 -name "*.go" -not -path "./vendor/*" -not -path "./node_modules/*")
 WEB_FILES := $(shell find web-app/src -type f 2>/dev/null)
@@ -72,6 +81,7 @@ registry-generate-backend: ## Scan proto+markers → write per-feature files und
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/unfinished.proto server/services/ $(BACKEND_FEATURES_DIR)
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/backlog.proto server/services/ $(BACKEND_FEATURES_DIR)
 	@./$(BACKEND_SCANNER_BIN) proto/session/v1/insights.proto server/services/ $(BACKEND_FEATURES_DIR)
+	@./$(BACKEND_SCANNER_BIN) proto/session/v1/github_user.proto server/services/ $(BACKEND_FEATURES_DIR)
 	@# Generation is additive; prune files whose RPC no longer exists so the
 	@# committed set stays in sync with the proto (avoids registry-validation drift).
 	@bash tools/scanner/prune-stale-backend.sh $(BACKEND_FEATURES_DIR)
@@ -122,12 +132,12 @@ stapler-squad: ensure-tools proto-gen server/web/dist lint $(GO_FILES) ## Build 
 	@echo "Building Go application..."
 ifeq ($(UNAME_S),Darwin)
 	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/Info.plist" \
-		go build -o stapler-squad .
+		go build -ldflags "$(LDFLAGS)" -o stapler-squad .
 	@# Verify Info.plist was actually embedded (catches silent CGO_ENABLED=0 failures)
 	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
 		(echo "ERROR: Info.plist was not embedded. Ensure CGO_ENABLED=1 and try again." && exit 1)
 else
-	go build -o stapler-squad .
+	go build -ldflags "$(LDFLAGS)" -o stapler-squad .
 endif
 	@echo "✅ stapler-squad built successfully"
 
@@ -137,7 +147,7 @@ web-app/node_modules/.modules.yaml: web-app/package.json web-app/pnpm-lock.yaml
 	@cd web-app && pnpm install --frozen-lockfile
 
 # Build Next.js app to web-app/out
-web-app/out: ensure-tools web-app/node_modules/.modules.yaml $(WEB_FILES) web-app/next.config.ts
+web-app/out: ensure-tools proto-gen web-app/node_modules/.modules.yaml $(WEB_FILES) web-app/next.config.ts
 	@# Guard: re-install if node_modules was wiped by external tools without touching pnpm-lock.yaml
 	@test -d web-app/node_modules/next || { \
 		echo "⚠️  node_modules incomplete, re-installing..."; \
@@ -259,11 +269,11 @@ build-tmux-embed: build-tmux ## Copy built tmux into the embed dir for go build 
 build-embedded: build-tmux-embed ## Build stapler-squad with tmux bundled inside the binary
 ifeq ($(UNAME_S),Darwin)
 	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/Info.plist" \
-		go build -tags embed_tmux -o stapler-squad .
+		go build -tags embed_tmux -ldflags "$(LDFLAGS)" -o stapler-squad .
 	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
 		(echo "ERROR: Info.plist was not embedded in embedded build." && exit 1)
 else
-	go build -tags embed_tmux -o stapler-squad .
+	go build -tags embed_tmux -ldflags "$(LDFLAGS)" -o stapler-squad .
 endif
 	@echo "✅ stapler-squad built with embedded tmux"
 
@@ -336,7 +346,7 @@ verify-codesign: ## Verify binary code signing status and TCC identity
 	@# before feeding to xxd. The awk extracts the 2nd-5th columns (hex groups only).
 	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | \
 		tail -n +2 | \
-		awk '{for(i=2;i<=NF&&length($$i)==8;i++) printf $$i; print ""}' | \
+		awk '{for(i=2;i<=NF&&length($$i)==8;i++){s=$$i; printf "%s%s%s%s",substr(s,7,2),substr(s,5,2),substr(s,3,2),substr(s,1,2)}; print ""}' | \
 		tr -d '\n' | xxd -r -p | plutil -p - 2>&1 || \
 		echo "(no embedded plist — Info.plist not embedded; check CGO_ENABLED=1)"
 
@@ -460,6 +470,24 @@ test-race: ensure-tools proto-gen ## Run tests with race detector enabled (skips
 
 test-integration: ensure-tools proto-gen ## Run integration tests (requires real tmux)
 	go test -race -tags integration ./...
+
+test-triage-harness: proto-gen ## Run all backlog triage harness phases (no UI/browser needed)
+	go test -v -tags=harness -run TestTriageHarness ./server/services/
+
+test-triage-gate: proto-gen ## Phase 1: verify TriggerTriage is blocked when repoPath is empty
+	go test -v -tags=harness -run TestTriageHarness/Gate ./server/services/
+
+test-triage-trigger: proto-gen ## Phase 2: trigger triage and poll until item reaches ready status
+	go test -v -tags=harness -run TestTriageHarness/TriggerAndPoll ./server/services/
+
+test-triage-parser: proto-gen ## Phase 3: verify parser tolerates LLM preamble before JSON block
+	go test -v -tags=harness -run TestTriageHarness/ParserRobust ./server/services/
+
+test-triage-flow: proto-gen ## Phase 4: full flow — create, gate, set repoPath, trigger, verify
+	go test -v -tags=harness -run TestTriageHarness/FullFlow ./server/services/
+
+test-triage-real: proto-gen ## Run triage with a REAL Claude session (requires claude in PATH, ~30s)
+	go test -v -tags=harness -run TestTriageHarness_RealClaude ./server/services/ -timeout 5m
 
 coverage-integration: ensure-tools proto-gen ## Build instrumented binary, run integration tests, emit integration.out
 	@mkdir -p /tmp/covdata

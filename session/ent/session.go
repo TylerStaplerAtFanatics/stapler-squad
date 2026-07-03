@@ -43,6 +43,8 @@ type Session struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 	// AutoYes holds the value of the "auto_yes" field.
 	AutoYes bool `json:"auto_yes,omitempty"`
+	// Crew autonomy mode — when true, the Fixer injects correction prompts without user confirmation.
+	AutonomousMode bool `json:"autonomous_mode,omitempty"`
 	// Prompt holds the value of the "prompt" field.
 	Prompt string `json:"prompt,omitempty"`
 	// Program holds the value of the "program" field.
@@ -95,6 +97,10 @@ type Session struct {
 	GithubPrURL string `json:"github_pr_url,omitempty"`
 	// GitHub PR number discovered by PRStatusPoller or extracted from push output. 0 = not yet discovered.
 	GithubPrNumber int `json:"github_pr_number,omitempty"`
+	// GitHub repository owner (user or org) associated with this session.
+	GithubOwner string `json:"github_owner,omitempty"`
+	// GitHub repository name associated with this session.
+	GithubRepo string `json:"github_repo,omitempty"`
 	// JSON-encoded SessionArtifactsBlob: PRURLs, CommitSHAs, ExternalURLs, scan offset.
 	SessionArtifacts string `json:"session_artifacts,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
@@ -201,11 +207,11 @@ func (*Session) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case session.FieldAutoYes, session.FieldIsExpanded, session.FieldOneShot, session.FieldHidden:
+		case session.FieldAutoYes, session.FieldAutonomousMode, session.FieldIsExpanded, session.FieldOneShot, session.FieldHidden:
 			values[i] = new(sql.NullBool)
 		case session.FieldID, session.FieldStatus, session.FieldHeight, session.FieldWidth, session.FieldGithubPrNumber:
 			values[i] = new(sql.NullInt64)
-		case session.FieldTitle, session.FieldUUID, session.FieldPath, session.FieldWorkingDir, session.FieldBranch, session.FieldPrompt, session.FieldProgram, session.FieldExistingWorktree, session.FieldCategory, session.FieldSessionType, session.FieldTmuxPrefix, session.FieldLastOutputSignature, session.FieldMcpServerURL, session.FieldInitialPrompt, session.FieldLastPromptSignature, session.FieldPauseReason, session.FieldWorkflowID, session.FieldGithubPrURL, session.FieldSessionArtifacts:
+		case session.FieldTitle, session.FieldUUID, session.FieldPath, session.FieldWorkingDir, session.FieldBranch, session.FieldPrompt, session.FieldProgram, session.FieldExistingWorktree, session.FieldCategory, session.FieldSessionType, session.FieldTmuxPrefix, session.FieldLastOutputSignature, session.FieldMcpServerURL, session.FieldInitialPrompt, session.FieldLastPromptSignature, session.FieldPauseReason, session.FieldWorkflowID, session.FieldGithubPrURL, session.FieldGithubOwner, session.FieldGithubRepo, session.FieldSessionArtifacts:
 			values[i] = new(sql.NullString)
 		case session.FieldCreatedAt, session.FieldUpdatedAt, session.FieldLastTerminalUpdate, session.FieldLastMeaningfulOutput, session.FieldLastAddedToQueue, session.FieldLastViewed, session.FieldLastAcknowledged, session.FieldLastUserResponse, session.FieldProcessingGraceUntil, session.FieldLastPromptDetected, session.FieldArchivedAt:
 			values[i] = new(sql.NullTime)
@@ -297,6 +303,12 @@ func (_m *Session) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field auto_yes", values[i])
 			} else if value.Valid {
 				_m.AutoYes = value.Bool
+			}
+		case session.FieldAutonomousMode:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field autonomous_mode", values[i])
+			} else if value.Valid {
+				_m.AutonomousMode = value.Bool
 			}
 		case session.FieldPrompt:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -463,6 +475,18 @@ func (_m *Session) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.GithubPrNumber = int(value.Int64)
 			}
+		case session.FieldGithubOwner:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field github_owner", values[i])
+			} else if value.Valid {
+				_m.GithubOwner = value.String
+			}
+		case session.FieldGithubRepo:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field github_repo", values[i])
+			} else if value.Valid {
+				_m.GithubRepo = value.String
+			}
 		case session.FieldSessionArtifacts:
 			if value, ok := values[i].(*sql.NullString); !ok {
 				return fmt.Errorf("unexpected type %T for field session_artifacts", values[i])
@@ -580,6 +604,9 @@ func (_m *Session) String() string {
 	builder.WriteString("auto_yes=")
 	builder.WriteString(fmt.Sprintf("%v", _m.AutoYes))
 	builder.WriteString(", ")
+	builder.WriteString("autonomous_mode=")
+	builder.WriteString(fmt.Sprintf("%v", _m.AutonomousMode))
+	builder.WriteString(", ")
 	builder.WriteString("prompt=")
 	builder.WriteString(_m.Prompt)
 	builder.WriteString(", ")
@@ -675,6 +702,12 @@ func (_m *Session) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("github_pr_number=")
 	builder.WriteString(fmt.Sprintf("%v", _m.GithubPrNumber))
+	builder.WriteString(", ")
+	builder.WriteString("github_owner=")
+	builder.WriteString(_m.GithubOwner)
+	builder.WriteString(", ")
+	builder.WriteString("github_repo=")
+	builder.WriteString(_m.GithubRepo)
 	builder.WriteString(", ")
 	builder.WriteString("session_artifacts=")
 	builder.WriteString(_m.SessionArtifacts)

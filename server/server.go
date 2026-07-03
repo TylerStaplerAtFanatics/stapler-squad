@@ -365,13 +365,28 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	}
 
 	// Register BacklogService handler.
+	// The feature-flag interceptor is added on top of the standard options so that
+	// all BacklogService RPCs return CodeNotFound when the "backlog" flag is off.
+	// isEnabled re-reads config on every request so flag changes take effect immediately.
 	if deps.BacklogService != nil {
-		blPath, blHandler := sessionv1connect.NewBacklogServiceHandler(deps.BacklogService, ConnectOptions(deps.ErrorRegistry)...)
+		blOpts := append(
+			ConnectOptions(deps.ErrorRegistry),
+			connect.WithInterceptors(interceptors.NewFeatureFlagInterceptor("backlog", func() bool {
+				return config.LoadConfig().GetFeatureFlag("backlog")
+			})),
+		)
+		blPath, blHandler := sessionv1connect.NewBacklogServiceHandler(deps.BacklogService, blOpts...)
 		blAPIPath := "/api" + blPath
 		srv.RegisterConnectHandler(blAPIPath, http.StripPrefix("/api", blHandler))
 		log.InfoLog.Printf("Registered BacklogService handler at %s", blAPIPath)
 	}
 
+	// Start UserPRCache and register GitHubUserService handler.
+	if deps.UserPRCache != nil {
+		deps.UserPRCache.Start(serverCtx)
+		srv.shutdownHooks = append(srv.shutdownHooks, deps.UserPRCache.Stop)
+		log.Info("UserPRCache started")
+	}
 	// Start WorkflowScheduler (nil guard: disabled when workflow repo is unavailable).
 	if deps.WorkflowScheduler != nil {
 		deps.WorkflowScheduler.Start(serverCtx)
@@ -460,7 +475,7 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	// Register MCP HTTP transport at /mcp so Claude sessions can connect
 	// without spawning a subprocess. The URL is passed via --mcp-server to
 	// claude when creating new sessions (no settings-file injection needed).
-	mcpHTTPHandler := servermcp.NewHTTPHandler(deps.Storage, deps.SessionService, deps.ScrollbackManager, deps.Storage, deps.EventBus)
+	mcpHTTPHandler := servermcp.NewHTTPHandler(deps.Storage, deps.SessionService, deps.ScrollbackManager, deps.Storage, deps.EventBus, deps.UserPRCache)
 	// Wrap with middleware that injects session UUID from X-Stapler-Session-UUID header.
 	mcpWithUUID := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if uuid := r.Header.Get("X-Stapler-Session-UUID"); uuid != "" {

@@ -45,6 +45,9 @@ func (Session) Fields() []ent.Field {
 			UpdateDefault(time.Now),
 		field.Bool("auto_yes").
 			Default(false),
+		field.Bool("autonomous_mode").
+			Default(false).
+			Comment("Crew autonomy mode — when true, the Fixer injects correction prompts without user confirmation."),
 		field.String("prompt").
 			Optional(),
 		field.String("program").
@@ -116,6 +119,12 @@ func (Session) Fields() []ent.Field {
 			Optional().
 			Default(0).
 			Comment("GitHub PR number discovered by PRStatusPoller or extracted from push output. 0 = not yet discovered."),
+		field.String("github_owner").
+			Optional().
+			Comment("GitHub repository owner (user or org) associated with this session."),
+		field.String("github_repo").
+			Optional().
+			Comment("GitHub repository name associated with this session."),
 		field.String("session_artifacts").
 			Optional().
 			Default("").

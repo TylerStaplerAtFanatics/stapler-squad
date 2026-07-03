@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
-	"github.com/tstapler/stapler-squad/github"
+	githubpkg "github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	warren "github.com/tstapler/stapler-squad/pkg/warren"
 	"github.com/tstapler/stapler-squad/server/analytics"
@@ -53,8 +55,8 @@ type ServerDependencies struct {
 	UnfinishedWorkService *services.UnfinishedWorkService
 	WorktreePRPoller      *session.WorktreePRPoller
 
-	// GitHub user-level PR cache and service.
-	UserPRCache       *github.UserPRCache
+	// GitHub user PR cache and service. Nil when no GitHub token is available.
+	UserPRCache       *githubpkg.UserPRCache
 	GitHubUserService *services.GitHubUserService
 
 	// Token usage analytics.
@@ -372,8 +374,8 @@ type RuntimeDeps struct {
 	UnfinishedWorkService *services.UnfinishedWorkService
 	WorktreePRPoller      *session.WorktreePRPoller
 
-	// GitHub user-level PR cache and service.
-	UserPRCache       *github.UserPRCache
+	// GitHub user PR cache and service.
+	UserPRCache       *githubpkg.UserPRCache
 	GitHubUserService *services.GitHubUserService
 
 	// Token usage analytics.
@@ -722,7 +724,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		unfinishedStateStore *unfinished.StateStore
 		unfinishedWorkSvc    *services.UnfinishedWorkService
 		worktreePRPoller     *session.WorktreePRPoller
-		userPRCache          *github.UserPRCache
+		userPRCache          *githubpkg.UserPRCache
 	)
 	if configDir, configErr := config.GetConfigDir(); configErr == nil {
 		statePath := filepath.Join(configDir, "unfinished_state.json")
@@ -735,11 +737,11 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 			// WorktreePRPoller enriches worktrees-without-sessions with GitHub PR data.
 			// The scannerSource adapter bridges session/unfinished → session without a cycle.
 			worktreePRPoller = session.NewWorktreePRPoller(
-				github.NewETagCache(),
+				githubpkg.NewETagCache(),
 				svc.PRStatusPoller,
 			)
 			worktreePRPoller.SetSource(&scannerSource{s: unfinishedScanner})
-			worktreePRPoller.SetOnUpdated(func(repoPath, branch string, info *github.PRInfo) {
+			worktreePRPoller.SetOnUpdated(func(repoPath, branch string, info *githubpkg.PRInfo) {
 				log.Info("worktree PR updated", "repo", repoPath, "branch", branch, "pr", info.Number)
 			})
 		}
@@ -748,8 +750,8 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}
 
 	// UserPRCache fetches all open PRs authored by the authenticated GitHub user.
-	userPRCache = github.NewUserPRCache()
-	userPRCache.SetOnUpdated(func(prs []github.UserPR) {
+	userPRCache = githubpkg.NewUserPRCache()
+	userPRCache.SetOnUpdated(func(prs []githubpkg.UserPR) {
 		annotateUserPRCache(userPRCache, svc.PRStatusPoller, unfinishedScanner)
 	})
 	githubUserSvc := services.NewGitHubUserService(userPRCache)
@@ -943,33 +945,66 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}, nil
 }
 
+// prNumFromTitle extracts a PR number from a session title following the
+// "pr-<number>-..." naming convention (e.g. "pr-1255-actions-spring-boot").
+var prNumFromTitle = regexp.MustCompile(`(?i)^pr-(\d+)-`)
+
 // annotateUserPRCache populates session IDs and worktree paths on the cached
-// UserPR list. Called in the UserPRCache onUpdated callback.
-func annotateUserPRCache(cache *github.UserPRCache, poller *session.PRStatusPoller, scanner *unfinished.Scanner) {
-	var annSessions []github.PRAnnotationSession
+// UserPR list. Called in the UserPRCache onUpdated callback. Lives here (not
+// in the github package) to avoid an import cycle: github → session → github.
+func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusPoller, scanner *unfinished.Scanner) {
+	var annSessions []githubpkg.PRAnnotationSession
 	if poller != nil {
 		for _, inst := range poller.GetInstances() {
-			if inst.GitHubOwner == "" || inst.Branch == "" {
+			prNumber := inst.GitHubPRNumber
+
+			// Resolve a full RepoRef (owner + repo) via a 3-tier fallback:
+			// 1. Direct from DB fields (new sessions written since schema migration).
+			// 2. Parse from stored PR URL.
+			// 3. Infer from git remote.
+			var repoRef githubpkg.RepoRef
+			if inst.GitHubOwner != "" && inst.GitHubRepo != "" {
+				repoRef, _ = githubpkg.NewRepoRef(inst.GitHubOwner, inst.GitHubRepo)
+			}
+			if !repoRef.IsValid() && inst.GitHubPRURL != "" {
+				if parsed, err := session.ParseGitHubURL(inst.GitHubPRURL); err == nil {
+					repoRef, _ = githubpkg.NewRepoRef(parsed.Owner, parsed.Repo)
+					if prNumber == 0 {
+						prNumber = parsed.PRNumber
+					}
+				}
+			}
+			if !repoRef.IsValid() && inst.Path != "" {
+				repoRef, _ = githubpkg.GetOwnerRepoFromRemote(inst.Path)
+			}
+			if !repoRef.IsValid() {
 				continue
 			}
-			annSessions = append(annSessions, github.PRAnnotationSession{
-				ID:          inst.Title,
-				Branch:      inst.Branch,
-				GitHubOwner: inst.GitHubOwner,
+			// Last resort: extract PR number from session title (e.g. "pr-1255-...").
+			if prNumber == 0 {
+				if m := prNumFromTitle.FindStringSubmatch(inst.Title); m != nil {
+					prNumber, _ = strconv.Atoi(m[1])
+				}
+			}
+			annSessions = append(annSessions, githubpkg.PRAnnotationSession{
+				ID:       inst.Title,
+				Branch:   inst.Branch,
+				Repo:     repoRef,
+				PRNumber: prNumber,
 			})
 		}
 	}
 
-	var annWorktrees []github.PRAnnotationWorktree
+	var annWorktrees []githubpkg.PRAnnotationWorktree
 	if scanner != nil {
 		for _, r := range scanner.GetAllResults() {
-			owner, _, _ := github.GetOwnerRepoFromRemote(r.RepoPath)
-			if owner == "" || r.Branch == "" {
+			repoRef, err := githubpkg.GetOwnerRepoFromRemote(r.RepoPath)
+			if err != nil || !repoRef.IsValid() || r.Branch == "" {
 				continue
 			}
-			annWorktrees = append(annWorktrees, github.PRAnnotationWorktree{
+			annWorktrees = append(annWorktrees, githubpkg.PRAnnotationWorktree{
 				Branch:       r.Branch,
-				GitHubOwner:  owner,
+				Repo:         repoRef,
 				WorktreePath: r.WorktreePath,
 			})
 		}

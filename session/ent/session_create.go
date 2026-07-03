@@ -160,6 +160,20 @@ func (_c *SessionCreate) SetNillableAutoYes(v *bool) *SessionCreate {
 	return _c
 }
 
+// SetAutonomousMode sets the "autonomous_mode" field.
+func (_c *SessionCreate) SetAutonomousMode(v bool) *SessionCreate {
+	_c.mutation.SetAutonomousMode(v)
+	return _c
+}
+
+// SetNillableAutonomousMode sets the "autonomous_mode" field if the given value is not nil.
+func (_c *SessionCreate) SetNillableAutonomousMode(v *bool) *SessionCreate {
+	if v != nil {
+		_c.SetAutonomousMode(*v)
+	}
+	return _c
+}
+
 // SetPrompt sets the "prompt" field.
 func (_c *SessionCreate) SetPrompt(v string) *SessionCreate {
 	_c.mutation.SetPrompt(v)
@@ -516,6 +530,34 @@ func (_c *SessionCreate) SetNillableGithubPrNumber(v *int) *SessionCreate {
 	return _c
 }
 
+// SetGithubOwner sets the "github_owner" field.
+func (_c *SessionCreate) SetGithubOwner(v string) *SessionCreate {
+	_c.mutation.SetGithubOwner(v)
+	return _c
+}
+
+// SetNillableGithubOwner sets the "github_owner" field if the given value is not nil.
+func (_c *SessionCreate) SetNillableGithubOwner(v *string) *SessionCreate {
+	if v != nil {
+		_c.SetGithubOwner(*v)
+	}
+	return _c
+}
+
+// SetGithubRepo sets the "github_repo" field.
+func (_c *SessionCreate) SetGithubRepo(v string) *SessionCreate {
+	_c.mutation.SetGithubRepo(v)
+	return _c
+}
+
+// SetNillableGithubRepo sets the "github_repo" field if the given value is not nil.
+func (_c *SessionCreate) SetNillableGithubRepo(v *string) *SessionCreate {
+	if v != nil {
+		_c.SetGithubRepo(*v)
+	}
+	return _c
+}
+
 // SetSessionArtifacts sets the "session_artifacts" field.
 func (_c *SessionCreate) SetSessionArtifacts(v string) *SessionCreate {
 	_c.mutation.SetSessionArtifacts(v)
@@ -702,6 +744,10 @@ func (_c *SessionCreate) defaults() {
 		v := session.DefaultAutoYes
 		_c.mutation.SetAutoYes(v)
 	}
+	if _, ok := _c.mutation.AutonomousMode(); !ok {
+		v := session.DefaultAutonomousMode
+		_c.mutation.SetAutonomousMode(v)
+	}
 	if _, ok := _c.mutation.IsExpanded(); !ok {
 		v := session.DefaultIsExpanded
 		_c.mutation.SetIsExpanded(v)
@@ -753,6 +799,9 @@ func (_c *SessionCreate) check() error {
 	}
 	if _, ok := _c.mutation.AutoYes(); !ok {
 		return &ValidationError{Name: "auto_yes", err: errors.New(`ent: missing required field "Session.auto_yes"`)}
+	}
+	if _, ok := _c.mutation.AutonomousMode(); !ok {
+		return &ValidationError{Name: "autonomous_mode", err: errors.New(`ent: missing required field "Session.autonomous_mode"`)}
 	}
 	if _, ok := _c.mutation.Program(); !ok {
 		return &ValidationError{Name: "program", err: errors.New(`ent: missing required field "Session.program"`)}
@@ -841,6 +890,10 @@ func (_c *SessionCreate) createSpec() (*Session, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.AutoYes(); ok {
 		_spec.SetField(session.FieldAutoYes, field.TypeBool, value)
 		_node.AutoYes = value
+	}
+	if value, ok := _c.mutation.AutonomousMode(); ok {
+		_spec.SetField(session.FieldAutonomousMode, field.TypeBool, value)
+		_node.AutonomousMode = value
 	}
 	if value, ok := _c.mutation.Prompt(); ok {
 		_spec.SetField(session.FieldPrompt, field.TypeString, value)
@@ -945,6 +998,14 @@ func (_c *SessionCreate) createSpec() (*Session, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.GithubPrNumber(); ok {
 		_spec.SetField(session.FieldGithubPrNumber, field.TypeInt, value)
 		_node.GithubPrNumber = value
+	}
+	if value, ok := _c.mutation.GithubOwner(); ok {
+		_spec.SetField(session.FieldGithubOwner, field.TypeString, value)
+		_node.GithubOwner = value
+	}
+	if value, ok := _c.mutation.GithubRepo(); ok {
+		_spec.SetField(session.FieldGithubRepo, field.TypeString, value)
+		_node.GithubRepo = value
 	}
 	if value, ok := _c.mutation.SessionArtifacts(); ok {
 		_spec.SetField(session.FieldSessionArtifacts, field.TypeString, value)
@@ -1280,6 +1341,18 @@ func (u *SessionUpsert) SetAutoYes(v bool) *SessionUpsert {
 // UpdateAutoYes sets the "auto_yes" field to the value that was provided on create.
 func (u *SessionUpsert) UpdateAutoYes() *SessionUpsert {
 	u.SetExcluded(session.FieldAutoYes)
+	return u
+}
+
+// SetAutonomousMode sets the "autonomous_mode" field.
+func (u *SessionUpsert) SetAutonomousMode(v bool) *SessionUpsert {
+	u.Set(session.FieldAutonomousMode, v)
+	return u
+}
+
+// UpdateAutonomousMode sets the "autonomous_mode" field to the value that was provided on create.
+func (u *SessionUpsert) UpdateAutonomousMode() *SessionUpsert {
+	u.SetExcluded(session.FieldAutonomousMode)
 	return u
 }
 
@@ -1733,6 +1806,42 @@ func (u *SessionUpsert) ClearGithubPrNumber() *SessionUpsert {
 	return u
 }
 
+// SetGithubOwner sets the "github_owner" field.
+func (u *SessionUpsert) SetGithubOwner(v string) *SessionUpsert {
+	u.Set(session.FieldGithubOwner, v)
+	return u
+}
+
+// UpdateGithubOwner sets the "github_owner" field to the value that was provided on create.
+func (u *SessionUpsert) UpdateGithubOwner() *SessionUpsert {
+	u.SetExcluded(session.FieldGithubOwner)
+	return u
+}
+
+// ClearGithubOwner clears the value of the "github_owner" field.
+func (u *SessionUpsert) ClearGithubOwner() *SessionUpsert {
+	u.SetNull(session.FieldGithubOwner)
+	return u
+}
+
+// SetGithubRepo sets the "github_repo" field.
+func (u *SessionUpsert) SetGithubRepo(v string) *SessionUpsert {
+	u.Set(session.FieldGithubRepo, v)
+	return u
+}
+
+// UpdateGithubRepo sets the "github_repo" field to the value that was provided on create.
+func (u *SessionUpsert) UpdateGithubRepo() *SessionUpsert {
+	u.SetExcluded(session.FieldGithubRepo)
+	return u
+}
+
+// ClearGithubRepo clears the value of the "github_repo" field.
+func (u *SessionUpsert) ClearGithubRepo() *SessionUpsert {
+	u.SetNull(session.FieldGithubRepo)
+	return u
+}
+
 // SetSessionArtifacts sets the "session_artifacts" field.
 func (u *SessionUpsert) SetSessionArtifacts(v string) *SessionUpsert {
 	u.Set(session.FieldSessionArtifacts, v)
@@ -1989,6 +2098,20 @@ func (u *SessionUpsertOne) SetAutoYes(v bool) *SessionUpsertOne {
 func (u *SessionUpsertOne) UpdateAutoYes() *SessionUpsertOne {
 	return u.Update(func(s *SessionUpsert) {
 		s.UpdateAutoYes()
+	})
+}
+
+// SetAutonomousMode sets the "autonomous_mode" field.
+func (u *SessionUpsertOne) SetAutonomousMode(v bool) *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetAutonomousMode(v)
+	})
+}
+
+// UpdateAutonomousMode sets the "autonomous_mode" field to the value that was provided on create.
+func (u *SessionUpsertOne) UpdateAutonomousMode() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateAutonomousMode()
 	})
 }
 
@@ -2517,6 +2640,48 @@ func (u *SessionUpsertOne) ClearGithubPrNumber() *SessionUpsertOne {
 	})
 }
 
+// SetGithubOwner sets the "github_owner" field.
+func (u *SessionUpsertOne) SetGithubOwner(v string) *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetGithubOwner(v)
+	})
+}
+
+// UpdateGithubOwner sets the "github_owner" field to the value that was provided on create.
+func (u *SessionUpsertOne) UpdateGithubOwner() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateGithubOwner()
+	})
+}
+
+// ClearGithubOwner clears the value of the "github_owner" field.
+func (u *SessionUpsertOne) ClearGithubOwner() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.ClearGithubOwner()
+	})
+}
+
+// SetGithubRepo sets the "github_repo" field.
+func (u *SessionUpsertOne) SetGithubRepo(v string) *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetGithubRepo(v)
+	})
+}
+
+// UpdateGithubRepo sets the "github_repo" field to the value that was provided on create.
+func (u *SessionUpsertOne) UpdateGithubRepo() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateGithubRepo()
+	})
+}
+
+// ClearGithubRepo clears the value of the "github_repo" field.
+func (u *SessionUpsertOne) ClearGithubRepo() *SessionUpsertOne {
+	return u.Update(func(s *SessionUpsert) {
+		s.ClearGithubRepo()
+	})
+}
+
 // SetSessionArtifacts sets the "session_artifacts" field.
 func (u *SessionUpsertOne) SetSessionArtifacts(v string) *SessionUpsertOne {
 	return u.Update(func(s *SessionUpsert) {
@@ -2942,6 +3107,20 @@ func (u *SessionUpsertBulk) SetAutoYes(v bool) *SessionUpsertBulk {
 func (u *SessionUpsertBulk) UpdateAutoYes() *SessionUpsertBulk {
 	return u.Update(func(s *SessionUpsert) {
 		s.UpdateAutoYes()
+	})
+}
+
+// SetAutonomousMode sets the "autonomous_mode" field.
+func (u *SessionUpsertBulk) SetAutonomousMode(v bool) *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetAutonomousMode(v)
+	})
+}
+
+// UpdateAutonomousMode sets the "autonomous_mode" field to the value that was provided on create.
+func (u *SessionUpsertBulk) UpdateAutonomousMode() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateAutonomousMode()
 	})
 }
 
@@ -3467,6 +3646,48 @@ func (u *SessionUpsertBulk) UpdateGithubPrNumber() *SessionUpsertBulk {
 func (u *SessionUpsertBulk) ClearGithubPrNumber() *SessionUpsertBulk {
 	return u.Update(func(s *SessionUpsert) {
 		s.ClearGithubPrNumber()
+	})
+}
+
+// SetGithubOwner sets the "github_owner" field.
+func (u *SessionUpsertBulk) SetGithubOwner(v string) *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetGithubOwner(v)
+	})
+}
+
+// UpdateGithubOwner sets the "github_owner" field to the value that was provided on create.
+func (u *SessionUpsertBulk) UpdateGithubOwner() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateGithubOwner()
+	})
+}
+
+// ClearGithubOwner clears the value of the "github_owner" field.
+func (u *SessionUpsertBulk) ClearGithubOwner() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.ClearGithubOwner()
+	})
+}
+
+// SetGithubRepo sets the "github_repo" field.
+func (u *SessionUpsertBulk) SetGithubRepo(v string) *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.SetGithubRepo(v)
+	})
+}
+
+// UpdateGithubRepo sets the "github_repo" field to the value that was provided on create.
+func (u *SessionUpsertBulk) UpdateGithubRepo() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.UpdateGithubRepo()
+	})
+}
+
+// ClearGithubRepo clears the value of the "github_repo" field.
+func (u *SessionUpsertBulk) ClearGithubRepo() *SessionUpsertBulk {
+	return u.Update(func(s *SessionUpsert) {
+		s.ClearGithubRepo()
 	})
 }
 

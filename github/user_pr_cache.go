@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,157 +18,204 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// UserPR is a pull request authored by the authenticated user across any repo.
+// UserPR is an open GitHub pull request authored by the authenticated user,
+// optionally annotated with local session IDs and worktree paths.
 type UserPR struct {
-	Owner           string
-	Repo            string
-	Number          int
-	Title           string
-	URL             string
-	HeadRef         string
-	BaseRef         string
-	State           string // OPEN, CLOSED, MERGED
-	IsDraft         bool
-	UpdatedAt       time.Time
-	ClosedAt        time.Time
-	MergedAt        time.Time
-	ApprovedCount   int
-	ChangesReqCount int
-	CheckConclusion string // success / failure / pending / action_required / neutral / ""
-
-	// Populated by Annotate — not from the GitHub API.
-	SessionIDs        []string // IDs of local sessions checked out on this branch/owner
-	LocalWorktreePath string   // path of a local worktree for this PR (if any)
+	Owner            string
+	Repo             string
+	Number           int
+	Title            string
+	URL              string
+	HeadRef          string
+	BaseRef          string
+	State            string
+	IsDraft          bool
+	UpdatedAt        time.Time
+	ClosedAt         time.Time
+	MergedAt         time.Time
+	ApprovedCount    int
+	ChangesReqCount  int
+	CheckConclusion  string // "success" / "failure" / "pending" / ""
+	SessionIDs       []string
+	LocalWorktreePath string
 }
 
-// PRAnnotationSession carries the fields UserPRCache.Annotate needs from a
-// local session. Callers build this from session.Instance without importing
-// the session package into the github package (avoids import cycle).
+// PRAnnotationSession carries session data needed to annotate UserPR entries.
+// Defined here (not in the session package) to avoid an import cycle:
+// session imports github, so github cannot import session.
+//
+// Repo is a typed value object: holding a valid RepoRef proves owner and repo
+// are non-empty. Sessions without a resolvable GitHub repo are skipped.
 type PRAnnotationSession struct {
-	ID          string // session ID
-	Branch      string // checked-out branch
-	GitHubOwner string // repo owner derived from git remote
-	WorktreePath string
+	ID       string
+	Branch   string
+	Repo     RepoRef
+	PRNumber int // fallback: match by PR number when branch name doesn't match headRef
 }
 
-// PRAnnotationWorktree carries the fields UserPRCache.Annotate needs from a
-// worktree scan result. Same import-cycle avoidance rationale.
+// PRAnnotationWorktree carries worktree data for annotation.
 type PRAnnotationWorktree struct {
-	Branch      string
-	GitHubOwner string // derived from git remote URL
+	Branch       string
+	Repo         RepoRef
 	WorktreePath string
 }
 
-// userPRSnapshot is the immutable COW payload stored in atomic.Value.
+// userPRSnapshot is an immutable snapshot stored in atomic.Value (COW pattern).
 type userPRSnapshot struct {
-	prs       []UserPR
+	prs        []UserPR
 	capturedAt time.Time
+}
+
+// loginResult is an immutable auth state stored in atomic.Value (single-account compat).
+type loginResult struct {
+	login     string
+	checkedAt time.Time
+}
+
+// connectedAccount is one (token, login) pair resolved during a multi-account fetch.
+type connectedAccount struct {
+	token string
+	login string
+}
+
+// multiLoginState caches the resolved accounts for the multi-account path.
+type multiLoginState struct {
+	accounts  []connectedAccount
+	checkedAt time.Time
 }
 
 // UserPRCacheConfig controls polling behaviour.
 type UserPRCacheConfig struct {
-	// RefreshInterval is how often the background goroutine refreshes.
-	RefreshInterval time.Duration
-	// LoginCacheTTL is how long we cache the authenticated user's login.
+	// PollInterval controls how often the cache refreshes from GitHub.
+	PollInterval time.Duration
+	// LoginCacheTTL controls how long the authenticated login is cached.
 	LoginCacheTTL time.Duration
 }
 
-func defaultUserPRCacheConfig() UserPRCacheConfig {
+// DefaultUserPRCacheConfig returns sensible defaults.
+func DefaultUserPRCacheConfig() UserPRCacheConfig {
 	return UserPRCacheConfig{
-		RefreshInterval: 5 * time.Minute,
-		LoginCacheTTL:   30 * time.Minute,
+		PollInterval:  2 * time.Minute,
+		LoginCacheTTL: 10 * time.Minute,
 	}
 }
 
-type onUserPRUpdatedFn struct {
+// UserPRCache fetches and caches open GitHub PRs authored by the authenticated user.
+// All reads are lock-free (atomic.Value COW). Concurrent refresh calls are
+// coalesced via singleflight.
+type onUpdatedFn struct {
 	fn func(prs []UserPR)
 }
 
-// UserPRCache fetches and caches all open (and recently closed) PRs authored
-// by the authenticated GitHub user across all repos, using the GraphQL API
-// directly (no gh subprocess). Reads are always lock-free via atomic.Value.
 type UserPRCache struct {
-	config UserPRCacheConfig
-
-	// snapshot is the current COW snapshot of open PRs.
-	snapshot atomic.Value // stores *userPRSnapshot
-
-	// onUpdated is the optional callback, set once via SetOnUpdated.
-	onUpdated atomic.Value // stores onUserPRUpdatedFn
-
-	// loginState caches the authenticated user's GitHub login.
-	loginState atomic.Value // stores loginResult
-	loginGroup singleflight.Group
-
-	// refreshGroup coalesces concurrent manual refresh calls.
-	refreshGroup singleflight.Group
-
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-type loginResult struct {
-	login  string
-	expiry time.Time
+	config       UserPRCacheConfig
+	snapshot     atomic.Value // stores *userPRSnapshot
+	subscribers  sync.Map     // maps string ID → chan []UserPR
+	onUpdated    atomic.Value // stores onUpdatedFn
+	cachedLogin  atomic.Value // stores string (first connected login; backward compat)
+	cachedLogins atomic.Value // stores []string (all connected logins)
+	loginState   atomic.Value // stores loginResult (single-account; backward compat)
+	multiLogin   atomic.Value // stores *multiLoginState (multi-account)
+	loginGroup   singleflight.Group //nolint:exhaustruct
+	refreshGroup singleflight.Group //nolint:exhaustruct
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // NewUserPRCache creates a cache with default configuration.
 func NewUserPRCache() *UserPRCache {
-	return newUserPRCacheWithConfig(defaultUserPRCacheConfig())
+	return NewUserPRCacheWithConfig(DefaultUserPRCacheConfig())
 }
 
-func newUserPRCacheWithConfig(cfg UserPRCacheConfig) *UserPRCache {
-	return &UserPRCache{config: cfg} //nolint:exhaustruct
+// NewUserPRCacheWithConfig creates a cache with custom configuration.
+func NewUserPRCacheWithConfig(cfg UserPRCacheConfig) *UserPRCache {
+	return &UserPRCache{
+		config: cfg,
+	}
+}
+
+// Start launches the background polling goroutine. Call once at server startup.
+func (c *UserPRCache) Start(ctx context.Context) {
+	c.ctx, c.cancel = context.WithCancel(ctx)
+	go c.loop()
+}
+
+// Stop halts background polling.
+func (c *UserPRCache) Stop() {
+	c.cancel()
 }
 
 // SetOnUpdated atomically registers a callback invoked after every successful
-// refresh. The callback receives a copy of the current PR slice. Safe to call
-// at any time, including after Start.
+// refresh. Pass nil to clear. The callback receives the current PR slice.
+// Safe to call at any time, including after Start.
 func (c *UserPRCache) SetOnUpdated(fn func(prs []UserPR)) {
-	c.onUpdated.Store(onUserPRUpdatedFn{fn: fn})
-}
-
-// Start begins the background refresh loop. Calling Start more than once is
-// safe but only the first call starts the goroutine.
-func (c *UserPRCache) Start(ctx context.Context) {
-	if c.cancel != nil {
-		return
-	}
-	c.ctx, c.cancel = context.WithCancel(ctx)
-	go c.pollLoop()
-}
-
-// Stop shuts down the background loop and waits for it to exit.
-func (c *UserPRCache) Stop() {
-	if c.cancel != nil {
-		c.cancel()
+	if fn == nil {
+		c.onUpdated.Store(onUpdatedFn{})
+	} else {
+		c.onUpdated.Store(onUpdatedFn{fn: fn})
 	}
 }
 
-// GetAll returns the current snapshot of open PRs. Returns nil before the first
-// successful fetch.
+// GetAll returns a copy of the current PR snapshot. Returns nil before the
+// first successful fetch.
 func (c *UserPRCache) GetAll() []UserPR {
 	v := c.snapshot.Load()
 	if v == nil {
 		return nil
 	}
-	return v.(*userPRSnapshot).prs
+	snap := v.(*userPRSnapshot)
+	out := make([]UserPR, len(snap.prs))
+	copy(out, snap.prs)
+	return out
 }
 
-// Refresh triggers an immediate refresh (coalesced via singleflight if already
-// in flight). Blocks until the refresh completes or ctx is cancelled.
-func (c *UserPRCache) Refresh(ctx context.Context) error {
-	_, err, _ := c.refreshGroup.Do("refresh", func() (interface{}, error) {
-		return nil, c.doRefresh(ctx)
-	})
-	return err
+// Subscribe registers a channel to receive PR snapshot updates.
+// The channel must be buffered. The caller is responsible for calling Unsubscribe.
+func (c *UserPRCache) Subscribe(id string, ch chan []UserPR) {
+	c.subscribers.Store(id, ch)
 }
 
-// Annotate enriches the current cached snapshot with local session IDs and
-// worktree paths. It is called after each refresh and after PRStatusPoller fires.
-// The COW pattern: load snapshot, copy+annotate, store new snapshot atomically.
-// Concurrent Annotate calls are safe — the worst case is one writer losing a
-// race; the next annotation call will correct it.
+// Unsubscribe removes a previously registered subscriber channel.
+func (c *UserPRCache) Unsubscribe(id string) {
+	c.subscribers.Delete(id)
+}
+
+// InvalidateLoginCache clears the cached login state so the next Refresh call
+// re-fetches the authenticated user from the GitHub API. Call this after
+// storing a new token (e.g. after a successful Device Flow auth) so the
+// cache picks up the new credentials immediately.
+func (c *UserPRCache) InvalidateLoginCache() {
+	c.loginState.Store(loginResult{})
+	c.cachedLogin.Store("")
+	c.multiLogin.Store((*multiLoginState)(nil))
+	c.cachedLogins.Store([]string{})
+}
+
+// GetCachedLogin returns the first connected GitHub login, or "" if none yet.
+func (c *UserPRCache) GetCachedLogin() string {
+	v := c.cachedLogin.Load()
+	if v == nil {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// GetCachedLogins returns all connected GitHub logins.
+func (c *UserPRCache) GetCachedLogins() []string {
+	v := c.cachedLogins.Load()
+	if v == nil {
+		return nil
+	}
+	s, _ := v.([]string)
+	out := make([]string, len(s))
+	copy(out, s)
+	return out
+}
+
+// Annotate enriches the current snapshot with session IDs and worktree paths.
+// It performs a COW update: load → copy → mutate → store.
+// No-op if the snapshot hasn't been populated yet.
 func (c *UserPRCache) Annotate(sessions []PRAnnotationSession, worktrees []PRAnnotationWorktree) {
 	v := c.snapshot.Load()
 	if v == nil {
@@ -173,111 +223,238 @@ func (c *UserPRCache) Annotate(sessions []PRAnnotationSession, worktrees []PRAnn
 	}
 	old := v.(*userPRSnapshot)
 
-	// Build lookup maps so annotation is O(n + m) rather than O(n*m).
-	// key: "owner/headRef" → []sessionIDs
-	sessionsByKey := make(map[string][]string, len(sessions))
+	// Primary index: keyed by RepoRef.BranchKey(branch) = "owner/branch".
+	sessionsByBranch := make(map[string][]string, len(sessions))
+	// Secondary index: keyed by RepoRef.PRKey(number) = "owner/#number".
+	sessionsByNum := make(map[string][]string, len(sessions))
 	for _, s := range sessions {
-		if s.Branch == "" || s.GitHubOwner == "" {
+		if !s.Repo.IsValid() {
 			continue
 		}
-		key := s.GitHubOwner + "/" + s.Branch
-		sessionsByKey[key] = append(sessionsByKey[key], s.ID)
+		if s.Branch != "" {
+			k := s.Repo.BranchKey(s.Branch)
+			sessionsByBranch[k] = append(sessionsByBranch[k], s.ID)
+		}
+		if s.PRNumber > 0 {
+			k := s.Repo.PRKey(s.PRNumber)
+			sessionsByNum[k] = append(sessionsByNum[k], s.ID)
+		}
 	}
-	// key: "owner/headRef" → worktreePath (last writer wins for simplicity)
 	worktreeByKey := make(map[string]string, len(worktrees))
 	for _, wt := range worktrees {
-		if wt.Branch == "" || wt.GitHubOwner == "" {
+		if wt.Branch == "" || !wt.Repo.IsValid() {
 			continue
 		}
-		worktreeByKey[wt.GitHubOwner+"/"+wt.Branch] = wt.WorktreePath
+		worktreeByKey[wt.Repo.BranchKey(wt.Branch)] = wt.WorktreePath
 	}
 
 	annotated := make([]UserPR, len(old.prs))
 	for i, pr := range old.prs {
-		key := pr.Owner + "/" + pr.HeadRef
-		pr.SessionIDs = sessionsByKey[key]
-		pr.LocalWorktreePath = worktreeByKey[key]
+		branchKey := pr.Owner + "/" + pr.HeadRef
+		ids := sessionsByBranch[branchKey]
+		if len(ids) == 0 && pr.Number > 0 {
+			ids = sessionsByNum[pr.Owner+"/#"+strconv.Itoa(pr.Number)]
+		}
+		pr.SessionIDs = ids
+		pr.LocalWorktreePath = worktreeByKey[branchKey]
 		annotated[i] = pr
 	}
-
 	c.snapshot.Store(&userPRSnapshot{prs: annotated, capturedAt: old.capturedAt})
 }
 
-func (c *UserPRCache) pollLoop() {
-	ticker := time.NewTicker(c.config.RefreshInterval)
-	defer ticker.Stop()
-
-	// Eager first fetch.
-	if err := c.doRefresh(c.ctx); err != nil {
-		log.Warn("UserPRCache: initial refresh failed", "err", err)
+// Refresh triggers an immediate fetch from GitHub, coalescing concurrent calls.
+func (c *UserPRCache) Refresh(ctx context.Context) error {
+	_, err, _ := c.refreshGroup.Do("refresh", func() (any, error) {
+		return struct{}{}, c.fetch()
+	})
+	if err != nil {
+		return err
 	}
+	return nil
+}
 
+// loop is the background polling goroutine.
+func (c *UserPRCache) loop() {
+	// Fetch immediately on start.
+	if err := c.fetch(); err != nil {
+		log.Warn("UserPRCache: initial fetch failed", "err", err)
+	}
+	ticker := time.NewTicker(c.config.PollInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := c.doRefresh(c.ctx); err != nil {
-				log.Warn("UserPRCache: refresh failed", "err", err)
+			if err := c.fetch(); err != nil {
+				log.Warn("UserPRCache: fetch failed", "err", err)
 			}
 		}
 	}
 }
 
-// doRefresh fetches PRs via GraphQL and updates the COW snapshot.
-func (c *UserPRCache) doRefresh(ctx context.Context) error {
-	login, err := c.getLogin(ctx)
+// fetch queries the GitHub GraphQL API for all connected accounts' open PRs and merges them.
+func (c *UserPRCache) fetch() error {
+	accounts, err := c.resolveAllLogins()
 	if err != nil {
-		return fmt.Errorf("UserPRCache: get login: %w", err)
-	}
-	if login == "" {
-		return nil // not authenticated — degrade gracefully
-	}
-
-	prs, err := c.fetchUserPRs(ctx, login)
-	if err != nil {
+		log.Debug("UserPRCache: skipping fetch, no GitHub auth", "err", err)
 		return err
 	}
+	if len(accounts) == 0 {
+		return nil
+	}
 
-	snap := &userPRSnapshot{prs: prs, capturedAt: time.Now()}
+	type prResult struct {
+		prs []UserPR
+		err error
+	}
+	results := make([]prResult, len(accounts))
+	var wg sync.WaitGroup
+	for i, acc := range accounts {
+		i, acc := i, acc
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			prs, fetchErr := c.fetchUserPRsForToken(acc.token)
+			results[i] = prResult{prs: prs, err: fetchErr}
+		}()
+	}
+	wg.Wait()
+
+	// Merge and dedup by URL (same PR can appear via multiple account tokens, e.g. org members).
+	seen := make(map[string]bool)
+	var merged []UserPR
+	for _, r := range results {
+		if r.err != nil {
+			log.Warn("UserPRCache: fetch failed for account", "err", r.err)
+			continue
+		}
+		for _, pr := range r.prs {
+			if !seen[pr.URL] {
+				seen[pr.URL] = true
+				merged = append(merged, pr)
+			}
+		}
+	}
+
+	snap := &userPRSnapshot{prs: merged, capturedAt: time.Now()}
 	c.snapshot.Store(snap)
 
+	out := make([]UserPR, len(merged))
+	copy(out, merged)
+	c.subscribers.Range(func(_, v any) bool {
+		ch := v.(chan []UserPR)
+		select {
+		case ch <- out:
+		default:
+			log.Warn("UserPRCache: subscriber channel full, dropping event")
+		}
+		return true
+	})
 	if v := c.onUpdated.Load(); v != nil {
-		if cb := v.(onUserPRUpdatedFn).fn; cb != nil {
-			cb(prs)
+		if cb := v.(onUpdatedFn).fn; cb != nil {
+			cb(out)
 		}
 	}
 	return nil
 }
 
-// getLogin returns the authenticated user's GitHub login, cached by loginState.
-func (c *UserPRCache) getLogin(ctx context.Context) (string, error) {
-	if v := c.loginState.Load(); v != nil {
-		if r := v.(loginResult); time.Now().Before(r.expiry) {
-			return r.login, nil
+// resolveAllLogins returns all connected (token, login) pairs, refreshing if stale.
+// Results are coalesced via singleflight so concurrent callers share one network round-trip.
+func (c *UserPRCache) resolveAllLogins() ([]connectedAccount, error) {
+	if v := c.multiLogin.Load(); v != nil {
+		if s, ok := v.(*multiLoginState); ok && s != nil && time.Since(s.checkedAt) < c.config.LoginCacheTTL {
+			return s.accounts, nil
 		}
 	}
 
 	res, err, _ := c.loginGroup.Do("login", func() (interface{}, error) {
-		login, fetchErr := GetCurrentUserLogin(ctx)
-		if fetchErr != nil {
-			return "", fetchErr
+		tokens := collectAllTokens()
+		if len(tokens) == 0 {
+			s := &multiLoginState{accounts: nil, checkedAt: time.Now()}
+			c.multiLogin.Store(s)
+			c.cachedLogins.Store([]string{})
+			c.loginState.Store(loginResult{checkedAt: time.Now()})
+			return []connectedAccount(nil), nil
 		}
-		c.loginState.Store(loginResult{login: login, expiry: time.Now().Add(c.config.LoginCacheTTL)})
-		return login, nil
+
+		type loginRes struct {
+			acc connectedAccount
+			err error
+		}
+		ch := make(chan loginRes, len(tokens))
+		ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
+		defer cancel()
+
+		for _, tok := range tokens {
+			tok := tok
+			go func() {
+				login, err := GetCurrentUserLoginWithToken(ctx, tok.Token)
+				if err != nil || login == "" {
+					ch <- loginRes{err: err}
+					return
+				}
+				ch <- loginRes{acc: connectedAccount{token: tok.Token, login: login}}
+			}()
+		}
+
+		seen := make(map[string]bool)
+		var accounts []connectedAccount
+		var logins []string
+		for range tokens {
+			r := <-ch
+			if r.err != nil || r.acc.login == "" {
+				continue
+			}
+			if !seen[r.acc.login] {
+				seen[r.acc.login] = true
+				accounts = append(accounts, r.acc)
+				logins = append(logins, r.acc.login)
+			}
+		}
+
+		s := &multiLoginState{accounts: accounts, checkedAt: time.Now()}
+		c.multiLogin.Store(s)
+		c.cachedLogins.Store(logins)
+		firstLogin := ""
+		if len(logins) > 0 {
+			firstLogin = logins[0]
+		}
+		c.cachedLogin.Store(firstLogin)
+		c.loginState.Store(loginResult{login: firstLogin, checkedAt: time.Now()})
+		return accounts, nil
 	})
+
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if res == nil {
-		return "", nil
+		return nil, nil
 	}
-	return res.(string), nil
+	return res.([]connectedAccount), nil
 }
 
-// graphQL query fetching up to 100 open PRs (and 20 recently closed) authored
-// by the viewer. We page closed PRs separately only if needed — 100 open is
-// a practical upper bound for personal accounts.
+// collectAllTokens returns all available GitHub tokens from env vars and the keychain.
+// Env-var tokens appear first.
+func collectAllTokens() []AccountToken {
+	var tokens []AccountToken
+	seen := make(map[string]bool)
+	for _, envKey := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
+		if tok := os.Getenv(envKey); tok != "" && !seen[tok] {
+			seen[tok] = true
+			tokens = append(tokens, AccountToken{Username: "env:" + envKey, Token: tok})
+		}
+	}
+	for _, at := range GetAllKeychainTokens() {
+		if !seen[at.Token] {
+			seen[at.Token] = true
+			tokens = append(tokens, at)
+		}
+	}
+	return tokens
+}
+
+// userPRGraphQLQuery fetches the authenticated user's open pull requests.
 const userPRGraphQLQuery = `
 query UserPRs {
   viewer {
@@ -299,43 +476,39 @@ query UserPRs {
         }
         reviewDecision
         reviews(last: 20, states: [APPROVED, CHANGES_REQUESTED]) {
-          nodes {
-            state
-          }
+          nodes { state }
         }
         commits(last: 1) {
           nodes {
             commit {
-              statusCheckRollup {
-                state
-              }
+              statusCheckRollup { state }
             }
           }
         }
       }
     }
   }
-}
-`
+}`
 
-type graphqlRequest struct {
-	Query string `json:"query"`
-}
-
-type userPRsResponse struct {
-	Data struct {
-		Viewer struct {
-			PullRequests struct {
-				Nodes []gqlPRNode `json:"nodes"`
-			} `json:"pullRequests"`
-		} `json:"viewer"`
-	} `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
+// graphQLResponse is the top-level GraphQL response envelope.
+type graphQLResponse struct {
+	Data   *graphQLData   `json:"data"`
+	Errors []graphQLError `json:"errors"`
 }
 
-type gqlPRNode struct {
+type graphQLError struct {
+	Message string `json:"message"`
+}
+
+type graphQLData struct {
+	Viewer struct {
+		PullRequests struct {
+			Nodes []graphQLPRNode `json:"nodes"`
+		} `json:"pullRequests"`
+	} `json:"viewer"`
+}
+
+type graphQLPRNode struct {
 	Number      int    `json:"number"`
 	Title       string `json:"title"`
 	URL         string `json:"url"`
@@ -347,10 +520,8 @@ type gqlPRNode struct {
 	ClosedAt    string `json:"closedAt"`
 	MergedAt    string `json:"mergedAt"`
 	Repository  struct {
-		Owner struct {
-			Login string `json:"login"`
-		} `json:"owner"`
-		Name string `json:"name"`
+		Owner struct{ Login string `json:"login"` } `json:"owner"`
+		Name  string                                `json:"name"`
 	} `json:"repository"`
 	ReviewDecision string `json:"reviewDecision"`
 	Reviews        struct {
@@ -369,87 +540,89 @@ type gqlPRNode struct {
 	} `json:"commits"`
 }
 
-func (c *UserPRCache) fetchUserPRs(ctx context.Context, _ string) ([]UserPR, error) {
-	body, err := json.Marshal(graphqlRequest{Query: userPRGraphQLQuery})
+func (c *UserPRCache) fetchUserPRsForToken(token string) ([]UserPR, error) {
+	body, err := json.Marshal(map[string]string{"query": userPRGraphQLQuery})
 	if err != nil {
-		return nil, fmt.Errorf("marshal graphql request: %w", err)
+		return nil, fmt.Errorf("marshal GraphQL query: %w", err)
 	}
 
-	req, err := newGHPostRequest(ctx, "graphql", bytes.NewReader(body))
+	req, err := newGHPostRequestWithToken(c.ctx, "graphql", bytes.NewReader(body), token)
 	if err != nil {
-		return nil, fmt.Errorf("build graphql request: %w", err)
+		return nil, fmt.Errorf("build GraphQL request: %w", err)
 	}
 
 	resp, err := ghHTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("graphql request failed: %w", err)
+		return nil, fmt.Errorf("GraphQL request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if backoff := checkRateLimitHeaders(resp); backoff > 0 {
 		time.Sleep(backoff)
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("GitHub API: auth error (%d)", resp.StatusCode)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, nil
 	}
-
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("graphql: unexpected status %d", resp.StatusCode)
+		return nil, fmt.Errorf("GraphQL API returned status %d", resp.StatusCode)
 	}
 
-	var gqlResp userPRsResponse
+	var gqlResp graphQLResponse
 	if err := json.NewDecoder(resp.Body).Decode(&gqlResp); err != nil {
-		return nil, fmt.Errorf("decode graphql response: %w", err)
+		return nil, fmt.Errorf("decode GraphQL response: %w", err)
 	}
 	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql errors: %s", gqlResp.Errors[0].Message)
+		msgs := make([]string, len(gqlResp.Errors))
+		for i, e := range gqlResp.Errors {
+			msgs[i] = e.Message
+		}
+		return nil, fmt.Errorf("GraphQL errors: %s", strings.Join(msgs, "; "))
+	}
+	if gqlResp.Data == nil {
+		return nil, nil
 	}
 
 	nodes := gqlResp.Data.Viewer.PullRequests.Nodes
 	prs := make([]UserPR, 0, len(nodes))
 	for _, n := range nodes {
-		prs = append(prs, nodeToUserPR(n))
+		approved, changesReq := 0, 0
+		for _, rv := range n.Reviews.Nodes {
+			switch strings.ToUpper(rv.State) {
+			case "APPROVED":
+				approved++
+			case "CHANGES_REQUESTED":
+				changesReq++
+			}
+		}
+		checkState := ""
+		if len(n.Commits.Nodes) > 0 && n.Commits.Nodes[0].Commit.StatusCheckRollup != nil {
+			checkState = normalizeCheckState(n.Commits.Nodes[0].Commit.StatusCheckRollup.State)
+		}
+
+		prs = append(prs, UserPR{
+			Owner:           n.Repository.Owner.Login,
+			Repo:            n.Repository.Name,
+			Number:          n.Number,
+			Title:           n.Title,
+			URL:             n.URL,
+			HeadRef:         n.HeadRefName,
+			BaseRef:         n.BaseRefName,
+			State:           strings.ToLower(n.State),
+			IsDraft:         n.IsDraft,
+			UpdatedAt:       parseGitHubTime(n.UpdatedAt),
+			ClosedAt:        parseGitHubTime(n.ClosedAt),
+			MergedAt:        parseGitHubTime(n.MergedAt),
+			ApprovedCount:   approved,
+			ChangesReqCount: changesReq,
+			CheckConclusion: checkState,
+		})
 	}
 	return prs, nil
 }
 
-func nodeToUserPR(n gqlPRNode) UserPR {
-	pr := UserPR{
-		Owner:       n.Repository.Owner.Login,
-		Repo:        n.Repository.Name,
-		Number:      n.Number,
-		Title:       n.Title,
-		URL:         n.URL,
-		HeadRef:     n.HeadRefName,
-		BaseRef:     n.BaseRefName,
-		State:       n.State,
-		IsDraft:     n.IsDraft,
-		UpdatedAt:   parseGQLTime(n.UpdatedAt),
-		ClosedAt:    parseGQLTime(n.ClosedAt),
-		MergedAt:    parseGQLTime(n.MergedAt),
-	}
-
-	for _, r := range n.Reviews.Nodes {
-		switch r.State {
-		case "APPROVED":
-			pr.ApprovedCount++
-		case "CHANGES_REQUESTED":
-			pr.ChangesReqCount++
-		}
-	}
-
-	if len(n.Commits.Nodes) > 0 {
-		if sc := n.Commits.Nodes[0].Commit.StatusCheckRollup; sc != nil {
-			pr.CheckConclusion = normalizeCheckState(sc.State)
-		}
-	}
-
-	return pr
-}
-
-func parseGQLTime(s string) time.Time {
+func parseGitHubTime(s string) time.Time {
 	if s == "" {
 		return time.Time{}
 	}
@@ -458,14 +631,12 @@ func parseGQLTime(s string) time.Time {
 }
 
 func normalizeCheckState(s string) string {
-	switch s {
+	switch strings.ToUpper(s) {
 	case "SUCCESS":
 		return "success"
 	case "FAILURE", "ERROR":
 		return "failure"
-	case "PENDING":
-		return "pending"
-	case "EXPECTED":
+	case "PENDING", "EXPECTED":
 		return "pending"
 	default:
 		return strings.ToLower(s)

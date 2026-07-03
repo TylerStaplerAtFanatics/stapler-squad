@@ -1039,6 +1039,7 @@ func (i *Instance) Pause() error {
 		return fmt.Errorf("failed to transition to Paused: %w", err)
 	}
 	i.stateMutex.Unlock()
+	i.gitManager.InvalidateDirtyCache()
 	log.ForSession(i.Title).Info("session paused")
 	_ = clipboard.WriteAll(i.gitManager.GetBranchName())
 	return nil
@@ -1149,6 +1150,7 @@ func (i *Instance) Resume() error {
 		return fmt.Errorf("failed to transition to Active on resume: %w", err)
 	}
 	i.stateMutex.Unlock()
+	i.gitManager.InvalidateDirtyCache()
 	log.ForSession(i.Title).Info("session resumed")
 
 	// Start ClaudeController for idle detection and automation
