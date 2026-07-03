@@ -210,3 +210,22 @@ func TestBuildLaunchCommand_PlainProgramIgnoresClaudeFlags(t *testing.T) {
 		t.Errorf("plain program should not receive any claude flags, got %q", got)
 	}
 }
+
+func TestBuildLaunchCommand_CLIFlagsAreShellQuoted(t *testing.T) {
+	// CLIFlags comes from the client-supplied cli_flags RPC field and must be
+	// shell-quoted to prevent injection. Each whitespace-delimited token is quoted
+	// individually so that multi-token flag strings (--flag1 --flag2=val) still work.
+	inst := &Instance{
+		Program:  "claude",
+		CLIFlags: "--foo --bar='; evil shell injection'",
+	}
+	got := inst.buildLaunchCommand("")
+	// The injection payload must not appear unquoted.
+	if strings.Contains(got, "; evil shell injection") {
+		t.Errorf("shell injection survived quoting: %s", got)
+	}
+	// Each token must be present in its quoted form.
+	if !strings.Contains(got, shellQuote("--foo")) {
+		t.Errorf("--foo not found quoted in: %s", got)
+	}
+}

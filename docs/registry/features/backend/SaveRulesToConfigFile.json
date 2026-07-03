@@ -1,0 +1,11 @@
+{
+  "id": "SaveRulesToConfigFile",
+  "type": "backend",
+  "service": "SessionService",
+  "method": "SaveRulesToConfigFile",
+  "protoFile": "proto/session/v1/session.proto",
+  "markerFound": false,
+  "tested": false,
+  "testIds": [],
+  "lastModified": "2026-07-02T08:00:23.512740432-07:00"
+}

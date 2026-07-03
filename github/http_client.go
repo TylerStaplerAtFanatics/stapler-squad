@@ -95,12 +95,6 @@ func newGHRequestWithToken(ctx context.Context, path, token string) (*http.Reque
 	return req, nil
 }
 
-// newGHPostRequest creates an authenticated POST request to the GitHub REST or
-// GraphQL API. Pass "graphql" as path to target https://api.github.com/graphql.
-func newGHPostRequest(ctx context.Context, path string, body io.Reader) (*http.Request, error) {
-	return newGHPostRequestWithToken(ctx, path, body, getGHToken(ctx))
-}
-
 // newGHPostRequestWithToken creates a POST request authenticated with an explicit token.
 func newGHPostRequestWithToken(ctx context.Context, path string, body io.Reader, token string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.github.com/"+path, body)

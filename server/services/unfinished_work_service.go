@@ -107,43 +107,6 @@ func (s *UnfinishedWorkService) instancePRIndex() map[string]worktreePRInfo {
 	return index
 }
 
-// worktreePRInfo holds the best available PR information for an unfinished worktree,
-// derived from active session instances whose Path matches the worktree path.
-type worktreePRInfo struct {
-	Number   int
-	URL      string
-	State    string
-	Priority string
-}
-
-// instancePRIndex builds a worktreePath → worktreePRInfo map from session instances
-// that have GitHub PR data from the PRStatusPoller.
-func (s *UnfinishedWorkService) instancePRIndex() map[string]worktreePRInfo {
-	if s.storage == nil {
-		return map[string]worktreePRInfo{}
-	}
-	instances, err := s.storage.LoadInstances()
-	if err != nil {
-		return map[string]worktreePRInfo{}
-	}
-	index := make(map[string]worktreePRInfo, len(instances))
-	for _, inst := range instances {
-		if inst.Path == "" || inst.GitHubPRNumber == 0 {
-			continue
-		}
-		// Prefer the first (or best-priority) PR we find for a given path.
-		if _, exists := index[inst.Path]; !exists {
-			index[inst.Path] = worktreePRInfo{
-				Number:   inst.GitHubPRNumber,
-				URL:      inst.GitHubPRURL,
-				State:    inst.GitHubPRState,
-				Priority: inst.GitHubPRPriority,
-			}
-		}
-	}
-	return index
-}
-
 // ListUnfinishedWork returns the current snapshot of all unfinished worktrees.
 func (s *UnfinishedWorkService) ListUnfinishedWork(
 	_ context.Context,

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,9 @@ import (
 
 // Compile-time interface check: SessionService must implement the full ConnectRPC handler.
 var _ sessionv1connect.SessionServiceHandler = (*SessionService)(nil)
+
+// resumeIDRe validates the client-supplied resume_id field: must be a standard UUID.
+var resumeIDRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // ReactiveQueueManager is an interface to avoid circular dependencies.
 // The actual implementation is in server/review_queue_manager.go
@@ -283,7 +287,7 @@ func NewSessionService(storage session.InstanceStore, eventBus *events.EventBus)
 			log.Info("[SessionService] AI rule generation unavailable: set ANTHROPIC_API_KEY or install claude/gemini/opencode CLI")
 		}
 	}
-	rulesSvc := NewRulesService(rulesStore, NewConfigFileRulesStore(), analyticsStore, classifierObj, promptBuilder, aiClientImpl)
+	rulesSvc := NewRulesService(rulesStore, nil, analyticsStore, classifierObj, promptBuilder, aiClientImpl)
 
 	// Initialize capacity monitor.
 	var capCfg config.CapacityConfig
@@ -1040,6 +1044,14 @@ func (s *SessionService) CreateSession(
 	for _, data := range existing {
 		if data.Title == req.Msg.Title {
 			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("session with title '%s' already exists", req.Msg.Title))
+		}
+	}
+
+	// Validate client-supplied resume_id before the fork block can overwrite it.
+	if req.Msg.ResumeId != "" && req.Msg.ForkSourceId == "" {
+		if !resumeIDRe.MatchString(req.Msg.ResumeId) {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				errors.New("resume_id must be a valid UUID"))
 		}
 	}
 

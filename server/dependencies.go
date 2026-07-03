@@ -959,66 +959,6 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}, nil
 }
 
-// annotateUserPRCache populates session IDs and worktree paths on the cached
-// UserPR list. Called in the UserPRCache onUpdated callback. Lives here (not
-// in the github package) to avoid an import cycle: github → session → github.
-func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusPoller, scanner *unfinished.Scanner) {
-	var annSessions []githubpkg.PRAnnotationSession
-	if poller != nil {
-		for _, inst := range poller.GetInstances() {
-			if inst.GitHubOwner == "" || inst.Branch == "" {
-				continue
-			}
-			annSessions = append(annSessions, githubpkg.PRAnnotationSession{
-				ID:          inst.Title,
-				Branch:      inst.Branch,
-				GitHubOwner: inst.GitHubOwner,
-			})
-		}
-	}
-
-	var annWorktrees []githubpkg.PRAnnotationWorktree
-	if scanner != nil {
-		for _, r := range scanner.GetAllResults() {
-			owner, _, _ := githubpkg.GetOwnerRepoFromRemote(r.RepoPath)
-			if owner == "" || r.Branch == "" {
-				continue
-			}
-			annWorktrees = append(annWorktrees, githubpkg.PRAnnotationWorktree{
-				Branch:       r.Branch,
-				GitHubOwner:  owner,
-				WorktreePath: r.WorktreePath,
-			})
-		}
-	}
-
-	cache.Annotate(annSessions, annWorktrees)
-}
-
-// scannerSource adapts *unfinished.Scanner to session.WorktreeSource, bridging
-// the two packages without creating an import cycle.
-// (session/unfinished → pkg/events → session would cycle; this adapter lives here.)
-type scannerSource struct {
-	s *unfinished.Scanner
-}
-
-func (a *scannerSource) ScanDone() <-chan time.Time {
-	return a.s.ScanDone()
-}
-
-func (a *scannerSource) GetWorktrees() []session.WorktreeScanItem {
-	results := a.s.GetAllResults()
-	items := make([]session.WorktreeScanItem, 0, len(results))
-	for _, r := range results {
-		items = append(items, session.WorktreeScanItem{
-			RepoPath:     r.RepoPath,
-			Branch:       r.Branch,
-			WorktreePath: r.WorktreePath,
-		})
-	}
-	return items
-}
-
 // prNumFromTitle extracts a PR number from a session title following the
 // "pr-<number>-..." naming convention (e.g. "pr-1255-actions-spring-boot").
 var prNumFromTitle = regexp.MustCompile(`(?i)^pr-(\d+)-`)
@@ -1030,26 +970,31 @@ func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusP
 	var annSessions []githubpkg.PRAnnotationSession
 	if poller != nil {
 		for _, inst := range poller.GetInstances() {
-			prNumber := inst.GitHubPRNumber
+			// Use Snapshot() — actor-based writes (SetGitHubPRNumber etc.) do not hold
+			// mu, so direct field reads would race with concurrent poller updates.
+			snap := inst.Snapshot()
+			prNumber := snap.GitHub.GitHubPRNumber
 
-			// Resolve a full RepoRef (owner + repo) via a 3-tier fallback:
+			// Resolve a full RepoRef (owner + repo) via a 3-tier fallback for RepoRef,
+			// plus a 4th title-regex path for PR number extraction:
 			// 1. Direct from DB fields (new sessions written since schema migration).
 			// 2. Parse from stored PR URL.
 			// 3. Infer from git remote.
+			// 4. PR number from session title (e.g. "pr-1255-...").
 			var repoRef githubpkg.RepoRef
-			if inst.GitHubOwner != "" && inst.GitHubRepo != "" {
-				repoRef, _ = githubpkg.NewRepoRef(inst.GitHubOwner, inst.GitHubRepo)
+			if snap.GitHub.GitHubOwner != "" && snap.GitHub.GitHubRepo != "" {
+				repoRef, _ = githubpkg.NewRepoRef(snap.GitHub.GitHubOwner, snap.GitHub.GitHubRepo)
 			}
-			if !repoRef.IsValid() && inst.GitHubPRURL != "" {
-				if parsed, err := session.ParseGitHubURL(inst.GitHubPRURL); err == nil {
+			if !repoRef.IsValid() && snap.GitHub.GitHubPRURL != "" {
+				if parsed, err := session.ParseGitHubURL(snap.GitHub.GitHubPRURL); err == nil {
 					repoRef, _ = githubpkg.NewRepoRef(parsed.Owner, parsed.Repo)
 					if prNumber == 0 {
 						prNumber = parsed.PRNumber
 					}
 				}
 			}
-			if !repoRef.IsValid() && inst.Path != "" {
-				repoRef, _ = githubpkg.GetOwnerRepoFromRemote(inst.Path)
+			if !repoRef.IsValid() && snap.Path != "" {
+				repoRef, _ = githubpkg.GetOwnerRepoFromRemote(snap.Path)
 			}
 			if !repoRef.IsValid() {
 				continue
@@ -1062,7 +1007,7 @@ func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusP
 			}
 			annSessions = append(annSessions, githubpkg.PRAnnotationSession{
 				ID:       inst.Title,
-				Branch:   inst.Branch,
+				Branch:   snap.Branch,
 				Repo:     repoRef,
 				PRNumber: prNumber,
 			})

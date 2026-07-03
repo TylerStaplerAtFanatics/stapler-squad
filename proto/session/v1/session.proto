@@ -176,6 +176,12 @@ service SessionService {
   // Rebuilds the in-memory classifier exactly once after all rules are stored.
   rpc BulkUpsertRules(BulkUpsertRulesRequest) returns (BulkUpsertRulesResponse) {}
 
+  // GetConfigFileRules returns rules persisted in the shared YAML config file.
+  rpc GetConfigFileRules(GetConfigFileRulesRequest) returns (GetConfigFileRulesResponse) {}
+
+  // SaveRulesToConfigFile exports one or more rules to the shared YAML config file.
+  rpc SaveRulesToConfigFile(SaveRulesToConfigFileRequest) returns (SaveRulesToConfigFileResponse) {}
+
   // ListDatabases returns all discovered workspace databases with metadata.
   // Used by the workspace switcher UI to show available workspaces.
   rpc ListDatabases(ListDatabasesRequest) returns (ListDatabasesResponse) {}
@@ -406,16 +412,6 @@ service SessionService {
 
   // GetProviderLimits returns the rate limit and usage details for a session.
   rpc GetProviderLimits(GetProviderLimitsRequest) returns (GetProviderLimitsResponse) {}
-
-  // GetHookStatus reports whether the global Claude Code hooks (rule enforcement
-  // and notifications) are installed in ~/.claude/settings.json.
-  // +api: hooks:status
-  rpc GetHookStatus(GetHookStatusRequest) returns (GetHookStatusResponse) {}
-
-  // InstallHooks installs the requested global Claude Code hooks into
-  // ~/.claude/settings.json. Idempotent per hook.
-  // +api: hooks:install
-  rpc InstallHooks(InstallHooksRequest) returns (InstallHooksResponse) {}
 
   // GetHookStatus reports whether the global Claude Code hooks (rule enforcement
   // and notifications) are installed in ~/.claude/settings.json.
@@ -2379,6 +2375,24 @@ message BulkUpsertRulesResponse {
   int32 updated = 2;
   int32 skipped = 3;
   repeated string errors = 4;
+}
+
+// GetConfigFileRules messages
+message GetConfigFileRulesRequest {}
+
+message GetConfigFileRulesResponse {
+  repeated ApprovalRuleProto rules = 1;
+  string file_path = 2;
+}
+
+// SaveRulesToConfigFile messages
+message SaveRulesToConfigFileRequest {
+  repeated string rule_ids = 1;
+  ApprovalRuleProto rule = 2;
+}
+
+message SaveRulesToConfigFileResponse {
+  string file_path = 1;
 }
 
 // ============================================================================

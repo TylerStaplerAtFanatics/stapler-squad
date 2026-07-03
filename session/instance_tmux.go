@@ -81,50 +81,9 @@ func (i *Instance) buildLaunchCommand(claudeSessionID string) string {
 	default:
 		panic(fmt.Sprintf("unknown programKind %T", p))
 	}
-	if i.CLIFlags != "" {
-		cmd = cmd + " " + i.CLIFlags
+	for _, f := range strings.Fields(i.CLIFlags) {
+		cmd = cmd + " " + shellQuote(f)
 	}
-	return cmd
-}
-
-// buildClaudeCommand assembles the full claude invocation with all instance flags.
-// It is only called when the program is proven to be claude (via programKind),
-// so no isClaude guards are needed here.
-func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
-	parts := []string{base}
-	if claudeSessionID != "" {
-		parts = append(parts, "--resume", claudeSessionID)
-	}
-	if i.MCPServerURL != "" {
-		parts = append(parts, i.claudeMCPConfigFlag())
-	}
-	if i.AppendSystemPrompt != "" {
-		parts = append(parts, "--append-system-prompt", fmt.Sprintf("%q", i.AppendSystemPrompt))
-	}
-	if i.AllowedTools != "" {
-		parts = append(parts, "--allowedTools", fmt.Sprintf("%q", i.AllowedTools))
-	}
-	if i.PermissionMode != "" {
-		parts = append(parts, "--permission-mode", fmt.Sprintf("%q", i.PermissionMode))
-	}
-	if i.AutoYes {
-		parts = append(parts, "--dangerously-skip-permissions")
-	}
-	if i.OneShot {
-		parts = append(parts, "-p", "--output-format", "json")
-	}
-	if i.Prompt != "" && (claudeSessionID == "" || i.OneShot) {
-		parts = append(parts, fmt.Sprintf("%q", i.Prompt))
-	}
-	return strings.Join(parts, " ")
-}
-
-// claudeMCPConfigFlag returns the --mcp-config flag string for this instance.
-func (i *Instance) claudeMCPConfigFlag() string {
-	if i.UUID != "" {
-		return fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}'`, i.MCPServerURL, i.UUID)
-	}
-	return fmt.Sprintf(`--mcp-config '{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}'`, i.MCPServerURL)
 	return cmd
 }
 
@@ -149,7 +108,8 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 		parts = append(parts, "--resume", shellQuote(claudeSessionID))
 	}
 	if i.MCPServerURL != "" {
-		parts = append(parts, i.claudeMCPConfigFlag())
+		flag, val := i.claudeMCPConfigArgs()
+		parts = append(parts, flag, val)
 	}
 	if i.AppendSystemPrompt != "" {
 		parts = append(parts, "--append-system-prompt", shellQuote(i.AppendSystemPrompt))
@@ -174,19 +134,18 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 	return strings.Join(parts, " ")
 }
 
-// claudeMCPConfigFlag returns the --mcp-config flag string for this instance.
-// %q here escapes MCPServerURL/UUID as JSON string values, a distinct job
-// from shell-quoting; the whole JSON payload is then wrapped once with
-// shellQuote so the outer shell-quoting isn't a hand-rolled second
-// implementation of the same job shellQuote already does correctly.
-func (i *Instance) claudeMCPConfigFlag() string {
+// claudeMCPConfigArgs returns the --mcp-config flag and its shell-quoted JSON value
+// as two separate strings, consistent with all other flag/value pairs in buildClaudeCommand.
+// %q escapes MCPServerURL/UUID as JSON string values; shellQuote then wraps the whole
+// JSON payload for the shell so neither quoting layer re-implements the other.
+func (i *Instance) claudeMCPConfigArgs() (string, string) {
 	var cfg string
 	if i.UUID != "" {
 		cfg = fmt.Sprintf(`{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}`, i.MCPServerURL, i.UUID)
 	} else {
 		cfg = fmt.Sprintf(`{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}`, i.MCPServerURL)
 	}
-	return "--mcp-config " + shellQuote(cfg)
+	return "--mcp-config", shellQuote(cfg)
 }
 
 // initTmuxSession creates (or reuses) the tmux.TmuxSession object without starting it.
