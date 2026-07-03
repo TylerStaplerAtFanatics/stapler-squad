@@ -387,6 +387,23 @@ service BacklogService {
 
   // GetSyncHistory returns the sync event history for an item source.
   rpc GetSyncHistory(GetSyncHistoryRequest) returns (GetSyncHistoryResponse) {}
+
+  // ImportGitHubIssue creates a backlog item pre-populated from a GitHub issue.
+  rpc ImportGitHubIssue(ImportGitHubIssueRequest) returns (ImportGitHubIssueResponse) {}
+}
+
+message ImportGitHubIssueRequest {
+  // GitHub issue URL (https://github.com/owner/repo/issues/N) or shorthand (owner/repo#N).
+  string issue_url = 1;
+  // Optional repo path override; if empty, derived from the issue URL.
+  string repo_path = 2;
+  // If true, skip automated triage after import.
+  bool skip_planning = 3;
+}
+
+message ImportGitHubIssueResponse {
+  BacklogItem item = 1;
+  bool triage_triggered = 2;
 }
 
 message CancelTriageRequest {
