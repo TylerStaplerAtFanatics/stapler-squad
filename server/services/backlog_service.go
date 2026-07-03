@@ -30,6 +30,12 @@ import (
 // live tmux process and can be safely tombstoned on re-trigger.
 const headlessTriageUUIDPrefix = "headless-triage-"
 
+// defaultTriageCleanupTimeout bounds the DB writes TriggerTriage's goroutine makes
+// after its headless LLM call returns (persist result, update plan_artifacts_path,
+// transition idea->ready, mark session ended). See BacklogService.triageCleanupTimeout
+// for why this needed to become configurable rather than a global.
+const defaultTriageCleanupTimeout = 10 * time.Second
+
 // maxTriageSessionAge is the maximum age of an open triage ItemSession before it is
 // treated as orphaned in the re-trigger guard. This prevents a hung or leaked session
 // from blocking re-trigger indefinitely.
@@ -88,6 +94,17 @@ type BacklogService struct {
 	shutdownCancel context.CancelFunc
 	triageSem      chan struct{}
 
+	// triageCleanupTimeout bounds the post-LLM-call DB writes in TriggerTriage's
+	// goroutine. An instance field (not a package var) so tests can override it on
+	// their own *BacklogService without any shared global state or data-race risk
+	// across concurrently running tests — see SetTriageCleanupTimeout and
+	// TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext, a regression test
+	// for a bug where this timeout used to start counting down BEFORE the
+	// (7-15 minute) LLM call instead of after it, so it was always already expired
+	// by the time these persistence calls ran and every successful triage
+	// silently failed to ever mark the item ready.
+	triageCleanupTimeout time.Duration
+
 	// resolveGitHubInput resolves a GitHub URL/shorthand to a local clone path,
 	// cloning it if necessary. Defaults to session.ResolveGitHubInput; overridable
 	// via SetGitHubResolver so tests don't need real network/git access.
@@ -107,21 +124,29 @@ func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *co
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &BacklogService{
-		storage:            storage,
-		sourceBackend:      storage,
-		sessionCreator:     creator,
-		cfg:                cfg,
-		engine:             engine,
-		shutdownCtx:        ctx,
-		shutdownCancel:     cancel,
-		triageSem:          make(chan struct{}, 8),
-		resolveGitHubInput: session.ResolveGitHubInput,
+		storage:              storage,
+		sourceBackend:        storage,
+		sessionCreator:       creator,
+		cfg:                  cfg,
+		engine:               engine,
+		shutdownCtx:          ctx,
+		shutdownCancel:       cancel,
+		triageSem:            make(chan struct{}, 8),
+		triageCleanupTimeout: defaultTriageCleanupTimeout,
+		resolveGitHubInput:   session.ResolveGitHubInput,
 	}
 }
 
 // SetHeadlessPool wires the headless pool for autonomous triage calls.
 func (s *BacklogService) SetHeadlessPool(pool headless.PoolClient) {
 	s.headlessPool = pool
+}
+
+// SetTriageCleanupTimeout overrides the default timeout for TriggerTriage's
+// post-LLM-call DB writes. Exposed for tests; production callers should rely
+// on the default.
+func (s *BacklogService) SetTriageCleanupTimeout(d time.Duration) {
+	s.triageCleanupTimeout = d
 }
 
 // Shutdown cancels the service's background context, unblocking any goroutines
@@ -312,9 +337,9 @@ func itemSessionToProto(is *ent.ItemSession) *sessionv1.ItemSession {
 // by itemSessionToProto. Uses canonical session.TriageSuggestion / session.TriageTask
 // to keep the schema in sync across the MCP tool, headless path, and proto conversion.
 type triageResultJSON struct {
-	Summary             string                    `json:"summary"`
+	Summary             string                     `json:"summary"`
 	Suggestions         []session.TriageSuggestion `json:"suggestions"`
-	ClarifyingQuestions []string                  `json:"clarifying_questions,omitempty"`
+	ClarifyingQuestions []string                   `json:"clarifying_questions,omitempty"`
 	Tasks               []session.TriageTask       `json:"tasks,omitempty"`
 }
 
@@ -1280,10 +1305,6 @@ func (s *BacklogService) TriggerTriage(
 		}
 		defer func() { <-s.triageSem }()
 
-		// cleanupCtx outlives shutdownCtx so DB writes succeed even during graceful shutdown.
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cleanupCancel()
-
 		triageCtx, cancel := context.WithTimeout(s.shutdownCtx, 30*time.Minute)
 		defer cancel()
 
@@ -1293,6 +1314,17 @@ func (s *BacklogService) TriggerTriage(
 			triagePrompt,
 			headless.CallOptions{WorkDir: itemRepoPath},
 		)
+
+		// cleanupCtx outlives shutdownCtx so DB writes succeed even during graceful
+		// shutdown. Created HERE, after CallBlockingWithOptions returns, not before
+		// it: the LLM call above routinely takes 7-15 minutes (4 parallel research
+		// subagents), so a cleanupCtx created before it would have its 10s budget
+		// already expired by the time these persistence calls run below — every
+		// successful triage would silently fail to ever mark the item ready. This
+		// was a live, 100%-reproducible bug: see the backlog cross-platform audit.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), s.triageCleanupTimeout)
+		defer cleanupCancel()
+
 		if callErr != nil {
 			log.ErrorLog.Printf("[TriggerTriage] headless triage failed item=%s: %v", itemID, callErr)
 			_ = s.storage.UpdateItemSessionEnded(cleanupCtx, isID, time.Now())

@@ -6,7 +6,7 @@ import { RuleBuilderPrefill } from "@/lib/ruleBuilderPrefill";
 import { RuleTemplate } from "@/lib/ruleTemplates";
 import { TagInput } from "./TagInput";
 import { RulePreview } from "./RulePreview";
-import { RuleCriteria } from "@/lib/rulePreview";
+import { RuleCriteria, SubcommandStat } from "@/lib/rulePreview";
 import {
   formWrapper, formTitle, modeToggle, modeBtn, modeBtnActive,
   section, sectionTitle, formGrid, formGridFull, fieldLabel, fieldInput, fieldSelect,
@@ -79,16 +79,20 @@ interface RuleBuilderFormProps {
   prefill?: RuleBuilderPrefill | null;
   templateSeed?: RuleTemplate | null;
   onSave: (rule: Partial<ApprovalRuleProto> & { id: string }) => Promise<void>;
+  /** If provided, the form shows a "Save to Config File" destination option. */
+  onSaveToConfig?: (rule: Partial<ApprovalRuleProto>) => Promise<void>;
   onCancel: () => void;
   /** Optional: command-sample generation hook interface, for "Generate from command" section. */
   onCmdGenerate?: (params: { source: SuggestionSource; commandSample?: string }) => Promise<void>;
   cmdSuggestions?: SuggestedRuleProto[];
   cmdLoading?: boolean;
   cmdClear?: () => void;
+  subcommandStats?: SubcommandStat[];
 }
 
-export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCancel, onCmdGenerate, cmdSuggestions = [], cmdLoading = false, cmdClear }: RuleBuilderFormProps) {
+export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onSaveToConfig, onCancel, onCmdGenerate, cmdSuggestions = [], cmdLoading = false, cmdClear, subcommandStats }: RuleBuilderFormProps) {
   const [mode, setMode] = useState<Mode>("structured");
+  const [pendingMode, setPendingMode] = useState<Mode | null>(null);
   const [toolTarget, setToolTarget] = useState<ToolTarget>("name");
   const [name, setName] = useState("");
   const [toolName, setToolName] = useState("");
@@ -104,16 +108,17 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
   const [safePythonImportsOnly, setSafePythonImportsOnly] = useState(false);
   const [commandPattern, setCommandPattern] = useState("");
   const [filePattern, setFilePattern] = useState("");
-  const [decision, setDecision] = useState<AutoDecision>(AutoDecision.ESCALATE);
+  const [decision, setDecision] = useState<AutoDecision>(AutoDecision.ALLOW);
   const [riskLevel, setRiskLevel] = useState("medium");
   const [reason, setReason] = useState("");
   const [alternative, setAlternative] = useState("");
-  const [priority, setPriority] = useState(450);
+  const [priority, setPriority] = useState(10);
   const [enabled, setEnabled] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [commandSampleText, setCommandSampleText] = useState("");
+  const [destination, setDestination] = useState<"db" | "config">("db");
   // Track whether commandPattern was set by AI (to show ai-generated-badge)
   const [commandPatternIsAi, setCommandPatternIsAi] = useState(false);
   // Track whether user has manually edited commandPattern (to prevent AI overwrite)
@@ -247,17 +252,27 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
 
   function handleModeSwitch(next: Mode) {
     if (next === mode) return;
-    if (next === "regex" && (programs.length > 0 || subcommands.length > 0)) {
-      if (!window.confirm("Switch to Regex mode? Structured criteria will be cleared.")) return;
+    const willLoseData =
+      (next === "regex" && (programs.length > 0 || subcommands.length > 0)) ||
+      (next === "structured" && !!commandPattern);
+    if (willLoseData) {
+      setPendingMode(next);
+      return;
+    }
+    applyModeSwitch(next);
+  }
+
+  function applyModeSwitch(next: Mode) {
+    if (next === "regex") {
       setPrograms([]); setSubcommands([]); setBlockedSubcommands([]);
       setRequiredFlags([]); setForbiddenFlags([]); setRequiredFlagPrefixes([]);
       setPythonModes([]); setSafePythonImportsOnly(false);
     }
-    if (next === "structured" && commandPattern) {
-      if (!window.confirm("Switch to Structured mode? The regex pattern will be cleared.")) return;
+    if (next === "structured") {
       setCommandPattern("");
     }
     setMode(next);
+    setPendingMode(null);
   }
 
   async function handleSave() {
@@ -277,9 +292,7 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
     setFormError(null);
     setSaving(true);
     try {
-      const id = editRule?.id ?? `user-${Date.now()}`;
-      await onSave({
-        id,
+      const rulePayload = {
         name: name.trim(),
         toolName: toolTarget === "name" ? toolName : "",
         toolCategory: toolTarget === "category" ? toolCategory : "",
@@ -300,7 +313,13 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
         requiredFlagPrefixes: mode === "structured" ? requiredFlagPrefixes : [],
         pythonModes: mode === "structured" ? pythonModes : [],
         safePythonImportsOnly: mode === "structured" ? safePythonImportsOnly : false,
-      });
+      };
+      if (destination === "config" && onSaveToConfig && !editRule) {
+        await onSaveToConfig(rulePayload);
+      } else {
+        const id = editRule?.id ?? `user-${Date.now()}`;
+        await onSave({ id, ...rulePayload });
+      }
     } catch (e) {
       setFormError(e instanceof Error ? e.message : "Failed to save rule.");
     } finally {
@@ -334,6 +353,24 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
           Regex / Advanced
         </button>
       </div>
+
+      {pendingMode && (
+        <div className={errorBanner} role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span>
+            {pendingMode === "regex"
+              ? "Switch to Regex? Structured criteria will be cleared."
+              : "Switch to Structured? The regex pattern will be cleared."}
+          </span>
+          <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <button type="button" className={saveBtn} style={{ padding: "2px 10px" }} onClick={() => applyModeSwitch(pendingMode)}>
+              Confirm
+            </button>
+            <button type="button" className={cancelBtn} style={{ padding: "2px 10px" }} onClick={() => setPendingMode(null)}>
+              Keep
+            </button>
+          </span>
+        </div>
+      )}
 
       {formError && <div className={errorBanner}>{formError}</div>}
 
@@ -425,7 +462,12 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
             </div>
           )}
 
-          <RulePreview criteria={previewCriteria} showSafePythonNotice={safePythonImportsOnly} />
+          <RulePreview
+            criteria={previewCriteria}
+            showSafePythonNotice={safePythonImportsOnly}
+            subcommandStats={subcommandStats}
+            onAddSubcommand={(sub) => setSubcommands((prev) => prev.includes(sub) ? prev : [...prev, sub])}
+          />
         </div>
       )}
 
@@ -547,9 +589,33 @@ export function RuleBuilderForm({ editRule, prefill, templateSeed, onSave, onCan
         </details>
       )}
 
+      {/* Destination toggle — only shown when config file option is available and not editing */}
+      {onSaveToConfig && !editRule && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+          <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>Save to:</span>
+          {(["db", "config"] as const).map((d) => (
+            <label key={d} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+              <input
+                type="radio"
+                name="destination"
+                value={d}
+                checked={destination === d}
+                onChange={() => setDestination(d)}
+              />
+              {d === "db" ? "Database" : "Config File"}
+            </label>
+          ))}
+          {destination === "config" && (
+            <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "monospace" }}>
+              → shared_rules.yaml
+            </span>
+          )}
+        </div>
+      )}
+
       <div className={actions}>
         <button className={saveBtn} onClick={handleSave} disabled={saving}>
-          {saving ? "Saving…" : editRule ? "Update Rule" : "Save Rule"}
+          {saving ? "Saving…" : editRule ? "Update Rule" : (destination === "config" ? "Save to Config File" : "Save Rule")}
         </button>
         <button className={cancelBtn} onClick={onCancel}>Cancel</button>
       </div>

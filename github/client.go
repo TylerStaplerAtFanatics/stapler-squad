@@ -235,6 +235,7 @@ func fetchLoginFromRequest(req *http.Request) (string, error) {
 	return u.Login, nil
 }
 
+
 // GetPRInfo fetches metadata for a pull request including review and CI status.
 func GetPRInfo(owner, repo string, prNumber int) (*PRInfo, error) {
 	return GetPRInfoCtx(context.Background(), owner, repo, prNumber)
@@ -673,6 +674,7 @@ func GetOwnerRepoFromRemote(repoPath string) (RepoRef, error) {
 	r, _ := NewRepoRef(ref.Owner, ref.Repo)
 	return r, nil
 }
+
 
 // GeneratePRPrompt generates a context prompt from PR information
 // This can be used to initialize a Claude Code session with PR context

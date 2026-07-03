@@ -22,6 +22,7 @@ type fakeHeadlessPool struct {
 	mu       sync.Mutex
 	response string
 	err      error
+	delay    time.Duration // simulates a slow LLM call; see TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext
 	calls    []fakePoolCall
 }
 
@@ -30,10 +31,20 @@ type fakePoolCall struct {
 	workDir string
 }
 
-func (f *fakeHeadlessPool) CallBlockingWithOptions(_ context.Context, key headless.FeatureKey, _, _ string, opts headless.CallOptions) (string, error) {
+func (f *fakeHeadlessPool) CallBlockingWithOptions(ctx context.Context, key headless.FeatureKey, _, _ string, opts headless.CallOptions) (string, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, fakePoolCall{key: key, workDir: opts.WorkDir})
+	delay := f.delay
 	f.mu.Unlock()
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	return f.response, f.err
 }
 
@@ -95,6 +106,19 @@ func (m *mockSessionStopper) KillTmuxSessionByTitle(_ context.Context, _ string)
 	return nil
 }
 
+// fakeAutonomousDriverStarter records StartAutonomousDriverForInstance calls for inspection.
+type fakeAutonomousDriverStarter struct {
+	calls []*session.Instance
+}
+
+func (f *fakeAutonomousDriverStarter) StartAutonomousDriverForInstance(inst *session.Instance) {
+	f.calls = append(f.calls, inst)
+}
+
+func (f *fakeAutonomousDriverStarter) StartAutonomousDriverWithTimeout(inst *session.Instance, _ time.Duration) {
+	f.calls = append(f.calls, inst)
+}
+
 type mockCreateCall struct {
 	title   string
 	path    string
@@ -108,7 +132,10 @@ func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, pa
 	if m.err != nil {
 		return nil, m.err
 	}
-	return &session.Instance{Title: title}, nil
+	// Path must round-trip: SpawnSessionFromItem writes slash commands and a
+	// context file to inst.Path. An empty Path here makes those writes land in
+	// the test process's working directory instead of a sandbox.
+	return &session.Instance{Title: title, Path: path}, nil
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -376,6 +403,161 @@ func TestApprovePlan_HappyPath_SetsPlanApprovedAndTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, approveResp.Msg.Item.PlanApproved)
 	assert.NotNil(t, approveResp.Msg.Item.PlanApprovedAt)
+}
+
+// ─── Full lifecycle (audit regression test) ──────────────────────────────────
+
+// TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent exercises
+// the real production path — CreateBacklogItem → TriggerTriage (real headless call,
+// real ParseHeadlessTriageResult, real idea→ready transition) → ApprovePlan →
+// SpawnSessionFromItem (real BuildTokenBudgetedPrompt) — faking only the two
+// external process boundaries (the LLM call and the tmux/claude subprocess).
+//
+// This was written to verify a cross-platform-audit finding (project_plans/
+// backlog-cross-platform-audit/gaps-and-risks.md #1): that AutonomousDriver's
+// inst.Prompt/inst.InitialPrompt mismatch (ADR-022) breaks the execution phase's
+// prompt delivery. It does not — CreateDirectorySession stores the real prompt in
+// inst.Prompt, and buildClaudeCommand includes it as a CLI arg on first launch
+// (claudeSessionID == ""), so session_driver.go's InitialPrompt-typing step
+// correctly no-ops (see session_driver.go:135 "No initial prompt configured").
+// This test locks in that the real item content — not a generic fallback —
+// reaches the session-creation boundary.
+func TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent(t *testing.T) {
+	storage := createTestStorage(t)
+	pool := &fakeHeadlessPool{response: validTriageJSON()}
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+	svc.SetHeadlessPool(pool)
+	starter := &fakeAutonomousDriverStarter{}
+	svc.SetAutonomousDriverStarter(starter)
+
+	repoPath := t.TempDir()
+	const description = "Build the zzyzx widget integration end to end"
+	const acText = "widget renders correctly on load"
+
+	// 1. Create item (real code, status starts at "idea"). SkipTriage=true so we
+	// control the TriggerTriage call explicitly below instead of racing the
+	// auto-triage goroutine CreateBacklogItem would otherwise kick off.
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:       "zzyzx widget",
+		Description: description,
+		RepoPath:    repoPath,
+		SkipTriage:  true,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: acText, Status: "pending"},
+		},
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	// 2. Trigger real triage. TriggerTriage returns immediately; the parse +
+	// persist + idea→ready transition happens in a goroutine (see
+	// backlog_service.go TriggerTriage), so poll for the real transition.
+	_, err = svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{ItemId: itemID}))
+	require.NoError(t, err)
+
+	var readyItem *sessionv1.BacklogItem
+	require.Eventually(t, func() bool {
+		getResp, getErr := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
+		if getErr != nil || getResp.Msg.Item.Status != "ready" {
+			return false
+		}
+		readyItem = getResp.Msg.Item
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "item should reach 'ready' after real headless triage completes")
+
+	require.Equal(t, 1, pool.callCount(), "TriggerTriage should have made exactly one real headless call")
+	require.NotEmpty(t, readyItem.PlanArtifactsPath, "TriggerTriage should persist plan_artifacts_path")
+
+	// 3. Approve the plan (real ApprovePlan handler).
+	approveResp, err := svc.ApprovePlan(t.Context(), connect.NewRequest(&sessionv1.ApprovePlanRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.True(t, approveResp.Msg.Item.PlanApproved)
+
+	// 4. Spawn the execution session (real SpawnSessionFromItem, real
+	// BuildTokenBudgetedPrompt). Autonomous=true with a wired autonomousStarter
+	// exercises the autonomous-driver-start code path (asserted in step 4a below).
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId:     itemID,
+		Autonomous: true,
+	}))
+	require.NoError(t, err)
+
+	// 4a. The autonomous driver start hook must actually fire when Autonomous=true
+	// and an autonomousStarter is wired.
+	require.Len(t, starter.calls, 1)
+
+	// 5. The real, load-bearing assertion: the prompt that reached the session
+	// creation boundary contains the item's actual content, not a placeholder.
+	require.Len(t, creator.calls, 1)
+	capturedPrompt := creator.calls[0].prompt
+	assert.Contains(t, capturedPrompt, description, "spawned session prompt should carry the real item description")
+	assert.Contains(t, capturedPrompt, acText, "spawned session prompt should carry the real acceptance criteria")
+	assert.Contains(t, capturedPrompt, "plan.md", "spawned session prompt should point at the approved plan artifacts")
+	assert.NotContains(t, capturedPrompt, "Please proceed with the task described in your instructions",
+		"spawned session prompt must not be the generic AutonomousDriver fallback")
+
+	// 6. Item should have advanced to in_progress after spawn.
+	finalResp, err := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	assert.Equal(t, "in_progress", finalResp.Msg.Item.Status)
+}
+
+// TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext is a regression test
+// for a live, 100%-reproducible bug found by manually observing a real triage
+// run in production (see project_plans/backlog-cross-platform-audit/gaps-and-risks.md
+// #1): TriggerTriage's cleanupCtx used to be created with a fixed timeout
+// BEFORE calling the headless LLM pool, not after. Real triage calls routinely
+// take 7-15 minutes (the prompt instructs 4 parallel research subagents), so
+// cleanupCtx's budget was always already expired by the time the post-call
+// persistence writes (triage result, plan_artifacts_path, idea->ready
+// transition) ran — every successful triage call would log "[TriggerTriage]
+// headless triage complete" while silently failing every single DB write that
+// was supposed to make the result visible, leaving the item stuck at "idea"
+// forever. This test simulates that exact shape (LLM call slower than the
+// cleanup budget) at test-friendly timescales.
+func TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext(t *testing.T) {
+	storage := createTestStorage(t)
+	// delay outlasts the cleanup timeout below — this is what the old code got
+	// wrong: a cleanupCtx created before this delay would already be expired by
+	// the time it's used afterward.
+	pool := &fakeHeadlessPool{response: validTriageJSON(), delay: 3 * time.Second}
+	svc := NewBacklogService(storage, nil, nil, nil)
+	svc.SetHeadlessPool(pool)
+	// Reduced but kept generous enough (2s) that the real SQLite writes below
+	// can't flake under CI load or a busy test machine — the bug being tested
+	// is about ORDERING (timeout starts before vs. after the slow call), not
+	// about needing a tiny timeout, so there's no reason to cut this closer to
+	// the wire. Set on this instance only — no shared global state, no risk to
+	// any other concurrently running test.
+	svc.SetTriageCleanupTimeout(2 * time.Second)
+
+	repoPath := t.TempDir()
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:      "slow triage item",
+		RepoPath:   repoPath,
+		SkipTriage: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	_, err = svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{ItemId: itemID}))
+	require.NoError(t, err)
+
+	var readyItem *sessionv1.BacklogItem
+	require.Eventually(t, func() bool {
+		getResp, getErr := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
+		if getErr != nil || getResp.Msg.Item.Status != "ready" {
+			return false
+		}
+		readyItem = getResp.Msg.Item
+		return true
+	}, 6*time.Second, 10*time.Millisecond,
+		"item must reach 'ready' even though the LLM call outlasted triageCleanupTimeout — "+
+			"with the pre-fix ordering this would time out here because every persistence "+
+			"write after the slow call would fail with context deadline exceeded")
+
+	require.NotEmpty(t, readyItem.PlanArtifactsPath, "plan_artifacts_path must be persisted, not silently dropped")
 }
 
 // ─── TriggerReReview ──────────────────────────────────────────────────────

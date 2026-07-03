@@ -45,18 +45,21 @@ Every action type must have a `describe` block in `dispatch.test.ts`. Test name 
 
 `DetectorRegistry` holds a priority-sorted list of `Detector` implementations. Each detector returns a `DetectionResult` or `null`; first match wins. `createDefaultRegistry()` is the single authoritative list, in priority order:
 
-| Priority | Detector | Matches |
-|---|---|---|
-| 10 | `GitHubPRDetector` | `https://github.com/.../pull/N` |
-| 20 | `GitHubBranchDetector` | `https://github.com/.../tree/branch` |
-| 30 | `GitHubRepoDetector` | `https://github.com/owner/repo` |
-| 35 | `NewSessionDetector` | `new:<path>` shorthand |
-| 40 | `GitHubShorthandDetector` | `owner/repo` shorthand |
-| 50 | `PathWithBranchDetector` | `/path:branch` |
-| 100 | `LocalPathDetector` | `/absolute/path` or `~/path` |
-| 200 | `SessionSearchDetector` | everything else (search fallback) |
+| Priority | Detector | Matches | Registered |
+|---|---|---|---|
+| 5 | `CommandDetector` | `>command` VS Code-style prefix | `createDefaultRegistry()` |
+| 10 | `GitHubPRDetector` | `https://github.com/.../pull/N` | `createDefaultRegistry()` |
+| 20 | `GitHubBranchDetector` | `https://github.com/.../tree/branch` | `createDefaultRegistry()` |
+| 25 | `WorkflowDetector` | `@workflow-slug` | dynamic — `OmnibarContext.tsx` effect |
+| 30 | `GitHubRepoDetector` | `https://github.com/owner/repo` | `createDefaultRegistry()` |
+| 35 | `NewSessionDetector` | `new:<path>` shorthand | `createDefaultRegistry()` |
+| 36 | `AliasDetector` | `@alias-name` | dynamic — `OmnibarContext.tsx` effect |
+| 40 | `GitHubShorthandDetector` | `owner/repo` shorthand | `createDefaultRegistry()` |
+| 50 | `PathWithBranchDetector` | `/path:branch` | `createDefaultRegistry()` |
+| 100 | `LocalPathDetector` | `/absolute/path` or `~/path` | `createDefaultRegistry()` |
+| 200 | `SessionSearchDetector` | everything else (search fallback) | `createDefaultRegistry()` |
 
-Lower priority number = checked first.
+**Dynamic detectors** (`WorkflowDetector`, `AliasDetector`) require runtime-fetched data and are registered/unregistered in `OmnibarContext.tsx` effects, NOT in `createDefaultRegistry()`. Add a data-driven detector there, not in `detector.ts`.
 
 ### When to add a new detector
 
