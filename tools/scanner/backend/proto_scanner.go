@@ -137,6 +137,7 @@ var methodToID = map[string]string{
 	"ListBacklogItems":            "backlog:list-items",
 	"UpdateBacklogItem":           "backlog:update-item",
 	"ArchiveBacklogItem":          "backlog:archive-item",
+	"DeleteBacklogItem":           "backlog:delete-item",
 	"TransitionBacklogItemStatus": "backlog:transition-status",
 	"SpawnSessionFromItem":        "backlog:spawn-session",
 	"AttachSessionToItem":         "backlog:attach-session",
@@ -152,6 +153,7 @@ var methodToID = map[string]string{
 	"UpdateItemSource":            "backlog:update-source",
 	"DeleteItemSource":            "backlog:delete-source",
 	"GetSyncHistory":              "backlog:get-sync-history",
+	"ImportGitHubIssue":           "backlog:import-github-issue",
 	// Session lifecycle RPCs
 	"ArchiveSession":          "session:archive",
 	"UnarchiveSession":        "session:unarchive",
@@ -188,8 +190,8 @@ var methodToID = map[string]string{
 	"GetHookStatus": "hooks:status",
 	"InstallHooks":  "hooks:install",
 	// GitHub user RPCs
-	"ListUserPRs":       "github-user:list-prs",
-	"WatchUserPRs":      "github-user:watch-prs",
+	"ListUserPRs":        "github-user:list-prs",
+	"WatchUserPRs":       "github-user:watch-prs",
 	"GetGitHubAuthState": "github-user:get-auth-state",
 }
 
