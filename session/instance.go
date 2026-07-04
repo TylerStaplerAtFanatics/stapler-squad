@@ -404,6 +404,14 @@ const (
 	PauseReasonAutoResource   = "auto:resource"
 )
 
+// PermissionMode constants for the --permission-mode Claude Code flag.
+const (
+	PermissionModeAuto             = "auto"
+	PermissionModeBypassPermissions = "bypassPermissions"
+	PermissionModeAcceptEdits      = "acceptEdits"
+	PermissionModeManual           = "manual"
+)
+
 // SessionType is an alias for config.SessionType so callers can use either package.
 type SessionType = config.SessionType
 

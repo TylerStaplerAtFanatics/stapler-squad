@@ -1125,8 +1125,8 @@ func (s *BacklogService) SpawnSessionFromItem(
 	prompt := session.BuildTokenBudgetedPrompt(entItem, priorSessions)
 
 	// 9. Generate session title — prefer triage-suggested short title if available.
-	repoName := filepath.Base(item.RepoPath)
-	title := repoName + "/" + triageShortTitle(priorSessions, item.Title)
+	repoName := slugify(filepath.Base(item.RepoPath))
+	title := repoName + "-" + triageShortTitle(priorSessions, item.Title)
 
 	// 10. Ensure the worktree path exists and write slash commands + context file BEFORE
 	// spawning the session — the claude process starts executing synchronously inside
@@ -1162,9 +1162,9 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// 11. Spawn session first so we have the real UUID before creating the ItemSession record.
 	// Pass the same resolved worktreePath so CreateDirectorySession's own resolution is a
 	// no-op and both paths are guaranteed to agree.
-	spawnTags := []string{"backlog:work"}
+	spawnTags := []string{session.TagBacklogWork}
 	if req.Msg.Autonomous {
-		spawnTags = append(spawnTags, "autonomous")
+		spawnTags = append(spawnTags, session.TagAutonomous)
 	}
 	inst, err := s.sessionCreator.CreateDirectorySession(ctx, title, worktreePath, prompt,
 		spawnTags, false, false)

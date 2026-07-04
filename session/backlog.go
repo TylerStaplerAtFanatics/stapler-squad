@@ -25,6 +25,12 @@ const (
 	SessionRoleReview = "review"
 )
 
+// Session tag constants for backlog-spawned sessions.
+const (
+	TagBacklogWork = "backlog:work"
+	TagAutonomous  = "autonomous"
+)
+
 // TriggeredBy values for BacklogStatusEvent records.
 const (
 	TriggeredByUser   = "user"
