@@ -13,6 +13,7 @@ import { GateVerdictBox } from "./GateVerdictBox";
 import { InlineError } from "./InlineError";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import { TriageReviewPanel } from "./TriageReviewPanel";
+import { ReviewChangesModal } from "./ReviewChangesModal";
 import * as styles from "./BacklogItemDetail.css";
 
 interface BacklogItemDetailProps {
@@ -67,6 +68,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   const [actionLoading, setActionLoading] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+
+  // Review changes modal
+  const [showChangesModal, setShowChangesModal] = useState(false);
 
   // Notes inline editing
   const [editingNotes, setEditingNotes] = useState(false);
@@ -558,22 +562,71 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           </div>
         )}
 
-        {/* Gate Verdict */}
-        {item.status === "review" && (
-          <div className={styles.section}>
-            <GateVerdictBox
-              verdict={item.gateVerdict ?? "PENDING"}
-              summary={item.gateVerdictSummary || "Review in progress"}
-              criteria={item.gateCriteria}
-              elapsedSeconds={undefined}
-              onApprove={handleGateApprove}
-              onReopen={handleGateReopen}
-              onOverride={handleGateOverride}
-              onSkipGate={handleGateSkip}
-              actionPending={actionLoading}
-            />
-          </div>
-        )}
+        {/* Gate Verdict + review context */}
+        {item.status === "review" && (() => {
+          const workSession = [...item.linkedSessions].reverse().find((s) => s.role === "work");
+          return (
+            <>
+              <div className={styles.section}>
+                <h3 className={styles.sectionTitle}>Reviewing</h3>
+                <div className={styles.reviewContextBox}>
+                  <div className={styles.reviewContextInfo}>
+                    {workSession ? (
+                      <>
+                        <span className={styles.reviewContextLabel}>Work session</span>
+                        <a
+                          className={styles.reviewContextSessionId}
+                          href={`/?session=${workSession.sessionId}`}
+                          title="Open in terminal"
+                        >
+                          {workSession.sessionId}
+                        </a>
+                        {workSession.endedAt && (
+                          <span className={styles.reviewContextDate}>
+                            Completed {new Date(workSession.endedAt).toLocaleString()}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className={styles.reviewContextLabel}>No work session found</span>
+                    )}
+                  </div>
+                  {workSession && (
+                    <button
+                      className={styles.viewChangesButton}
+                      onClick={() => setShowChangesModal(true)}
+                      data-testid="backlog-review-view-changes"
+                    >
+                      View Changes ↗
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className={styles.section}>
+                <GateVerdictBox
+                  verdict={item.gateVerdict ?? "PENDING"}
+                  summary={item.gateVerdictSummary || "Review in progress"}
+                  criteria={item.gateCriteria}
+                  elapsedSeconds={undefined}
+                  onApprove={handleGateApprove}
+                  onReopen={handleGateReopen}
+                  onOverride={handleGateOverride}
+                  onSkipGate={handleGateSkip}
+                  actionPending={actionLoading}
+                />
+              </div>
+
+              {showChangesModal && workSession && (
+                <ReviewChangesModal
+                  sessionId={workSession.sessionId}
+                  sessionTitle={item.title}
+                  onClose={() => setShowChangesModal(false)}
+                />
+              )}
+            </>
+          );
+        })()}
 
         {/* Description */}
         <div className={styles.section}>
