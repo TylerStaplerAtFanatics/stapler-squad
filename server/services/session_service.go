@@ -719,7 +719,7 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 		Title:           title,
 		Path:            path,
 		Program:         resolved.Program,
-		PermissionMode:  "auto", // automated sessions auto-approve tool uses without bypass prompt
+		PermissionMode:  session.PermissionModeAuto, // automated sessions auto-approve tool uses without bypass prompt
 		SessionType:     session.SessionTypeDirectory,
 		Prompt:          prompt,
 		Tags:            tags,

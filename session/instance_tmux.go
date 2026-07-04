@@ -121,7 +121,7 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 		parts = append(parts, "--permission-mode", shellQuote(i.PermissionMode))
 	}
 	if i.AutoYes {
-		parts = append(parts, "--permission-mode", "bypassPermissions")
+		parts = append(parts, "--permission-mode", PermissionModeBypassPermissions)
 	}
 	if i.OneShot {
 		parts = append(parts, "-p", "--output-format", "json")
