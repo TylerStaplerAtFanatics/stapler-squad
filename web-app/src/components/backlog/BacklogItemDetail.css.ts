@@ -457,6 +457,67 @@ export const workflowEventArrow = style({
   flexShrink: 0,
 });
 
+export const reviewContextBox = style({
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: vars.space["3"],
+  padding: vars.space["3"],
+  background: vars.color.surfaceSubtle,
+  border: `1px solid ${vars.color.borderSubtle}`,
+  borderRadius: vars.radii.md,
+});
+
+export const reviewContextInfo = style({
+  display: "flex",
+  flexDirection: "column",
+  gap: vars.space["1"],
+  minWidth: 0,
+  flex: 1,
+});
+
+export const reviewContextLabel = style({
+  fontSize: vars.fontSize.xs,
+  color: vars.color.textMuted,
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+});
+
+export const reviewContextSessionId = style({
+  fontSize: vars.fontSize.xs,
+  fontFamily: vars.font.mono,
+  color: vars.color.primary,
+  textDecoration: "none",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  ":hover": { textDecoration: "underline" },
+});
+
+export const reviewContextDate = style({
+  fontSize: vars.fontSize.xs,
+  color: vars.color.textMuted,
+});
+
+export const viewChangesButton = style({
+  display: "inline-flex",
+  alignItems: "center",
+  padding: `${vars.space["1"]} ${vars.space["3"]}`,
+  borderRadius: vars.radii.md,
+  fontSize: vars.fontSize.sm,
+  fontWeight: vars.fontWeight.medium,
+  cursor: "pointer",
+  border: `1px solid ${vars.color.primary}`,
+  background: vars.color.accentBg,
+  color: vars.color.primary,
+  whiteSpace: "nowrap",
+  flexShrink: 0,
+  transition: "background 0.1s ease",
+  ":hover": {
+    background: vars.color.accentHover,
+  },
+});
+
 export const workflowEventTo = style({
   fontWeight: 600,
   color: vars.color.textPrimary,
