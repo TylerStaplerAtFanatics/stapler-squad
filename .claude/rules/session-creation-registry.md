@@ -168,8 +168,4 @@ Copy this checklist into the PR description when adding a new mode:
 
 ## One-Off Session Reference Implementation
 
-The one-off session feature (2026-04-24) is the canonical example of the "flag on existing type" pattern. See:
-- `session/namegen/` — name generation package
-- `config/config.go` `OneOffBaseDirOrDefault()` — config with lazy default
-- `server/services/session_service.go` lines ~510–615 — full handler flow
-- `web-app/src/components/sessions/OmnibarCreationPanel.tsx` — UI integration
+The one-off session is the canonical "flag on existing type" example. See `server/services/session_service.go` lines ~510–615 for the full handler flow.

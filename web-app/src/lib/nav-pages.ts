@@ -14,6 +14,7 @@ import {
   LayoutList,
   Zap,
   FolderOpen,
+  ToggleLeft,
 } from "lucide-react";
 import { routes } from "./routes";
 
@@ -64,7 +65,8 @@ export const NAV_PAGES: NavPage[] = [
   { href: routes.errors,  label: "Errors",  icon: AlertTriangle, headerNav: false, group: "settings" },
   { href: routes.help,    label: "Help",    icon: HelpCircle,  headerNav: false, group: "settings" },
   { href: routes.escapeAnalytics, label: "Escape Analytics", icon: BarChart2, headerNav: false, group: "insights" },
-  { href: routes.files,           label: "Files",            icon: FolderOpen, headerNav: false, group: "settings" },
+  { href: routes.files,           label: "Files",            icon: FolderOpen,   headerNav: false, group: "settings" },
+  { href: routes.settingsFeatures, label: "Feature Flags",   icon: ToggleLeft,   headerNav: false, group: "settings" },
 ];
 
 export const MOBILE_NAV_PAGES = NAV_PAGES.filter((p) => p.mobileNav !== false);
