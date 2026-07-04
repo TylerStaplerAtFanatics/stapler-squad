@@ -1125,7 +1125,8 @@ func (s *BacklogService) SpawnSessionFromItem(
 	prompt := session.BuildTokenBudgetedPrompt(entItem, priorSessions)
 
 	// 9. Generate session title — prefer triage-suggested short title if available.
-	title := triageShortTitle(priorSessions, item.Title)
+	repoName := filepath.Base(item.RepoPath)
+	title := repoName + "/" + triageShortTitle(priorSessions, item.Title)
 
 	// 10. Ensure the worktree path exists and write slash commands + context file BEFORE
 	// spawning the session — the claude process starts executing synchronously inside
