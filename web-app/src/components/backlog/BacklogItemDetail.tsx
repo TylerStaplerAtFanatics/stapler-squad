@@ -762,26 +762,41 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 const isOrphan = !s.endedAt && s.role !== statusToRole[item.status];
                 return (
                   <div
-                    key={s.sessionId}
+                    key={s.entityId ?? s.sessionId}
                     className={styles.sessionRow}
                     role="listitem"
                   >
-                    <a
-                      className={styles.sessionLink}
-                      href={`/?session=${s.sessionId}`}
-                      title="Open in terminal"
-                    >
-                      <span className={styles.sessionId} title={s.sessionId}>
-                        {s.sessionId}
+                    {s.role === "triage" ? (
+                      <span className={styles.sessionLink}>
+                        <span className={styles.sessionId} title={s.sessionId}>
+                          {s.sessionId}
+                        </span>
+                        <span className={styles.sessionRole}>{s.role}</span>
+                        {s.startedAt && (
+                          <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
+                        )}
+                        {isOrphan && (
+                          <span className={styles.sessionEndedBadge}>ended</span>
+                        )}
                       </span>
-                      <span className={styles.sessionRole}>{s.role}</span>
-                      {s.startedAt && (
-                        <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
-                      )}
-                      {isOrphan && (
-                        <span className={styles.sessionEndedBadge}>ended</span>
-                      )}
-                    </a>
+                    ) : (
+                      <a
+                        className={styles.sessionLink}
+                        href={`/?session=${s.sessionId}`}
+                        title="Open in terminal"
+                      >
+                        <span className={styles.sessionId} title={s.sessionId}>
+                          {s.sessionId}
+                        </span>
+                        <span className={styles.sessionRole}>{s.role}</span>
+                        {s.startedAt && (
+                          <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
+                        )}
+                        {isOrphan && (
+                          <span className={styles.sessionEndedBadge}>ended</span>
+                        )}
+                      </a>
+                    )}
                     <button
                       className={styles.sessionDeleteBtn}
                       disabled={deletingSessionId === s.sessionId}
@@ -791,7 +806,11 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                         if (!confirm("Delete this session? This cannot be undone.")) return;
                         setDeletingSessionId(s.sessionId);
                         try {
-                          await deleteSession(s.sessionId, true);
+                          if (s.role === "triage") {
+                            await cancelTriage(item.id);
+                          } else {
+                            await deleteSession(s.sessionId, true);
+                          }
                           await load();
                         } finally {
                           setDeletingSessionId(null);

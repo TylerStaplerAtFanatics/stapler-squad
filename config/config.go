@@ -405,6 +405,17 @@ func (c *Config) HibernationCheckpointDirOrDefault() (string, error) {
 	return dir, nil
 }
 
+// TriageArtifactDirOrDefault returns the resolved triage artifact directory.
+// Triage workers write their planning files here instead of into the item's repo.
+// Always defaults to "~/.stapler-squad/triage-artifacts".
+func (c *Config) TriageArtifactDirOrDefault() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot expand home dir: %w", err)
+	}
+	return filepath.Join(home, ".stapler-squad", "triage-artifacts"), nil
+}
+
 // NewProjectBaseDirOrDefault returns the resolved new-project base directory.
 // If NewProjectBaseDir is empty, it defaults to "~/Projects" with ~ expanded.
 func (c *Config) NewProjectBaseDirOrDefault() (string, error) {
