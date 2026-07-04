@@ -2,9 +2,13 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -142,6 +146,71 @@ func TestGitHubPRsPlugin_Fetch_ParsesPRsWithReviewRequestedAndCILabels(t *testin
 	require.Equal(t, "7", items[0].ExternalID)
 	require.Contains(t, items[0].Labels, "pr:review-requested")
 	require.Contains(t, items[0].Labels, "pr:ci-failing")
+}
+
+// TestGitHubPRsPlugin_Fetch_ConcurrentCIFetchPreservesPerPRLabels verifies that
+// Fetch's bounded-concurrency CI-label lookup (githubCILabelConcurrency workers)
+// still returns items in the original PR order with each PR's own labels correctly
+// matched, not swapped or dropped, despite fetching check-runs concurrently. Run
+// with -race to confirm the concurrent writes into labelsByIndex are race-free.
+func TestGitHubPRsPlugin_Fetch_ConcurrentCIFetchPreservesPerPRLabels(t *testing.T) {
+	const prCount = 12
+	var inFlight, maxInFlight int32
+	withGitHubTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets/pulls":
+			var sb []byte
+			sb = append(sb, '[')
+			for i := 0; i < prCount; i++ {
+				if i > 0 {
+					sb = append(sb, ',')
+				}
+				sb = append(sb, []byte(`{"number":`+strconv.Itoa(i)+`,"title":"pr `+strconv.Itoa(i)+`","html_url":"https://x/`+strconv.Itoa(i)+`","head":{"sha":"sha-`+strconv.Itoa(i)+`"}}`)...)
+			}
+			sb = append(sb, ']')
+			w.Write(sb)
+		default:
+			// /repos/acme/widgets/commits/sha-N/check-runs — even N fails CI, odd N passes.
+			// Track concurrent in-flight requests to prove the fetch is actually bounded
+			// AND parallel (not accidentally serialized), not just correct in isolation.
+			n := atomic.AddInt32(&inFlight, 1)
+			defer atomic.AddInt32(&inFlight, -1)
+			for {
+				old := atomic.LoadInt32(&maxInFlight)
+				if n <= old || atomic.CompareAndSwapInt32(&maxInFlight, old, n) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond) // widen the overlap window so concurrent requests actually coincide
+
+			var num int
+			fmt.Sscanf(r.URL.Path, "/repos/acme/widgets/commits/sha-%d/check-runs", &num)
+			if num%2 == 0 {
+				w.Write([]byte(`{"check_runs":[{"conclusion":"failure"}]}`))
+			} else {
+				w.Write([]byte(`{"check_runs":[{"conclusion":"success"}]}`))
+			}
+		}
+	})
+
+	p := NewGitHubPRsPlugin()
+	cfg := PluginConfig{Raw: `{"owner":"acme","repo":"widgets","token":"tok"}`}
+	items, _, err := p.Fetch(context.Background(), cfg, "")
+	require.NoError(t, err)
+	require.Len(t, items, prCount)
+
+	for i, item := range items {
+		require.Equal(t, strconv.Itoa(i), item.ExternalID, "PR order must be preserved despite concurrent CI fetch")
+		if i%2 == 0 {
+			require.Contains(t, item.Labels, "pr:ci-failing", "PR %d should be labeled ci-failing", i)
+		} else {
+			require.NotContains(t, item.Labels, "pr:ci-failing", "PR %d should not be labeled ci-failing", i)
+		}
+	}
+
+	observed := int(atomic.LoadInt32(&maxInFlight))
+	require.Greater(t, observed, 1, "fetches should actually overlap — a regression to serial fetching would not be caught otherwise")
+	require.LessOrEqual(t, observed, githubCILabelConcurrency, "concurrency must stay bounded by githubCILabelConcurrency")
 }
 
 func TestGitHubPRsPlugin_MapToBacklogItem_TruncatesLongFields(t *testing.T) {
