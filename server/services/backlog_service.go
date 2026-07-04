@@ -283,6 +283,27 @@ func slugify(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// triageShortTitle extracts the triage-suggested short title from the most recent
+// completed triage ItemSession, falling back to a truncated slug of itemTitle.
+func triageShortTitle(sessions []*ent.ItemSession, itemTitle string) string {
+	for i := len(sessions) - 1; i >= 0; i-- {
+		s := sessions[i]
+		if s.SessionRole != string(session.SessionRoleTriage) || s.TriageResult == "" {
+			continue
+		}
+		var r session.HeadlessTriageResult
+		if err := json.Unmarshal([]byte(s.TriageResult), &r); err == nil && r.Title != "" {
+			return r.Title
+		}
+	}
+	// Fallback: first 4 words of the slug.
+	parts := strings.SplitN(slugify(itemTitle), "-", 5)
+	if len(parts) > 4 {
+		parts = parts[:4]
+	}
+	return strings.Join(parts, "-")
+}
+
 // itemSessionToProto converts an ent.ItemSession to its proto representation.
 func itemSessionToProto(is *ent.ItemSession) *sessionv1.ItemSession {
 	p := &sessionv1.ItemSession{
@@ -1103,8 +1124,8 @@ func (s *BacklogService) SpawnSessionFromItem(
 	}
 	prompt := session.BuildTokenBudgetedPrompt(entItem, priorSessions)
 
-	// 9. Generate session title.
-	title := "backlog:" + slugify(item.Title)
+	// 9. Generate session title — prefer triage-suggested short title if available.
+	title := triageShortTitle(priorSessions, item.Title)
 
 	// 10. Ensure the worktree path exists and write slash commands + context file BEFORE
 	// spawning the session — the claude process starts executing synchronously inside
@@ -1140,8 +1161,12 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// 11. Spawn session first so we have the real UUID before creating the ItemSession record.
 	// Pass the same resolved worktreePath so CreateDirectorySession's own resolution is a
 	// no-op and both paths are guaranteed to agree.
+	spawnTags := []string{"backlog:work"}
+	if req.Msg.Autonomous {
+		spawnTags = append(spawnTags, "autonomous")
+	}
 	inst, err := s.sessionCreator.CreateDirectorySession(ctx, title, worktreePath, prompt,
-		[]string{"backlog:work"}, false, false)
+		spawnTags, false, false)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn session: %w", err))
 	}

@@ -23,6 +23,7 @@ type TriageTask struct {
 
 // HeadlessTriageResult is the parsed output from a headless triage LLM call.
 type HeadlessTriageResult struct {
+	Title       string             `json:"title"`
 	Summary     string             `json:"summary"`
 	Suggestions []TriageSuggestion `json:"suggestions"`
 	Tasks       []TriageTask       `json:"tasks,omitempty"`
@@ -78,7 +79,9 @@ Write %s/validation.md containing:
 
 ### Step 4 — Output
 After all files are written, output ONLY a JSON object (no other text before or after):
-{"summary":"2-3 sentence summary","suggestions":[{"text":"...","rationale":"..."}],"tasks":[{"text":"task description","estimate":"2h","category":"backend"}]}
+{"title":"fix-short-kebab-name","summary":"2-3 sentence summary","suggestions":[{"text":"...","rationale":"..."}],"tasks":[{"text":"task description","estimate":"2h","category":"backend"}]}
+- title: short kebab-case session name (3-5 words, imperative verb first, e.g. "fix-session-rename" or "add-pr-status-badge")
+- summary: 2-3 sentence executive summary
 - suggestions: AC gaps, open questions, improvement ideas (questions use rationale="question")
 - tasks: implementation task breakdown from plan.md (max 12)
 - Do NOT call submit_triage_result. Do NOT write any source code.
