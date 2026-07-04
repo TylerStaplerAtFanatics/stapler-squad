@@ -78,6 +78,97 @@ func TestParseHeadlessTriageResult_NoJSON(t *testing.T) {
 	assert.Contains(t, err.Error(), "ParseHeadlessTriageResult")
 }
 
+// TestParseHeadlessTriageResult_StrayBraceInPreamble is a regression test for the
+// audit finding in project_plans/backlog-cross-platform-audit/gaps-and-risks.md #5:
+// the old first-`{`/last-`}` scan spans across an unrelated illustrative brace in
+// prose and the real JSON object, producing an unparseable concatenated blob. Real
+// models sometimes describe their output format before emitting it, e.g. "the
+// result looks like {"example":"schema"}" — this must not break parsing of the real
+// object that follows.
+func TestParseHeadlessTriageResult_StrayBraceInPreamble(t *testing.T) {
+	raw := `I've finished the triage. For reference, a sample response looks like {"example":"schema"}.
+
+` + `{"summary":"the real summary","suggestions":[{"text":"s","rationale":"r"}],"tasks":[]}`
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "the real summary", result.Summary)
+}
+
+// TestParseHeadlessTriageResult_MultipleStrayBracesPickLast verifies the parser
+// prefers the LAST balanced JSON object when multiple valid-looking candidates are
+// present, matching the prompt's instruction to emit the real result last.
+func TestParseHeadlessTriageResult_MultipleStrayBracesPickLast(t *testing.T) {
+	raw := `First I considered {"summary":"decoy one"} but discarded it.
+Then {"summary":"decoy two","suggestions":[]} also didn't fit.
+Final answer: {"summary":"real one","suggestions":[]}`
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "real one", result.Summary)
+}
+
+// TestParseHeadlessTriageResult_BraceInsideStringLiteralIgnored verifies that a
+// brace character embedded inside a JSON string value does not confuse the
+// balanced-scan depth counter, even with a decoy object in the preamble whose own
+// depth-counting would go wrong if string literals weren't tracked correctly: were
+// the scanner to naively count every `{`/`}` regardless of string context, the
+// decoy's un-nested brace plus the real object's embedded `{ braces }` would throw
+// off depth tracking and either merge the two spans or truncate the real one early.
+func TestParseHeadlessTriageResult_BraceInsideStringLiteralIgnored(t *testing.T) {
+	raw := `Example: {"x":"y"}
+Real: {"summary":"config looks like { nested }","suggestions":[]}`
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "config looks like { nested }", result.Summary)
+}
+
+// TestParseHeadlessTriageResult_EscapedQuoteInStringLiteral verifies that an
+// escaped quote (`\"`) inside a JSON string value does not prematurely end
+// string-literal tracking and expose the brace-depth counter to characters that
+// are still logically inside the string.
+func TestParseHeadlessTriageResult_EscapedQuoteInStringLiteral(t *testing.T) {
+	raw := `{"summary":"She said \"the plan has a { in it\" during standup","suggestions":[]}`
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, `She said "the plan has a { in it" during standup`, result.Summary)
+}
+
+// TestParseHeadlessTriageResult_EscapedBackslashBeforeQuote verifies that a literal
+// escaped backslash (`\\`) immediately followed by a closing quote is not
+// misread as an escaped quote (`\"`) — the escape flag must reset after consuming
+// the backslash, not be evaluated against the following quote character.
+func TestParseHeadlessTriageResult_EscapedBackslashBeforeQuote(t *testing.T) {
+	raw := `{"summary":"path is C:\\","suggestions":[]}`
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, `path is C:\`, result.Summary)
+}
+
+// TestParseHeadlessTriageResult_StrayClosingBraceBeforeJSON verifies parsing still
+// succeeds when the preamble contains a stray, unmatched closing brace (not a
+// complete decoy object) before the real JSON.
+func TestParseHeadlessTriageResult_StrayClosingBraceBeforeJSON(t *testing.T) {
+	raw := `Here's a stray closing brace: } — ignore that.
+{"summary":"still parses","suggestions":[]}`
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "still parses", result.Summary)
+}
+
+// TestParseHeadlessTriageResult_StrayUnmatchedOpeningBrace is a regression test
+// for a bug caught in code review: a hand-rolled brace-depth counter permanently
+// "gets stuck" once it sees an opening brace that never closes — depth never
+// returns to zero, so every well-formed object after it is silently swallowed and
+// the parser wrongly reports "no JSON object found" even though a valid result
+// follows. The fix decodes independently from each `{`, so one unmatched brace
+// cannot poison the rest of the scan.
+func TestParseHeadlessTriageResult_StrayUnmatchedOpeningBrace(t *testing.T) {
+	raw := `Note: { this brace never closes, it's just a stray character.
+{"summary":"still found me","suggestions":[]}`
+	result, err := ParseHeadlessTriageResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "still found me", result.Summary)
+}
+
 // ─── BuildHeadlessTriagePrompt ────────────────────────────────────────────────
 
 func TestBuildHeadlessTriagePrompt_ContainsTitle(t *testing.T) {

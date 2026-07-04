@@ -176,6 +176,12 @@ service SessionService {
   // Rebuilds the in-memory classifier exactly once after all rules are stored.
   rpc BulkUpsertRules(BulkUpsertRulesRequest) returns (BulkUpsertRulesResponse) {}
 
+  // GetConfigFileRules returns rules persisted in the shared YAML config file.
+  rpc GetConfigFileRules(GetConfigFileRulesRequest) returns (GetConfigFileRulesResponse) {}
+
+  // SaveRulesToConfigFile exports one or more rules to the shared YAML config file.
+  rpc SaveRulesToConfigFile(SaveRulesToConfigFileRequest) returns (SaveRulesToConfigFileResponse) {}
+
   // ListDatabases returns all discovered workspace databases with metadata.
   // Used by the workspace switcher UI to show available workspaces.
   rpc ListDatabases(ListDatabasesRequest) returns (ListDatabasesResponse) {}
@@ -404,6 +410,9 @@ service SessionService {
   // Returns the count of sessions that were archived.
   rpc DeleteWorkflowFailedSessions(DeleteWorkflowFailedSessionsRequest) returns (DeleteWorkflowFailedSessionsResponse) {}
 
+  // GetProviderLimits returns the rate limit and usage details for a session.
+  rpc GetProviderLimits(GetProviderLimitsRequest) returns (GetProviderLimitsResponse) {}
+
   // GetHookStatus reports whether the global Claude Code hooks (rule enforcement
   // and notifications) are installed in ~/.claude/settings.json.
   // +api: hooks:status
@@ -479,7 +488,9 @@ message CreateSessionRequest {
   // Optional: Category for organization.
   string category = 6;
 
-  // Optional: Initial prompt to pass on startup.
+  // Optional: prompt passed as a CLI argument at process-spawn time (fresh spawns / one-shot
+  // only). See initial_prompt for the tmux-typed alternative used for resume/attach flows —
+  // the two are independent and may both be set on the same request.
   string prompt = 7;
 
   // Optional: Auto-approve prompts without user interaction.
@@ -507,7 +518,9 @@ message CreateSessionRequest {
   reserved 14;
   reserved "one_off";
 
-  // Optional: Initial prompt to inject via CLAUDE.md (no size limit; shell-safe).
+  // Optional: prompt typed into the tmux pane as simulated keystrokes once the session reaches
+  // Ready state (no size limit; shell-safe) — used for resume/attach flows where a CLI arg can
+  // no longer be injected. See prompt (field 7) for the CLI-arg alternative.
   string initial_prompt = 15;
 
   // Optional: Run claude in one-shot mode (-p flag); session exits after task completes.
@@ -2368,6 +2381,24 @@ message BulkUpsertRulesResponse {
   repeated string errors = 4;
 }
 
+// GetConfigFileRules messages
+message GetConfigFileRulesRequest {}
+
+message GetConfigFileRulesResponse {
+  repeated ApprovalRuleProto rules = 1;
+  string file_path = 2;
+}
+
+// SaveRulesToConfigFile messages
+message SaveRulesToConfigFileRequest {
+  repeated string rule_ids = 1;
+  ApprovalRuleProto rule = 2;
+}
+
+message SaveRulesToConfigFileResponse {
+  string file_path = 1;
+}
+
 // ============================================================================
 // Workflow messages
 // ============================================================================
@@ -2531,3 +2562,31 @@ message DeleteWorkflowFailedSessionsResponse {
   // Number of sessions that were archived (soft-deleted).
   int32 deleted_count = 1;
 }
+
+message GetProviderLimitsRequest {
+  string session_id = 1; // session title/id
+}
+
+message ProviderLimitsProto {
+  string provider = 1;
+  string model = 2;
+  int32 requests_limit = 3;
+  int32 requests_remaining = 4;
+  google.protobuf.Timestamp requests_reset = 5;
+  int32 tokens_limit = 6;
+  int32 tokens_remaining = 7;
+  google.protobuf.Timestamp tokens_reset = 8;
+  int32 context_tokens_used = 9;
+  int32 context_tokens_max = 10;
+  int32 session_input_tokens = 11;
+  int32 session_output_tokens = 12;
+  double estimated_cost_usd = 13;
+  bool available = 14;
+  string last_error_code = 15;
+  google.protobuf.Timestamp fetched_at = 16;
+}
+
+message GetProviderLimitsResponse {
+  ProviderLimitsProto limits = 1;
+}
+

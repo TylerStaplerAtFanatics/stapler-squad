@@ -1,0 +1,12 @@
+{
+  "id": "backlog:list-github-issues",
+  "type": "backend",
+  "service": "BacklogService",
+  "method": "ListGitHubIssues",
+  "protoFile": "proto/session/v1/backlog.proto",
+  "markerFound": true,
+  "handlerFile": "server/services/backlog_service.go",
+  "tested": true,
+  "testIds": ["TestListGitHubIssues_NilStorage", "TestListGitHubIssues_EmptyOwner", "TestListGitHubIssues_EmptyRepo", "TestListGitHubIssues_InvalidOwnerChars", "TestListGitHubIssues_DefaultState", "TestListGitHubIssues_SearchUsesSearchAPI"],
+  "lastModified": "2026-07-04T00:00:00.000Z"
+}

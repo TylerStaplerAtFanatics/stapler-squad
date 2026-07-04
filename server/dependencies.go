@@ -85,6 +85,9 @@ type ServerDependencies struct {
 
 	// WorkflowScheduler manages cron-based workflow execution.
 	WorkflowScheduler *workflows.Scheduler
+
+	// Registry is the live-handle map for all running sessions.
+	Registry *session.Registry
 }
 
 // ToServerDeps converts RuntimeDeps to the flat ServerDependencies struct consumed
@@ -121,6 +124,7 @@ func (rt *RuntimeDeps) ToServerDeps() *ServerDependencies {
 		HeadlessPool:            rt.HeadlessPool,
 		WorkflowRepo:            rt.WorkflowRepo,
 		WorkflowScheduler:       rt.WorkflowScheduler,
+		Registry:                rt.Registry,
 	}
 }
 
@@ -319,6 +323,7 @@ type ServiceDeps struct {
 	StatusManager     *session.InstanceStatusManager
 	ReviewQueuePoller *session.ReviewQueuePoller
 	PRStatusPoller    *session.PRStatusPoller
+	Registry          *session.Registry
 }
 
 // BuildServiceDeps constructs Phase 2 dependencies using Phase 1 outputs.
@@ -338,6 +343,9 @@ func BuildServiceDeps(core *CoreDeps) (*ServiceDeps, error) {
 	)
 	prStatusPoller := session.NewPRStatusPoller(core.Storage)
 
+	registry := session.NewRegistry(core.Storage, core.SessionService.WireInstanceCallbacks)
+	core.SessionService.SetRegistry(registry)
+
 	w := warren.NewWire("ServiceDeps")
 	warren.Set(w, "ApprovalProvider", reviewQueuePoller.SetApprovalProvider, session.ApprovalMetadataProvider(core.ApprovalStore))
 	warren.Set(w, "StatusManager", core.SessionService.SetStatusManager, statusManager)
@@ -351,6 +359,7 @@ func BuildServiceDeps(core *CoreDeps) (*ServiceDeps, error) {
 		StatusManager:     statusManager,
 		ReviewQueuePoller: reviewQueuePoller,
 		PRStatusPoller:    prStatusPoller,
+		Registry:          registry,
 	}, nil
 }
 
@@ -402,6 +411,9 @@ type RuntimeDeps struct {
 
 	// WorkflowScheduler manages cron-based workflow execution.
 	WorkflowScheduler *workflows.Scheduler
+
+	// Registry is the live-handle map for all running sessions.
+	Registry *session.Registry
 }
 
 // BuildRuntimeDeps constructs Phase 3 dependencies using Phase 2 outputs.
@@ -789,9 +801,10 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	backlogCtrl := session.NewBacklogController(backlogLifecycleListener, storage, syncRegistry, keyFunc)
 	if cfg.GetFeatureFlag("backlog") {
 		if err := backlogCtrl.Enable(context.Background()); err != nil {
-			log.Warn("failed to enable backlog feature on startup", "err", err)
+			log.Error("failed to enable backlog feature on startup — disk config says enabled but the runtime controller is not; TriggerSync will reject calls until this is retried", "err", err)
+		} else {
+			log.Info("backlog feature enabled")
 		}
-		log.Info("backlog feature enabled")
 	} else {
 		log.Info("backlog feature disabled (toggle via Settings → Features)")
 	}
@@ -802,6 +815,13 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	if headlessPool != nil {
 		backlogSvc.SetHeadlessPool(headlessPool)
 	}
+	// Reuse the same registry/keyFunc backlogCtrl's periodic SyncLoop uses, so a
+	// manual TriggerSync call decrypts tokens and dispatches to plugins identically.
+	backlogSvc.SetPluginRegistry(syncRegistry)
+	backlogSvc.SetSyncKeyFunc(keyFunc)
+	// Refuse manual syncs while the backlog feature is toggled off, matching
+	// the periodic SyncLoop's behavior.
+	backlogSvc.SetSyncFeatureEnabledCheck(backlogCtrl.IsEnabled)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
@@ -832,6 +852,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		historyLinker.RegisterFileCallback(tokenStore.OnHistoryFileChanged)
 		tokenStore.Start(context.Background())
 		insightsSvc = services.NewInsightsService(tokenStore, pricing, associator)
+		sessionService.SetTokenStoreReader(tokenStore)
 		log.Info("InsightsService initialized", "historyDir", historyDir)
 
 		// Wire ArtifactExtractor to extract PR links, commits, and URLs from JSONL history.
@@ -896,7 +917,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	var workflowScheduler *workflows.Scheduler
 	if workflowRepo != nil {
 		workflowScheduler = workflows.NewScheduler(workflowRepo, sessionService, eventBus)
-		workflowSvc := services.NewWorkflowService(workflowRepo, workflowScheduler)
+		workflowSvc := services.NewWorkflowService(workflowRepo, workflowScheduler, storage)
 		sessionService.SetWorkflowService(workflowSvc)
 		sessionService.SetWorkflowRepository(workflowRepo)
 		log.Info("WorkflowService and WorkflowScheduler initialized")
@@ -942,6 +963,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		CDPDeps:                 cdpDeps,
 		WorkflowRepo:            workflowRepo,
 		WorkflowScheduler:       workflowScheduler,
+		Registry:                svc.Registry,
 	}, nil
 }
 
@@ -956,26 +978,31 @@ func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusP
 	var annSessions []githubpkg.PRAnnotationSession
 	if poller != nil {
 		for _, inst := range poller.GetInstances() {
-			prNumber := inst.GitHubPRNumber
+			// Use Snapshot() — actor-based writes (SetGitHubPRNumber etc.) do not hold
+			// mu, so direct field reads would race with concurrent poller updates.
+			snap := inst.Snapshot()
+			prNumber := snap.GitHub.GitHubPRNumber
 
-			// Resolve a full RepoRef (owner + repo) via a 3-tier fallback:
+			// Resolve a full RepoRef (owner + repo) via a 3-tier fallback for RepoRef,
+			// plus a 4th title-regex path for PR number extraction:
 			// 1. Direct from DB fields (new sessions written since schema migration).
 			// 2. Parse from stored PR URL.
 			// 3. Infer from git remote.
+			// 4. PR number from session title (e.g. "pr-1255-...").
 			var repoRef githubpkg.RepoRef
-			if inst.GitHubOwner != "" && inst.GitHubRepo != "" {
-				repoRef, _ = githubpkg.NewRepoRef(inst.GitHubOwner, inst.GitHubRepo)
+			if snap.GitHub.GitHubOwner != "" && snap.GitHub.GitHubRepo != "" {
+				repoRef, _ = githubpkg.NewRepoRef(snap.GitHub.GitHubOwner, snap.GitHub.GitHubRepo)
 			}
-			if !repoRef.IsValid() && inst.GitHubPRURL != "" {
-				if parsed, err := session.ParseGitHubURL(inst.GitHubPRURL); err == nil {
+			if !repoRef.IsValid() && snap.GitHub.GitHubPRURL != "" {
+				if parsed, err := session.ParseGitHubURL(snap.GitHub.GitHubPRURL); err == nil {
 					repoRef, _ = githubpkg.NewRepoRef(parsed.Owner, parsed.Repo)
 					if prNumber == 0 {
 						prNumber = parsed.PRNumber
 					}
 				}
 			}
-			if !repoRef.IsValid() && inst.Path != "" {
-				repoRef, _ = githubpkg.GetOwnerRepoFromRemote(inst.Path)
+			if !repoRef.IsValid() && snap.Path != "" {
+				repoRef, _ = githubpkg.GetOwnerRepoFromRemote(snap.Path)
 			}
 			if !repoRef.IsValid() {
 				continue
@@ -988,7 +1015,7 @@ func annotateUserPRCache(cache *githubpkg.UserPRCache, poller *session.PRStatusP
 			}
 			annSessions = append(annSessions, githubpkg.PRAnnotationSession{
 				ID:       inst.Title,
-				Branch:   inst.Branch,
+				Branch:   snap.Branch,
 				Repo:     repoRef,
 				PRNumber: prNumber,
 			})

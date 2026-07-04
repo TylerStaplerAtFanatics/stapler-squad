@@ -274,11 +274,44 @@ function toProtoAcCriteria(criteria: AcCriterion[]): AcCriterionProto[] {
 // Hook
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// GitHub picker domain types
+// ---------------------------------------------------------------------------
+
+export interface GitHubRepo {
+  owner: string;
+  repo: string;
+  isLocal: boolean;
+  localPath: string;
+  description: string;
+}
+
+export interface GitHubIssue {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  labels: string[];
+}
+
+export class GitHubAuthError extends Error {
+  constructor() {
+    super("No GitHub token configured");
+    this.name = "GitHubAuthError";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hook
+// ---------------------------------------------------------------------------
+
 interface UseBacklogServiceReturn {
   listBacklogItems: (filter?: ListBacklogItemsFilter) => Promise<BacklogItem[]>;
   getBacklogItem: (id: string) => Promise<BacklogItem | null>;
   createBacklogItem: (data: BacklogItemInput) => Promise<{ item: BacklogItem; triageTriggered: boolean } | null>;
   importGitHubIssue: (issueUrl: string, options?: { repoPath?: string; skipPlanning?: boolean }) => Promise<{ item: BacklogItem; triageTriggered: boolean } | null>;
+  searchGitHubRepos: (query: string, limit?: number) => Promise<GitHubRepo[]>;
+  listGitHubIssues: (owner: string, repo: string, options?: { state?: string; search?: string; limit?: number }) => Promise<GitHubIssue[]>;
   updateBacklogItem: (id: string, data: Partial<BacklogItemInput>) => Promise<BacklogItem | null>;
   archiveBacklogItem: (id: string) => Promise<boolean>;
   deleteBacklogItem: (id: string) => Promise<boolean>;
@@ -569,6 +602,60 @@ export function useBacklogService(): UseBacklogServiceReturn {
     []
   );
 
+  const searchGitHubRepos = useCallback(
+    async (query: string, limit?: number): Promise<GitHubRepo[]> => {
+      if (!clientRef.current) return [];
+      try {
+        const resp = await clientRef.current.searchGitHubRepos({ query, limit: limit ?? 30 });
+        return resp.repos.map((r) => ({
+          owner: r.owner,
+          repo: r.repo,
+          isLocal: r.isLocal,
+          localPath: r.localPath,
+          description: r.description,
+        }));
+      } catch (err) {
+        if (err instanceof Error && err.message.toLowerCase().includes("token")) {
+          throw new GitHubAuthError();
+        }
+        throw err;
+      }
+    },
+    []
+  );
+
+  const listGitHubIssues = useCallback(
+    async (
+      owner: string,
+      repo: string,
+      options?: { state?: string; search?: string; limit?: number }
+    ): Promise<GitHubIssue[]> => {
+      if (!clientRef.current) return [];
+      try {
+        const resp = await clientRef.current.listGitHubIssues({
+          owner,
+          repo,
+          state: options?.state ?? "open",
+          search: options?.search ?? "",
+          limit: options?.limit ?? 30,
+        });
+        return resp.issues.map((i) => ({
+          number: i.number,
+          title: i.title,
+          state: i.state,
+          url: i.url,
+          labels: i.labels,
+        }));
+      } catch (err) {
+        if (err instanceof Error && err.message.toLowerCase().includes("token")) {
+          throw new GitHubAuthError();
+        }
+        throw err;
+      }
+    },
+    []
+  );
+
   // Stable object reference: all methods are useCallback(fn,[]) — only lastError changes.
   // Without useMemo, every render creates a new object, making callers' useCallback deps
   // fire on every render and causing infinite reload loops.
@@ -578,6 +665,8 @@ export function useBacklogService(): UseBacklogServiceReturn {
       getBacklogItem,
       createBacklogItem,
       importGitHubIssue,
+      searchGitHubRepos,
+      listGitHubIssues,
       updateBacklogItem,
       archiveBacklogItem,
       deleteBacklogItem,

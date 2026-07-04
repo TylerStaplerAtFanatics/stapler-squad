@@ -213,24 +213,23 @@ func (p *PRStatusPoller) checkAllSessions() {
 	p.mu.RUnlock()
 
 	for _, inst := range instances {
-		if inst.GitHubOwner == "" || inst.GitHubRepo == "" {
+		// Lock-free snapshot replaces both the unguarded GitHubOwner/GitHubRepo reads and
+		// the explicit stateMutex.RLock() for GitHubPRStatusTerminal / GitHubIsFork.
+		instSnap := inst.Snapshot()
+
+		if instSnap.GitHub.GitHubOwner == "" || instSnap.GitHub.GitHubRepo == "" {
 			continue // no GitHub info for this session
 		}
 
-		inst.stateMutex.RLock()
-		isTerminal := inst.GitHubPRStatusTerminal
-		isFork := inst.GitHubIsFork
-		inst.stateMutex.RUnlock()
-
-		if isTerminal {
+		if instSnap.GitHub.GitHubPRStatusTerminal {
 			continue // merged/closed; poller already marked it terminal
 		}
-		if isFork {
-			log.Info("PR status poller: skipping fork session (upstream PR lookup Phase 2)", "session", inst.Title)
+		if instSnap.GitHub.GitHubIsFork {
+			log.Info("PR status poller: skipping fork session (upstream PR lookup Phase 2)", "session", instSnap.Title)
 			continue
 		}
 
-		if pollAfter, ok := noPRPollAfter[inst.Title]; ok && now.Before(pollAfter) {
+		if pollAfter, ok := noPRPollAfter[instSnap.Title]; ok && now.Before(pollAfter) {
 			continue // no-PR backoff still in effect
 		}
 
@@ -272,11 +271,12 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 	ctx, cancel := context.WithTimeout(p.ctx, p.config.CallTimeout)
 	defer cancel()
 
-	inst.stateMutex.RLock()
-	prNumber := inst.GitHubPRNumber
-	owner := inst.GitHubOwner
-	repo := inst.GitHubRepo
-	inst.stateMutex.RUnlock()
+	// Use Snapshot() — actor-based writes (SetGitHubPRNumber etc.) do not hold mu,
+	// so mu.RLock would not synchronize with them.
+	snap := inst.Snapshot()
+	prNumber := snap.GitHub.GitHubPRNumber
+	owner := snap.GitHub.GitHubOwner
+	repo := snap.GitHub.GitHubRepo
 
 	// Auto-discovery: find PR for branch when PR number not yet known.
 	// CurrentBranch() reads live from git for directory sessions (Branch field is empty).
@@ -299,9 +299,7 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 			return
 		}
 		// Persist discovered PR number and clear no-PR backoff.
-		inst.stateMutex.Lock()
-		inst.GitHubPRNumber = prInfo.Number
-		inst.stateMutex.Unlock()
+		inst.SetGitHubPRNumber(prInfo.Number)
 		p.mu.Lock()
 		delete(p.noPRPollAfter, inst.Title)
 		p.mu.Unlock()
@@ -326,9 +324,7 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 
 	if !changed {
 		// 304 Not Modified — PR unchanged; just bump the check timestamp
-		inst.stateMutex.Lock()
-		inst.LastPRStatusCheck = time.Now()
-		inst.stateMutex.Unlock()
+		inst.SetLastPRStatusCheck(time.Now())
 		return
 	}
 
@@ -381,12 +377,7 @@ func (p *PRStatusPoller) applyPRUpdate(inst *Instance, prInfo *github.PRInfo) {
 		isDraft = prInfo.IsDraft
 	}
 
-	// Check whether priority actually changed before notifying
-	inst.stateMutex.RLock()
-	oldPriority := inst.GitHubPRPriority
-	inst.stateMutex.RUnlock()
-
-	inst.UpdatePRStatus(state, priority, checkConclusion, approvedCount, changesReqCount, isDraft, terminal)
+	result := inst.UpdatePRStatus(state, priority, checkConclusion, approvedCount, changesReqCount, isDraft, terminal)
 
 	if p.storage != nil {
 		if err := p.storage.UpdateInstancePRStatus(inst.Title, state, priority, checkConclusion,
@@ -395,13 +386,13 @@ func (p *PRStatusPoller) applyPRUpdate(inst *Instance, prInfo *github.PRInfo) {
 		}
 	}
 
-	if priority != oldPriority {
+	if result.PriorityChanged {
 		p.mu.RLock()
 		onUpdated := p.onUpdated
 		p.mu.RUnlock()
 		if onUpdated != nil {
 			onUpdated(inst)
 		}
-		log.Info("PR status poller: PR priority changed", "session", inst.Title, "old", oldPriority, "new", priority)
+		log.Info("PR status poller: PR priority changed", "session", inst.Title, "new", priority)
 	}
 }

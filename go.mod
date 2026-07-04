@@ -52,6 +52,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/petermattis/goid v0.0.0-20250813065127-a731cc31b4fe // indirect
 	github.com/zalando/go-keyring v0.2.8 // indirect
+	go.uber.org/goleak v1.3.0 // indirect
 )
 
 require (

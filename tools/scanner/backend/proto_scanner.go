@@ -154,6 +154,8 @@ var methodToID = map[string]string{
 	"DeleteItemSource":            "backlog:delete-source",
 	"GetSyncHistory":              "backlog:get-sync-history",
 	"ImportGitHubIssue":           "backlog:import-github-issue",
+	"SearchGitHubRepos":           "backlog:search-github-repos",
+	"ListGitHubIssues":            "backlog:list-github-issues",
 	// Session lifecycle RPCs
 	"ArchiveSession":          "session:archive",
 	"UnarchiveSession":        "session:unarchive",
@@ -193,6 +195,11 @@ var methodToID = map[string]string{
 	"ListUserPRs":        "github-user:list-prs",
 	"WatchUserPRs":       "github-user:watch-prs",
 	"GetGitHubAuthState": "github-user:get-auth-state",
+	// Provider limits RPCs
+	"GetProviderLimits": "session:get-provider-limits",
+	// Config file rules RPCs (stub implementations in RulesService)
+	"GetConfigFileRules":    "rules:get-config-file",
+	"SaveRulesToConfigFile": "rules:save-to-config-file",
 }
 
 // rpcPattern matches lines like:   rpc MethodName(  (indented or not)

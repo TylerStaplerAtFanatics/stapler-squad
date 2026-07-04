@@ -120,6 +120,7 @@ type UserPRCache struct {
 	refreshGroup singleflight.Group //nolint:exhaustruct
 	ctx          context.Context
 	cancel       context.CancelFunc
+	startOnce    sync.Once
 }
 
 // NewUserPRCache creates a cache with default configuration.
@@ -134,10 +135,13 @@ func NewUserPRCacheWithConfig(cfg UserPRCacheConfig) *UserPRCache {
 	}
 }
 
-// Start launches the background polling goroutine. Call once at server startup.
+// Start launches the background polling goroutine. Safe to call multiple times;
+// only the first call starts the goroutine.
 func (c *UserPRCache) Start(ctx context.Context) {
-	c.ctx, c.cancel = context.WithCancel(ctx)
-	go c.loop()
+	c.startOnce.Do(func() {
+		c.ctx, c.cancel = context.WithCancel(ctx)
+		go c.loop()
+	})
 }
 
 // Stop halts background polling.

@@ -1,5 +1,9 @@
 version: "2"
 
+run:
+  # ponytail: single-threaded to avoid golangci-lint v2.11.4 race on //go:build go1.26 files
+  concurrency: 1
+
 linters:
   enable:
     - depguard
@@ -71,6 +75,8 @@ linters:
         text: "unknown type name 'cgo'"
       - linters: [typecheck]
         text: "expected ';' after top level declarator"
+      - linters: [typecheck]
+        text: "requires newer Go version"
       # LoadInstances: allow in the storage implementation itself, in bulk-startup wiring,
       # and in the fallback path of findInstanceFast (workspace_service.go) which is
       # intentionally guarded by the live-finder fast path.
