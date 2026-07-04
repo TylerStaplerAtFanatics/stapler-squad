@@ -1840,3 +1840,15 @@ func (s *BacklogService) GetSyncHistory(
 
 	return connect.NewResponse(&sessionv1.GetSyncHistoryResponse{Events: protoEvents, Truncated: truncated}), nil
 }
+
+func (s *BacklogService) ImportGitHubIssue(ctx context.Context, req *connect.Request[sessionv1.ImportGitHubIssueRequest]) (*connect.Response[sessionv1.ImportGitHubIssueResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ImportGitHubIssue not yet implemented"))
+}
+
+func (s *BacklogService) SearchGitHubRepos(ctx context.Context, req *connect.Request[sessionv1.SearchGitHubReposRequest]) (*connect.Response[sessionv1.SearchGitHubReposResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("SearchGitHubRepos not yet implemented"))
+}
+
+func (s *BacklogService) ListGitHubIssues(ctx context.Context, req *connect.Request[sessionv1.ListGitHubIssuesRequest]) (*connect.Response[sessionv1.ListGitHubIssuesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ListGitHubIssues not yet implemented"))
+}
