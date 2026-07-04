@@ -597,6 +597,17 @@ func (s *BacklogService) GetBacklogItem(
 		log.ErrorLog.Printf("[GetBacklogItem] failed to load item sessions for %s: %v", req.Msg.ItemId, isErr)
 		// Non-fatal: return item without sessions.
 	} else {
+		// Tombstone any stale headless-triage sessions (no endedAt) so they don't
+		// appear as "running" indefinitely after the triage process has exited.
+		now := time.Now()
+		for _, is := range isSessions {
+			if is.SessionRole == string(session.SessionRoleTriage) &&
+				is.EndedAt == nil &&
+				strings.HasPrefix(is.SessionUUID, headlessTriageUUIDPrefix) {
+				_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
+				is.EndedAt = &now
+			}
+		}
 		item.ItemSessions = isSessions
 	}
 
@@ -1335,9 +1346,14 @@ func (s *BacklogService) TriggerTriage(
 		}
 	}
 
-	// 4. Build slug and artifact dir path.
-	slug := slugify(item.Title)
-	artifactAbsPath := filepath.Join(item.RepoPath, "docs", "tasks", slug)
+	// 4. Build artifact dir path under ~/.stapler-squad/triage-artifacts/<item-id>/
+	//    so triage workers don't write into the item's git repo.
+	triageBase, triageBaseErr := s.cfg.TriageArtifactDirOrDefault()
+	if triageBaseErr != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("failed to resolve triage artifact dir: %w", triageBaseErr))
+	}
+	artifactAbsPath := filepath.Join(triageBase, item.ID)
 
 	// 5. Create artifact dir.
 	if mkErr := os.MkdirAll(artifactAbsPath, 0o755); mkErr != nil {

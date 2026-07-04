@@ -4,9 +4,11 @@
 package headless
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"strings"
 
@@ -85,9 +87,11 @@ func filteredEnv() []string {
 // /proc/<pid>/cmdline. The stop function terminates the subprocess and must
 // always be called.
 func (r *ProcessRunner) Run(ctx context.Context, args []string, stdin io.Reader) (io.ReadCloser, func() error, error) {
+	var stderrBuf bytes.Buffer
 	opts := []executor.ProcessOption{
 		executor.WithNewSession(),
 		executor.WithProcessReplaceEnv(filteredEnv()),
+		executor.WithConsumeStderr(&stderrBuf),
 	}
 	if r.workDir != "" {
 		opts = append(opts, executor.WithProcessDir(r.workDir))
@@ -102,7 +106,11 @@ func (r *ProcessRunner) Run(ctx context.Context, args []string, stdin io.Reader)
 
 	stdout := proc.Stdout()
 	stop := func() error {
-		return proc.Stop()
+		stopErr := proc.Stop()
+		if s := strings.TrimSpace(stderrBuf.String()); s != "" {
+			log.Printf("ERROR: claude headless stderr: %s", s)
+		}
+		return stopErr
 	}
 	return io.NopCloser(stdout), stop, nil
 }
