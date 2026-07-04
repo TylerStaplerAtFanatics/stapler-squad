@@ -310,7 +310,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	}
 
 	if instance.Paused() {
-		instance.started = true
+		instance.started.Store(true)
 		tmuxPrefix := instance.TmuxPrefix
 		if tmuxPrefix == "" {
 			tmuxPrefix = "staplersquad_"
@@ -348,10 +348,10 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			if err := instance.Start(false); err != nil {
 				log.Warn("recovery start failed, keeping stopped", "session", instance.Title, "err", err)
 				instance.loadStatus(Stopped)
-				instance.started = true
+				instance.started.Store(true)
 			}
 		} else {
-			instance.started = true
+			instance.started.Store(true)
 		}
 	} else if instance.Status == Hibernated {
 		// Wire the tmux session object (for IsAlive checks at resume time)
@@ -370,7 +370,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 					instance.Title, instance.Program, tmuxPrefix))
 			}
 		}
-		instance.started = true
+		instance.started.Store(true)
 	} else {
 		if err := instance.Start(false); err != nil {
 			return nil, err

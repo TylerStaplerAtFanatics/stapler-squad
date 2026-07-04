@@ -21,7 +21,7 @@ import (
 // Thread-safe: acquires stateMutex write lock.
 // Returns an error if the instance is not started.
 func (i *Instance) CreateCheckpoint(label string, scrollbackSeq uint64) (*Checkpoint, error) {
-	if !i.started {
+	if !i.started.Load() {
 		return nil, fmt.Errorf("cannot create checkpoint on unstarted instance '%s'", i.Title)
 	}
 

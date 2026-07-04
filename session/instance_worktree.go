@@ -18,7 +18,7 @@ import (
 // RepoName returns the name of the git repository.
 // Returns an error if the instance has not been started or has no worktree.
 func (i *Instance) RepoName() (string, error) {
-	if !i.started {
+	if !i.started.Load() {
 		return "", fmt.Errorf("cannot get repo name for instance that has not been started")
 	}
 	if i.Status == Paused {
@@ -141,7 +141,7 @@ func (i *Instance) CleanupWorktree() error {
 
 // GetGitWorktree returns the git worktree for the instance.
 func (i *Instance) GetGitWorktree() (*git.GitWorktree, error) {
-	if !i.started {
+	if !i.started.Load() {
 		return nil, fmt.Errorf("cannot get git worktree for instance that has not been started")
 	}
 	return i.gitManager.GetWorktree(), nil
@@ -155,7 +155,7 @@ func (i *Instance) HasGitWorktree() bool {
 // SetGitWorktree sets the git worktree for testing purposes.
 func (i *Instance) SetGitWorktree(worktree *git.GitWorktree) {
 	i.gitManager.SetWorktree(worktree)
-	i.started = worktree != nil
+	i.started.Store(worktree != nil)
 }
 
 // UpdateDiffStats updates the git diff statistics for this instance.
@@ -163,7 +163,7 @@ func (i *Instance) SetGitWorktree(worktree *git.GitWorktree) {
 func (i *Instance) UpdateDiffStats() error {
 	// Read lock for initial state checks
 	i.stateMutex.RLock()
-	if !i.started {
+	if !i.started.Load() {
 		i.gitManager.ClearDiffStats()
 		i.stateMutex.RUnlock()
 		return nil

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
@@ -1946,6 +1947,20 @@ func (s *SessionService) StreamTerminal(
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get PTY reader: %w", err))
 	}
 
+	// Duplicate the PTY fd for this goroutine's exclusive use. ptyFile is
+	// shared with the instance's own internal consumers (response stream,
+	// command executor), so calling SetReadDeadline directly on it would
+	// mutate poll.FD state those other readers depend on. A dup'd fd gets
+	// its own independent *os.File/poll.FD — closing or setting a deadline
+	// on readFile has no effect on ptyFile or its other readers, since the
+	// underlying open file description is only released once every fd
+	// referencing it is closed.
+	dupFd, err := syscall.Dup(int(ptyFile.Fd()))
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to duplicate PTY fd: %w", err))
+	}
+	readFile := os.NewFile(uintptr(dupFd), ptyFile.Name())
+
 	// Create context for managing goroutines
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1969,6 +1984,7 @@ func (s *SessionService) StreamTerminal(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer readFile.Close() // our own dup'd fd; does not affect ptyFile or its other readers
 		defer func() {
 			if r := recover(); r != nil {
 				errCh <- fmt.Errorf("panic in output goroutine: %v", r)
@@ -1999,18 +2015,15 @@ func (s *SessionService) StreamTerminal(
 					log.Info("[FlowControl] PTY reading PAUSED", "session", initialMsg.SessionId)
 				}
 			default:
-				// ptyFile is shared with the instance's own internal PTY
-				// consumers (response stream, command executor), which may
-				// already have a read in flight. Deliberately not setting a
-				// read deadline here: os.File.SetReadDeadline mutates shared
-				// poll.FD state on that *os.File — calling it concurrently
-				// from here would race with (and could corrupt the timing
-				// of) those other readers' own blocking Reads on the same
-				// file. Cancellation is instead handled by the streamCtx
-				// check immediately below, right before Send, plus the
-				// bounded wg.Wait() after the outer select at the bottom of
-				// StreamTerminal.
-				n, readErr := ptyFile.Read(buf)
+				// A short deadline on our own dup'd fd (see readFile above)
+				// bounds how long Read can block, so this goroutine notices
+				// streamCtx cancellation promptly instead of potentially
+				// blocking until the next real PTY output — which could
+				// arrive well after the handler has returned and Connect has
+				// closed the stream. Safe to set here because readFile is
+				// exclusively ours; it does not touch ptyFile's poll.FD.
+				_ = readFile.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+				n, readErr := readFile.Read(buf)
 				if n > 0 {
 					// Update terminal activity timestamps with the output content
 					// This ensures LastMeaningfulOutput reflects web UI viewing activity
@@ -2037,6 +2050,11 @@ func (s *SessionService) StreamTerminal(
 				}
 
 				if readErr != nil {
+					if netErr, ok := readErr.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+						// Expected: the deadline above elapsed with no data.
+						// Loop back around to re-check streamCtx/pauseCh.
+						continue
+					}
 					// EOF or other read error
 					if readErr.Error() != "EOF" {
 						errCh <- fmt.Errorf("PTY read error: %w", readErr)
@@ -2181,8 +2199,11 @@ func (s *SessionService) StreamTerminal(
 	// both goroutines to actually stop before returning. Returning early lets
 	// Connect close the underlying HTTP/2 stream; if either goroutine is
 	// still mid-Send/Receive when that happens, the concurrent writes to the
-	// same connection race. The bound guards against goroutine 2's
-	// stream.Receive() blocking indefinitely if it's mid-read on a client
+	// same connection race. Goroutine 1 is now reliably bounded (its dup'd
+	// fd's 250ms read deadline means it notices streamCtx.Done() promptly
+	// regardless of PTY activity), so in practice this resolves almost
+	// immediately. The timeout remains as a safety net for goroutine 2's
+	// stream.Receive(), which could still block if it's mid-read on a client
 	// connection that outlives streamCtx without actually disconnecting
 	// (e.g. the error came from goroutine 1, not a real client hangup).
 	const shutdownWaitTimeout = 2 * time.Second
@@ -2204,10 +2225,12 @@ func (s *SessionService) StreamTerminal(
 }
 
 // waitWithTimeout waits for wg to complete, returning true if it did so
-// within timeout and false if the timeout elapsed first. The goroutine
-// spawned to call wg.Wait() is intentionally leaked on timeout — it will
-// still complete and call the (now-unused) done channel's close, which is
-// harmless since nothing reads from it after this function returns.
+// within timeout and false if the timeout elapsed first. On timeout, this
+// bookkeeping goroutine itself is harmlessly leaked (it will eventually
+// complete and close the now-unread done channel) — but the caller's own
+// tracked goroutines may still be running and may still touch shared state
+// (e.g. a stream) after this function returns false. Callers on the false
+// path must treat that as a real, logged condition, not a no-op.
 func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {

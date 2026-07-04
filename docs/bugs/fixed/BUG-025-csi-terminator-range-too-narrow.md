@@ -135,27 +135,50 @@ the only existing tests (`BenchmarkSessionService_StreamTerminal_NotFound`/
 `NotStarted`) short-circuit before reaching the PTY-forwarding goroutine.
 Adding `server/services/session_service_stream_terminal_test.go` (a real
 tmux-backed end-to-end test) immediately caught two genuine, pre-existing
-concurrency bugs under `-race`, neither related to the CSI fix:
+concurrency bugs under `-race`, neither related to the CSI fix. A first pass
+at fixing both went out as PR #163; a `/github:pr-ship` code-review gate on
+that PR (4 more parallel agents) correctly identified that the first pass
+was incomplete on both counts and required a second, deeper fix before
+merge:
 
 1. **`StreamTerminal`'s output goroutine raced Connect's own stream-close
    write.** The goroutine reading the PTY and calling `stream.Send()` was
    never joined before the RPC handler returned, so a `stream.Send()` call
    in flight could race with Connect's `Close()` writing the end-of-stream
-   frame to the same connection on context cancellation. Fixed with a
-   `sync.WaitGroup` the handler waits on (bounded to 2s, since the PTY read
-   is a blocking syscall not tied to any context) plus a `streamCtx.Done()`
-   check immediately before each `Send()`.
+   frame to the same connection on context cancellation.
+   - First pass: a `sync.WaitGroup` bounded to a 2s timeout, plus a
+     `streamCtx.Done()` check immediately before each `Send()`. Reviewers
+     correctly pointed out this only narrows the window — since the PTY read
+     is a blocking syscall with no read deadline, a goroutine still blocked
+     past the 2s timeout gets abandoned, and if it later wakes with data it
+     still calls `stream.Send()` after the handler has returned.
+   - Actual fix: `syscall.Dup()` the PTY fd once per `StreamTerminal` call so
+     the output goroutine reads from its own independent `*os.File` (and
+     `poll.FD`) rather than the one shared with the instance's other
+     internal PTY consumers (response stream, command executor). This makes
+     it safe to call `SetReadDeadline` (a shared `*os.File`'s deadline state
+     can't be mutated from multiple goroutines without racing/corrupting the
+     other readers' blocking calls — that's *why* the first pass avoided a
+     deadline at all) without affecting anything else. A 250ms deadline on
+     the dup'd fd means the goroutine now reliably notices `streamCtx.Done()`
+     within ~250ms regardless of PTY activity, so the `wg.Wait()` bound is
+     now a genuine safety net rather than the primary (leaky) mechanism.
 2. **`session.Instance.Started()` raced `Instance.start()`.** `Started()`
    read the `started` field without `stateMutex`, while `start()` wrote it
    *outside* the lock it otherwise held for the adjacent status transition —
    a real production bug (this exact path is also used by `StreamTerminal`'s
-   own precondition check), not a test artifact. Fixed by moving the write
-   inside the existing lock scope and adding the missing `RLock`/`RUnlock` to
-   `Started()`, matching its sibling accessors (`GetStatus()`,
-   `Hibernated()`, etc.). Note: `i.started` is read/written unguarded in
-   ~30 other places across the `session` package; this fix is scoped to the
-   exact read/write pair this new test exercises, not a full audit of that
-   field's locking discipline.
+   own precondition check), not a test artifact.
+   - First pass: moved the write inside `start()`'s existing lock scope and
+     added the missing `RLock`/`RUnlock` to `Started()`. Reviewers correctly
+     pointed out `i.started` was *also* read/written completely unguarded at
+     ~30 other sites across the `session` package (tmux lifecycle,
+     hibernation, worktree/workspace teardown, serialization restore) — the
+     fix only silenced the one repro this PR's own test happened to exercise.
+   - Actual fix: converted the field from `bool` to `atomic.Bool` package-wide
+     (`session/instance.go` plus every other `instance_*.go` file listed
+     below), so every access site is race-free by construction instead of by
+     manual lock-discipline audit. The `stateMutex` lock/unlock added around
+     the single write/read pair in the first pass was removed as redundant.
 3. Added `server/services/stream_terminal_routing_test.go`, pinning a
    routing invariant that was previously only asserted in a code comment:
    `net/http.ServeMux`'s longest-pattern-wins rule means the exact
@@ -164,10 +187,21 @@ concurrency bugs under `-race`, neither related to the CSI fix:
    ConnectRPC handler — so a non-browser client can never reach
    `SessionService.StreamTerminal` directly through the production HTTP
    routing, only through the WebSocket bridge.
+4. Added `TestWaitWithTimeout` (deterministic, no tmux dependency) covering
+   both branches of the `waitWithTimeout` helper, and exported
+   `ansi.IsCSIFinalByte`/`CSIFinalByteMin`/`CSIFinalByteMax` as a byte-range
+   twin to `CSIFinalByteClass` so `pkg/analytics/escape_code_parser.go`'s
+   manual byte-scanning CSI check (a 6th independent reimplementation the
+   original consolidation missed) now derives from the same source of truth.
 
 ## Files Changed
 
 - `pkg/ansi/csi.go`, `pkg/ansi/csi_test.go` — new shared Go module
+  (`CSIFinalByteClass`/`CSIRegex`/`StripCSI` for regex-based callers,
+  `IsCSIFinalByte`/`CSIFinalByteMin`/`CSIFinalByteMax` for byte-scanning
+  callers)
+- `pkg/analytics/escape_code_parser.go` — CSI final-byte check now calls
+  `ansi.IsCSIFinalByte` instead of an inline literal range
 - `web-app/src/lib/terminal/stripAnsi.ts`, `stripAnsi.test.ts` — new shared
   TS module
 - `session/detection/detector.go` — `ansiStripRegex` CSI branch, now built
@@ -184,10 +218,17 @@ concurrency bugs under `-race`, neither related to the CSI fix:
   `gen/proto/go/session/v1/events.pb.go`,
   `web-app/src/gen/session/v1/events_pb.ts` — reserved orphaned
   `TerminalData` oneof fields, deleted their message types
-- `server/services/session_service.go` — `StreamTerminal`: `sync.WaitGroup`
-  + bounded wait + pre-`Send` cancellation check
-- `session/instance.go`, `session/instance_state.go` — fixed the
-  `started` field race described above
+- `server/services/session_service.go` — `StreamTerminal`: dup'd PTY fd with
+  its own read deadline, `sync.WaitGroup` + bounded wait as a safety net,
+  pre-`Send` cancellation check
+- `session/instance.go` — `started bool` → `started atomic.Bool`
+- `session/instance_state.go`, `instance_terminal.go`, `instance_controller.go`,
+  `instance_hibernate.go`, `instance_worktree.go`, `instance_workspace.go`,
+  `instance_tmux.go`, `instance_serialization.go`, `instance_checkpoint.go` —
+  every direct `.started` access site updated to `.Load()`/`.Store()`
+- 15 `session/*_test.go` files — updated `Instance{started: ...}` struct
+  literals and direct `.started = ...` assignments to `.started.Store(...)`
+  (mechanical; `atomic.Bool` doesn't support struct-literal field init)
 
 ## Tests Added
 
@@ -209,19 +250,21 @@ concurrency bugs under `-race`, neither related to the CSI fix:
 - `server/services/stream_terminal_routing_test.go` —
   `TestStreamTerminalRouting_WebSocketPathTakesPrecedenceOverGeneralHandler`,
   `TestStreamTerminalRouting_OtherRPCsStillReachGeneralHandler`
+- `server/services/session_service_stream_terminal_test.go` —
+  `TestWaitWithTimeout` (both branches, deterministic, no tmux dependency)
 
 ## Verification
 
 ```
-go build ./...                                    # clean
-go vet ./...                                       # clean
-go test ./...                                       # all packages ok
-go test ./server/services/... ./session/... -race   # race-clean, incl. 30x -count TestStreamTerminal_SendsRawOutput
+go build ./...                                      # clean
+go vet ./...                                         # clean
+go test ./... -race                                  # all packages ok, race-clean
+go test ./server/services/... -run TestStreamTerminal_SendsRawOutput -race -count=15  # 15/15 pass
 cd web-app && npx tsc --noEmit && npx jest --no-coverage
     Test Suites: 154 passed, 154 total
     Tests:       2781 passed, 2781 total
-make quick-check                                  # ✅ full pass: build, test-coverage, test-race, lint, lint-css-tokens,
-                                                   #    registry-diff (0.0% divergence)
+make quick-check                                    # ✅ full pass: build, test-coverage, test-race, lint,
+                                                      #    lint-css-tokens, registry-diff (0.0% divergence)
 ```
 
 ## Conclusion for the Original Report

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,4 +120,21 @@ func TestStreamTerminal_SendsRawOutput(t *testing.T) {
 	}
 
 	require.True(t, gotOutput, "expected at least one TerminalData_Output frame from the live PTY")
+}
+
+// TestWaitWithTimeout pins waitWithTimeout's two branches directly, without
+// depending on tmux or the e2e StreamTerminal path above.
+func TestWaitWithTimeout(t *testing.T) {
+	t.Run("returns true when goroutines finish in time", func(t *testing.T) {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done() }()
+		require.True(t, waitWithTimeout(&wg, time.Second))
+	})
+
+	t.Run("returns false when goroutines don't finish in time", func(t *testing.T) {
+		var wg sync.WaitGroup
+		wg.Add(1) // deliberately never Done()
+		require.False(t, waitWithTimeout(&wg, 10*time.Millisecond))
+	})
 }

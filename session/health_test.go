@@ -88,10 +88,10 @@ func TestHealthCheckerDebounce(t *testing.T) {
 	// Create a minimal instance that appears started but has no tmux session.
 	// TmuxAlive() returns false because tmuxManager.HasSession() is false.
 	inst := &Instance{
-		Title:   "debounce-test",
-		started: true,
-		Status:  Running,
+		Title:  "debounce-test",
+		Status: Running,
 	}
+	inst.started.Store(true)
 
 	// First call: count=1, below threshold (2), no recovery attempted.
 	result1 := checker.checkSingleSession(inst)

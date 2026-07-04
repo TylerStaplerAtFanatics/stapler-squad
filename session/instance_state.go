@@ -245,9 +245,7 @@ func (i *Instance) Hibernated() bool {
 
 // Started returns true if the instance has been started.
 func (i *Instance) Started() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.started
+	return i.started.Load()
 }
 
 // RecoverFromStopped resets a stale Stopped status to Creating so the instance can be
@@ -259,7 +257,7 @@ func (i *Instance) RecoverFromStopped() {
 	defer i.stateMutex.Unlock()
 	if i.Status == Stopped {
 		i.loadStatus(Creating)
-		i.started = false
+		i.started.Store(false)
 	}
 }
 

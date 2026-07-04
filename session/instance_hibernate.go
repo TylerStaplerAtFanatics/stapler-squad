@@ -101,7 +101,7 @@ func (i *Instance) ResumeFromHibernation(ctx context.Context) error {
 // Must NOT hold stateMutex.
 func (i *Instance) resumeFromHibernation(ctx context.Context) {
 	// Re-launch via the cold-restore path
-	i.started = false
+	i.started.Store(false)
 	if err := i.Start(false); err != nil {
 		log.Error("hibernation resume: failed to start session",
 			"session", i.Title, "err", err.Error())

@@ -45,8 +45,8 @@ func TestFromInstanceDataWithMissingWorktree(t *testing.T) {
 				"abcdef1234567890",
 			),
 		},
-		started: true,
 	}
+	instance.started.Store(true)
 
 	// Test 1: Worktree exists - instance should not be paused
 	checkInstanceStatus(t, instance, worktreePath, false)
@@ -79,8 +79,8 @@ func TestFromInstanceDataWithMissingWorktree(t *testing.T) {
 				"abcdef1234567890",
 			),
 		},
-		started: true,
 	}
+	instance.started.Store(true)
 
 	// Test 2: Apply our fix - check if worktree exists and update status
 	if !instance.Paused() && instance.gitManager.worktree != nil {

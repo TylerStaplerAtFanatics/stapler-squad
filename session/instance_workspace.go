@@ -88,7 +88,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 	result := &WorkspaceSwitchResult{}
 
 	// Validate session state
-	if !i.started {
+	if !i.started.Load() {
 		return nil, fmt.Errorf("cannot switch workspace for session that has not been started")
 	}
 	if i.Status == Paused {
@@ -142,7 +142,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 			if err := i.KillSession(); err != nil {
 				return nil, fmt.Errorf("failed to stop session: %w", err)
 			}
-			i.started = false
+			i.started.Store(false)
 
 			log.Info("restarting session in new directory", "path", repoPath)
 			if err := i.Start(false); err != nil {
@@ -180,7 +180,7 @@ func (i *Instance) SwitchWorkspace(req WorkspaceSwitchRequest) (*WorkspaceSwitch
 	if err := i.KillSession(); err != nil {
 		return nil, fmt.Errorf("failed to stop session: %w", err)
 	}
-	i.started = false
+	i.started.Store(false)
 
 	// 6. Perform VCS operation
 	var switchErr error

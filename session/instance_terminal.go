@@ -48,7 +48,7 @@ func (i *Instance) MatchesID(id string) bool {
 // SetTitle sets the title of the instance. Returns an error if the instance has started.
 // We can't change the title once it's been used for a tmux session etc.
 func (i *Instance) SetTitle(title string) error {
-	if i.started {
+	if i.started.Load() {
 		return fmt.Errorf("cannot change title of a started instance")
 	}
 	i.Title = title
@@ -104,7 +104,7 @@ func (i *Instance) combineErrors(errs []error) error {
 // Preview returns the current visible terminal content.
 // Prefers the in-memory PTY buffer from ClaudeController; falls back to capture-pane.
 func (i *Instance) Preview() (string, error) {
-	if !i.started || i.Status == Paused || i.Status == Stopped {
+	if !i.started.Load() || i.Status == Paused || i.Status == Stopped {
 		return "", nil
 	}
 
@@ -127,7 +127,7 @@ func (i *Instance) Preview() (string, error) {
 
 // PreviewFullHistory captures the entire tmux pane output including full scrollback history.
 func (i *Instance) PreviewFullHistory() (string, error) {
-	if !i.started || i.Status == Paused || i.Status == Stopped {
+	if !i.started.Load() || i.Status == Paused || i.Status == Stopped {
 		return "", nil
 	}
 
@@ -148,7 +148,7 @@ func (i *Instance) PreviewFullHistory() (string, error) {
 // Called during graceful shutdown so cold restore can restart in the right directory.
 // No-op if the session is not started, paused, or the tmux session is dead.
 func (i *Instance) CaptureCurrentState() error {
-	if !i.started || i.Paused() {
+	if !i.started.Load() || i.Paused() {
 		return nil
 	}
 	if !i.pm().IsAlive() {

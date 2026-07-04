@@ -37,10 +37,10 @@ func TestForkFromCheckpoint_ConvUUID_SetAsResumeId(t *testing.T) {
 
 	// Create source instance.
 	srcInst := &Instance{
-		Title:   "src-session",
-		Path:    t.TempDir(),
-		started: true,
+		Title: "src-session",
+		Path:  t.TempDir(),
 	}
+	srcInst.started.Store(true)
 	// Point HistoryFilePath at a real file with content.
 	historyDir := t.TempDir()
 	historyFile := filepath.Join(historyDir, "conv-aaa.jsonl")
@@ -69,10 +69,10 @@ func TestForkFromCheckpoint_ConvUUID_SetAsResumeId(t *testing.T) {
 func TestForkFromCheckpoint_NoGitSHA_Succeeds(t *testing.T) {
 	configDir := t.TempDir()
 	srcInst := &Instance{
-		Title:   "src-session",
-		Path:    t.TempDir(),
-		started: true,
+		Title: "src-session",
+		Path:  t.TempDir(),
 	}
+	srcInst.started.Store(true)
 
 	cp, err := srcInst.CreateCheckpoint("snap", 0)
 	require.NoError(t, err)
@@ -89,10 +89,10 @@ func TestForkFromCheckpoint_NoGitSHA_Succeeds(t *testing.T) {
 func TestForkFromCheckpoint_NoConvUUID_EmptyResumeId(t *testing.T) {
 	configDir := t.TempDir()
 	srcInst := &Instance{
-		Title:   "src-session",
-		Path:    t.TempDir(),
-		started: true,
+		Title: "src-session",
+		Path:  t.TempDir(),
 	}
+	srcInst.started.Store(true)
 	// claudeSession is nil — no UUID available.
 
 	cp, err := srcInst.CreateCheckpoint("snap", 0)
@@ -107,10 +107,10 @@ func TestForkFromCheckpoint_NoConvUUID_EmptyResumeId(t *testing.T) {
 func TestForkFromCheckpoint_ForkedFromIDSet(t *testing.T) {
 	configDir := t.TempDir()
 	srcInst := &Instance{
-		Title:   "src-session",
-		Path:    t.TempDir(),
-		started: true,
+		Title: "src-session",
+		Path:  t.TempDir(),
 	}
+	srcInst.started.Store(true)
 
 	cp, err := srcInst.CreateCheckpoint("snap", 0)
 	require.NoError(t, err)
@@ -123,7 +123,8 @@ func TestForkFromCheckpoint_ForkedFromIDSet(t *testing.T) {
 
 func TestForkFromCheckpoint_UnknownCheckpointID_ReturnsError(t *testing.T) {
 	configDir := t.TempDir()
-	srcInst := &Instance{Title: "src-session", Path: t.TempDir(), started: true}
+	srcInst := &Instance{Title: "src-session", Path: t.TempDir()}
+	srcInst.started.Store(true)
 
 	_, err := srcInst.ForkFromCheckpoint("nonexistent-id", "fork-session", configDir)
 
@@ -133,7 +134,8 @@ func TestForkFromCheckpoint_UnknownCheckpointID_ReturnsError(t *testing.T) {
 
 func TestForkFromCheckpoint_EmptyNewTitle_ReturnsError(t *testing.T) {
 	configDir := t.TempDir()
-	srcInst := &Instance{Title: "src-session", Path: t.TempDir(), started: true}
+	srcInst := &Instance{Title: "src-session", Path: t.TempDir()}
+	srcInst.started.Store(true)
 	cp, err := srcInst.CreateCheckpoint("snap", 0)
 	require.NoError(t, err)
 
