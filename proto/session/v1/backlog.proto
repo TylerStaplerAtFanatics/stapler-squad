@@ -460,11 +460,3 @@ message ListGitHubIssuesRequest {
 message ListGitHubIssuesResponse {
   repeated GitHubIssueEntry issues = 1;
 }
-
-message CancelTriageRequest {
-  string item_id = 1;
-}
-
-message CancelTriageResponse {
-  bool cancelled = 1;
-}
