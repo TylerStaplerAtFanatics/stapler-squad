@@ -249,16 +249,20 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		// Record a failed review ItemSession with a FAIL verdict so the gate verdict
 		// is visible in the UI and operators can act (override or re-review).
 		summary := fmt.Sprintf("Review blocked by security check: %v. Override required to proceed.", secErr)
-		if _, _, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+		secIS, _, secCreateErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
 			ItemID:      item.ID.String(),
 			SessionUUID: "review-blocked-" + item.ID.String(),
 			SessionRole: SessionRoleReview,
 		}, ReviewVerdictData{
 			OverallOutcome: ReviewVerdictFail,
 			Summary:        summary,
-		}); createErr != nil {
-			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (security block) item=%s: %v", item.ID, createErr)
+		})
+		if secCreateErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (security block) item=%s: %v", item.ID, secCreateErr)
 			return
+		}
+		if updateErr := l.storage.UpdateItemSessionEnded(ctx, secIS.ID.String(), time.Now()); updateErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (security block) item=%s: %v", item.ID, updateErr)
 		}
 		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate security check blocked for item %s — FAIL verdict recorded", item.ID)
 		return
@@ -283,6 +287,22 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		reviewResult, callErr := pool.CallBlocking(reviewCtx, headless.FeatureKeyReview, headless.HeadlessReviewSystemPrompt(), headlessPrompt)
 		if callErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate headless.CallBlocking item=%s: %v", item.ID, callErr)
+			// Record a FAIL verdict so the item is not stuck in review with no actionable result.
+			failUUID := "headless-review-" + uuid.New().String()
+			failIS, _, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+				ItemID:      item.ID.String(),
+				SessionUUID: failUUID,
+				SessionRole: SessionRoleReview,
+				AcSnapshot:  is.AcSnapshot,
+			}, ReviewVerdictData{
+				OverallOutcome: ReviewVerdictFail,
+				Summary:        fmt.Sprintf("Review failed: %v", callErr),
+			})
+			if createErr != nil {
+				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (headless fail) item=%s: %v", item.ID, createErr)
+			} else if updateErr := l.storage.UpdateItemSessionEnded(ctx, failIS.ID.String(), time.Now()); updateErr != nil {
+				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (headless fail) item=%s: %v", item.ID, updateErr)
+			}
 			return
 		}
 
@@ -305,6 +325,9 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		if createErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (headless) item=%s: %v", item.ID, createErr)
 			return
+		}
+		if updateErr := l.storage.UpdateItemSessionEnded(ctx, reviewIS.ID.String(), time.Now()); updateErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (headless) item=%s: %v", item.ID, updateErr)
 		}
 
 		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate headless review complete for item %s (session %s, outcome %s)", item.ID, reviewIS.ID, overall)

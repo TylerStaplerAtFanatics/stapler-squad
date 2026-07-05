@@ -819,10 +819,10 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                     className={styles.sessionRow}
                     role="listitem"
                   >
-                    {s.role === "triage" ? (
+                    {s.role === "triage" || s.sessionId.startsWith("headless-") || s.sessionId.startsWith("review-blocked-") ? (
                       <span className={styles.sessionLink}>
                         <span className={styles.sessionId} title={s.sessionId}>
-                          {s.sessionId}
+                          {s.sessionId.startsWith("headless-review-") ? "headless review" : s.sessionId.startsWith("review-blocked-") ? "review blocked" : s.sessionId}
                         </span>
                         <span className={styles.sessionRole}>{s.role}</span>
                         {s.startedAt && (
@@ -890,7 +890,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               const expectedRole = statusToRole[item.status];
               const active = [...item.linkedSessions]
                 .reverse()
-                .find((s) => !s.endedAt && s.role === expectedRole);
+                .find((s) => !s.endedAt && s.role === expectedRole && !s.sessionId.startsWith("headless-") && !s.sessionId.startsWith("review-blocked-"));
               if (!active) return null;
               return (
                 <SessionMonitor

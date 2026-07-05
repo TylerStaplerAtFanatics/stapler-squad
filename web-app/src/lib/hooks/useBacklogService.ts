@@ -199,19 +199,18 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
   let gateVerdictSummary: string | undefined;
   let gateCriteria: Array<{ label: string; passed: boolean }> | undefined;
 
-  if (linkedSessions.length > 0) {
-    const mostRecentSession = linkedSessions[linkedSessions.length - 1];
-    if (mostRecentSession.reviewVerdict?.overallOutcome) {
-      gateVerdict = mostRecentSession.reviewVerdict.overallOutcome;
-      gateVerdictSummary = mostRecentSession.reviewVerdict.summary;
+  // Use the most recent review session's verdict — not the most recent session of any
+  // role, which could be a work session (no verdict) after a reopen-for-revision cycle.
+  const mostRecentReviewSession = linkedSessions.filter((s) => s.role === "review").at(-1);
+  if (mostRecentReviewSession?.reviewVerdict?.overallOutcome) {
+    gateVerdict = mostRecentReviewSession.reviewVerdict.overallOutcome;
+    gateVerdictSummary = mostRecentReviewSession.reviewVerdict.summary;
 
-      // Map per-criterion verdicts to criteria with pass/fail
-      if (mostRecentSession.reviewVerdict.perCriterion?.length) {
-        gateCriteria = mostRecentSession.reviewVerdict.perCriterion.map((c) => ({
-          label: `Criterion ${c.criterionIndex}: ${c.outcome}`,
-          passed: c.outcome === "PASS" || c.outcome === "pass",
-        }));
-      }
+    if (mostRecentReviewSession.reviewVerdict.perCriterion?.length) {
+      gateCriteria = mostRecentReviewSession.reviewVerdict.perCriterion.map((c) => ({
+        label: `Criterion ${c.criterionIndex}: ${c.outcome}`,
+        passed: c.outcome === "PASS" || c.outcome === "pass",
+      }));
     }
   }
 
