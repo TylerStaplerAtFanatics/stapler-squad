@@ -865,7 +865,10 @@ function SessionCardInner({
           onSteerAutonomousSession={onSteerAutonomousSession}
           onClearConversationState={onClearConversationState}
           onUpdateTags={onUpdateTags}
-          onChangeProgram={(_id, program) => { void sessionActions.update({ program }); }}
+          onChangeProgram={async (_id, program) => {
+            const result = await sessionActions.update({ program });
+            if (!result) throw new Error("Failed to change program.");
+          }}
         />
       </div>
     </div>
