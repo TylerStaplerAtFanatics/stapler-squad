@@ -27,6 +27,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/detection"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/headless"
+	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/namegen"
 	"github.com/tstapler/stapler-squad/session/prompts"
 	"github.com/tstapler/stapler-squad/session/search"
@@ -2272,39 +2273,55 @@ func (s *SessionService) GetSessionDiff(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
+	var diffStats *git.DiffStats
+
 	instance := s.findInstance(req.Msg.Id)
-	if instance == nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.Id))
+	if instance != nil {
+		// Live session: update and read cached diff.
+		if err := instance.UpdateDiffStats(); err != nil {
+			log.Warn("failed to update diff stats", "session", req.Msg.Id, "err", err)
+		}
+		diffStats = instance.GetDiffStats()
+	} else {
+		// Completed session: reconstruct worktree from DB and compute diff on-demand.
+		allData, err := s.storage.ListInstanceData()
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list sessions: %w", err))
+		}
+		var found *session.InstanceData
+		for i := range allData {
+			if allData[i].MatchesID(req.Msg.Id) {
+				found = &allData[i]
+				break
+			}
+		}
+		if found == nil {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", req.Msg.Id))
+		}
+		if found.Worktree.WorktreePath != "" {
+			wt := git.NewGitWorktreeFromStorage(
+				found.Worktree.RepoPath,
+				found.Worktree.WorktreePath,
+				found.Worktree.SessionName,
+				found.Worktree.BranchName,
+				found.Worktree.BaseCommitSHA,
+			)
+			diffStats = wt.Diff()
+		}
 	}
 
-	// Update diff stats to get fresh data (the cached version may be stale or nil)
-	if err := instance.UpdateDiffStats(); err != nil {
-		log.Warn("failed to update diff stats", "session", req.Msg.Id, "err", err)
-		// Continue anyway - we'll return empty stats if unavailable
-	}
-
-	// Get diff stats from the instance
-	diffStats := instance.GetDiffStats()
 	if diffStats == nil {
-		// Return empty diff stats if none available
 		return connect.NewResponse(&sessionv1.GetSessionDiffResponse{
-			DiffStats: &sessionv1.DiffStats{
-				Added:   0,
-				Removed: 0,
-				Content: "",
-			},
+			DiffStats: &sessionv1.DiffStats{},
 		}), nil
 	}
 
-	// Convert to proto message
-	protoDiffStats := &sessionv1.DiffStats{
-		Added:   int32(diffStats.Added),
-		Removed: int32(diffStats.Removed),
-		Content: diffStats.Content,
-	}
-
 	return connect.NewResponse(&sessionv1.GetSessionDiffResponse{
-		DiffStats: protoDiffStats,
+		DiffStats: &sessionv1.DiffStats{
+			Added:   int32(diffStats.Added),
+			Removed: int32(diffStats.Removed),
+			Content: diffStats.Content,
+		},
 	}), nil
 }
 

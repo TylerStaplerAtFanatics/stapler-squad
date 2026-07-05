@@ -3,7 +3,8 @@
 
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { FilesTab } from "@/components/sessions/FilesTab";
+import { DiffViewer } from "@/components/sessions/DiffViewer";
+import { SessionVcsProvider } from "@/lib/contexts/SessionVcsContext";
 import { getApiBaseUrl } from "@/lib/config";
 import {
   backdrop,
@@ -71,7 +72,9 @@ export function ReviewChangesModal({ sessionId, sessionTitle, onClose }: ReviewC
           </button>
         </div>
         <div className={modalBody}>
-          <FilesTab sessionId={sessionId} baseUrl={getApiBaseUrl()} />
+          <SessionVcsProvider sessionId={sessionId} baseUrl={getApiBaseUrl()}>
+            <DiffViewer />
+          </SessionVcsProvider>
         </div>
       </div>
     </>,
