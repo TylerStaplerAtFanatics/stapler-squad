@@ -122,7 +122,17 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
   const [isProgramPickerOpen, setIsProgramPickerOpen] = useState(false);
   const [programPickerValue, setProgramPickerValue] = useState(session.program || "");
   const [isSavingProgram, setIsSavingProgram] = useState(false);
+  const [isProgramRestartConfirmOpen, setIsProgramRestartConfirmOpen] = useState(false);
+  const [pendingProgramValue, setPendingProgramValue] = useState("");
   const availablePrograms = useAvailablePrograms();
+
+  // Keep the picker's selected value in sync with the session while the dialog is
+  // open — otherwise a concurrent server-side change (e.g. the capacity-monitor
+  // auto-fallback switching programs) leaves a stale dialog whose Save would
+  // silently clobber that change back to the value it had when opened.
+  useEffect(() => {
+    if (isProgramPickerOpen) setProgramPickerValue(session.program || "");
+  }, [session.program, isProgramPickerOpen]);
 
   const overflowContainerRef = useRef<HTMLDivElement>(null);
   const overflowButtonRef = useRef<HTMLButtonElement>(null);
@@ -133,6 +143,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
   const autonomousConfirmDialogRef = useRef<HTMLDivElement>(null);
   const steerDialogRef = useRef<HTMLDivElement>(null);
   const clearConversationDialogRef = useRef<HTMLDivElement>(null);
+  const programConfirmDialogRef = useRef<HTMLDivElement>(null);
   const restartTriggerRef = useRef<HTMLButtonElement>(null);
   const checkpointTriggerRef = useRef<HTMLButtonElement>(null);
   const clearConversationTriggerRef = useRef<HTMLButtonElement>(null);
@@ -144,6 +155,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
   useFocusTrap(autonomousConfirmDialogRef, isAutonomousConfirmOpen);
   useFocusTrap(steerDialogRef, isSteerOpen);
   useFocusTrap(clearConversationDialogRef, isClearConversationConfirmOpen, clearConversationTriggerRef);
+  useFocusTrap(programConfirmDialogRef, isProgramRestartConfirmOpen);
 
   useEffect(() => {
     if (showOverflow && overflowMenuRef.current) {
@@ -212,6 +224,15 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
       setRestartError(err instanceof Error ? err.message : "Failed to restart session.");
     } finally {
       setIsRestarting(false);
+    }
+  };
+
+  const commitProgramChange = async (program: string) => {
+    setIsSavingProgram(true);
+    try {
+      await onChangeProgram?.(session.id, program);
+    } finally {
+      setIsSavingProgram(false);
     }
   };
 
@@ -760,7 +781,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
               <strong>Change Program</strong>
               <p style={{ fontSize: 13, margin: "8px 0 4px", color: "var(--text-secondary)" }}>
                 Select a program for <em>{session.title}</em>.
-                {session.status === 3 /* ACTIVE */ && " The session will restart."}
+                {isRunning && " The session will restart."}
               </p>
               <select
                 value={programPickerValue}
@@ -786,16 +807,61 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
                 className={submitButton}
                 disabled={isSavingProgram}
                 onClick={async () => {
-                  setIsSavingProgram(true);
-                  try { await onChangeProgram?.(session.id, programPickerValue); } finally {
-                    setIsSavingProgram(false);
+                  if (isRunning) {
+                    // Active sessions restart on a program change — require an
+                    // explicit second confirmation, matching Restart/Delete.
+                    setPendingProgramValue(programPickerValue);
                     setIsProgramPickerOpen(false);
+                    setIsProgramRestartConfirmOpen(true);
+                    return;
                   }
+                  await commitProgramChange(programPickerValue);
+                  setIsProgramPickerOpen(false);
                 }}
               >
                 {isSavingProgram ? "Saving…" : "Save"}
               </button>
               <button className={cancelButton} onClick={() => setIsProgramPickerOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Program-change restart confirmation — only reached for Active sessions */}
+      {isProgramRestartConfirmOpen && createPortal(
+        <div className={confirmDialog} onClick={(e) => { e.stopPropagation(); setIsProgramRestartConfirmOpen(false); }}>
+          <div
+            ref={programConfirmDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="programConfirmDialogTitle"
+            className={dialogContent}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === "Escape") setIsProgramRestartConfirmOpen(false); }}
+          >
+            <h3 id="programConfirmDialogTitle">Change Program</h3>
+            <p>Switch &quot;{session.title}&quot; to a different program?</p>
+            <p className={warningText}>This will terminate the current process and start a new one with the new program.</p>
+            <div className={dialogActions}>
+              <button
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  await commitProgramChange(pendingProgramValue);
+                  setIsProgramRestartConfirmOpen(false);
+                }}
+                disabled={isSavingProgram}
+                className={submitButton}
+              >
+                {isSavingProgram ? "Saving…" : "Change & Restart"}
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); setIsProgramRestartConfirmOpen(false); }}
+                disabled={isSavingProgram}
+                className={cancelButton}
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>,
