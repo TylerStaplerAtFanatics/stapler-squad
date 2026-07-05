@@ -170,7 +170,24 @@ export function SessionDetailView({
   }, [shells]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [filesSelectedPath, setFilesSelectedPath] = useState<string | null>(null);
+  const [filesSelectedPath, setFilesSelectedPath] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const hash = window.location.hash;
+    if (hash.startsWith("#file=")) return decodeURIComponent(hash.slice(6)) || null;
+    return null;
+  });
+  // Sync file selection to/from URL hash so the user can always navigate back.
+  React.useEffect(() => {
+    if (filesSelectedPath) {
+      history.replaceState(null, "", `#file=${encodeURIComponent(filesSelectedPath)}`);
+    } else {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }, [filesSelectedPath]);
+  // Clear file selection when the session changes so stale paths don't leak across sessions.
+  React.useEffect(() => {
+    setFilesSelectedPath(null);
+  }, [session.id]);
   const [showWorkspaceSwitchModal, setShowWorkspaceSwitchModal] = useState(false);
   const availablePrograms = useAvailablePrograms();
   const [isEditingProgram, setIsEditingProgram] = useState(false);
@@ -535,7 +552,7 @@ export function SessionDetailView({
         </ActionBar>
       </div>}
 
-      {!embedded && <div
+      <div
         className={`${styles.tabs} ${isFullscreen ? styles.fullscreenMobileTabs : ""}`}
         role="tablist"
         onKeyDown={(e) => {
@@ -608,7 +625,7 @@ export function SessionDetailView({
         >
           +
         </button>
-      </div>}
+      </div>
 
       <div className={`${styles.content} ${isFullscreen ? styles.fullscreenContent : ""}`}>
         {/* Terminal tab: kept mounted but hidden via display:none to preserve xterm.js instances */}
