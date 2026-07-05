@@ -64,6 +64,14 @@ export const verdictCardPending = style([
   },
 ]);
 
+export const verdictCardUnverifiable = style([
+  verdictCardBase,
+  {
+    borderLeftColor: vars.color.textMuted,
+    background: vars.color.cardBackground,
+  },
+]);
+
 export const verdictHeader = style({
   display: "flex",
   alignItems: "center",
@@ -94,6 +102,10 @@ export const verdictIconPending = style({
   display: "inline-block",
 });
 
+export const verdictIconUnverifiable = style({
+  color: vars.color.textMuted,
+});
+
 export const verdictLabel = style({
   fontSize: vars.fontSize.xs,
   fontWeight: vars.fontWeight.bold,
@@ -115,6 +127,10 @@ export const verdictLabelFail = style({
 });
 
 export const verdictLabelPending = style({
+  color: vars.color.textMuted,
+});
+
+export const verdictLabelUnverifiable = style({
   color: vars.color.textMuted,
 });
 

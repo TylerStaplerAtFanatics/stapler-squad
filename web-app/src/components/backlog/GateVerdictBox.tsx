@@ -6,7 +6,7 @@ import * as styles from "./GateVerdictBox.css";
 import { InlineError } from "./InlineError";
 
 interface GateVerdictBoxProps {
-  verdict: "PASS" | "PARTIAL" | "FAIL" | "PENDING";
+  verdict: "PASS" | "PARTIAL" | "FAIL" | "PENDING" | "UNVERIFIABLE";
   summary: string;
   criteria?: Array<{ label: string; passed: boolean }>;
   elapsedSeconds?: number;
@@ -14,6 +14,7 @@ interface GateVerdictBoxProps {
   onReopen: (feedback: string) => Promise<void>;
   onOverride: (reason: string) => Promise<void>;
   onSkipGate: () => Promise<void>;
+  onReReview?: () => Promise<void>;
   actionPending?: boolean;
 }
 
@@ -48,6 +49,13 @@ const VERDICT_CONFIG = {
     iconClass: styles.verdictIconPending,
     labelClass: styles.verdictLabelPending,
   },
+  UNVERIFIABLE: {
+    icon: "?",
+    label: "UNVERIFIABLE",
+    cardClass: styles.verdictCardUnverifiable,
+    iconClass: styles.verdictIconUnverifiable,
+    labelClass: styles.verdictLabelUnverifiable,
+  },
 } as const;
 
 export function GateVerdictBox({
@@ -59,6 +67,7 @@ export function GateVerdictBox({
   onReopen,
   onOverride,
   onSkipGate,
+  onReReview,
   actionPending = false,
 }: GateVerdictBoxProps) {
   const [showOverride, setShowOverride] = useState(false);
@@ -118,6 +127,19 @@ export function GateVerdictBox({
     setLocalPending(true);
     try {
       await onApprove();
+    } catch (err) {
+      setActionError("Action failed. Please try again.");
+      console.error(err);
+    } finally {
+      setLocalPending(false);
+    }
+  }
+
+  async function handleReReview() {
+    if (!onReReview) return;
+    setLocalPending(true);
+    try {
+      await onReReview();
     } catch (err) {
       setActionError("Action failed. Please try again.");
       console.error(err);
@@ -288,6 +310,27 @@ export function GateVerdictBox({
             >
               Approve — Mark Done
             </button>
+            <button
+              className={styles.secondaryButton}
+              onClick={() => setShowReopen(true)}
+              disabled={isPending}
+            >
+              Reopen for Revision
+            </button>
+          </>
+        )}
+
+        {verdict === "UNVERIFIABLE" && (
+          <>
+            {onReReview && (
+              <button
+                className={styles.primaryButton}
+                onClick={() => void handleReReview()}
+                disabled={isPending}
+              >
+                Re-run Gate
+              </button>
+            )}
             <button
               className={styles.secondaryButton}
               onClick={() => setShowReopen(true)}

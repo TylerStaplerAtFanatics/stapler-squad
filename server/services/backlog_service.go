@@ -1109,6 +1109,14 @@ func (s *BacklogService) SpawnSessionFromItem(
 		priorSessions = nil
 	}
 
+	// 7b. Guard against spawning a duplicate work session when one is already active.
+	for _, ps := range priorSessions {
+		if ps.SessionRole == session.SessionRoleWork && ps.EndedAt == nil {
+			return nil, connect.NewError(connect.CodeAlreadyExists,
+				fmt.Errorf("a work session is already active for this item; wait for it to finish or kill it first"))
+		}
+	}
+
 	// 8. Build agent prompt.
 	// Parse item.ID as UUID for the ent struct (needed by BuildTokenBudgetedPrompt for logging).
 	itemUUID, _ := uuid.Parse(item.ID)

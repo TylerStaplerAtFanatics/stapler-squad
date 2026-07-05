@@ -57,7 +57,7 @@ export interface LinkedSession {
   startedAt?: string;
   endedAt?: string;
   reviewVerdict?: {
-    overallOutcome?: "PASS" | "PARTIAL" | "FAIL" | "PENDING";
+    overallOutcome?: "PASS" | "PARTIAL" | "FAIL" | "PENDING" | "UNVERIFIABLE";
     summary?: string;
     perCriterion?: Array<{ criterionIndex: number; outcome: string }>;
   };
@@ -82,7 +82,7 @@ export interface BacklogItem {
   createdAt?: string;
   updatedAt?: string;
   /** Gate verdict from the most recent item session (if in review status) */
-  gateVerdict?: "PASS" | "PARTIAL" | "FAIL" | "PENDING";
+  gateVerdict?: "PASS" | "PARTIAL" | "FAIL" | "PENDING" | "UNVERIFIABLE";
   gateVerdictSummary?: string;
   gateCriteria?: Array<{ label: string; passed: boolean }>;
   /** Triage progress indicator: when item is in "idea" status being triaged */
@@ -144,11 +144,10 @@ function mapItemSession(s: ItemSessionProto): LinkedSession {
   // Map review verdict if present
   if (s.reviewVerdict) {
     const rv = s.reviewVerdict;
-    const knownOutcomes = new Set(["PASS", "FAIL", "PARTIAL"]);
+    const knownOutcomes = new Set(["PASS", "FAIL", "PARTIAL", "UNVERIFIABLE"]);
     session.reviewVerdict = {
-      // Map UNVERIFIABLE → PARTIAL so GateVerdictBox always gets a known verdict
       overallOutcome: knownOutcomes.has(rv.overallOutcome)
-        ? (rv.overallOutcome as "PASS" | "PARTIAL" | "FAIL" | "PENDING")
+        ? (rv.overallOutcome as "PASS" | "PARTIAL" | "FAIL" | "PENDING" | "UNVERIFIABLE")
         : rv.overallOutcome
           ? "PARTIAL"
           : "PENDING",
@@ -195,7 +194,7 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
   const linkedSessions = (p.itemSessions ?? []).map(mapItemSession);
 
   // Extract gate verdict from the most recent session (for review status)
-  let gateVerdict: "PASS" | "PARTIAL" | "FAIL" | "PENDING" | undefined;
+  let gateVerdict: "PASS" | "PARTIAL" | "FAIL" | "PENDING" | "UNVERIFIABLE" | undefined;
   let gateVerdictSummary: string | undefined;
   let gateCriteria: Array<{ label: string; passed: boolean }> | undefined;
 
