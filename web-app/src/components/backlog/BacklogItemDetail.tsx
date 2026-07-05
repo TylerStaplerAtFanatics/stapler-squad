@@ -295,16 +295,24 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     }
   }, [item, transitionStatus, lastError, load]);
 
-  const handleGateReopen = useCallback(async () => {
+  const handleGateReopen = useCallback(async (feedback: string) => {
     if (!item) return;
     setActionLoading(true);
     try {
+      // Append feedback to notes so the next work session sees it in its prompt.
+      if (feedback.trim()) {
+        const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+        const note = `\n\n[Revision feedback ${timestamp}]\n${feedback.trim()}`;
+        await updateBacklogItem(item.id, { notes: (item.notes ?? "") + note });
+      }
       await transitionStatus(item.id, "in_progress");
+      // Spawn a new work session immediately — the backend now accepts in_progress.
+      await spawnSessionFromItem(item.id);
       await load();
     } finally {
       setActionLoading(false);
     }
-  }, [item, transitionStatus, load]);
+  }, [item, transitionStatus, spawnSessionFromItem, updateBacklogItem, load]);
 
   const handleGateOverride = useCallback(
     async (reason: string) => {
