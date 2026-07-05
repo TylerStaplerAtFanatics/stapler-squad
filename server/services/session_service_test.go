@@ -8,6 +8,7 @@ import (
 	connect "connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/config"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/session"
@@ -1086,4 +1087,154 @@ func TestDeleteSession_CancelsPendingApprovals_NoApprovalsIsNoop(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.True(t, resp.Msg.Success)
+}
+
+// --------------------------------------------------------------------------
+// UpdateSession – program switch (backlog: "switching session programs does not
+// save correctly"). Regression coverage for the shipped fix (commit 914138ec) plus
+// the empty->default no-op fix folded into Instance.SwitchProgram.
+// --------------------------------------------------------------------------
+
+// TestUpdateSession_ProgramUpdate_Stopped_SavesNoRestart verifies that changing the
+// program on a non-Active session persists the new value and completes without error
+// (no restart is attempted for a Paused/Stopped session).
+func TestUpdateSession_ProgramUpdate_Stopped_SavesNoRestart(t *testing.T) {
+	fix := setupForkTestFixture(t)
+	t.Cleanup(fix.cleanup)
+
+	addPausedSession(t, fix, "program-switch-session")
+
+	resp, err := fix.svc.UpdateSession(context.Background(), connect.NewRequest(&sessionv1.UpdateSessionRequest{
+		Id:      "program-switch-session",
+		Program: strPtr("aider"),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "aider", resp.Msg.Session.Program)
+
+	loaded, err := fix.storage.LoadInstances()
+	require.NoError(t, err)
+	var found *session.Instance
+	for _, inst := range loaded {
+		if inst.Title == "program-switch-session" {
+			found = inst
+			break
+		}
+	}
+	require.NotNil(t, found)
+	assert.Equal(t, "aider", found.Program, "program change must be persisted")
+}
+
+// TestUpdateSession_ProgramUpdate_EmptyString_ResolvesToConfigDefault verifies that
+// sending program: "" (the "System default" option) resolves to config.LoadConfig()'s
+// DefaultProgram before persistence, rather than being dropped or stored as "".
+func TestUpdateSession_ProgramUpdate_EmptyString_ResolvesToConfigDefault(t *testing.T) {
+	fix := setupForkTestFixture(t)
+	t.Cleanup(fix.cleanup)
+
+	addPausedSession(t, fix, "default-program-session")
+
+	resp, err := fix.svc.UpdateSession(context.Background(), connect.NewRequest(&sessionv1.UpdateSessionRequest{
+		Id:      "default-program-session",
+		Program: strPtr(""),
+	}))
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Msg.Session.Program, "empty string must resolve to a real default, not be stored empty")
+	assert.Equal(t, config.LoadConfig().DefaultProgram, resp.Msg.Session.Program)
+}
+
+// TestUpdateSession_ProgramUpdate_SameValue_NoOp verifies that requesting the program a
+// session already has succeeds and leaves the program unchanged.
+func TestUpdateSession_ProgramUpdate_SameValue_NoOp(t *testing.T) {
+	fix := setupForkTestFixture(t)
+	t.Cleanup(fix.cleanup)
+
+	addPausedSession(t, fix, "same-program-session")
+
+	resp, err := fix.svc.UpdateSession(context.Background(), connect.NewRequest(&sessionv1.UpdateSessionRequest{
+		Id:      "same-program-session",
+		Program: strPtr("claude"),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "claude", resp.Msg.Session.Program)
+}
+
+// TestUpdateSession_ProgramUpdate_ActiveSameValue_NoRestartAttempted verifies that a
+// same-value program request against an Active session is recognized as a no-op before
+// any restart is attempted. The Active instance here has no real tmux backend wired up,
+// so if SwitchProgram attempted a restart anyway, Restart() would error and this test
+// would fail — the passing case is the regression guard.
+func TestUpdateSession_ProgramUpdate_ActiveSameValue_NoRestartAttempted(t *testing.T) {
+	fix := setupForkTestFixture(t)
+	t.Cleanup(fix.cleanup)
+
+	inst := &session.Instance{
+		Title:     "active-noop-session",
+		Path:      "/tmp/test",
+		Status:    session.Paused,
+		Program:   "claude",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	require.NoError(t, fix.storage.AddInstance(inst))
+	loaded, err := fix.storage.LoadInstances()
+	require.NoError(t, err)
+	var found *session.Instance
+	for _, li := range loaded {
+		if li.Title == "active-noop-session" {
+			found = li
+			break
+		}
+	}
+	require.NotNil(t, found)
+	found.Status = session.Active // started=true from the Paused round-trip; no real tmux session backing it
+	addInstanceToPoller(fix.poller, found)
+
+	resp, err := fix.svc.UpdateSession(context.Background(), connect.NewRequest(&sessionv1.UpdateSessionRequest{
+		Id:      "active-noop-session",
+		Program: strPtr("claude"),
+	}))
+	require.NoError(t, err, "same-value switch on an Active session must not attempt a restart")
+	assert.Equal(t, "claude", resp.Msg.Session.Program)
+}
+
+// --------------------------------------------------------------------------
+// UpdateSessionProgram – capacity-monitor auto-fallback path
+// --------------------------------------------------------------------------
+
+// TestUpdateSessionProgram_EmptyString_ResolvesToConfigDefault verifies the
+// capacity-monitor auto-fallback entry point (UpdateSessionProgram) gets the same
+// empty->default resolution as the UpdateSession RPC handler now that both share
+// Instance.SwitchProgram — this was the gap flagged in the plan (the old duplicated
+// implementation compared the raw "" against inst.Program instead of the resolved
+// default first).
+func TestUpdateSessionProgram_EmptyString_ResolvesToConfigDefault(t *testing.T) {
+	fix := setupForkTestFixture(t)
+	t.Cleanup(fix.cleanup)
+
+	addPausedSession(t, fix, "capacity-fallback-session")
+
+	err := fix.svc.UpdateSessionProgram(context.Background(), "capacity-fallback-session", "")
+	require.NoError(t, err)
+
+	loaded, err := fix.storage.LoadInstances()
+	require.NoError(t, err)
+	var found *session.Instance
+	for _, inst := range loaded {
+		if inst.Title == "capacity-fallback-session" {
+			found = inst
+			break
+		}
+	}
+	require.NotNil(t, found)
+	assert.Equal(t, config.LoadConfig().DefaultProgram, found.Program)
+}
+
+// TestUpdateSessionProgram_NotFound verifies UpdateSessionProgram returns an error for
+// an unknown session id rather than silently no-op'ing.
+func TestUpdateSessionProgram_NotFound(t *testing.T) {
+	fix := setupForkTestFixture(t)
+	t.Cleanup(fix.cleanup)
+
+	err := fix.svc.UpdateSessionProgram(context.Background(), "no-such-session", "aider")
+	require.Error(t, err)
 }
