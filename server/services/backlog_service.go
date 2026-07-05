@@ -1072,14 +1072,16 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
 	}
 
-	// 2. Validate status is ready.
-	if item.Status != string(session.BacklogStatusReady) {
+	// 2. Validate status. Allow ready (first spawn) or in_progress (re-spawn after reopen).
+	isReopen := item.Status == string(session.BacklogStatusInProgress)
+	if item.Status != string(session.BacklogStatusReady) && !isReopen {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("item must be in %q status to spawn a session, got %q", session.BacklogStatusReady, item.Status))
+			fmt.Errorf("item must be in %q or %q status to spawn a session, got %q",
+				session.BacklogStatusReady, session.BacklogStatusInProgress, item.Status))
 	}
 
-	// 3. Planning gate.
-	if !item.SkipPlanning && !item.PlanApproved {
+	// 3. Planning gate (only for fresh spawns; on reopen planning is already approved).
+	if !isReopen && !item.SkipPlanning && !item.PlanApproved {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("run TriggerTriage and approve the plan before spawning; set skip_planning=true to bypass"))
 	}
@@ -1187,9 +1189,11 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create item session: %w", err))
 	}
 
-	// 13. Transition item to in_progress.
-	if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil); transErr != nil {
-		log.ErrorLog.Printf("[SpawnSessionFromItem] failed to transition item to in_progress: %v", transErr)
+	// 13. Transition item to in_progress (no-op if already in_progress on reopen).
+	if !isReopen {
+		if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil); transErr != nil {
+			log.ErrorLog.Printf("[SpawnSessionFromItem] failed to transition item to in_progress: %v", transErr)
+		}
 	}
 
 	return connect.NewResponse(&sessionv1.SpawnSessionFromItemResponse{

@@ -11,7 +11,7 @@ interface GateVerdictBoxProps {
   criteria?: Array<{ label: string; passed: boolean }>;
   elapsedSeconds?: number;
   onApprove: () => Promise<void>;
-  onReopen: () => Promise<void>;
+  onReopen: (feedback: string) => Promise<void>;
   onOverride: (reason: string) => Promise<void>;
   onSkipGate: () => Promise<void>;
   actionPending?: boolean;
@@ -63,6 +63,8 @@ export function GateVerdictBox({
 }: GateVerdictBoxProps) {
   const [showOverride, setShowOverride] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
+  const [showReopen, setShowReopen] = useState(false);
+  const [reopenFeedback, setReopenFeedback] = useState("");
   const [showSkipConfirm, setShowSkipConfirm] = useState(false);
   const [localPending, setLocalPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -85,6 +87,16 @@ export function GateVerdictBox({
     }
   }, [showOverride]);
 
+  // Focus reopen feedback textarea when form opens
+  useEffect(() => {
+    if (showReopen) {
+      const el = document.getElementById("reopen-feedback");
+      if (el) {
+        (el as HTMLTextAreaElement).focus();
+      }
+    }
+  }, [showReopen]);
+
   // Focus cancel button when skip confirm opens
   useEffect(() => {
     if (showSkipConfirm) {
@@ -97,7 +109,7 @@ export function GateVerdictBox({
       if (verdict === "PASS") {
         void handleApprove();
       } else if (verdict === "PARTIAL" || verdict === "FAIL") {
-        void handleReopen();
+        setShowReopen(true);
       }
     }
   }
@@ -114,10 +126,12 @@ export function GateVerdictBox({
     }
   }
 
-  async function handleReopen() {
+  async function handleReopenSubmit() {
     setLocalPending(true);
     try {
-      await onReopen();
+      await onReopen(reopenFeedback);
+      setShowReopen(false);
+      setReopenFeedback("");
     } catch (err) {
       setActionError("Action failed. Please try again.");
       console.error(err);
@@ -246,7 +260,7 @@ export function GateVerdictBox({
             </button>
             <button
               className={styles.secondaryButton}
-              onClick={() => void handleReopen()}
+              onClick={() => setShowReopen(true)}
               disabled={isPending}
             >
               Reopen for Revision
@@ -257,7 +271,7 @@ export function GateVerdictBox({
         {(verdict === "PARTIAL" || verdict === "FAIL") && (
           <button
             className={styles.primaryButton}
-            onClick={() => void handleReopen()}
+            onClick={() => setShowReopen(true)}
             disabled={isPending}
           >
             Reopen for Revision
@@ -276,7 +290,7 @@ export function GateVerdictBox({
             </button>
             <button
               className={styles.secondaryButton}
-              onClick={() => void handleReopen()}
+              onClick={() => setShowReopen(true)}
               disabled={isPending}
             >
               Reopen for Revision
@@ -284,6 +298,44 @@ export function GateVerdictBox({
           </>
         )}
       </div>
+
+      {showReopen && (
+        <div
+          role="form"
+          aria-label="Reopen for revision"
+          className={styles.overrideForm}
+        >
+          <label htmlFor="reopen-feedback" className={styles.formLabel}>
+            Feedback for the agent (optional)
+          </label>
+          <textarea
+            id="reopen-feedback"
+            rows={3}
+            placeholder="What should the agent fix or improve?"
+            value={reopenFeedback}
+            onChange={(e) => setReopenFeedback(e.target.value)}
+            className={styles.formTextarea}
+          />
+          <div className={styles.formActions}>
+            <button
+              className={styles.secondaryButton}
+              onClick={() => {
+                setShowReopen(false);
+                setReopenFeedback("");
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              className={styles.primaryButton}
+              disabled={isPending}
+              onClick={() => void handleReopenSubmit()}
+            >
+              Reopen &amp; Spawn Session
+            </button>
+          </div>
+        </div>
+      )}
 
       {actionError && (
         <InlineError
