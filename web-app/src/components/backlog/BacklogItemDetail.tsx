@@ -101,13 +101,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     void load();
   }, [load]);
 
-  // Poll for updated item data while triage is running so triage-review-panel appears automatically.
+  // Poll for updated item data while triage is running or while in review (waiting for gate verdict).
   // Suspend polling while the edit form is open so a background refresh can't clobber unsaved edits.
   useEffect(() => {
-    if (item?.triageStatus !== "running" || editMode) return;
+    const shouldPoll = (item?.triageStatus === "running" || item?.status === "review") && !editMode;
+    if (!shouldPoll) return;
     const interval = setInterval(() => { void load(); }, 5_000);
     return () => clearInterval(interval);
-  }, [item?.triageStatus, editMode, load]);
+  }, [item?.triageStatus, item?.status, editMode, load]);
 
   // Track triage progress: increment elapsed time while triageStatus === "running"
   useEffect(() => {
@@ -621,6 +622,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   onReopen={handleGateReopen}
                   onOverride={handleGateOverride}
                   onSkipGate={handleGateSkip}
+                  onReReview={() => triggerReReview(item.id).then(() => load())}
                   actionPending={actionLoading}
                 />
               </div>
