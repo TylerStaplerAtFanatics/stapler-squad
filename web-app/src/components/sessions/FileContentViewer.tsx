@@ -109,11 +109,12 @@ interface BreadcrumbProps {
   path: string;
   onSegmentClick?: (path: string) => void;
   downloadUrl?: string;
+  openUrl?: string;
   wrapLines?: boolean;
   onToggleWrap?: () => void;
 }
 
-function Breadcrumb({ path, onSegmentClick, downloadUrl, wrapLines, onToggleWrap }: BreadcrumbProps) {
+function Breadcrumb({ path, onSegmentClick, downloadUrl, openUrl, wrapLines, onToggleWrap }: BreadcrumbProps) {
   const segments = path.split("/").filter(Boolean);
   return (
     <div className={breadcrumb}>
@@ -141,6 +142,17 @@ function Breadcrumb({ path, onSegmentClick, downloadUrl, wrapLines, onToggleWrap
         >
           ↵ Wrap
         </button>
+      )}
+      {openUrl && (
+        <a
+          href={openUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={downloadButton}
+          title="Open file in browser"
+        >
+          ↗ Open
+        </a>
       )}
       {downloadUrl && (
         <a
@@ -397,6 +409,7 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
 
   const rawUrl = `/api/files/raw?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(filePath)}`;
   const downloadUrl = `${rawUrl}&download=true`;
+  const openUrl = rawUrl;
 
   if (loading) {
     return (
@@ -428,7 +441,7 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
   if (isImage) {
     return (
       <div className={container}>
-        <Breadcrumb path={filePath} downloadUrl={downloadUrl} />
+        <Breadcrumb path={filePath} openUrl={openUrl} downloadUrl={downloadUrl} />
         <div className={imageViewer}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -445,7 +458,7 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
   if (isPdf) {
     return (
       <div className={container}>
-        <Breadcrumb path={filePath} downloadUrl={downloadUrl} />
+        <Breadcrumb path={filePath} openUrl={openUrl} downloadUrl={downloadUrl} />
         <div className={pdfViewer}>
           <embed
             src={`${rawUrl}#view=FitH&navpanes=0`}
@@ -467,7 +480,7 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
 
     return (
       <div className={container}>
-        <Breadcrumb path={filePath} downloadUrl={downloadUrl} />
+        <Breadcrumb path={filePath} openUrl={openUrl} downloadUrl={downloadUrl} />
         <div className={videoViewer}>
           <video
             src={rawUrl}
@@ -490,7 +503,7 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
     const sizeKb = Number(data.size) / 1024;
     return (
       <div className={container}>
-        <Breadcrumb path={filePath} downloadUrl={downloadUrl} />
+        <Breadcrumb path={filePath} openUrl={openUrl} downloadUrl={downloadUrl} />
         <div className={binaryPlaceholder}>
           <span className={binaryIcon}>🔒</span>
           <p className={binaryTitle}>Binary file — cannot display</p>
@@ -513,6 +526,7 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
     <div className={container}>
       <Breadcrumb
         path={filePath}
+        openUrl={openUrl}
         downloadUrl={downloadUrl}
         wrapLines={wrapLines}
         onToggleWrap={() => setWrapLines((w) => !w)}

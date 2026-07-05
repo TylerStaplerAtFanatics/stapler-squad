@@ -276,9 +276,8 @@ export function GateVerdictBox({
             </button>
             <button
               className={styles.secondaryButton}
-              aria-disabled="true"
-              disabled
-              title="Wait for gate result or use Skip Gate below"
+              onClick={() => void handleReopen()}
+              disabled={isPending}
             >
               Reopen for Revision
             </button>
