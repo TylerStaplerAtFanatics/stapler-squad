@@ -13,6 +13,21 @@ import { useSessionActions } from "@/lib/hooks/useSessionActions";
 import { DetectionEventsPanel } from "./DetectionEventsPanel";
 import { SessionActionsOverflow } from "./SessionActionsOverflow";
 import { formatPauseReason } from "@/lib/sessions/formatPauseReason";
+
+// The launch command always starts with the program string it was last launched
+// with (see Instance.buildLaunchCommand, session/instance_tmux.go). If it no longer
+// starts with the current program, the program was changed since the last launch
+// and won't take effect until the session is next resumed/restarted. Exported as a
+// standalone predicate so it's unit-testable without rendering the full card.
+export function hasPendingProgramChange(session: Pick<Session, "status" | "program" | "launchCommand">): boolean {
+  const isPausedOrStopped = session.status === SessionStatus.PAUSED || session.status === SessionStatus.STOPPED;
+  return (
+    isPausedOrStopped &&
+    !!session.program &&
+    !!session.launchCommand &&
+    !session.launchCommand.startsWith(session.program)
+  );
+}
 import {
   card,
   cardDeleting,
@@ -158,6 +173,7 @@ function SessionCardInner({
   const isSnapshotEnabled = session.status === SessionStatus.ACTIVE && isSnapshotOpen;
   const isCreating = session.status === SessionStatus.CREATING;
   const isPaused = session.status === SessionStatus.PAUSED;
+  const pendingProgramChange = hasPendingProgramChange(session);
   const { html: snapshotHtml, isEmpty: snapshotIsEmpty, loading: snapshotLoadingState, error: snapshotErrorMsg } =
     useTerminalSnapshot(session.id, isSnapshotEnabled);
 
@@ -592,6 +608,17 @@ function SessionCardInner({
                 data-testid="workflow-badge"
               >
                 <span aria-hidden="true">⚙</span> {session.workflowName || "Workflow"}
+              </span>
+            )}
+            {pendingProgramChange && (
+              <span
+                className={workflowBadge}
+                role="img"
+                data-testid="badge-pending-program"
+                title="Program was changed since this session last launched — takes effect on resume/restart"
+                aria-label="Program change pending: takes effect on resume or restart"
+              >
+                <span aria-hidden="true">⏳</span> Pending program change
               </span>
             )}
           </div>
