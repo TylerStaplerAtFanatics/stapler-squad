@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -792,6 +793,55 @@ func (fs *FileService) ServeFileRaw(w http.ResponseWriter, r *http.Request) {
 			"filename": filepath.Base(absPath),
 		})
 		w.Header().Set("Content-Disposition", cd)
+	}
+
+	// For HTML files served without download mode, inject a <base> tag so that relative
+	// links (images, CSS, other HTML files) resolve correctly when accessed via the
+	// /api/files/raw?sessionId=...&path=... endpoint.
+	isHTML := strings.HasPrefix(contentType, "text/html") || ext == ".html" || ext == ".htm"
+	if isHTML && !download {
+		// Compute the directory prefix for the base URL (e.g. "logos/" for "logos/preview.html").
+		dir := ""
+		if idx := strings.LastIndex(relPath, "/"); idx >= 0 {
+			dir = relPath[:idx+1]
+		}
+
+		q := url.Values{}
+		q.Set("sessionId", sessionID)
+		q.Set("path", dir)
+		baseHref := "/api/files/raw?" + q.Encode()
+		baseTag := `<base href="` + baseHref + `">`
+
+		// Seek to start; content-type sniffing may have advanced the file position.
+		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+			http.Error(w, "could not read file", http.StatusInternalServerError)
+			return
+		}
+		rawContent, readErr := io.ReadAll(f)
+		if readErr != nil {
+			http.Error(w, "could not read file", http.StatusInternalServerError)
+			return
+		}
+
+		contentStr := string(rawContent)
+		lowerContent := strings.ToLower(contentStr)
+
+		// Find <head> tag (which may have attributes) and inject the base tag just after
+		// its closing ">". Fall back to prepending if no <head> is present.
+		if headIdx := strings.Index(lowerContent, "<head"); headIdx >= 0 {
+			if closeIdx := strings.Index(lowerContent[headIdx:], ">"); closeIdx >= 0 {
+				insertAt := headIdx + closeIdx + 1
+				contentStr = contentStr[:insertAt] + baseTag + contentStr[insertAt:]
+			}
+		} else {
+			contentStr = baseTag + contentStr
+		}
+
+		body := []byte(contentStr)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		_, _ = w.Write(body)
+		return
 	}
 
 	http.ServeContent(w, r, filepath.Base(absPath), info.ModTime(), f)
