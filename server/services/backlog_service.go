@@ -1163,6 +1163,14 @@ func (s *BacklogService) SpawnSessionFromItem(
 		s.worktreeMu.Unlock()
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to prepare session directory: %w", err))
 	}
+	// Inject MCP config so the spawned Claude Code session has access to the
+	// stapler-squad MCP tools (get_backlog_item, report_progress, etc.).
+	// Non-fatal: log and continue if it fails.
+	if binPath, binErr := os.Executable(); binErr != nil {
+		log.ErrorLog.Printf("[SpawnSessionFromItem] failed to resolve binary path for MCP injection item=%s: %v", item.ID, binErr)
+	} else if mcpErr := InjectMCPConfig(worktreePath, binPath); mcpErr != nil {
+		log.ErrorLog.Printf("[SpawnSessionFromItem] InjectMCPConfig item=%s worktree=%s: %v", item.ID, worktreePath, mcpErr)
+	}
 	if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
 		s.worktreeMu.Unlock()
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
