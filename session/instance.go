@@ -369,6 +369,11 @@ type Instance struct {
 	recentRestartTimes []time.Time
 	restartMu          deadlock.Mutex
 
+	// programSwitchMu serializes SwitchProgram calls so a manual program-switch
+	// request and an automatic capacity-monitor fallback can't race on the same
+	// instance and double-restart or double-port history.
+	programSwitchMu deadlock.Mutex
+
 	// lifecycleListeners receives EventStarted / EventExited notifications.
 	lifecycleListeners   []LifecycleListener
 	lifecycleListenersMu deadlock.Mutex

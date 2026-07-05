@@ -1489,37 +1489,20 @@ func (s *SessionService) UpdateSession(
 	}
 
 	// Handle program update. Empty string means "System default" — resolve to the
-	// configured default so the DB NotEmpty constraint is satisfied.
+	// configured default so the DB NotEmpty constraint is satisfied. Consolidated with
+	// the capacity-monitor auto-fallback path (UpdateSessionProgram below) via
+	// Instance.SwitchProgram so the two entry points can't drift or double-restart.
 	if req.Msg.Program != nil {
-		oldProgram := instance.Program
-		newProgram := *req.Msg.Program
-		if newProgram == "" {
-			newProgram = config.LoadConfig().DefaultProgram
-		}
-		if instance.Program != newProgram {
-			instance.SetProgram(newProgram)
+		changed, _, switchErr := instance.SwitchProgram(ctx, *req.Msg.Program, func() error {
+			instances[instanceIndex] = instance
+			return s.storage.SaveInstances(instances)
+		})
+		if changed {
 			updatedFields = append(updatedFields, "program")
-
-			// Port history if switching between Claude and Antigravity
-			if (strings.Contains(oldProgram, "claude") && (strings.Contains(newProgram, "agy") || strings.Contains(newProgram, "antigravity"))) ||
-				((strings.Contains(oldProgram, "agy") || strings.Contains(oldProgram, "antigravity")) && strings.Contains(newProgram, "claude")) {
-				if err := session.PortSessionHistory(ctx, oldProgram, newProgram, instance); err != nil {
-					log.Error("[UpdateSession] failed to port session history during program switch", "session", instance.Title, "old", oldProgram, "new", newProgram, "err", err)
-				}
-			}
-
-			// If the session is running, restart it with the new program.
-			// Save before restarting so the new program is persisted even if Restart fails.
-			if instance.Status == session.Active {
-				instances[instanceIndex] = instance
-				if saveErr := s.storage.SaveInstances(instances); saveErr != nil {
-					log.Warn("[UpdateSession] failed to pre-save before program restart", "session", instance.Title, "err", saveErr)
-				}
-				if err := instance.Restart(true); err != nil {
-					log.Error("[UpdateSession] failed to restart session after program change", "session", instance.Title, "err", err)
-					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restart session after program change: %w", err))
-				}
-			}
+		}
+		if switchErr != nil {
+			log.Error("[UpdateSession] failed to restart session after program change", "session", instance.Title, "err", switchErr)
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to restart session after program change: %w", switchErr))
 		}
 	}
 
@@ -3978,35 +3961,24 @@ func (s *SessionService) GetProviderLimits(
 	}), nil
 }
 
-// UpdateSessionProgram handles switching programs for a session, doing the history porting, DB save, and PTY restart.
+// UpdateSessionProgram handles switching programs for a session, doing the history
+// porting, DB save, and PTY restart. Shares its implementation with the UpdateSession RPC
+// handler via Instance.SwitchProgram (see session/instance_program.go) so the two
+// program-switch entry points — this auto-fallback path and the manual RPC — can't drift.
 func (s *SessionService) UpdateSessionProgram(ctx context.Context, sessionID string, newProgram string) error {
 	inst := s.findInstance(sessionID)
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	if inst.Program == newProgram {
+	changed, _, err := inst.SwitchProgram(ctx, newProgram, func() error {
+		return s.storage.SaveInstances([]*session.Instance{inst})
+	})
+	if !changed {
 		return nil
 	}
-
-	oldProgram := inst.Program
-	inst.SetProgram(newProgram)
-
-	if (strings.Contains(oldProgram, "claude") && (strings.Contains(newProgram, "agy") || strings.Contains(newProgram, "antigravity"))) ||
-		((strings.Contains(oldProgram, "agy") || strings.Contains(oldProgram, "antigravity")) && strings.Contains(newProgram, "claude")) {
-		if err := session.PortSessionHistory(ctx, oldProgram, newProgram, inst); err != nil {
-			log.Error("failed to port session history during program switch in auto-transition", "session", inst.Title, "err", err)
-		}
-	}
-
-	if err := s.storage.SaveInstances([]*session.Instance{inst}); err != nil {
-		log.Error("failed to save instance program update in auto-transition", "session", inst.Title, "err", err)
-	}
-
-	if inst.Status == session.Active {
-		if err := inst.Restart(true); err != nil {
-			return fmt.Errorf("failed to restart session: %w", err)
-		}
+	if err != nil {
+		return fmt.Errorf("failed to restart session: %w", err)
 	}
 
 	s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"program"}))
