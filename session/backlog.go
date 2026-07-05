@@ -27,8 +27,9 @@ const (
 
 // Session tag constants for backlog-spawned sessions.
 const (
-	TagBacklogWork = "backlog:work"
-	TagAutonomous  = "autonomous"
+	TagBacklogWork     = "backlog:work"
+	TagBacklogRevision = "backlog:revision"
+	TagAutonomous      = "autonomous"
 )
 
 // TriggeredBy values for BacklogStatusEvent records.

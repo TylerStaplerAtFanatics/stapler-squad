@@ -1126,9 +1126,21 @@ func (s *BacklogService) SpawnSessionFromItem(
 	}
 	prompt := session.BuildTokenBudgetedPrompt(entItem, priorSessions)
 
-	// 9. Generate session title — prefer triage-suggested short title if available.
+	// 9. Generate session title.
+	// On reopen, append a revision number (r2, r3…) based on how many work sessions
+	// already exist so the session list shows distinct, human-readable names.
 	repoName := slugify(filepath.Base(item.RepoPath))
-	title := repoName + "-" + triageShortTitle(priorSessions, item.Title)
+	baseTitle := repoName + "-" + triageShortTitle(priorSessions, item.Title)
+	title := baseTitle
+	if isReopen {
+		workCount := 0
+		for _, s := range priorSessions {
+			if s.SessionRole == string(session.SessionRoleWork) {
+				workCount++
+			}
+		}
+		title = fmt.Sprintf("%s-r%d", baseTitle, workCount+1)
+	}
 
 	// 10. Ensure the worktree path exists and write slash commands + context file BEFORE
 	// spawning the session — the claude process starts executing synchronously inside
@@ -1165,6 +1177,9 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// Pass the same resolved worktreePath so CreateDirectorySession's own resolution is a
 	// no-op and both paths are guaranteed to agree.
 	spawnTags := []string{session.TagBacklogWork}
+	if isReopen {
+		spawnTags = append(spawnTags, session.TagBacklogRevision)
+	}
 	if req.Msg.Autonomous {
 		spawnTags = append(spawnTags, session.TagAutonomous)
 	}
