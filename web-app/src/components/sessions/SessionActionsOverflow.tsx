@@ -1,4 +1,5 @@
 "use client";
+// +feature: session-change-program
 
 import { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
@@ -122,6 +123,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
   const [isProgramPickerOpen, setIsProgramPickerOpen] = useState(false);
   const [programPickerValue, setProgramPickerValue] = useState(session.program || "");
   const [isSavingProgram, setIsSavingProgram] = useState(false);
+  const [programError, setProgramError] = useState("");
   const [isProgramRestartConfirmOpen, setIsProgramRestartConfirmOpen] = useState(false);
   const [pendingProgramValue, setPendingProgramValue] = useState("");
   const availablePrograms = useAvailablePrograms();
@@ -229,8 +231,13 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
 
   const commitProgramChange = async (program: string) => {
     setIsSavingProgram(true);
+    setProgramError("");
     try {
       await onChangeProgram?.(session.id, program);
+      return true;
+    } catch (err) {
+      setProgramError(err instanceof Error ? err.message : "Failed to change program.");
+      return false;
     } finally {
       setIsSavingProgram(false);
     }
@@ -633,7 +640,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
               )}
               {onChangeProgram && (
                 <button role="menuitem" className={overflowMenuItem}
-                  onClick={(e) => { e.stopPropagation(); setProgramPickerValue(session.program || ""); setIsProgramPickerOpen(true); }}
+                  onClick={(e) => { e.stopPropagation(); setProgramPickerValue(session.program || ""); setProgramError(""); setIsProgramPickerOpen(true); }}
                   aria-label={`Change program for session ${session.title}`}
                 >
                   <span aria-hidden="true">⚙️</span> Change Program
@@ -801,6 +808,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
                   <option value={programPickerValue}>{programPickerValue}</option>
                 )}
               </select>
+              {programError && <p className={errorMessage}>{programError}</p>}
             </div>
             <div className={dialogActions}>
               <button
@@ -811,17 +819,18 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
                     // Active sessions restart on a program change — require an
                     // explicit second confirmation, matching Restart/Delete.
                     setPendingProgramValue(programPickerValue);
+                    setProgramError("");
                     setIsProgramPickerOpen(false);
                     setIsProgramRestartConfirmOpen(true);
                     return;
                   }
-                  await commitProgramChange(programPickerValue);
-                  setIsProgramPickerOpen(false);
+                  const ok = await commitProgramChange(programPickerValue);
+                  if (ok) setIsProgramPickerOpen(false);
                 }}
               >
                 {isSavingProgram ? "Saving…" : "Save"}
               </button>
-              <button className={cancelButton} onClick={() => setIsProgramPickerOpen(false)}>Cancel</button>
+              <button className={cancelButton} onClick={() => { setIsProgramPickerOpen(false); setProgramError(""); }}>Cancel</button>
             </div>
           </div>
         </div>,
@@ -843,12 +852,13 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
             <h3 id="programConfirmDialogTitle">Change Program</h3>
             <p>Switch &quot;{session.title}&quot; to a different program?</p>
             <p className={warningText}>This will terminate the current process and start a new one with the new program.</p>
+            {programError && <p className={errorMessage}>{programError}</p>}
             <div className={dialogActions}>
               <button
                 onClick={async (e) => {
                   e.stopPropagation();
-                  await commitProgramChange(pendingProgramValue);
-                  setIsProgramRestartConfirmOpen(false);
+                  const ok = await commitProgramChange(pendingProgramValue);
+                  if (ok) setIsProgramRestartConfirmOpen(false);
                 }}
                 disabled={isSavingProgram}
                 className={submitButton}
@@ -856,7 +866,7 @@ export const SessionActionsOverflow = forwardRef<SessionActionsOverflowHandle, S
                 {isSavingProgram ? "Saving…" : "Change & Restart"}
               </button>
               <button
-                onClick={(e) => { e.stopPropagation(); setIsProgramRestartConfirmOpen(false); }}
+                onClick={(e) => { e.stopPropagation(); setIsProgramRestartConfirmOpen(false); setProgramError(""); }}
                 disabled={isSavingProgram}
                 className={cancelButton}
               >

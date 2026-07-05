@@ -290,6 +290,31 @@ describe("SessionActionsOverflow", () => {
       await waitFor(() => expect(onChangeProgram).toHaveBeenCalledWith("session-1", "aider"));
     });
 
+    it("keeps the dialog open and shows an inline error when the save fails (non-Active session)", async () => {
+      const session = makeSession({ status: SessionStatus.PAUSED, program: "claude" });
+      const onChangeProgram = jest.fn().mockRejectedValue(new Error("network down"));
+      openProgramPicker({ session, onChangeProgram });
+
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: "aider" } });
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+      await waitFor(() => expect(screen.getByText("network down")).toBeInTheDocument());
+      expect(screen.getByRole("dialog", { name: /change program/i })).toBeInTheDocument();
+    });
+
+    it("keeps the restart-confirm dialog open and shows an inline error when the save fails (Active session)", async () => {
+      const session = makeSession({ status: SessionStatus.ACTIVE });
+      const onChangeProgram = jest.fn().mockRejectedValue(new Error("network down"));
+      openProgramPicker({ session, onChangeProgram });
+
+      fireEvent.change(screen.getByRole("combobox"), { target: { value: "aider" } });
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      fireEvent.click(screen.getByRole("button", { name: /change & restart/i }));
+
+      await waitFor(() => expect(screen.getByText("network down")).toBeInTheDocument());
+      expect(screen.getByRole("button", { name: /change & restart/i })).toBeInTheDocument();
+    });
+
     it("re-syncs the picker value when the session's program changes externally while open", () => {
       const session = makeSession({ status: SessionStatus.PAUSED, program: "claude" });
       const { rerender } = openProgramPicker({ session });
