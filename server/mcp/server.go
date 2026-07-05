@@ -53,7 +53,10 @@ func NewCore(store session.InstanceStore, svc *services.SessionService, sbMgr *s
 // eventBus is optional — pass nil to disable triage-complete notifications.
 // prCache is optional — pass nil to disable GitHub PR tools.
 func NewHTTPHandler(store session.InstanceStore, svc *services.SessionService, sbMgr *scrollback.ScrollbackManager, storage *session.Storage, eventBus *events.EventBus, prCache *githubpkg.UserPRCache) *mcpserver.StreamableHTTPServer {
-	return mcpserver.NewStreamableHTTPServer(NewCore(store, svc, sbMgr, storage, eventBus, prCache))
+	// Stateless mode: accept any session ID rather than tracking them in memory.
+	// This allows Claude Code sessions to survive server restarts without needing
+	// to re-initialize the MCP connection (which would require restarting the agent).
+	return mcpserver.NewStreamableHTTPServer(NewCore(store, svc, sbMgr, storage, eventBus, prCache), mcpserver.WithStateLess(true))
 }
 
 // RunServer initializes and starts the MCP stdio server.
