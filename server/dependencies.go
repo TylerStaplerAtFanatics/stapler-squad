@@ -491,6 +491,27 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		backlogLifecycleListener.WireToInstance(inst)
 	}
 
+	// Restore dirBaseSHA for directory-mode backlog sessions that were persisted
+	// before this process started. One batch query replaces N individual lookups.
+	{
+		var dirUUIDs []string
+		dirInstMap := make(map[string]*session.Instance)
+		for _, inst := range instances {
+			if !inst.IsWorktree && inst.HasTag(session.TagBacklogWork) {
+				dirUUIDs = append(dirUUIDs, inst.UUID)
+				dirInstMap[inst.UUID] = inst
+			}
+		}
+		if len(dirUUIDs) > 0 {
+			baseSHAs, _ := storage.GetBaseCommitSHAsForSessions(context.Background(), dirUUIDs)
+			for uuid, sha := range baseSHAs {
+				if inst, ok := dirInstMap[uuid]; ok {
+					inst.SetDirBaseSHA(sha)
+				}
+			}
+		}
+	}
+
 	// Wire instances to pollers.
 	// SetInstances accepts a slice (non-comparable) so use SetAlways (skips nil check).
 	w2 := warren.NewWire("RuntimeDeps.Pollers")
@@ -822,6 +843,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// Refuse manual syncs while the backlog feature is toggled off, matching
 	// the periodic SyncLoop's behavior.
 	backlogSvc.SetSyncFeatureEnabledCheck(backlogCtrl.IsEnabled)
+	backlogLifecycleListener.SetAutoReopener(backlogSvc)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 

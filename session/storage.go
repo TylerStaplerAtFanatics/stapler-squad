@@ -764,6 +764,15 @@ func (s *Storage) GetItemSession(ctx context.Context, id string) (*ent.ItemSessi
 	return er.GetItemSession(ctx, id)
 }
 
+// GetBaseCommitSHAsForSessions returns a sessionUUID→base_commit_sha map for the given UUIDs.
+func (s *Storage) GetBaseCommitSHAsForSessions(ctx context.Context, uuids []string) (map[string]string, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, nil
+	}
+	return er.GetBaseCommitSHAsForSessions(ctx, uuids)
+}
+
 // GetItemSessionBySessionUUID looks up the ItemSession for a given session UUID (loads BacklogItem edge).
 func (s *Storage) GetItemSessionBySessionUUID(ctx context.Context, sessionUUID string) (*ent.ItemSession, error) {
 	er, ok := s.repo.(*EntRepository)
@@ -789,6 +798,15 @@ func (s *Storage) UpdateItemSessionStarted(ctx context.Context, id string, start
 		return fmt.Errorf("item session updates not supported by this storage backend")
 	}
 	return er.UpdateItemSessionStarted(ctx, id, startedAt)
+}
+
+// UpdateItemSessionGitActivity records the latest commit SHA and related fields on an ItemSession.
+func (s *Storage) UpdateItemSessionGitActivity(ctx context.Context, id string, sha, msg string, commitAt time.Time, commitCount int) error {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return fmt.Errorf("item session updates not supported by this storage backend")
+	}
+	return er.UpdateItemSessionGitActivity(ctx, id, sha, msg, commitAt, commitCount)
 }
 
 // UpdateItemSessionEnded records the end time for an ItemSession.
