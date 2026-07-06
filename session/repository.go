@@ -318,6 +318,10 @@ type BacklogItemPrecondition struct {
 	ExpectedStatus string
 	// ExpectedUpdatedAt, if non-zero, requires the item's updated_at to match.
 	ExpectedUpdatedAt *time.Time
+	// Note, if non-empty, is stored in the status event audit log alongside this
+	// transition. Use it to record why the transition happened (e.g. "auto-reopened
+	// after FAIL verdict").
+	Note string
 }
 
 // ItemSourceData is the domain model for an external item source.

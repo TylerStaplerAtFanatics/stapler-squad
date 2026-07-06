@@ -179,7 +179,7 @@ func init() {
 	// backlogstatusevent.DefaultTriggeredBy holds the default value on creation for the triggered_by field.
 	backlogstatusevent.DefaultTriggeredBy = backlogstatuseventDescTriggeredBy.Default.(string)
 	// backlogstatuseventDescCreatedAt is the schema descriptor for created_at field.
-	backlogstatuseventDescCreatedAt := backlogstatuseventFields[5].Descriptor()
+	backlogstatuseventDescCreatedAt := backlogstatuseventFields[6].Descriptor()
 	// backlogstatusevent.DefaultCreatedAt holds the default value on creation for the created_at field.
 	backlogstatusevent.DefaultCreatedAt = backlogstatuseventDescCreatedAt.Default.(func() time.Time)
 	// backlogstatuseventDescID is the schema descriptor for id field.
