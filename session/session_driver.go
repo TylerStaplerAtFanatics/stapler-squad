@@ -45,6 +45,14 @@ const (
 	// before it is considered stuck and restarted. Only fires after the initial prompt is sent.
 	driverInactivityTimeout = 10 * time.Minute
 
+	// driverBacklogNudgeDelay is how long after the initial prompt a backlog work session can
+	// be idle before we send a task-reminder nudge (instead of restarting immediately).
+	driverBacklogNudgeDelay = 5 * time.Minute
+
+	// driverBacklogNudgeGrace is how long we wait after sending a nudge before treating
+	// the session as stuck and falling through to the normal restart path.
+	driverBacklogNudgeGrace = 5 * time.Minute
+
 	// driverMinRuntimeBeforeRetry is the minimum time after sending the initial prompt before
 	// an unexpected exit is treated as a crash worth retrying. Sessions that ran longer than
 	// this are assumed to have completed their task normally.
@@ -141,6 +149,10 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 	// Pre-seed from the current in-memory state so we don't re-scan for sessions
 	// that already have a linked PR (e.g. created from a PR URL in the omnibar).
 	prURLLinked := inst.GitHubPRNumber > 0
+
+	// nudgeSentAt records when the last backlog-work nudge was sent.
+	// Zero means no nudge has been sent yet.
+	var nudgeSentAt time.Time
 
 	// No initial prompt configured — skip the send step; driver still handles
 	// startup dialogs, auto-approval, and monitoring.
@@ -374,10 +386,40 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 			if !last.IsZero() && last.After(initialPromptSentAt) {
 				activityRef = last
 			}
-			if time.Since(activityRef) > driverInactivityTimeout {
+			if !nudgeSentAt.IsZero() && nudgeSentAt.After(activityRef) {
+				activityRef = nudgeSentAt
+			}
+
+			idle := time.Since(activityRef)
+
+			// For backlog work sessions: send a task-reminder nudge before restarting.
+			// This preserves conversational context when Claude finishes but forgets to
+			// call /backlog/review or report_progress.
+			if inst.HasTag(TagBacklogWork) && nudgeSentAt.IsZero() && idle > driverBacklogNudgeDelay {
+				nudge := "You appear to have paused. Run `/backlog/status` to see remaining " +
+					"acceptance criteria. Mark each complete criterion with `/backlog/done-N`, " +
+					"then submit with `/backlog/review` once all are done."
+				if sendErr := inst.SendKeys(nudge + "\r"); sendErr != nil {
+					log.Warn("SessionDriver: failed to send backlog nudge",
+						"session", inst.Title, "err", sendErr)
+				} else {
+					log.Info("SessionDriver: sent backlog nudge",
+						"session", inst.Title,
+						"idle", idle.Round(time.Second),
+					)
+					nudgeSentAt = time.Now()
+				}
+				continue
+			}
+
+			graceTimeout := driverInactivityTimeout
+			if inst.HasTag(TagBacklogWork) && !nudgeSentAt.IsZero() {
+				graceTimeout = driverBacklogNudgeGrace
+			}
+			if idle > graceTimeout {
 				log.Warn("SessionDriver: session stuck — no output for inactivity timeout",
 					"session", inst.Title,
-					"inactivity", time.Since(activityRef).Round(time.Second),
+					"inactivity", idle.Round(time.Second),
 				)
 				handleDriverFailure(inst, allowedPath, retried, "inactivity timeout")
 				return
