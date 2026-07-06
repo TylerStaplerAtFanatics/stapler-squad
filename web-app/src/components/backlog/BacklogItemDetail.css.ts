@@ -597,6 +597,21 @@ export const sessionEndedBadge = style({
   marginLeft: vars.space["2"],
 });
 
+export const sessionCost = style({
+  fontSize: vars.fontSize.xs,
+  fontFamily: vars.font.mono,
+  color: vars.color.textMuted,
+  marginLeft: vars.space["2"],
+});
+
+export const sessionTotalCost = style({
+  fontSize: vars.fontSize.sm,
+  color: vars.color.textSecondary,
+  marginTop: vars.space["2"],
+  paddingTop: vars.space["2"],
+  borderTop: `1px solid ${vars.color.borderColor}`,
+});
+
 export const errorState = style({
   display: "flex",
   alignItems: "center",

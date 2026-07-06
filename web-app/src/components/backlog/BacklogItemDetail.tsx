@@ -629,6 +629,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
 
               {showChangesModal && workSession && (
                 <ReviewChangesModal
+                  itemId={item.id}
                   sessionId={workSession.sessionId}
                   sessionTitle={item.title}
                   onClose={() => setShowChangesModal(false)}
@@ -838,6 +839,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                         {s.startedAt && (
                           <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
                         )}
+                        {s.estimatedCostUsd > 0 && (
+                          <span className={styles.sessionCost} title="Estimated session cost">${s.estimatedCostUsd.toFixed(4)}</span>
+                        )}
                         {isOrphan && (
                           <span className={styles.sessionEndedBadge}>ended</span>
                         )}
@@ -854,6 +858,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                         <span className={styles.sessionRole}>{s.role}</span>
                         {s.startedAt && (
                           <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
+                        )}
+                        {s.estimatedCostUsd > 0 && (
+                          <span className={styles.sessionCost} title="Estimated session cost">${s.estimatedCostUsd.toFixed(4)}</span>
                         )}
                         {isOrphan && (
                           <span className={styles.sessionEndedBadge}>ended</span>
@@ -886,6 +893,11 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 );
               })}
             </div>
+            {item.totalEstimatedCostUsd > 0 && (
+              <p className={styles.sessionTotalCost}>
+                Total estimated cost: <strong>${item.totalEstimatedCostUsd.toFixed(4)}</strong>
+              </p>
+            )}
 
             {/* Session monitor for the most recent active session.
                 A session is only considered active if the item is in the

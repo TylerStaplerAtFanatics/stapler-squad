@@ -69,6 +69,7 @@ message ItemSession {
   google.protobuf.Timestamp created_at = 10;
   ReviewVerdict review_verdict = 11;
   TriageResult triage_result = 12;
+  double estimated_cost_usd = 13;
 }
 
 // BacklogStatusEvent records a single status transition for a backlog item.
@@ -102,6 +103,7 @@ message BacklogItem {
   repeated ItemSession item_sessions = 18;
   string source_id = 19;
   repeated BacklogStatusEvent status_events = 20;
+  double total_estimated_cost_usd = 21;
 }
 
 // ItemSource represents an external plugin source that syncs items into the
@@ -403,6 +405,9 @@ service BacklogService {
   // GetBacklogItemDiff returns the committed diff for a backlog item's work sessions
   // (from the earliest work session base SHA to the current HEAD).
   rpc GetBacklogItemDiff(GetBacklogItemDiffRequest) returns (GetBacklogItemDiffResponse) {}
+
+  // GetBacklogItemCost returns the estimated token cost for all sessions linked to an item.
+  rpc GetBacklogItemCost(GetBacklogItemCostRequest) returns (GetBacklogItemCostResponse) {}
 }
 
 message ImportGitHubIssueRequest {
@@ -473,4 +478,21 @@ message GetBacklogItemDiffResponse {
   string diff = 1;
   int32 added = 2;
   int32 removed = 3;
+}
+
+message SessionCostEntry {
+  string session_id = 1;
+  string session_role = 2; // "work", "triage", "review"
+  double estimated_cost_usd = 3;
+  int64 input_tokens = 4;
+  int64 output_tokens = 5;
+}
+
+message GetBacklogItemCostRequest {
+  string item_id = 1;
+}
+
+message GetBacklogItemCostResponse {
+  double total_cost_usd = 1;
+  repeated SessionCostEntry sessions = 2;
 }

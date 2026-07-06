@@ -889,7 +889,7 @@ func TestItemSessionToProto_MapsTriageResult(t *testing.T) {
 	require.NoError(t, loadErr)
 	require.Len(t, sessions, 1)
 
-	proto := itemSessionToProto(sessions[0])
+	proto := itemSessionToProto(sessions[0], nil)
 	require.NotNil(t, proto.TriageResult, "TriageResult should be populated")
 	assert.Equal(t, "looks good", proto.TriageResult.Summary)
 	require.Len(t, proto.TriageResult.Suggestions, 1)
@@ -927,7 +927,7 @@ func TestItemSessionToProto_HandlesInvalidTriageResultJSON(t *testing.T) {
 	require.NotPanics(t, func() {
 		sessions, _ := storage.ListItemSessions(t.Context(), item.ID)
 		if len(sessions) > 0 {
-			proto := itemSessionToProto(sessions[0])
+			proto := itemSessionToProto(sessions[0], nil)
 			// TriageResult should be nil because JSON was invalid.
 			assert.Nil(t, proto.TriageResult)
 		}

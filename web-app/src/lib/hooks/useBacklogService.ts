@@ -62,6 +62,7 @@ export interface LinkedSession {
     perCriterion?: Array<{ criterionIndex: number; outcome: string; evidence: string }>;
   };
   triageResult?: TriageResult;
+  estimatedCostUsd: number;
 }
 
 export interface BacklogItem {
@@ -91,6 +92,8 @@ export interface BacklogItem {
   triageResult?: TriageResult;
   /** Status transition history for this item (audit log) */
   statusEvents: StatusEvent[];
+  /** Sum of estimated USD cost across all linked sessions */
+  totalEstimatedCostUsd: number;
 }
 
 export interface StatusEvent {
@@ -139,6 +142,7 @@ function mapItemSession(s: ItemSessionProto): LinkedSession {
     role: s.sessionRole,
     startedAt: s.startedAt ? new Date(Number(s.startedAt.seconds) * 1000).toISOString() : undefined,
     endedAt: s.endedAt ? new Date(Number(s.endedAt.seconds) * 1000).toISOString() : undefined,
+    estimatedCostUsd: s.estimatedCostUsd ?? 0,
   };
 
   // Map review verdict if present
@@ -257,6 +261,7 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
     triageStatus,
     triageResult,
     statusEvents: (p.statusEvents ?? []).map(mapStatusEvent),
+    totalEstimatedCostUsd: p.totalEstimatedCostUsd ?? 0,
   };
 }
 

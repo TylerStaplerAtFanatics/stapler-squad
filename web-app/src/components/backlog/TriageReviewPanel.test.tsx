@@ -40,6 +40,7 @@ function makeItem(overrides: Partial<BacklogItem> = {}): BacklogItem {
     acCriteria: [],
     linkedSessions: [],
     statusEvents: [],
+    totalEstimatedCostUsd: 0,
     triageStatus: "completed",
     triageResult: TRIAGE_RESULT_WITH_SUGGESTIONS,
     ...overrides,
@@ -294,6 +295,7 @@ describe("mapBacklogItem_triageStatus_is_failed_when_session_ended_but_no_triage
           role: "triage",
           endedAt: new Date().toISOString(),
           triageResult: undefined,
+          estimatedCostUsd: 0,
         },
       ],
     });
@@ -316,6 +318,7 @@ describe("mapBacklogItem_triageStatus_is_completed_when_session_ended_and_triage
           role: "triage",
           endedAt: new Date().toISOString(),
           triageResult: TRIAGE_RESULT_WITH_SUGGESTIONS,
+          estimatedCostUsd: 0,
         },
       ],
     });
