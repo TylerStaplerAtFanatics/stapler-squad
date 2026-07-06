@@ -875,6 +875,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		tokenStore.Start(context.Background())
 		insightsSvc = services.NewInsightsService(tokenStore, pricing, associator)
 		sessionService.SetTokenStoreReader(tokenStore)
+		backlogSvc.SetTokenStore(tokenStore, pricing)
 		log.Info("InsightsService initialized", "historyDir", historyDir)
 
 		// Wire ArtifactExtractor to extract PR links, commits, and URLs from JSONL history.

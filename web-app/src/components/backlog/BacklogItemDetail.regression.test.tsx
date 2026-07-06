@@ -70,6 +70,7 @@ const baseItem: BacklogItem = {
   createdAt: "2026-07-01T00:00:00Z",
   updatedAt: "2026-07-01T00:00:00Z",
   statusEvents: [],
+  totalEstimatedCostUsd: 0,
 };
 
 describe("BacklogItemDetail — background refresh must not unmount the view", () => {

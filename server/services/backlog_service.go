@@ -15,10 +15,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/config"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
+	gh "github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/headless"
+	"github.com/tstapler/stapler-squad/session/tokens"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -131,6 +133,10 @@ type BacklogService struct {
 	// cloning it if necessary. Defaults to session.ResolveGitHubInput; overridable
 	// via SetGitHubResolver so tests don't need real network/git access.
 	resolveGitHubInput func(input string) (string, *session.GitHubRef, error)
+
+	// tokenStore and pricing power per-session cost estimates surfaced in the UI.
+	tokenStore tokens.TokenStoreReader
+	pricing    *tokens.PricingTable
 }
 
 // NewBacklogService creates a BacklogService with all optional dependencies.
@@ -205,6 +211,40 @@ func (s *BacklogService) SetSessionStopper(stopper SessionStopper) {
 // When set, SpawnSessionFromItem with autonomous=true will start an AutonomousDriver on the spawned instance.
 func (s *BacklogService) SetAutonomousDriverStarter(starter AutonomousDriverStarter) {
 	s.autonomousStarter = starter
+}
+
+// SetTokenStore wires cost-estimation data. Optional: if not set, cost fields remain 0.
+func (s *BacklogService) SetTokenStore(ts tokens.TokenStoreReader, pt *tokens.PricingTable) {
+	s.tokenStore = ts
+	s.pricing = pt
+}
+
+// buildCostLookup returns a function that maps a tmux session UUID to its estimated
+// USD cost. TokenStore keys by Claude conversation UUID (JSONL filename), so we
+// resolve via session records. Returns a no-op func when token data is unavailable.
+func (s *BacklogService) buildCostLookup() func(tmuxUUID string) float64 {
+	if s.tokenStore == nil || s.pricing == nil || s.storage == nil {
+		return nil
+	}
+	convIDByTmux := make(map[string]string)
+	for _, rec := range s.storage.ListSessionRecords() {
+		if rec.SessionID != "" && rec.ConversationID != "" {
+			convIDByTmux[rec.SessionID] = rec.ConversationID
+		}
+	}
+	ts := s.tokenStore
+	pt := s.pricing
+	return func(tmuxUUID string) float64 {
+		convID := convIDByTmux[tmuxUUID]
+		if convID == "" {
+			return 0
+		}
+		r := ts.GetByUUID(convID)
+		if r == nil {
+			return 0
+		}
+		return pt.EstimateCost(r)
+	}
 }
 
 // SetGitHubResolver overrides how GitHub URLs are resolved to local clone paths.
@@ -310,7 +350,8 @@ func triageShortTitle(sessions []*ent.ItemSession, itemTitle string) string {
 }
 
 // itemSessionToProto converts an ent.ItemSession to its proto representation.
-func itemSessionToProto(is *ent.ItemSession) *sessionv1.ItemSession {
+// costFor, if non-nil, is called with the tmux session UUID to populate EstimatedCostUsd.
+func itemSessionToProto(is *ent.ItemSession, costFor func(tmuxUUID string) float64) *sessionv1.ItemSession {
 	p := &sessionv1.ItemSession{
 		Id:                    is.ID.String(),
 		SessionUuid:           is.SessionUUID,
@@ -392,6 +433,9 @@ func itemSessionToProto(is *ent.ItemSession) *sessionv1.ItemSession {
 			}
 		}
 	}
+	if costFor != nil && is.SessionUUID != "" {
+		p.EstimatedCostUsd = costFor(is.SessionUUID)
+	}
 	return p
 }
 
@@ -406,7 +450,7 @@ type triageResultJSON struct {
 }
 
 // backlogItemToProto maps a BacklogItemData to the proto BacklogItem message.
-func backlogItemToProto(item *session.BacklogItemData) *sessionv1.BacklogItem {
+func backlogItemToProto(item *session.BacklogItemData, costFor func(tmuxUUID string) float64) *sessionv1.BacklogItem {
 	p := &sessionv1.BacklogItem{
 		Id:                item.ID,
 		Title:             item.Title,
@@ -450,10 +494,14 @@ func backlogItemToProto(item *session.BacklogItemData) *sessionv1.BacklogItem {
 	// Populate item sessions when they were eagerly loaded.
 	if len(item.ItemSessions) > 0 {
 		protoSessions := make([]*sessionv1.ItemSession, len(item.ItemSessions))
+		var totalCost float64
 		for i, is := range item.ItemSessions {
-			protoSessions[i] = itemSessionToProto(is)
+			ps := itemSessionToProto(is, costFor)
+			protoSessions[i] = ps
+			totalCost += ps.EstimatedCostUsd
 		}
 		p.ItemSessions = protoSessions
+		p.TotalEstimatedCostUsd = totalCost
 	}
 
 	// Populate status events when they were eagerly loaded.
@@ -592,7 +640,7 @@ func (s *BacklogService) CreateBacklogItem(
 	}
 
 	return connect.NewResponse(&sessionv1.CreateBacklogItemResponse{
-		Item:            backlogItemToProto(created),
+		Item:            backlogItemToProto(created, s.buildCostLookup()),
 		TriageTriggered: triageTriggered,
 	}), nil
 }
@@ -638,7 +686,7 @@ func (s *BacklogService) GetBacklogItem(
 	}
 
 	return connect.NewResponse(&sessionv1.GetBacklogItemResponse{
-		Item: backlogItemToProto(item),
+		Item: backlogItemToProto(item, s.buildCostLookup()),
 	}), nil
 }
 
@@ -677,7 +725,7 @@ func (s *BacklogService) ListBacklogItems(
 
 	protoItems := make([]*sessionv1.BacklogItem, len(items))
 	for i := range items {
-		protoItems[i] = backlogItemToProto(&items[i])
+		protoItems[i] = backlogItemToProto(&items[i], s.buildCostLookup())
 	}
 
 	return connect.NewResponse(&sessionv1.ListBacklogItemsResponse{
@@ -757,7 +805,7 @@ func (s *BacklogService) UpdateBacklogItem(
 	}
 
 	return connect.NewResponse(&sessionv1.UpdateBacklogItemResponse{
-		Item: backlogItemToProto(updated),
+		Item: backlogItemToProto(updated, s.buildCostLookup()),
 	}), nil
 }
 
@@ -782,7 +830,7 @@ func (s *BacklogService) ArchiveBacklogItem(
 	}
 
 	return connect.NewResponse(&sessionv1.ArchiveBacklogItemResponse{
-		Item: backlogItemToProto(archived),
+		Item: backlogItemToProto(archived, s.buildCostLookup()),
 	}), nil
 }
 
@@ -885,7 +933,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 	}
 
 	return connect.NewResponse(&sessionv1.TransitionBacklogItemStatusResponse{
-		Item: backlogItemToProto(updated),
+		Item: backlogItemToProto(updated, s.buildCostLookup()),
 	}), nil
 }
 
@@ -931,7 +979,7 @@ func (s *BacklogService) ApprovePlan(
 	}
 
 	return connect.NewResponse(&sessionv1.ApprovePlanResponse{
-		Item: backlogItemToProto(updated),
+		Item: backlogItemToProto(updated, s.buildCostLookup()),
 	}), nil
 }
 
@@ -1242,7 +1290,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 
 	return connect.NewResponse(&sessionv1.SpawnSessionFromItemResponse{
 		SessionUuid: inst.UUID,
-		ItemSession: itemSessionToProto(is),
+		ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 	}), nil
 }
 
@@ -1414,7 +1462,7 @@ func (s *BacklogService) AttachSessionToItem(
 	}
 
 	return connect.NewResponse(&sessionv1.AttachSessionToItemResponse{
-		ItemSession: itemSessionToProto(is),
+		ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 	}), nil
 }
 
@@ -1604,7 +1652,7 @@ func (s *BacklogService) TriggerTriage(
 	}()
 
 	return connect.NewResponse(&sessionv1.TriggerTriageResponse{
-		ItemSession: itemSessionToProto(is),
+		ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 	}), nil
 }
 
@@ -1665,7 +1713,7 @@ func (s *BacklogService) SuggestNextItem(
 
 	top := &items[0]
 	return connect.NewResponse(&sessionv1.SuggestNextItemResponse{
-		Item: backlogItemToProto(top),
+		Item: backlogItemToProto(top, s.buildCostLookup()),
 	}), nil
 }
 
@@ -1751,7 +1799,7 @@ func (s *BacklogService) OverrideVerdict(
 	}
 
 	return connect.NewResponse(&sessionv1.OverrideVerdictResponse{
-		Item: backlogItemToProto(updatedItem),
+		Item: backlogItemToProto(updatedItem, s.buildCostLookup()),
 	}), nil
 }
 
@@ -1930,7 +1978,7 @@ Do not modify the code. Only write the review verdict.
 	log.InfoLog.Printf("[TriggerReReview] spawned re-review session %s for item %s", inst.UUID, item.ID)
 
 	return connect.NewResponse(&sessionv1.TriggerReReviewResponse{
-		ItemSession: itemSessionToProto(is),
+		ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 	}), nil
 }
 
@@ -2014,11 +2062,60 @@ func (s *BacklogService) ImportGitHubIssue(ctx context.Context, req *connect.Req
 }
 
 func (s *BacklogService) SearchGitHubRepos(ctx context.Context, req *connect.Request[sessionv1.SearchGitHubReposRequest]) (*connect.Response[sessionv1.SearchGitHubReposResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("SearchGitHubRepos not yet implemented"))
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+	limit := int(req.Msg.Limit)
+	if limit <= 0 {
+		limit = 30
+	}
+	results, err := gh.SearchUserRepos(ctx, req.Msg.Query, limit)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("search repos: %w", err))
+	}
+	entries := make([]*sessionv1.GitHubRepoEntry, 0, len(results))
+	for _, r := range results {
+		entries = append(entries, &sessionv1.GitHubRepoEntry{
+			Owner:       r.Owner,
+			Repo:        r.Repo,
+			Description: r.Description,
+		})
+	}
+	return connect.NewResponse(&sessionv1.SearchGitHubReposResponse{Repos: entries}), nil
 }
 
 func (s *BacklogService) ListGitHubIssues(ctx context.Context, req *connect.Request[sessionv1.ListGitHubIssuesRequest]) (*connect.Response[sessionv1.ListGitHubIssuesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ListGitHubIssues not yet implemented"))
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+	if req.Msg.Owner == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("owner is required"))
+	}
+	if req.Msg.Repo == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo is required"))
+	}
+	if strings.ContainsAny(req.Msg.Owner, " \t\n/") {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("owner contains invalid characters"))
+	}
+	limit := int(req.Msg.Limit)
+	if limit <= 0 {
+		limit = 30
+	}
+	results, err := gh.ListRepoIssues(ctx, req.Msg.Owner, req.Msg.Repo, req.Msg.State, req.Msg.Search, limit)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list issues: %w", err))
+	}
+	entries := make([]*sessionv1.GitHubIssueEntry, 0, len(results))
+	for _, r := range results {
+		entries = append(entries, &sessionv1.GitHubIssueEntry{
+			Number: int32(r.Number),
+			Title:  r.Title,
+			State:  r.State,
+			Url:    r.URL,
+			Labels: r.Labels,
+		})
+	}
+	return connect.NewResponse(&sessionv1.ListGitHubIssuesResponse{Issues: entries}), nil
 }
 
 func (s *BacklogService) GetBacklogItemDiff(
@@ -2082,4 +2179,69 @@ func (s *BacklogService) GetBacklogItemDiff(
 		Added:   added,
 		Removed: removed,
 	}), nil
+}
+
+// GetBacklogItemCost returns estimated token costs for all sessions linked to an item.
+func (s *BacklogService) GetBacklogItemCost(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetBacklogItemCostRequest],
+) (*connect.Response[sessionv1.GetBacklogItemCostResponse], error) {
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+	if req.Msg.ItemId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("item_id is required"))
+	}
+
+	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
+	if err != nil {
+		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
+	}
+
+	itemSessions, err := s.storage.ListItemSessions(ctx, item.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list item sessions: %w", err))
+	}
+
+	resp := &sessionv1.GetBacklogItemCostResponse{}
+	if s.tokenStore == nil || s.pricing == nil {
+		return connect.NewResponse(resp), nil
+	}
+
+	// Build tmux-UUID → conversation-UUID map once; TokenStore is keyed by
+	// conversation UUID (JSONL filename), not by tmux session UUID.
+	convIDByTmux := make(map[string]string)
+	for _, rec := range s.storage.ListSessionRecords() {
+		if rec.SessionID != "" && rec.ConversationID != "" {
+			convIDByTmux[rec.SessionID] = rec.ConversationID
+		}
+	}
+
+	for _, is := range itemSessions {
+		if is.SessionUUID == "" {
+			continue
+		}
+		convID := convIDByTmux[is.SessionUUID]
+		if convID == "" {
+			continue
+		}
+		result := s.tokenStore.GetByUUID(convID)
+		if result == nil {
+			continue
+		}
+		cost := s.pricing.EstimateCost(result)
+		resp.TotalCostUsd += cost
+		resp.Sessions = append(resp.Sessions, &sessionv1.SessionCostEntry{
+			SessionId:        is.SessionUUID,
+			SessionRole:      string(is.SessionRole),
+			EstimatedCostUsd: cost,
+			InputTokens:      int64(result.TotalInput),
+			OutputTokens:     int64(result.TotalOutput),
+		})
+	}
+
+	return connect.NewResponse(resp), nil
 }

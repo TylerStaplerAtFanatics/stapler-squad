@@ -108,6 +108,9 @@ const (
 	// BacklogServiceGetBacklogItemDiffProcedure is the fully-qualified name of the BacklogService's
 	// GetBacklogItemDiff RPC.
 	BacklogServiceGetBacklogItemDiffProcedure = "/session.v1.BacklogService/GetBacklogItemDiff"
+	// BacklogServiceGetBacklogItemCostProcedure is the fully-qualified name of the BacklogService's
+	// GetBacklogItemCost RPC.
+	BacklogServiceGetBacklogItemCostProcedure = "/session.v1.BacklogService/GetBacklogItemCost"
 )
 
 // BacklogServiceClient is a client for the session.v1.BacklogService service.
@@ -163,6 +166,8 @@ type BacklogServiceClient interface {
 	// GetBacklogItemDiff returns the committed diff for a backlog item's work sessions
 	// (from the earliest work session base SHA to the current HEAD).
 	GetBacklogItemDiff(context.Context, *connect.Request[v1.GetBacklogItemDiffRequest]) (*connect.Response[v1.GetBacklogItemDiffResponse], error)
+	// GetBacklogItemCost returns the estimated token cost for all sessions linked to an item.
+	GetBacklogItemCost(context.Context, *connect.Request[v1.GetBacklogItemCostRequest]) (*connect.Response[v1.GetBacklogItemCostResponse], error)
 }
 
 // NewBacklogServiceClient constructs a client for the session.v1.BacklogService service. By
@@ -326,6 +331,12 @@ func NewBacklogServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItemDiff")),
 			connect.WithClientOptions(opts...),
 		),
+		getBacklogItemCost: connect.NewClient[v1.GetBacklogItemCostRequest, v1.GetBacklogItemCostResponse](
+			httpClient,
+			baseURL+BacklogServiceGetBacklogItemCostProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItemCost")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -356,6 +367,7 @@ type backlogServiceClient struct {
 	searchGitHubRepos           *connect.Client[v1.SearchGitHubReposRequest, v1.SearchGitHubReposResponse]
 	listGitHubIssues            *connect.Client[v1.ListGitHubIssuesRequest, v1.ListGitHubIssuesResponse]
 	getBacklogItemDiff          *connect.Client[v1.GetBacklogItemDiffRequest, v1.GetBacklogItemDiffResponse]
+	getBacklogItemCost          *connect.Client[v1.GetBacklogItemCostRequest, v1.GetBacklogItemCostResponse]
 }
 
 // CreateBacklogItem calls session.v1.BacklogService.CreateBacklogItem.
@@ -483,6 +495,11 @@ func (c *backlogServiceClient) GetBacklogItemDiff(ctx context.Context, req *conn
 	return c.getBacklogItemDiff.CallUnary(ctx, req)
 }
 
+// GetBacklogItemCost calls session.v1.BacklogService.GetBacklogItemCost.
+func (c *backlogServiceClient) GetBacklogItemCost(ctx context.Context, req *connect.Request[v1.GetBacklogItemCostRequest]) (*connect.Response[v1.GetBacklogItemCostResponse], error) {
+	return c.getBacklogItemCost.CallUnary(ctx, req)
+}
+
 // BacklogServiceHandler is an implementation of the session.v1.BacklogService service.
 type BacklogServiceHandler interface {
 	// CreateBacklogItem adds a new item to the backlog.
@@ -536,6 +553,8 @@ type BacklogServiceHandler interface {
 	// GetBacklogItemDiff returns the committed diff for a backlog item's work sessions
 	// (from the earliest work session base SHA to the current HEAD).
 	GetBacklogItemDiff(context.Context, *connect.Request[v1.GetBacklogItemDiffRequest]) (*connect.Response[v1.GetBacklogItemDiffResponse], error)
+	// GetBacklogItemCost returns the estimated token cost for all sessions linked to an item.
+	GetBacklogItemCost(context.Context, *connect.Request[v1.GetBacklogItemCostRequest]) (*connect.Response[v1.GetBacklogItemCostResponse], error)
 }
 
 // NewBacklogServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -695,6 +714,12 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 		connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItemDiff")),
 		connect.WithHandlerOptions(opts...),
 	)
+	backlogServiceGetBacklogItemCostHandler := connect.NewUnaryHandler(
+		BacklogServiceGetBacklogItemCostProcedure,
+		svc.GetBacklogItemCost,
+		connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItemCost")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/session.v1.BacklogService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case BacklogServiceCreateBacklogItemProcedure:
@@ -747,6 +772,8 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 			backlogServiceListGitHubIssuesHandler.ServeHTTP(w, r)
 		case BacklogServiceGetBacklogItemDiffProcedure:
 			backlogServiceGetBacklogItemDiffHandler.ServeHTTP(w, r)
+		case BacklogServiceGetBacklogItemCostProcedure:
+			backlogServiceGetBacklogItemCostHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -854,4 +881,8 @@ func (UnimplementedBacklogServiceHandler) ListGitHubIssues(context.Context, *con
 
 func (UnimplementedBacklogServiceHandler) GetBacklogItemDiff(context.Context, *connect.Request[v1.GetBacklogItemDiffRequest]) (*connect.Response[v1.GetBacklogItemDiffResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.GetBacklogItemDiff is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) GetBacklogItemCost(context.Context, *connect.Request[v1.GetBacklogItemCostRequest]) (*connect.Response[v1.GetBacklogItemCostResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.GetBacklogItemCost is not implemented"))
 }
