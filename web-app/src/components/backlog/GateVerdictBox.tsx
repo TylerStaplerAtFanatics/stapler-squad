@@ -221,8 +221,7 @@ export function GateVerdictBox({
     }
   }
 
-  const showCriteria =
-    (verdict === "PARTIAL" || verdict === "FAIL") && criteria && criteria.length > 0;
+  const showCriteria = criteria && criteria.length > 0;
 
   return (
     <section
@@ -389,7 +388,7 @@ export function GateVerdictBox({
         />
       )}
 
-      {(verdict === "PARTIAL" || verdict === "FAIL") && (
+      {(verdict === "PARTIAL" || verdict === "FAIL" || verdict === "UNVERIFIABLE") && (
         <div className={styles.overrideSection}>
           <button
             ref={overrideToggleRef}

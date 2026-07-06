@@ -28,6 +28,19 @@ const ALT_KEY_MAP: Record<string, string> = {
   '\x1b[5~': '\x1b[5;3~', // Alt+PgUp
   '\x1b[6~': '\x1b[6;3~', // Alt+PgDn
 };
+
+// CSI modifier parameter 2 = Shift.
+const SHIFT_KEY_MAP: Record<string, string> = {
+  '\t':      '\x1b[Z',      // Shift+Tab (backtab / dedent)
+  '\x1b[A':  '\x1b[1;2A',  // Shift+Up
+  '\x1b[B':  '\x1b[1;2B',  // Shift+Down
+  '\x1b[C':  '\x1b[1;2C',  // Shift+Right
+  '\x1b[D':  '\x1b[1;2D',  // Shift+Left
+  '\x1b[H':  '\x1b[1;2H',  // Shift+Home
+  '\x1b[F':  '\x1b[1;2F',  // Shift+End
+  '\x1b[5~': '\x1b[5;2~',  // Shift+PgUp
+  '\x1b[6~': '\x1b[6;2~',  // Shift+PgDn
+};
 import { useTerminalStream } from "@/lib/hooks/useTerminalStream";
 import { useBrowserLogStream } from "@/lib/hooks/useBrowserLogStream";
 import { useHandedness } from "@/lib/hooks/useHandedness";
@@ -189,10 +202,11 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     return false;
   });
 
-  // Sticky modifier keys — CTRL and ALT arm on first tap, fire+clear on the next key.
-  // Mutually exclusive: arming one disarms the other.
+  // Sticky modifier keys — CTRL, ALT, SHIFT arm on first tap, fire+clear on the next key.
+  // Mutually exclusive: arming one disarms the others.
   const [ctrlActive, setCtrlActive] = useState(false);
   const [altActive, setAltActive] = useState(false);
+  const [shiftActive, setShiftActive] = useState(false);
 
   // Transient paste error shown briefly when clipboard access is denied.
   const [pasteError, setPasteError] = useState<string | null>(null);
@@ -573,10 +587,13 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     } else if (altActive) {
       data = ALT_KEY_MAP[keyData] ?? '\x1b' + keyData;
       setAltActive(false);
+    } else if (shiftActive) {
+      data = SHIFT_KEY_MAP[keyData] ?? keyData;
+      setShiftActive(false);
     }
 
     handleTerminalData(data);
-  }, [ctrlActive, altActive, handleTerminalData]);
+  }, [ctrlActive, altActive, shiftActive, handleTerminalData]);
 
   // Handle terminal resize with size stability detection
   const handleTerminalResize = useCallback((cols: number, rows: number) => {
@@ -1701,8 +1718,17 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
           <div className={styles.mobileKeyRow}>
             <button className={styles.mobileKey} onPointerDown={(e) => { e.preventDefault(); sendKey('\t'); }} aria-label="Tab" data-testid="mobile-key">Tab</button>
             <button
+              className={`${styles.mobileKey} ${shiftActive ? styles.mobileKeyActive : ''}`}
+              onPointerDown={(e) => { e.preventDefault(); setShiftActive(p => !p); setCtrlActive(false); setAltActive(false); }}
+              aria-label={shiftActive ? 'Shift active — press next key' : 'Shift modifier'}
+              aria-pressed={shiftActive}
+              data-testid="mobile-key"
+            >
+              Shift
+            </button>
+            <button
               className={`${styles.mobileKey} ${ctrlActive ? styles.mobileKeyActive : ''}`}
-              onPointerDown={(e) => { e.preventDefault(); setCtrlActive(p => !p); setAltActive(false); }}
+              onPointerDown={(e) => { e.preventDefault(); setCtrlActive(p => !p); setAltActive(false); setShiftActive(false); }}
               aria-label={ctrlActive ? 'Ctrl active — press next key' : 'Control modifier'}
               aria-pressed={ctrlActive}
               data-testid="mobile-key"
@@ -1711,7 +1737,7 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
             </button>
             <button
               className={`${styles.mobileKey} ${altActive ? styles.mobileKeyActive : ''}`}
-              onPointerDown={(e) => { e.preventDefault(); setAltActive(p => !p); setCtrlActive(false); }}
+              onPointerDown={(e) => { e.preventDefault(); setAltActive(p => !p); setCtrlActive(false); setShiftActive(false); }}
               aria-label={altActive ? 'Alt active — press next key' : 'Alt modifier'}
               aria-pressed={altActive}
               data-testid="mobile-key"

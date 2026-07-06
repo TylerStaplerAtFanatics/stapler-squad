@@ -2020,3 +2020,66 @@ func (s *BacklogService) SearchGitHubRepos(ctx context.Context, req *connect.Req
 func (s *BacklogService) ListGitHubIssues(ctx context.Context, req *connect.Request[sessionv1.ListGitHubIssuesRequest]) (*connect.Response[sessionv1.ListGitHubIssuesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ListGitHubIssues not yet implemented"))
 }
+
+func (s *BacklogService) GetBacklogItemDiff(
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetBacklogItemDiffRequest],
+) (*connect.Response[sessionv1.GetBacklogItemDiffResponse], error) {
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+	if req.Msg.ItemId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("item_id is required"))
+	}
+
+	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
+	if err != nil {
+		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
+	}
+	if item.RepoPath == "" {
+		return connect.NewResponse(&sessionv1.GetBacklogItemDiffResponse{}), nil
+	}
+
+	sessions, err := s.storage.ListItemSessions(ctx, item.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list item sessions: %w", err))
+	}
+
+	// Use the earliest work session's base SHA to capture all work commits.
+	var earliestWorkSHA string
+	var earliestWorkSHATime time.Time
+	for _, is := range sessions {
+		if is.SessionRole == session.SessionRoleWork && is.LastCommitSha != "" {
+			if earliestWorkSHA == "" || is.CreatedAt.Before(earliestWorkSHATime) {
+				earliestWorkSHA = is.LastCommitSha
+				earliestWorkSHATime = is.CreatedAt
+			}
+		}
+	}
+	if earliestWorkSHA == "" {
+		earliestWorkSHA = "HEAD~1"
+	}
+
+	diffContent, _, diffErr := session.GetGitDiff(ctx, item.RepoPath, earliestWorkSHA)
+	if diffErr != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to compute diff: %w", diffErr))
+	}
+
+	var added, removed int32
+	for _, line := range strings.Split(diffContent, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			added++
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			removed++
+		}
+	}
+
+	return connect.NewResponse(&sessionv1.GetBacklogItemDiffResponse{
+		Diff:    diffContent,
+		Added:   added,
+		Removed: removed,
+	}), nil
+}
