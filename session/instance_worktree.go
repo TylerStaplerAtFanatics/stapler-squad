@@ -192,12 +192,16 @@ func (i *Instance) UpdateDiffStats() error {
 	}
 	if !i.gitManager.HasWorktree() {
 		dirBase := i.gitManager.GetDirBaseSHA()
+		workingDir := i.WorkingDir
+		if workingDir == "" {
+			workingDir = i.Path
+		}
 		i.mu.RUnlock()
 		if dirBase == "" {
 			return nil
 		}
 		// Directory session with a known base SHA — compute diff outside the lock.
-		stats := computeDirDiffStats(i.WorkingDir, dirBase)
+		stats := computeDirDiffStats(workingDir, dirBase)
 		i.mu.Lock()
 		i.gitManager.SetDiffStats(stats)
 		i.mu.Unlock()
