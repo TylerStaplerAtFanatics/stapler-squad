@@ -275,11 +275,17 @@ func (h *backlogHandlers) requestReview(ctx context.Context, req mcpgo.CallToolR
 		return errResult(ErrInternalError, fmt.Sprintf("link check failed: %v", linkErr), ""), nil
 	}
 
-	// Log the review request (notification infrastructure is handled externally).
-	log.InfoLog.Printf("[mcp:request_review] session=%s item=%s message=%q", callerUUID, itemID, message)
+	// Transition item to review status (from in_progress only).
+	precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusInProgress)}
+	if _, transErr := h.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusReview, precondition); transErr != nil {
+		log.InfoLog.Printf("[mcp:request_review] transition to review failed: %v", transErr)
+		return errResult(ErrInternalError, fmt.Sprintf("transition to review failed: %v", transErr), ""), nil
+	}
+
+	log.InfoLog.Printf("[mcp:request_review] session=%s item=%s transitioned to review message=%q", callerUUID, itemID, message)
 
 	return mcpgo.NewToolResultText(fmt.Sprintf(
-		"Review requested for item %s. The reviewer has been notified.", itemID,
+		"Review requested for item %s. The item has been moved to review status.", itemID,
 	)), nil
 }
 
