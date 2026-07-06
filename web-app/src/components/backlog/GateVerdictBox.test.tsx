@@ -86,7 +86,7 @@ describe("GateVerdictBox — FAIL verdict", () => {
 // ---------------------------------------------------------------------------
 
 describe("GateVerdictBox — PENDING verdict", () => {
-  it("renders PENDING label with disabled Approve and Reopen buttons with aria-disabled", () => {
+  it("renders PENDING label with disabled Approve button; Reopen stays enabled", () => {
     render(<GateVerdictBox {...makeProps({ verdict: "PENDING" })} />);
 
     expect(screen.getByText("PENDING")).toBeInTheDocument();
@@ -95,9 +95,9 @@ describe("GateVerdictBox — PENDING verdict", () => {
     expect(approveBtn).toBeDisabled();
     expect(approveBtn).toHaveAttribute("aria-disabled", "true");
 
+    // Reopen is intentionally enabled during PENDING (fix(backlog): enable Reopen in pending state)
     const reopenBtn = screen.getByRole("button", { name: /Reopen for Revision/i });
-    expect(reopenBtn).toBeDisabled();
-    expect(reopenBtn).toHaveAttribute("aria-disabled", "true");
+    expect(reopenBtn).not.toBeDisabled();
   });
 });
 
@@ -126,7 +126,7 @@ describe("GateVerdictBox — keyboard shortcut", () => {
   // Test: 6 — Ctrl+Enter on PARTIAL calls onReopen NOT onApprove
   // ---------------------------------------------------------------------------
 
-  it("Ctrl+Enter on PARTIAL verdict calls onReopen, not onApprove", async () => {
+  it("Ctrl+Enter on PARTIAL verdict opens reopen form, not onApprove", async () => {
     const onApprove = jest.fn().mockResolvedValue(undefined);
     const onReopen = jest.fn().mockResolvedValue(undefined);
     render(
@@ -138,7 +138,9 @@ describe("GateVerdictBox — keyboard shortcut", () => {
     const section = screen.getByRole("status", { name: "Gate verdict" });
     fireEvent.keyDown(section, { key: "Enter", ctrlKey: true });
 
-    await waitFor(() => expect(onReopen).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("form", { name: /Reopen for revision/i })).toBeInTheDocument()
+    );
     expect(onApprove).not.toHaveBeenCalled();
   });
 });
@@ -338,7 +340,7 @@ describe("GateVerdictBox — criteria list", () => {
     expect(screen.getByText("Coverage >= 80%")).toBeInTheDocument();
   });
 
-  it("does not render criteria list when verdict is PASS", () => {
+  it("renders criteria list for PASS verdict (shown for all verdicts)", () => {
     const criteria = [{ label: "Unit tests pass", passed: true }];
     render(
       <GateVerdictBox
@@ -346,6 +348,7 @@ describe("GateVerdictBox — criteria list", () => {
       />
     );
 
-    expect(screen.queryByRole("list", { name: /Criteria results/i })).not.toBeInTheDocument();
+    // feat(backlog): show review criteria for all verdicts
+    expect(screen.getByRole("list", { name: /Criteria results/i })).toBeInTheDocument();
   });
 });
