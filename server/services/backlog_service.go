@@ -1383,7 +1383,7 @@ func (s *BacklogService) AttachSessionToItem(
 	if loadErr == nil {
 		for _, inst := range instances {
 			if inst.UUID == req.Msg.SessionUuid && inst.Path != "" {
-				worktreePath := inst.Path
+				worktreePath := inst.GetEffectiveRootDir()
 				// Write synchronously under mutex to prevent concurrent write races.
 				s.worktreeMu.Lock()
 				if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
@@ -1395,6 +1395,12 @@ func (s *BacklogService) AttachSessionToItem(
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
 				}
 				s.worktreeMu.Unlock()
+				// Capture pre-work HEAD SHA so the review gate can diff base..HEAD
+				// across all commits the agent makes (same as SpawnSessionFromItem step 12b).
+				if baseSHA, shaErr := session.GetGitHeadSHA(worktreePath); shaErr == nil && baseSHA != "" {
+					_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
+					inst.SetDirBaseSHA(baseSHA)
+				}
 				break
 			}
 		}
