@@ -26,6 +26,7 @@ import { OmnibarModeBadge } from "./OmnibarModeBadge";
 import { OmnibarCreationPanel, SESSION_TYPES } from "./OmnibarCreationPanel";
 import { parseSlashCommand } from "@/lib/omnibar/parseSlashCommand";
 import { parseInputWithSeparator } from "@/lib/omnibar/parseInput";
+import { toSessionSlug } from "@/lib/omnibar/slugify";
 import {
   overlay, modal, inputContainer, typeIndicator, input as inputClass,
   detectionInfo, detectionBadge, unknown,
@@ -447,12 +448,23 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           if (parsed.firstPrompt) {
             setFormField("firstPrompt", parsed.firstPrompt);
           }
-        } else if (result.suggestedName && result.type !== InputType.Alias) {
+        } else if (
+          result.suggestedName &&
+          result.type !== InputType.Alias &&
+          result.type !== InputType.Command &&
+          result.type !== InputType.SpawnShell
+        ) {
           // Skip for Alias — the alias-specific block below handles name population
           // (running both would reset lastSuggestedNameRef mid-effect and cause oscillation).
+          // Skip for Command/SpawnShell — their suggestedName is a human-readable label
+          // ("Switch to Matrix theme"), not a session-name candidate.
           if (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current) {
-            setSessionName(result.suggestedName);
-            lastSuggestedNameRef.current = result.suggestedName;
+            // Detectors like LocalPath/PathWithBranch/NewSession/GitHub* build suggestedName
+            // from raw path segments, branch names, or free text — slug it here so every
+            // detector gets a valid kebab-case name for free instead of each one remembering to.
+            const slugged = toSessionSlug(result.suggestedName);
+            setSessionName(slugged);
+            lastSuggestedNameRef.current = slugged;
           }
         }
 
@@ -489,7 +501,9 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
           const typedLabel = aliasMeta?.label;
           const namePrefix = alias?.namePrefix ?? "";
           if (typedLabel && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {
-            const suggested = namePrefix ? `${namePrefix}${typedLabel}` : typedLabel;
+            // Slug the typed portion only — speech-to-text and free typing won't
+            // produce dashes on their own (e.g. "deck drainage" → "deck-drainage").
+            const suggested = namePrefix ? `${namePrefix}${toSessionSlug(typedLabel)}` : toSessionSlug(typedLabel);
             setSessionName(suggested);
             lastSuggestedNameRef.current = suggested;
           } else if (namePrefix && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {

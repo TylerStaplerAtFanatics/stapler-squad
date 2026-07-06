@@ -21,6 +21,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/protocol"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/scrollback"
+	"github.com/tstapler/stapler-squad/session/tmux"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -479,7 +480,9 @@ func (h *ConnectRPCWebSocketHandler) streamViaControlMode(stream *connectWebSock
 	if tmuxPrefix == "" {
 		tmuxPrefix = "staplersquad_"
 	}
-	tmuxSessionName := tmuxPrefix + snap.Title
+	// Always derive via the canonical sanitizer, never by hand-concatenating prefix+title —
+	// a raw title containing spaces would target a session name that was never created (#162).
+	tmuxSessionName := tmux.NewSessionName(snap.Title, tmuxPrefix).String()
 
 	log.Info("[streamViaControlMode] starting", "session", sessionID, "tmux", tmuxSessionName, "mode", streamingMode)
 
@@ -1034,12 +1037,14 @@ func (h *ConnectRPCWebSocketHandler) streamViaTmuxCapturePane(stream *connectWeb
 		// External session - use metadata tmux name
 		tmuxSessionName = snap.ExternalMetadata.TmuxSessionName
 	} else {
-		// Managed session - construct tmux name using prefix
+		// Managed session - construct tmux name using prefix.
+		// Always via the canonical sanitizer (see #162 — raw concatenation targets
+		// a session name that was never actually created whenever the title has spaces).
 		tmuxPrefix := snap.TmuxPrefix
 		if tmuxPrefix == "" {
 			tmuxPrefix = "staplersquad_" // Default prefix
 		}
-		tmuxSessionName = tmuxPrefix + snap.Title
+		tmuxSessionName = tmux.NewSessionName(snap.Title, tmuxPrefix).String()
 	}
 	sessionID := snap.Title
 
