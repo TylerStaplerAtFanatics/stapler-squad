@@ -17,6 +17,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/headless"
+	"github.com/tstapler/stapler-squad/session/tmux"
 
 	"github.com/google/uuid"
 )
@@ -587,10 +588,9 @@ func matchesIDData(d session.InstanceData, id string) bool {
 	if d.TmuxPrefix == "" {
 		return false
 	}
-	// Replicate tmux name sanitization: strip whitespace, replace . and : with _
-	title := strings.Join(strings.Fields(d.Title), "")
-	title = strings.NewReplacer(".", "_", ":", "_").Replace(title)
-	return d.TmuxPrefix+title == id
+	// Derive via the canonical sanitizer rather than re-implementing it here —
+	// a hand-rolled copy silently drifts from tmux.NewSessionName's rules (#162).
+	return tmux.NewSessionName(d.Title, d.TmuxPrefix).String() == id
 }
 
 // writeDeferDecision returns an empty HTTP 200 with no body.

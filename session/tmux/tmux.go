@@ -200,6 +200,28 @@ func toStaplerSquadTmuxNameWithPrefix(str string, prefix string) string {
 	return fmt.Sprintf("%s%s", prefix, str)
 }
 
+// SessionName is a sanitized tmux session identifier — the only string form that is
+// safe to pass to tmux's "-t" flag. The field is unexported so the only way to obtain
+// one outside this package is NewSessionName: holding a SessionName proves the raw
+// title has already been through sanitization, so callers never need to re-derive or
+// re-sanitize it themselves.
+//
+// This exists because tmux session names were historically re-derived ad hoc at each
+// call site (creation, streaming, approval matching) using slightly different logic,
+// which silently drifted out of sync whenever a title contained whitespace (see #162:
+// a session was created as "staplersquad_CareerGrowth" but addressed as
+// "staplersquad_Career Growth", making it permanently uncontrollable).
+type SessionName struct{ value string }
+
+// NewSessionName sanitizes a raw instance title into the tmux session name that was
+// (or will be) used to create the session. Always call this instead of concatenating
+// prefix+title — it is the single source of truth for the sanitization rules.
+func NewSessionName(title, prefix string) SessionName {
+	return SessionName{value: toStaplerSquadTmuxNameWithPrefix(title, prefix)}
+}
+
+func (n SessionName) String() string { return n.value }
+
 // serverNotRunning returns true if the combined output of a failed tmux command
 // indicates the tmux server process is not running (as opposed to a session not found).
 func serverNotRunning(output []byte) bool {
