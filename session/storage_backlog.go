@@ -496,7 +496,7 @@ func (r *EntRepository) UpdateAcCriterionStatus(ctx context.Context, itemID stri
 
 	criteria[criterionIndex].Status = status
 	if note != "" {
-		criteria[criterionIndex].Text = criteria[criterionIndex].Text + " [" + note + "]"
+		criteria[criterionIndex].Note = note
 	}
 
 	serialized, serErr := SerializeAcCriteria(criteria)

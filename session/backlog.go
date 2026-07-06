@@ -47,6 +47,7 @@ type AcCriterion struct {
 	Index  int    `json:"index"`
 	Text   string `json:"text"`
 	Status string `json:"status"` // "pending", "in_progress", "done"
+	Note   string `json:"note,omitempty"`
 }
 
 // ParseAcCriteria deserializes acceptance criteria from a JSON string.
