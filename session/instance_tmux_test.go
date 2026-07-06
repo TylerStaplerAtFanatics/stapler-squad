@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -227,5 +228,44 @@ func TestBuildLaunchCommand_CLIFlagsAreShellQuoted(t *testing.T) {
 	// Each token must be present in its quoted form.
 	if !strings.Contains(got, shellQuote("--foo")) {
 		t.Errorf("--foo not found quoted in: %s", got)
+	}
+}
+
+func TestClaudeMCPConfigArgs_HTTPFormat(t *testing.T) {
+	inst := &Instance{
+		Program:      "claude",
+		MCPServerURL: "http://localhost:8543/mcp",
+		UUID:         "test-uuid-123",
+	}
+	flag, val := inst.claudeMCPConfigArgs()
+	if flag != "--mcp-config" {
+		t.Errorf("flag = %q, want --mcp-config", flag)
+	}
+	// val is shell-quoted; strip the outer single quotes to get the raw JSON.
+	if !strings.HasPrefix(val, "'") || !strings.HasSuffix(val, "'") {
+		t.Fatalf("val should be single-quoted JSON, got %q", val)
+	}
+	raw := val[1 : len(val)-1]
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("val is not valid JSON: %v\nval=%q", err, raw)
+	}
+	servers, ok := cfg["mcpServers"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing mcpServers key in %q", raw)
+	}
+	entry, ok := servers["stapler-squad"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing stapler-squad entry in mcpServers")
+	}
+	if got := entry["type"]; got != "http" {
+		t.Errorf("type = %q, want http", got)
+	}
+	if got := entry["url"]; got != "http://localhost:8543/mcp" {
+		t.Errorf("url = %q, want http://localhost:8543/mcp", got)
+	}
+	headers, _ := entry["headers"].(map[string]interface{})
+	if headers["X-Stapler-Session-UUID"] != "test-uuid-123" {
+		t.Errorf("X-Stapler-Session-UUID = %q, want test-uuid-123", headers["X-Stapler-Session-UUID"])
 	}
 }
