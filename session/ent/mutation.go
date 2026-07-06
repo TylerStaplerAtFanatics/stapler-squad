@@ -4777,6 +4777,7 @@ type BacklogStatusEventMutation struct {
 	from_status   *string
 	to_status     *string
 	triggered_by  *string
+	note          *string
 	created_at    *time.Time
 	clearedFields map[string]struct{}
 	item          *uuid.UUID
@@ -5034,6 +5035,55 @@ func (m *BacklogStatusEventMutation) ResetTriggeredBy() {
 	m.triggered_by = nil
 }
 
+// SetNote sets the "note" field.
+func (m *BacklogStatusEventMutation) SetNote(s string) {
+	m.note = &s
+}
+
+// Note returns the value of the "note" field in the mutation.
+func (m *BacklogStatusEventMutation) Note() (r string, exists bool) {
+	v := m.note
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldNote returns the old "note" field's value of the BacklogStatusEvent entity.
+// If the BacklogStatusEvent object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStatusEventMutation) OldNote(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldNote is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldNote requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldNote: %w", err)
+	}
+	return oldValue.Note, nil
+}
+
+// ClearNote clears the value of the "note" field.
+func (m *BacklogStatusEventMutation) ClearNote() {
+	m.note = nil
+	m.clearedFields[backlogstatusevent.FieldNote] = struct{}{}
+}
+
+// NoteCleared returns if the "note" field was cleared in this mutation.
+func (m *BacklogStatusEventMutation) NoteCleared() bool {
+	_, ok := m.clearedFields[backlogstatusevent.FieldNote]
+	return ok
+}
+
+// ResetNote resets all changes to the "note" field.
+func (m *BacklogStatusEventMutation) ResetNote() {
+	m.note = nil
+	delete(m.clearedFields, backlogstatusevent.FieldNote)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *BacklogStatusEventMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -5131,7 +5181,7 @@ func (m *BacklogStatusEventMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *BacklogStatusEventMutation) Fields() []string {
-	fields := make([]string, 0, 5)
+	fields := make([]string, 0, 6)
 	if m.item != nil {
 		fields = append(fields, backlogstatusevent.FieldItemID)
 	}
@@ -5143,6 +5193,9 @@ func (m *BacklogStatusEventMutation) Fields() []string {
 	}
 	if m.triggered_by != nil {
 		fields = append(fields, backlogstatusevent.FieldTriggeredBy)
+	}
+	if m.note != nil {
+		fields = append(fields, backlogstatusevent.FieldNote)
 	}
 	if m.created_at != nil {
 		fields = append(fields, backlogstatusevent.FieldCreatedAt)
@@ -5163,6 +5216,8 @@ func (m *BacklogStatusEventMutation) Field(name string) (ent.Value, bool) {
 		return m.ToStatus()
 	case backlogstatusevent.FieldTriggeredBy:
 		return m.TriggeredBy()
+	case backlogstatusevent.FieldNote:
+		return m.Note()
 	case backlogstatusevent.FieldCreatedAt:
 		return m.CreatedAt()
 	}
@@ -5182,6 +5237,8 @@ func (m *BacklogStatusEventMutation) OldField(ctx context.Context, name string) 
 		return m.OldToStatus(ctx)
 	case backlogstatusevent.FieldTriggeredBy:
 		return m.OldTriggeredBy(ctx)
+	case backlogstatusevent.FieldNote:
+		return m.OldNote(ctx)
 	case backlogstatusevent.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	}
@@ -5221,6 +5278,13 @@ func (m *BacklogStatusEventMutation) SetField(name string, value ent.Value) erro
 		}
 		m.SetTriggeredBy(v)
 		return nil
+	case backlogstatusevent.FieldNote:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetNote(v)
+		return nil
 	case backlogstatusevent.FieldCreatedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -5257,7 +5321,11 @@ func (m *BacklogStatusEventMutation) AddField(name string, value ent.Value) erro
 // ClearedFields returns all nullable fields that were cleared during this
 // mutation.
 func (m *BacklogStatusEventMutation) ClearedFields() []string {
-	return nil
+	var fields []string
+	if m.FieldCleared(backlogstatusevent.FieldNote) {
+		fields = append(fields, backlogstatusevent.FieldNote)
+	}
+	return fields
 }
 
 // FieldCleared returns a boolean indicating if a field with the given name was
@@ -5270,6 +5338,11 @@ func (m *BacklogStatusEventMutation) FieldCleared(name string) bool {
 // ClearField clears the value of the field with the given name. It returns an
 // error if the field is not defined in the schema.
 func (m *BacklogStatusEventMutation) ClearField(name string) error {
+	switch name {
+	case backlogstatusevent.FieldNote:
+		m.ClearNote()
+		return nil
+	}
 	return fmt.Errorf("unknown BacklogStatusEvent nullable field %s", name)
 }
 
@@ -5288,6 +5361,9 @@ func (m *BacklogStatusEventMutation) ResetField(name string) error {
 		return nil
 	case backlogstatusevent.FieldTriggeredBy:
 		m.ResetTriggeredBy()
+		return nil
+	case backlogstatusevent.FieldNote:
+		m.ResetNote()
 		return nil
 	case backlogstatusevent.FieldCreatedAt:
 		m.ResetCreatedAt()

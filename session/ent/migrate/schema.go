@@ -169,6 +169,7 @@ var (
 		{Name: "from_status", Type: field.TypeString},
 		{Name: "to_status", Type: field.TypeString},
 		{Name: "triggered_by", Type: field.TypeString, Default: "user"},
+		{Name: "note", Type: field.TypeString, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime},
 		{Name: "item_id", Type: field.TypeUUID},
 	}
@@ -180,7 +181,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "backlog_status_events_backlog_items_status_events",
-				Columns:    []*schema.Column{BacklogStatusEventsColumns[5]},
+				Columns:    []*schema.Column{BacklogStatusEventsColumns[6]},
 				RefColumns: []*schema.Column{BacklogItemsColumns[0]},
 				OnDelete:   schema.Cascade,
 			},
@@ -189,7 +190,7 @@ var (
 			{
 				Name:    "backlogstatusevent_item_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{BacklogStatusEventsColumns[5], BacklogStatusEventsColumns[4]},
+				Columns: []*schema.Column{BacklogStatusEventsColumns[6], BacklogStatusEventsColumns[5]},
 			},
 		},
 	}

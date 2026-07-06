@@ -351,12 +351,15 @@ func (r *EntRepository) TransitionBacklogItemStatus(ctx context.Context, id stri
 	}
 
 	// Append an immutable audit record for this transition.
-	if _, evErr := r.client.BacklogStatusEvent.Create().
+	evCreate := r.client.BacklogStatusEvent.Create().
 		SetItemID(parsedID).
 		SetFromStatus(current.Status).
 		SetToStatus(string(toStatus)).
-		SetTriggeredBy(TriggeredBySystem).
-		Save(ctx); evErr != nil {
+		SetTriggeredBy(TriggeredBySystem)
+	if precondition != nil && precondition.Note != "" {
+		evCreate = evCreate.SetNote(precondition.Note)
+	}
+	if _, evErr := evCreate.Save(ctx); evErr != nil {
 		// Non-fatal: audit log failure should not block the transition itself.
 		_ = evErr
 	}

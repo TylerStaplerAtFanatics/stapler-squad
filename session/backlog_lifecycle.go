@@ -24,6 +24,14 @@ type ReviewGateSpawner interface {
 	SpawnReviewSession(ctx context.Context, item *ent.BacklogItem, itemSessionID string, prompt string) (*Instance, error)
 }
 
+// AutoReopenSpawner can automatically reopen a backlog item for rework after a
+// failed review verdict (FAIL or PARTIAL). It transitions the item back to
+// in_progress and spawns a new work session so the review→rework cycle is
+// fully automated.
+type AutoReopenSpawner interface {
+	AutoReopenAfterFailedReview(ctx context.Context, itemID string) error
+}
+
 // maxConcurrentReviewGates is the maximum number of review gates that can run
 // concurrently. This caps goroutine fan-out when many sessions exit simultaneously.
 const maxConcurrentReviewGates = 8
@@ -40,6 +48,10 @@ type BacklogLifecycleListener struct {
 	// poolMu guards headlessPool for concurrent Set/get access.
 	poolMu       sync.RWMutex
 	headlessPool *headless.Pool
+
+	// autoReopenMu guards autoReopener for concurrent Set/get access.
+	autoReopenMu sync.RWMutex
+	autoReopener AutoReopenSpawner
 
 	// reviewSem limits concurrent review gate goroutines.
 	reviewSem chan struct{}
@@ -62,6 +74,21 @@ func (l *BacklogLifecycleListener) SetHeadlessPool(p *headless.Pool) {
 	l.poolMu.Lock()
 	defer l.poolMu.Unlock()
 	l.headlessPool = p
+}
+
+// SetAutoReopener wires in the spawner used to automatically reopen items for
+// rework when a review verdict is FAIL or PARTIAL.
+func (l *BacklogLifecycleListener) SetAutoReopener(r AutoReopenSpawner) {
+	l.autoReopenMu.Lock()
+	defer l.autoReopenMu.Unlock()
+	l.autoReopener = r
+}
+
+// getAutoReopener returns the current auto-reopener under a read lock.
+func (l *BacklogLifecycleListener) getAutoReopener() AutoReopenSpawner {
+	l.autoReopenMu.RLock()
+	defer l.autoReopenMu.RUnlock()
+	return l.autoReopener
 }
 
 // getHeadlessPool returns the current headless pool under a read lock.
@@ -331,6 +358,19 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		}
 
 		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate headless review complete for item %s (session %s, outcome %s)", item.ID, reviewIS.ID, overall)
+
+		// Auto-reopen: if verdict is FAIL or PARTIAL, immediately transition the item
+		// back to in_progress and spawn a new work session so the review→rework cycle
+		// is fully automated without requiring manual intervention.
+		if reopener := l.getAutoReopener(); (overall == ReviewVerdictFail || overall == ReviewVerdictPartial) && reopener != nil {
+			go func() {
+				if err := reopener.AutoReopenAfterFailedReview(l.shutdownCtx, item.ID.String()); err != nil {
+					log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate AutoReopenAfterFailedReview item=%s: %v", item.ID, err)
+				} else {
+					log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate auto-reopened item %s for rework (verdict %s)", item.ID, overall)
+				}
+			}()
+		}
 		return
 	}
 
