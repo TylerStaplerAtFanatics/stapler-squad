@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -795,22 +797,17 @@ func (fs *FileService) ServeFileRaw(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", cd)
 	}
 
-	// For HTML files served without download mode, inject a <base> tag so that relative
-	// links (images, CSS, other HTML files) resolve correctly when accessed via the
-	// /api/files/raw?sessionId=...&path=... endpoint.
+	// For HTML files served without download mode, rewrite relative src/href attributes
+	// (images, CSS, other HTML files) to absolute /api/files/raw?sessionId=...&path=...
+	// URLs. A <base href> tag doesn't work here: this endpoint identifies the file via a
+	// query parameter, and per URL resolution rules a relative reference discards the
+	// base's query string entirely, so the browser would request the wrong URL.
 	isHTML := strings.HasPrefix(contentType, "text/html") || ext == ".html" || ext == ".htm"
 	if isHTML && !download {
-		// Compute the directory prefix for the base URL (e.g. "logos/" for "logos/preview.html").
 		dir := ""
 		if idx := strings.LastIndex(relPath, "/"); idx >= 0 {
 			dir = relPath[:idx+1]
 		}
-
-		q := url.Values{}
-		q.Set("sessionId", sessionID)
-		q.Set("path", dir)
-		baseHref := "/api/files/raw?" + q.Encode()
-		baseTag := `<base href="` + baseHref + `">`
 
 		// Seek to start; content-type sniffing may have advanced the file position.
 		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
@@ -823,21 +820,7 @@ func (fs *FileService) ServeFileRaw(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		contentStr := string(rawContent)
-		lowerContent := strings.ToLower(contentStr)
-
-		// Find <head> tag (which may have attributes) and inject the base tag just after
-		// its closing ">". Fall back to prepending if no <head> is present.
-		if headIdx := strings.Index(lowerContent, "<head"); headIdx >= 0 {
-			if closeIdx := strings.Index(lowerContent[headIdx:], ">"); closeIdx >= 0 {
-				insertAt := headIdx + closeIdx + 1
-				contentStr = contentStr[:insertAt] + baseTag + contentStr[insertAt:]
-			}
-		} else {
-			contentStr = baseTag + contentStr
-		}
-
-		body := []byte(contentStr)
+		body := []byte(rewriteRelativeHTMLLinks(string(rawContent), sessionID, dir))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 		_, _ = w.Write(body)
@@ -845,4 +828,54 @@ func (fs *FileService) ServeFileRaw(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeContent(w, r, filepath.Base(absPath), info.ModTime(), f)
+}
+
+// htmlLinkAttrRe matches src/href attribute values in HTML markup, e.g. src="foo.png" or href='bar.css'.
+var htmlLinkAttrRe = regexp.MustCompile(`(?i)\b(src|href)(\s*=\s*)(["'])([^"']*)(["'])`)
+
+// absoluteLinkPrefixes are reference schemes/forms that already resolve correctly and must be left alone.
+var absoluteLinkPrefixes = []string{"http://", "https://", "//", "data:", "mailto:", "tel:", "javascript:", "#"}
+
+// rewriteRelativeHTMLLinks rewrites relative src/href attribute values in html so they point at
+// /api/files/raw?sessionId=...&path=... instead of resolving relative to the page's own URL. dir is
+// the directory (with trailing slash) of the HTML file being served, used to resolve paths relative
+// to it; a value starting with "/" is instead resolved relative to the session's workspace root.
+func rewriteRelativeHTMLLinks(html, sessionID, dir string) string {
+	return htmlLinkAttrRe.ReplaceAllStringFunc(html, func(match string) string {
+		groups := htmlLinkAttrRe.FindStringSubmatch(match)
+		attr, eq, openQuote, value, closeQuote := groups[1], groups[2], groups[3], groups[4], groups[5]
+
+		if value == "" {
+			return match
+		}
+		for _, prefix := range absoluteLinkPrefixes {
+			if strings.HasPrefix(strings.ToLower(value), prefix) {
+				return match
+			}
+		}
+
+		fragment := ""
+		refPath := value
+		if idx := strings.Index(refPath, "#"); idx >= 0 {
+			fragment = refPath[idx:]
+			refPath = refPath[:idx]
+		}
+		if idx := strings.Index(refPath, "?"); idx >= 0 {
+			refPath = refPath[:idx]
+		}
+
+		var resolved string
+		if strings.HasPrefix(refPath, "/") {
+			resolved = path.Clean(refPath)[1:]
+		} else {
+			resolved = path.Clean(dir + refPath)
+		}
+
+		q := url.Values{}
+		q.Set("sessionId", sessionID)
+		q.Set("path", resolved)
+		newValue := "/api/files/raw?" + q.Encode() + fragment
+
+		return attr + eq + openQuote + newValue + closeQuote
+	})
 }
