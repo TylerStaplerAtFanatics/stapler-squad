@@ -27,6 +27,11 @@ import (
 // live tmux process and can be safely tombstoned on re-trigger.
 const headlessTriageUUIDPrefix = "headless-triage-"
 
+// maxAutoReworkIterations caps how many automated work sessions can be spawned for a single
+// backlog item by the auto-reopen loop. When this ceiling is hit, the item stays in review
+// so a human can inspect it rather than spinning indefinitely on a persistent FAIL verdict.
+const maxAutoReworkIterations = 3
+
 // defaultTriageCleanupTimeout bounds the DB writes TriggerTriage's goroutine makes
 // after its headless LLM call returns (persist result, update plan_artifacts_path,
 // transition idea->ready, mark session ended). See BacklogService.triageCleanupTimeout
@@ -1181,6 +1186,15 @@ func (s *BacklogService) SpawnSessionFromItem(
 	}
 	s.worktreeMu.Unlock()
 
+	// 10b. Inject the stdio MCP config so the spawned session can call backlog tools.
+	// STAPLER_SESSION_UUID is set in the tmux session env by initTmuxSession (instance_tmux.go),
+	// so the stdio subprocess inherits it automatically — no UUID needs to go into this file.
+	if binaryPath, execErr := os.Executable(); execErr == nil {
+		if mcpErr := InjectMCPConfig(worktreePath, binaryPath); mcpErr != nil {
+			log.WarningLog.Printf("[SpawnSessionFromItem] InjectMCPConfig failed (non-fatal): %v", mcpErr)
+		}
+	}
+
 	// 11. Spawn session first so we have the real UUID before creating the ItemSession record.
 	// Pass the same resolved worktreePath so CreateDirectorySession's own resolution is a
 	// no-op and both paths are guaranteed to agree.
@@ -1212,6 +1226,13 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create item session: %w", err))
 	}
 
+	// 12b. Capture the pre-work HEAD SHA so the review gate can diff base..HEAD across
+	// all commits the agent makes (not just HEAD~1..HEAD at review time).
+	if baseSHA, shaErr := session.GetGitHeadSHA(worktreePath); shaErr == nil && baseSHA != "" {
+		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
+		inst.SetDirBaseSHA(baseSHA)
+	}
+
 	// 13. Transition item to in_progress (no-op if already in_progress on reopen).
 	if !isReopen {
 		if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil); transErr != nil {
@@ -1223,6 +1244,66 @@ func (s *BacklogService) SpawnSessionFromItem(
 		SessionUuid: inst.UUID,
 		ItemSession: itemSessionToProto(is),
 	}), nil
+}
+
+// AutoReopenAfterFailedReview implements session.AutoReopenSpawner.
+// It transitions the item from review back to in_progress and spawns a new
+// work session so the review→rework cycle runs without manual intervention.
+func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID string) error {
+	if s.storage == nil {
+		return fmt.Errorf("storage not available")
+	}
+
+	// Load item to check current status and obtain updated_at for the precondition.
+	item, err := s.storage.GetBacklogItem(ctx, itemID)
+	if err != nil {
+		return fmt.Errorf("load item: %w", err)
+	}
+
+	// Iteration cap: count prior work sessions so we don't spin forever on a
+	// persistent FAIL verdict. Fail-safe: if the DB query errors we cannot know
+	// the true count, so we bail rather than risk an unbounded loop.
+	sessions, sessErr := s.storage.ListItemSessions(ctx, item.ID)
+	if sessErr != nil {
+		return fmt.Errorf("list sessions for cap check: %w", sessErr)
+	}
+	workCount := 0
+	for _, is := range sessions {
+		if is.SessionRole == session.SessionRoleWork {
+			workCount++
+		}
+	}
+	if workCount >= maxAutoReworkIterations {
+		log.InfoLog.Printf("[AutoReopenAfterFailedReview] item %s has %d work sessions (cap %d); leaving in review for manual action", itemID, workCount, maxAutoReworkIterations)
+		return nil
+	}
+
+	// Transition review → in_progress with a precondition to guard against races
+	// (e.g. concurrent manual reopen firing at the same time).
+	updatedAt := item.UpdatedAt
+	precondition := &session.BacklogItemPrecondition{
+		ExpectedStatus:    string(session.BacklogStatusReview),
+		ExpectedUpdatedAt: &updatedAt,
+		Note:              "auto-reopened after failed review verdict",
+	}
+	if _, err := s.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusInProgress, precondition); err != nil {
+		return fmt.Errorf("transition to in_progress: %w", err)
+	}
+
+	_, spawnErr := s.SpawnSessionFromItem(ctx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId:     itemID,
+		Autonomous: true,
+	}))
+	if spawnErr != nil {
+		// Roll back: item should stay in review rather than stranded in in_progress
+		// with no active session. ReconcileStuckItems is an eventual fallback, but
+		// an explicit rollback provides faster recovery.
+		if _, rollbackErr := s.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusReview, nil); rollbackErr != nil {
+			log.ErrorLog.Printf("[AutoReopenAfterFailedReview] rollback to review failed for item %s: %v", itemID, rollbackErr)
+		}
+		return fmt.Errorf("spawn session: %w", spawnErr)
+	}
+	return nil
 }
 
 // AttachSessionToItem links an existing session to a backlog item.

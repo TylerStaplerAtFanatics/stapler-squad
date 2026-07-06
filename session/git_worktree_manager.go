@@ -19,8 +19,9 @@ import (
 // itself has no knowledge of Instance lifecycle; it only manages the worktree
 // and diff operations.
 type GitWorktreeManager struct {
-	worktree  *git.GitWorktree
-	diffStats *git.DiffStats
+	worktree   *git.GitWorktree
+	diffStats  *git.DiffStats
+	dirBaseSHA string // base commit SHA for directory-mode backlog sessions
 }
 
 // HasWorktree reports whether a git worktree has been initialized.
@@ -82,6 +83,12 @@ func (gm *GitWorktreeManager) GetBranchName() string {
 	}
 	return gm.worktree.GetBranchName()
 }
+
+// SetDirBaseSHA sets the base commit SHA for directory-mode diff computation.
+func (gm *GitWorktreeManager) SetDirBaseSHA(sha string) { gm.dirBaseSHA = sha }
+
+// GetDirBaseSHA returns the base commit SHA for directory-mode diff computation.
+func (gm *GitWorktreeManager) GetDirBaseSHA() string { return gm.dirBaseSHA }
 
 // GetBaseCommitSHA returns the base commit SHA or "" if no worktree.
 func (gm *GitWorktreeManager) GetBaseCommitSHA() string {

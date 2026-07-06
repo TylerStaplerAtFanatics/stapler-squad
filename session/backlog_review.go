@@ -9,6 +9,7 @@ import (
 
 	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
@@ -187,6 +188,12 @@ func ParseHeadlessVerdictResult(text string) (overall string, verdicts []Criteri
 // Each occurrence is replaced with spaced backticks which cannot form a fence.
 func sanitizeDiff(diff string) string {
 	return strings.ReplaceAll(diff, "```", "` `` ")
+}
+
+// GetGitHeadSHA returns the current HEAD commit SHA in the given directory,
+// or "" on any error. Used to capture a base SHA at work session start.
+func GetGitHeadSHA(repoPath string) (string, error) {
+	return git.GetHeadCommitSHA(repoPath)
 }
 
 // GetGitDiff returns the diff of changes in worktreePath relative to baseSHA

@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/git"
 )
@@ -189,8 +191,16 @@ func (i *Instance) UpdateDiffStats() error {
 		return nil
 	}
 	if !i.gitManager.HasWorktree() {
-		i.gitManager.ClearDiffStats()
+		dirBase := i.gitManager.GetDirBaseSHA()
 		i.mu.RUnlock()
+		if dirBase == "" {
+			return nil
+		}
+		// Directory session with a known base SHA — compute diff outside the lock.
+		stats := computeDirDiffStats(i.WorkingDir, dirBase)
+		i.mu.Lock()
+		i.gitManager.SetDiffStats(stats)
+		i.mu.Unlock()
 		return nil
 	}
 	i.mu.RUnlock()
@@ -236,6 +246,36 @@ func (i *Instance) GetDiffStats() *git.DiffStats {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.gitManager.GetDiffStats()
+}
+
+// SetDirBaseSHA sets the base commit SHA used to compute diff stats for
+// directory-mode sessions (sessions without an isolated git worktree).
+func (i *Instance) SetDirBaseSHA(sha string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.gitManager.SetDirBaseSHA(sha)
+}
+
+// computeDirDiffStats computes diff stats for a directory session by running
+// git diff against baseSHA. Returns nil on any error (diff is optional/cosmetic).
+func computeDirDiffStats(repoPath, baseSHA string) *git.DiffStats {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := safeexec.CommandContext(ctx, "git", "diff", baseSHA+"..HEAD")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	stats := &git.DiffStats{Content: string(out)}
+	for _, line := range strings.Split(stats.Content, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			stats.Added++
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			stats.Removed++
+		}
+	}
+	return stats
 }
 
 // GetWorkingDirectory returns the working directory for this instance.

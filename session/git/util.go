@@ -155,6 +155,9 @@ func getCurrentBranchName(path string) (string, error) {
 	return ref.Target().Short(), nil
 }
 
+// GetHeadCommitSHA returns the SHA of the HEAD commit for a git repository or worktree.
+func GetHeadCommitSHA(path string) (string, error) { return getHeadCommitSHA(path) }
+
 // getHeadCommitSHA returns the SHA of the HEAD commit for a git repository or worktree
 func getHeadCommitSHA(path string) (string, error) {
 	shaCtx, shaCancel := context.WithTimeout(context.Background(), 10*time.Second)

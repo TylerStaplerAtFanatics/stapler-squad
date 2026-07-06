@@ -96,6 +96,26 @@ func (r *EntRepository) ListItemSessions(ctx context.Context, itemID string) ([]
 	return sessions, nil
 }
 
+// GetBaseCommitSHAsForSessions returns a map of sessionUUID → last_commit_sha for the
+// given session UUIDs, including only rows where last_commit_sha is non-empty.
+// Used at startup to restore dirBaseSHA for directory-mode backlog sessions.
+func (r *EntRepository) GetBaseCommitSHAsForSessions(ctx context.Context, sessionUUIDs []string) (map[string]string, error) {
+	rows, err := r.client.ItemSession.Query().
+		Where(itemsession.SessionUUIDIn(sessionUUIDs...)).
+		Select(itemsession.FieldSessionUUID, itemsession.FieldLastCommitSha).
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetBaseCommitSHAsForSessions: %w", err)
+	}
+	result := make(map[string]string, len(rows))
+	for _, row := range rows {
+		if row.LastCommitSha != "" {
+			result[row.SessionUUID] = row.LastCommitSha
+		}
+	}
+	return result, nil
+}
+
 // GetItemSessionBySessionUUID looks up the most recent active ItemSession by session UUID alone.
 // session_uuid is not unique across records (a session may be reused), so we order by
 // created_at descending and take the first match. Returns ErrNotFound if no record exists.
