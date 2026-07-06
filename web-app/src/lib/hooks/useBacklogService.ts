@@ -59,7 +59,7 @@ export interface LinkedSession {
   reviewVerdict?: {
     overallOutcome?: "PASS" | "PARTIAL" | "FAIL" | "PENDING" | "UNVERIFIABLE";
     summary?: string;
-    perCriterion?: Array<{ criterionIndex: number; outcome: string }>;
+    perCriterion?: Array<{ criterionIndex: number; outcome: string; evidence: string }>;
   };
   triageResult?: TriageResult;
 }
@@ -155,6 +155,7 @@ function mapItemSession(s: ItemSessionProto): LinkedSession {
       perCriterion: (rv.perCriterion ?? []).map((c) => ({
         criterionIndex: c.criterionIndex,
         outcome: c.outcome,
+        evidence: c.evidence,
       })),
     };
   }
@@ -207,7 +208,7 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
 
     if (mostRecentReviewSession.reviewVerdict.perCriterion?.length) {
       gateCriteria = mostRecentReviewSession.reviewVerdict.perCriterion.map((c) => ({
-        label: `Criterion ${c.criterionIndex}: ${c.outcome}`,
+        label: c.evidence ? `${c.outcome}: ${c.evidence}` : `Criterion ${c.criterionIndex}: ${c.outcome}`,
         passed: c.outcome === "PASS" || c.outcome === "pass",
       }));
     }

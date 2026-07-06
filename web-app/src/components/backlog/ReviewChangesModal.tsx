@@ -1,11 +1,13 @@
 "use client";
 // +feature: backlog:review-changes-modal
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { DiffViewer } from "@/components/sessions/DiffViewer";
-import { SessionVcsProvider } from "@/lib/contexts/SessionVcsContext";
-import { getApiBaseUrl } from "@/lib/config";
+import { createClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
+import { BacklogService } from "@/gen/session/v1/backlog_pb";
+import { DiffRenderer } from "@/components/shared/DiffRenderer";
+import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
 import {
   backdrop,
   modal,
@@ -18,13 +20,30 @@ import {
 } from "./ReviewChangesModal.css";
 
 interface ReviewChangesModalProps {
-  sessionId: string;
+  itemId: string;
+  sessionId?: string;
   sessionTitle?: string;
   onClose: () => void;
 }
 
-export function ReviewChangesModal({ sessionId, sessionTitle, onClose }: ReviewChangesModalProps) {
+export function ReviewChangesModal({ itemId, sessionId, sessionTitle, onClose }: ReviewChangesModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const [diff, setDiff] = useState<{ content: string; added: number; removed: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const transport = createConnectTransport({
+      baseUrl: getApiBaseUrl(),
+      interceptors: [createAuthInterceptor()],
+    });
+    const client = createClient(BacklogService, transport);
+
+    client.getBacklogItemDiff({ itemId }).then((resp) => {
+      setDiff({ content: resp.diff, added: resp.added, removed: resp.removed });
+    }).catch(() => {
+      setDiff({ content: "", added: 0, removed: 0 });
+    }).finally(() => setLoading(false));
+  }, [itemId]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -57,24 +76,29 @@ export function ReviewChangesModal({ sessionId, sessionTitle, onClose }: ReviewC
       >
         <div className={modalHeader}>
           <span id="review-changes-title" className={modalTitle}>
-            {sessionTitle ?? sessionId}
+            {sessionTitle ?? itemId}
           </span>
           <span className={modalLabel}>Changes</span>
-          <a
-            className={openTerminalLink}
-            href={`/?session=${sessionId}`}
-            title="Open session in terminal"
-          >
-            Open in Terminal ↗
-          </a>
+          {sessionId && (
+            <a
+              className={openTerminalLink}
+              href={`/?session=${sessionId}`}
+              title="Open session in terminal"
+            >
+              Open in Terminal ↗
+            </a>
+          )}
           <button className={closeButton} onClick={onClose} aria-label="Close changes viewer">
             ✕
           </button>
         </div>
         <div className={modalBody}>
-          <SessionVcsProvider sessionId={sessionId} baseUrl={getApiBaseUrl()}>
-            <DiffViewer />
-          </SessionVcsProvider>
+          <DiffRenderer
+            content={diff?.content ?? ""}
+            added={diff?.added ?? 0}
+            removed={diff?.removed ?? 0}
+            loading={loading}
+          />
         </div>
       </div>
     </>,

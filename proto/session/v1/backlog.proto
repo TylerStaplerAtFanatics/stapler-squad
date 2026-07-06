@@ -399,6 +399,10 @@ service BacklogService {
 
   // ListGitHubIssues returns issues for a specific GitHub repo.
   rpc ListGitHubIssues(ListGitHubIssuesRequest) returns (ListGitHubIssuesResponse) {}
+
+  // GetBacklogItemDiff returns the committed diff for a backlog item's work sessions
+  // (from the earliest work session base SHA to the current HEAD).
+  rpc GetBacklogItemDiff(GetBacklogItemDiffRequest) returns (GetBacklogItemDiffResponse) {}
 }
 
 message ImportGitHubIssueRequest {
@@ -459,4 +463,14 @@ message ListGitHubIssuesRequest {
 
 message ListGitHubIssuesResponse {
   repeated GitHubIssueEntry issues = 1;
+}
+
+message GetBacklogItemDiffRequest {
+  string item_id = 1;
+}
+
+message GetBacklogItemDiffResponse {
+  string diff = 1;
+  int32 added = 2;
+  int32 removed = 3;
 }
