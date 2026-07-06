@@ -251,7 +251,6 @@ function PaneLeafComponent({ pane, state, dispatch, sessions, hasSplits }: PaneL
         isFocused={isFocused}
         onClose={handleClose}
         onFocus={handleFocus}
-        onTabChange={handleTabChange}
         onZoom={handleZoom}
         onSetView={handleSetView}
         splitButtonVisible={true}
