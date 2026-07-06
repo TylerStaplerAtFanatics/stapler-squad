@@ -414,6 +414,79 @@ func TestSubmitTriageResult_PublishesNotificationOnSuccess(t *testing.T) {
 	}
 }
 
+// TestRequestReview_TransitionsItemToReview verifies that requestReview
+// transitions the item from in_progress to review.
+func TestRequestReview_TransitionsItemToReview(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+	ctx := context.Background()
+
+	itemData := session.BacklogItemData{
+		Title:  "Review me",
+		Status: string(session.BacklogStatusInProgress),
+	}
+	item, err := storage.CreateBacklogItem(ctx, itemData)
+	require.NoError(t, err)
+
+	sessionUUID := uuid.New().String()
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: sessionUUID,
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	handler := &backlogHandlers{storage: storage}
+	ctxWithUUID := WithSessionUUID(ctx, sessionUUID)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id": item.ID,
+		"message": "Implemented the feature, all criteria done.",
+	})
+
+	result, err := handler.requestReview(ctxWithUUID, req)
+	require.NoError(t, err)
+	require.Len(t, result.Content, 1)
+	tc, ok := result.Content[0].(mcpgo.TextContent)
+	require.True(t, ok)
+	require.Contains(t, tc.Text, "review")
+
+	// Verify item is now in review status.
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	require.Equal(t, string(session.BacklogStatusReview), fetched.Status)
+}
+
+// TestRequestReview_RejectsWhenSessionNotLinked verifies PERMISSION_DENIED
+// when session is not linked to the item.
+func TestRequestReview_RejectsWhenSessionNotLinked(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+	ctx := context.Background()
+
+	itemData := session.BacklogItemData{
+		Title:  "Unlinked item",
+		Status: string(session.BacklogStatusInProgress),
+	}
+	item, err := storage.CreateBacklogItem(ctx, itemData)
+	require.NoError(t, err)
+
+	sessionUUID := uuid.New().String()
+	ctxWithUUID := WithSessionUUID(ctx, sessionUUID)
+	handler := &backlogHandlers{storage: storage}
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id": item.ID,
+		"message": "Done.",
+	})
+
+	result, err := handler.requestReview(ctxWithUUID, req)
+	require.NoError(t, err)
+
+	m := parseResult(t, result)
+	require.False(t, m["success"].(bool))
+	errObj := m["error"].(map[string]interface{})
+	require.Equal(t, ErrPermissionDenied, errObj["code"])
+}
+
 // TestSubmitTriageResult_NoNotificationWhenEventBusNil verifies that submitTriageResult
 // does not panic when eventBus is nil and still returns a success result.
 func TestSubmitTriageResult_NoNotificationWhenEventBusNil(t *testing.T) {
