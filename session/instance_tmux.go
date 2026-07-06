@@ -134,17 +134,16 @@ func (i *Instance) buildClaudeCommand(base, claudeSessionID string) string {
 	return strings.Join(parts, " ")
 }
 
-// claudeMCPConfigArgs returns the --mcp-config flag and its shell-quoted JSON value
-// as two separate strings, consistent with all other flag/value pairs in buildClaudeCommand.
-// %q escapes MCPServerURL/UUID as JSON string values; shellQuote then wraps the whole
-// JSON payload for the shell so neither quoting layer re-implements the other.
+// claudeMCPConfigArgs returns the --mcp-config flag and its shell-quoted JSON value.
+// Uses the Streamable HTTP transport (type "http") pointing at MCPServerURL, with the
+// session UUID passed as a request header. The server middleware at /mcp extracts
+// X-Stapler-Session-UUID and injects it into the request context for tool handlers.
+// Both "http" and "streamable-http" are accepted by the Claude CLI for --mcp-config.
 func (i *Instance) claudeMCPConfigArgs() (string, string) {
-	var cfg string
-	if i.UUID != "" {
-		cfg = fmt.Sprintf(`{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}`, i.MCPServerURL, i.UUID)
-	} else {
-		cfg = fmt.Sprintf(`{"mcpServers":{"stapler-squad":{"type":"http","url":%q}}}`, i.MCPServerURL)
-	}
+	cfg := fmt.Sprintf(
+		`{"mcpServers":{"stapler-squad":{"type":"http","url":%q,"headers":{"X-Stapler-Session-UUID":%q}}}}`,
+		i.MCPServerURL, i.UUID,
+	)
 	return "--mcp-config", shellQuote(cfg)
 }
 
