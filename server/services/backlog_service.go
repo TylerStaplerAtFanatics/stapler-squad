@@ -1794,6 +1794,10 @@ func (s *BacklogService) TriggerReReview(
 
 	var mostRecentReviewSession *ent.ItemSession
 	var mostRecentWorkSession *ent.ItemSession
+	// earliestWorkSHA is the base SHA from the oldest work session that has one.
+	// Using the oldest captures the full diff from before any work began.
+	var earliestWorkSHA string
+	var earliestWorkSHATime time.Time
 	for _, is := range sessions {
 		switch is.SessionRole {
 		case session.SessionRoleReview:
@@ -1804,16 +1808,24 @@ func (s *BacklogService) TriggerReReview(
 			if mostRecentWorkSession == nil || is.CreatedAt.After(mostRecentWorkSession.CreatedAt) {
 				mostRecentWorkSession = is
 			}
+			if is.LastCommitSha != "" && (earliestWorkSHA == "" || is.CreatedAt.Before(earliestWorkSHATime)) {
+				earliestWorkSHA = is.LastCommitSha
+				earliestWorkSHATime = is.CreatedAt
+			}
 		}
 	}
 
 	// 5. Note: We don't need to delete the old verdict; a new one will overwrite it when the re-review
 	// session submits its findings via the MCP tool.
 
-	// 6. Get git diff from the most recent work session (use HEAD~1..HEAD if no commit SHA tracked).
+	// 6. Get git diff using the earliest available base SHA so the reviewer sees all work commits.
+	// Fall back to HEAD~1 only as a last resort (better than nothing, avoids empty diff).
 	var workSessionDiff string
 	if mostRecentWorkSession != nil {
-		fromSHA := mostRecentWorkSession.LastCommitSha
+		fromSHA := earliestWorkSHA
+		if fromSHA == "" && mostRecentWorkSession.LastCommitSha != "" {
+			fromSHA = mostRecentWorkSession.LastCommitSha
+		}
 		if fromSHA == "" {
 			fromSHA = "HEAD~1"
 		}
