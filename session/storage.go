@@ -782,6 +782,17 @@ func (s *Storage) GetItemSessionBySessionUUID(ctx context.Context, sessionUUID s
 	return er.GetItemSessionBySessionUUID(ctx, sessionUUID)
 }
 
+// GetWorktreeDataBySessionUUID returns the git worktree data for the Session with
+// the given UUID. Returns empty GitWorktreeData for directory-mode sessions or if
+// the session is not found.
+func (s *Storage) GetWorktreeDataBySessionUUID(ctx context.Context, sessionUUID string) (GitWorktreeData, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return GitWorktreeData{}, nil
+	}
+	return er.GetWorktreeDataBySessionUUID(ctx, sessionUUID)
+}
+
 // UpdateItemSessionTriageResult stores the triage result JSON payload on an ItemSession.
 func (s *Storage) UpdateItemSessionTriageResult(ctx context.Context, id string, triageResult string) error {
 	er, ok := s.repo.(*EntRepository)

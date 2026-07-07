@@ -262,9 +262,15 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		return
 	}
 
-	// Get the git diff.
-	worktreePath := item.RepoPath
-	diff, truncated, diffErr := GetGitDiff(ctx, worktreePath, is.LastCommitSha)
+	// Get the git diff from the session's dedicated worktree (if one exists).
+	// Fall back to the item's repo path for directory-mode sessions.
+	diffDir := item.RepoPath
+	diffBaseSHA := is.LastCommitSha
+	if wt, wtErr := l.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID); wtErr == nil && wt.WorktreePath != "" {
+		diffDir = wt.WorktreePath
+		diffBaseSHA = wt.BaseCommitSHA
+	}
+	diff, truncated, diffErr := GetGitDiff(ctx, diffDir, diffBaseSHA)
 	if diffErr != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff item=%s: %v", item.ID, diffErr)
 		diff = ""

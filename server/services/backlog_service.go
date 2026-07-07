@@ -1882,10 +1882,6 @@ func (s *BacklogService) TriggerReReview(
 
 	var mostRecentReviewSession *ent.ItemSession
 	var mostRecentWorkSession *ent.ItemSession
-	// earliestWorkSHA is the base SHA from the oldest work session that has one.
-	// Using the oldest captures the full diff from before any work began.
-	var earliestWorkSHA string
-	var earliestWorkSHATime time.Time
 	for _, is := range sessions {
 		switch is.SessionRole {
 		case session.SessionRoleReview:
@@ -1896,28 +1892,26 @@ func (s *BacklogService) TriggerReReview(
 			if mostRecentWorkSession == nil || is.CreatedAt.After(mostRecentWorkSession.CreatedAt) {
 				mostRecentWorkSession = is
 			}
-			if is.LastCommitSha != "" && (earliestWorkSHA == "" || is.CreatedAt.Before(earliestWorkSHATime)) {
-				earliestWorkSHA = is.LastCommitSha
-				earliestWorkSHATime = is.CreatedAt
-			}
 		}
 	}
 
 	// 5. Note: We don't need to delete the old verdict; a new one will overwrite it when the re-review
 	// session submits its findings via the MCP tool.
 
-	// 6. Get git diff using the earliest available base SHA so the reviewer sees all work commits.
-	// Fall back to HEAD~1 only as a last resort (better than nothing, avoids empty diff).
+	// 6. Get git diff from the most recent work session's worktree using its base SHA.
+	// Fall back to item.RepoPath / HEAD~1 only for directory-mode sessions.
 	var workSessionDiff string
 	if mostRecentWorkSession != nil {
-		fromSHA := earliestWorkSHA
-		if fromSHA == "" && mostRecentWorkSession.LastCommitSha != "" {
-			fromSHA = mostRecentWorkSession.LastCommitSha
+		diffDir := item.RepoPath
+		diffBaseSHA := "HEAD~1"
+		wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, mostRecentWorkSession.SessionUUID)
+		if wtErr == nil && wt.WorktreePath != "" {
+			diffDir = wt.WorktreePath
+			diffBaseSHA = wt.BaseCommitSHA
+		} else if mostRecentWorkSession.LastCommitSha != "" {
+			diffBaseSHA = mostRecentWorkSession.LastCommitSha
 		}
-		if fromSHA == "" {
-			fromSHA = "HEAD~1"
-		}
-		diff, _, diffErr := session.GetGitDiff(ctx, item.RepoPath, fromSHA)
+		diff, _, diffErr := session.GetGitDiff(ctx, diffDir, diffBaseSHA)
 		if diffErr != nil {
 			log.WarningLog.Printf("[TriggerReReview] GetGitDiff failed: %v", diffErr)
 		} else {
@@ -1975,7 +1969,7 @@ Call submit_review_verdict with:
   verdicts: [{"criterion_index": N, "outcome": "PASS|FAIL|PARTIAL", "evidence": "<specific evidence>"}]
 
 Do not modify the code. Only write the review verdict.
-`, workSessionDiff, item.ID)
+`, session.SanitizeDiff(workSessionDiff), item.ID)
 
 	// 9. Require SessionCreator to spawn review session.
 	// degraded: sessionCreator unavailable — return a placeholder response so the
@@ -2190,22 +2184,29 @@ func (s *BacklogService) GetBacklogItemDiff(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list item sessions: %w", err))
 	}
 
-	// Use the earliest work session's base SHA to capture all work commits.
-	var earliestWorkSHA string
-	var earliestWorkSHATime time.Time
+	// Use the most recent work session's dedicated worktree and its base SHA so
+	// the diff reflects what the current iteration of work actually changed.
+	var mostRecentWorkSession *ent.ItemSession
 	for _, is := range sessions {
-		if is.SessionRole == session.SessionRoleWork && is.LastCommitSha != "" {
-			if earliestWorkSHA == "" || is.CreatedAt.Before(earliestWorkSHATime) {
-				earliestWorkSHA = is.LastCommitSha
-				earliestWorkSHATime = is.CreatedAt
+		if is.SessionRole == session.SessionRoleWork {
+			if mostRecentWorkSession == nil || is.CreatedAt.After(mostRecentWorkSession.CreatedAt) {
+				mostRecentWorkSession = is
 			}
 		}
 	}
-	if earliestWorkSHA == "" {
-		earliestWorkSHA = "HEAD~1"
+	diffDir := item.RepoPath
+	diffBaseSHA := "HEAD~1"
+	if mostRecentWorkSession != nil {
+		wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, mostRecentWorkSession.SessionUUID)
+		if wtErr == nil && wt.WorktreePath != "" {
+			diffDir = wt.WorktreePath
+			diffBaseSHA = wt.BaseCommitSHA
+		} else if mostRecentWorkSession.LastCommitSha != "" {
+			diffBaseSHA = mostRecentWorkSession.LastCommitSha
+		}
 	}
 
-	diffContent, _, diffErr := session.GetGitDiff(ctx, item.RepoPath, earliestWorkSHA)
+	diffContent, _, diffErr := session.GetGitDiff(ctx, diffDir, diffBaseSHA)
 	if diffErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to compute diff: %w", diffErr))
 	}

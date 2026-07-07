@@ -186,7 +186,11 @@ func ParseHeadlessVerdictResult(text string) (overall string, verdicts []Criteri
 // prompt injection: a ``` inside the diff block would close the code fence and
 // allow the model to interpret subsequent diff content as instructions.
 // Each occurrence is replaced with spaced backticks which cannot form a fence.
-func sanitizeDiff(diff string) string {
+func sanitizeDiff(diff string) string { return SanitizeDiff(diff) }
+
+// SanitizeDiff neutralizes triple-backtick sequences in a diff so they cannot
+// close a markdown code fence when the diff is interpolated into an LLM prompt.
+func SanitizeDiff(diff string) string {
 	return strings.ReplaceAll(diff, "```", "` `` ")
 }
 
