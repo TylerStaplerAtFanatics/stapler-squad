@@ -13,6 +13,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
+	entSession "github.com/tstapler/stapler-squad/session/ent/session"
 	"github.com/tstapler/stapler-squad/session/ent/sourcesyncevent"
 )
 
@@ -625,4 +626,30 @@ func (r *EntRepository) GetAllItemSessionsWithBacklogInfo(ctx context.Context) (
 		})
 	}
 	return results, nil
+}
+
+// GetWorktreeDataBySessionUUID returns the git worktree data for the Session with
+// the given UUID. Returns an empty GitWorktreeData (no error) if the session does
+// not exist or is a directory-mode session without a dedicated worktree.
+func (r *EntRepository) GetWorktreeDataBySessionUUID(ctx context.Context, sessionUUID string) (GitWorktreeData, error) {
+	sess, err := r.client.Session.Query().
+		Where(entSession.UUID(sessionUUID)).
+		WithWorktree().
+		Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return GitWorktreeData{}, nil
+		}
+		return GitWorktreeData{}, fmt.Errorf("GetWorktreeDataBySessionUUID %q: %w", sessionUUID, err)
+	}
+	if sess.Edges.Worktree == nil {
+		return GitWorktreeData{}, nil
+	}
+	return GitWorktreeData{
+		RepoPath:      sess.Edges.Worktree.RepoPath,
+		WorktreePath:  sess.Edges.Worktree.WorktreePath,
+		SessionName:   sess.Edges.Worktree.SessionName,
+		BranchName:    sess.Edges.Worktree.BranchName,
+		BaseCommitSHA: sess.Edges.Worktree.BaseCommitSha,
+	}, nil
 }
