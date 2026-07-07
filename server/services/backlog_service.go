@@ -19,6 +19,7 @@ import (
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/tokens"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -689,8 +690,20 @@ func (s *BacklogService) GetBacklogItem(
 		item.ItemSessions = isSessions
 	}
 
+	p := backlogItemToProto(item, s.buildCostLookup())
+	// Populate worktree_branch for each linked work session.
+	for _, is := range p.ItemSessions {
+		if is.SessionUuid == "" {
+			continue
+		}
+		wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUuid)
+		if wtErr == nil && wt.BranchName != "" {
+			is.WorktreeBranch = wt.BranchName
+		}
+	}
+
 	return connect.NewResponse(&sessionv1.GetBacklogItemResponse{
-		Item: backlogItemToProto(item, s.buildCostLookup()),
+		Item: p,
 	}), nil
 }
 
@@ -833,6 +846,11 @@ func (s *BacklogService) ArchiveBacklogItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to archive backlog item: %w", err))
 	}
 
+	// Best-effort: clean up git worktrees for work sessions on archive.
+	if sessions, lsErr := s.storage.ListItemSessions(ctx, req.Msg.ItemId); lsErr == nil {
+		s.cleanupItemWorktrees(ctx, sessions)
+	}
+
 	return connect.NewResponse(&sessionv1.ArchiveBacklogItemResponse{
 		Item: backlogItemToProto(archived, s.buildCostLookup()),
 	}), nil
@@ -934,6 +952,13 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 			return nil, connect.NewError(connect.CodeAborted, err)
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to transition backlog item: %w", err))
+	}
+
+	// Best-effort: clean up git worktrees for work sessions on terminal transitions.
+	if to == session.BacklogStatusDone || to == session.BacklogStatusArchived {
+		if sessions, lsErr := s.storage.ListItemSessions(ctx, req.Msg.ItemId); lsErr == nil {
+			s.cleanupItemWorktrees(ctx, sessions)
+		}
 	}
 
 	return connect.NewResponse(&sessionv1.TransitionBacklogItemStatusResponse{
@@ -1319,6 +1344,12 @@ func (s *BacklogService) SpawnSessionFromItem(
 	if baseSHA, shaErr := session.GetGitHeadSHA(worktreePath); shaErr == nil && baseSHA != "" {
 		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
 		inst.SetDirBaseSHA(baseSHA)
+	}
+
+	// 12c. On reopen, clean up git worktrees from prior work sessions now that the
+	// new session is safely persisted. Best-effort only — errors are logged, not returned.
+	if isReopen {
+		s.cleanupItemWorktrees(ctx, priorSessions)
 	}
 
 	// 13. Transition item to in_progress (no-op if already in_progress on reopen).
@@ -2321,4 +2352,25 @@ func (s *BacklogService) GetSessionBacklogIndex(
 	return connect.NewResponse(&sessionv1.GetSessionBacklogIndexResponse{
 		Entries: protoEntries,
 	}), nil
+}
+
+// cleanupItemWorktrees removes git worktrees for work-role item sessions.
+// Errors are logged but do not fail the caller — cleanup is best-effort.
+func (s *BacklogService) cleanupItemWorktrees(ctx context.Context, sessions []*ent.ItemSession) {
+	for _, is := range sessions {
+		if is.SessionUUID == "" {
+			continue
+		}
+		if is.SessionRole != string(session.SessionRoleWork) {
+			continue
+		}
+		wt, err := s.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
+		if err != nil || wt.WorktreePath == "" {
+			continue
+		}
+		g := git.NewGitWorktreeFromStorage(wt.RepoPath, wt.WorktreePath, wt.SessionName, wt.BranchName, wt.BaseCommitSHA)
+		if cleanErr := g.Cleanup(); cleanErr != nil {
+			log.WarningLog.Printf("[cleanupItemWorktrees] failed to cleanup worktree path=%s: %v", wt.WorktreePath, cleanErr)
+		}
+	}
 }

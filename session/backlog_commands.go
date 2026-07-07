@@ -63,6 +63,23 @@ func WriteSlashCommands(item *ent.BacklogItem, worktreePath string) error {
 		return err
 	}
 
+	// ship.md
+	if err := writeFile(filepath.Join(cmdDir, "ship.md"),
+		"You are ready to ship your work as a pull request.\n\n"+
+			"Before shipping, confirm all acceptance criteria are marked complete (`/backlog/status`).\n\n"+
+			"Steps:\n"+
+			"1. Create the pull request:\n"+
+			"   Run `/github:pr-ship` — this drives the PR through local CI, code review, remote CI, and\n"+
+			"   merge-conflict resolution. It will stop short of actually merging; the final merge is left to\n"+
+			"   the human reviewer.\n\n"+
+			"2. Once `/github:pr-ship` reports all gates green, request the automated review:\n"+
+			"   Run `/backlog/review` with a 2-3 sentence summary of what was built and the PR number.\n\n"+
+			"Note: if the repository has no GitHub remote, use `gh pr create --fill` to create the PR manually,\n"+
+			"then run `/backlog/review`.\n",
+	); err != nil {
+		return err
+	}
+
 	// help.md — list all available commands
 	var helpSb strings.Builder
 	helpSb.WriteString("# Available Backlog Commands\n\n")
@@ -72,6 +89,7 @@ func WriteSlashCommands(item *ent.BacklogItem, worktreePath string) error {
 		fmt.Fprintf(&helpSb, "- `/backlog/fail-%d` — Mark criterion %d as failed\n", c.Index, c.Index)
 	}
 	helpSb.WriteString("- `/backlog/review` — Submit for review with a summary\n")
+	helpSb.WriteString("- `/backlog/ship` — Create a PR with /github:pr-ship and submit for review\n")
 	if err := writeFile(filepath.Join(cmdDir, "help.md"), helpSb.String()); err != nil {
 		return err
 	}

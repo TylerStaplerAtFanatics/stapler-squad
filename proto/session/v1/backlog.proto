@@ -70,6 +70,7 @@ message ItemSession {
   ReviewVerdict review_verdict = 11;
   TriageResult triage_result = 12;
   double estimated_cost_usd = 13;
+  string worktree_branch = 14;
 }
 
 // BacklogStatusEvent records a single status transition for a backlog item.

@@ -859,6 +859,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                           {s.sessionId.startsWith("headless-review-") ? "headless review" : s.sessionId.startsWith("review-blocked-") ? "review blocked" : s.sessionId}
                         </span>
                         <span className={styles.sessionRole}>{s.role}</span>
+                        {s.worktreeBranch && (
+                          <span className={styles.branchBadge} title="Git branch for this work session">{s.worktreeBranch}</span>
+                        )}
                         {s.startedAt && (
                           <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
                         )}
@@ -879,6 +882,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                           {s.sessionId}
                         </span>
                         <span className={styles.sessionRole}>{s.role}</span>
+                        {s.worktreeBranch && (
+                          <span className={styles.branchBadge} title="Git branch for this work session">{s.worktreeBranch}</span>
+                        )}
                         {s.startedAt && (
                           <span className={styles.sessionDate}>{formatDate(s.startedAt)}</span>
                         )}
