@@ -2245,3 +2245,34 @@ func (s *BacklogService) GetBacklogItemCost(
 
 	return connect.NewResponse(resp), nil
 }
+
+// GetSessionBacklogIndex returns a flat list of all item sessions with their parent backlog
+// item metadata, keyed by session UUID. Used by the Insights dashboard to annotate sessions.
+func (s *BacklogService) GetSessionBacklogIndex(
+	ctx context.Context,
+	_ *connect.Request[sessionv1.GetSessionBacklogIndexRequest],
+) (*connect.Response[sessionv1.GetSessionBacklogIndexResponse], error) {
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+
+	entries, err := s.storage.GetAllItemSessionsWithBacklogInfo(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to query session backlog index: %w", err))
+	}
+
+	protoEntries := make([]*sessionv1.BacklogSessionEntry, 0, len(entries))
+	for _, e := range entries {
+		protoEntries = append(protoEntries, &sessionv1.BacklogSessionEntry{
+			SessionUuid: e.SessionUUID,
+			ItemId:      e.ItemID,
+			ItemTitle:   e.ItemTitle,
+			ItemStatus:  e.ItemStatus,
+			SessionRole: e.SessionRole,
+		})
+	}
+
+	return connect.NewResponse(&sessionv1.GetSessionBacklogIndexResponse{
+		Entries: protoEntries,
+	}), nil
+}

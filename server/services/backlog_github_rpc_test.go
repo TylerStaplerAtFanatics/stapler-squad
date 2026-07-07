@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	gh "github.com/tstapler/stapler-squad/github"
+	"github.com/tstapler/stapler-squad/session"
 )
 
 // resetGhBaseURL overrides GhBaseURL for a test and returns a restore func.
@@ -153,4 +154,54 @@ func TestListGitHubIssues_SearchUsesSearchAPI(t *testing.T) {
 		}))
 	require.NoError(t, err)
 	assert.Equal(t, "/search/issues", capturedPath)
+}
+
+// ─── GetSessionBacklogIndex ───────────────────────────────────────────────────
+
+func TestGetSessionBacklogIndex_NilStorage(t *testing.T) {
+	svc := newBacklogServiceNilStorage()
+	_, err := svc.GetSessionBacklogIndex(context.Background(),
+		connect.NewRequest(&sessionv1.GetSessionBacklogIndexRequest{}))
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, connect.CodeUnavailable, connectErr.Code())
+}
+
+func TestGetSessionBacklogIndex_EmptyDB(t *testing.T) {
+	svc := newBacklogService(t)
+	resp, err := svc.GetSessionBacklogIndex(context.Background(),
+		connect.NewRequest(&sessionv1.GetSessionBacklogIndexRequest{}))
+	require.NoError(t, err)
+	assert.Empty(t, resp.Msg.Entries)
+}
+
+func TestGetSessionBacklogIndex_WithEntries(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	ctx := context.Background()
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Test Backlog Item",
+		Status: "idea",
+	})
+	require.NoError(t, err)
+
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "test-session-uuid-abc",
+		SessionRole: "work",
+	})
+	require.NoError(t, err)
+
+	resp, err := svc.GetSessionBacklogIndex(context.Background(),
+		connect.NewRequest(&sessionv1.GetSessionBacklogIndexRequest{}))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.Entries, 1)
+	e := resp.Msg.Entries[0]
+	assert.Equal(t, "test-session-uuid-abc", e.SessionUuid)
+	assert.Equal(t, "Test Backlog Item", e.ItemTitle)
+	assert.Equal(t, "idea", e.ItemStatus)
+	assert.Equal(t, "work", e.SessionRole)
+	assert.NotEmpty(t, e.ItemId)
 }

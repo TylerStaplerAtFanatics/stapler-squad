@@ -170,6 +170,9 @@ type Repository interface {
 	DeleteBacklogItem(ctx context.Context, id string) error
 	// TransitionBacklogItemStatus changes the status of a backlog item with optional precondition.
 	TransitionBacklogItemStatus(ctx context.Context, id string, toStatus BacklogStatus, precondition *BacklogItemPrecondition) (*BacklogItemData, error)
+	// GetAllItemSessionsWithBacklogInfo returns all item sessions joined with their parent backlog item metadata.
+	// Used by the Insights dashboard to annotate sessions with backlog context.
+	GetAllItemSessionsWithBacklogInfo(ctx context.Context) ([]ItemSessionBacklogEntry, error)
 
 	// --- ItemSource ---
 
@@ -279,6 +282,16 @@ type BacklogItemData struct {
 	// StatusEvents holds the eagerly-loaded status transition history.
 	// Only populated when explicitly loaded by the caller (e.g. GetBacklogItem).
 	StatusEvents []*ent.BacklogStatusEvent
+}
+
+// ItemSessionBacklogEntry is a lightweight join record linking a tmux session UUID
+// to its parent backlog item's metadata. Returned by GetAllItemSessionsWithBacklogInfo.
+type ItemSessionBacklogEntry struct {
+	SessionUUID string
+	SessionRole string
+	ItemID      string
+	ItemTitle   string
+	ItemStatus  string
 }
 
 // BacklogItemFilter controls which items ListBacklogItems returns.
