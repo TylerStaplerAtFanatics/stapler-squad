@@ -601,3 +601,28 @@ func (r *EntRepository) FinishSourceSync(ctx context.Context, sourceID string, c
 	}
 	return nil
 }
+
+// GetAllItemSessionsWithBacklogInfo returns all item sessions joined with their parent
+// backlog item's ID, title, and status. Used by the Insights dashboard index.
+func (r *EntRepository) GetAllItemSessionsWithBacklogInfo(ctx context.Context) ([]ItemSessionBacklogEntry, error) {
+	sessions, err := r.client.ItemSession.Query().
+		WithBacklogItem().
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query item sessions with backlog info: %w", err)
+	}
+	results := make([]ItemSessionBacklogEntry, 0, len(sessions))
+	for _, is := range sessions {
+		if is.Edges.BacklogItem == nil {
+			continue
+		}
+		results = append(results, ItemSessionBacklogEntry{
+			SessionUUID: is.SessionUUID,
+			SessionRole: is.SessionRole,
+			ItemID:      is.Edges.BacklogItem.ID.String(),
+			ItemTitle:   is.Edges.BacklogItem.Title,
+			ItemStatus:  is.Edges.BacklogItem.Status,
+		})
+	}
+	return results, nil
+}

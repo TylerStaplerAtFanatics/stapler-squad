@@ -111,6 +111,9 @@ const (
 	// BacklogServiceGetBacklogItemCostProcedure is the fully-qualified name of the BacklogService's
 	// GetBacklogItemCost RPC.
 	BacklogServiceGetBacklogItemCostProcedure = "/session.v1.BacklogService/GetBacklogItemCost"
+	// BacklogServiceGetSessionBacklogIndexProcedure is the fully-qualified name of the BacklogService's
+	// GetSessionBacklogIndex RPC.
+	BacklogServiceGetSessionBacklogIndexProcedure = "/session.v1.BacklogService/GetSessionBacklogIndex"
 )
 
 // BacklogServiceClient is a client for the session.v1.BacklogService service.
@@ -168,6 +171,9 @@ type BacklogServiceClient interface {
 	GetBacklogItemDiff(context.Context, *connect.Request[v1.GetBacklogItemDiffRequest]) (*connect.Response[v1.GetBacklogItemDiffResponse], error)
 	// GetBacklogItemCost returns the estimated token cost for all sessions linked to an item.
 	GetBacklogItemCost(context.Context, *connect.Request[v1.GetBacklogItemCostRequest]) (*connect.Response[v1.GetBacklogItemCostResponse], error)
+	// GetSessionBacklogIndex returns all item sessions mapped to their backlog item metadata.
+	// Used by the Insights dashboard to annotate sessions with backlog context.
+	GetSessionBacklogIndex(context.Context, *connect.Request[v1.GetSessionBacklogIndexRequest]) (*connect.Response[v1.GetSessionBacklogIndexResponse], error)
 }
 
 // NewBacklogServiceClient constructs a client for the session.v1.BacklogService service. By
@@ -337,6 +343,12 @@ func NewBacklogServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItemCost")),
 			connect.WithClientOptions(opts...),
 		),
+		getSessionBacklogIndex: connect.NewClient[v1.GetSessionBacklogIndexRequest, v1.GetSessionBacklogIndexResponse](
+			httpClient,
+			baseURL+BacklogServiceGetSessionBacklogIndexProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("GetSessionBacklogIndex")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -368,6 +380,7 @@ type backlogServiceClient struct {
 	listGitHubIssues            *connect.Client[v1.ListGitHubIssuesRequest, v1.ListGitHubIssuesResponse]
 	getBacklogItemDiff          *connect.Client[v1.GetBacklogItemDiffRequest, v1.GetBacklogItemDiffResponse]
 	getBacklogItemCost          *connect.Client[v1.GetBacklogItemCostRequest, v1.GetBacklogItemCostResponse]
+	getSessionBacklogIndex      *connect.Client[v1.GetSessionBacklogIndexRequest, v1.GetSessionBacklogIndexResponse]
 }
 
 // CreateBacklogItem calls session.v1.BacklogService.CreateBacklogItem.
@@ -500,6 +513,11 @@ func (c *backlogServiceClient) GetBacklogItemCost(ctx context.Context, req *conn
 	return c.getBacklogItemCost.CallUnary(ctx, req)
 }
 
+// GetSessionBacklogIndex calls session.v1.BacklogService.GetSessionBacklogIndex.
+func (c *backlogServiceClient) GetSessionBacklogIndex(ctx context.Context, req *connect.Request[v1.GetSessionBacklogIndexRequest]) (*connect.Response[v1.GetSessionBacklogIndexResponse], error) {
+	return c.getSessionBacklogIndex.CallUnary(ctx, req)
+}
+
 // BacklogServiceHandler is an implementation of the session.v1.BacklogService service.
 type BacklogServiceHandler interface {
 	// CreateBacklogItem adds a new item to the backlog.
@@ -555,6 +573,9 @@ type BacklogServiceHandler interface {
 	GetBacklogItemDiff(context.Context, *connect.Request[v1.GetBacklogItemDiffRequest]) (*connect.Response[v1.GetBacklogItemDiffResponse], error)
 	// GetBacklogItemCost returns the estimated token cost for all sessions linked to an item.
 	GetBacklogItemCost(context.Context, *connect.Request[v1.GetBacklogItemCostRequest]) (*connect.Response[v1.GetBacklogItemCostResponse], error)
+	// GetSessionBacklogIndex returns all item sessions mapped to their backlog item metadata.
+	// Used by the Insights dashboard to annotate sessions with backlog context.
+	GetSessionBacklogIndex(context.Context, *connect.Request[v1.GetSessionBacklogIndexRequest]) (*connect.Response[v1.GetSessionBacklogIndexResponse], error)
 }
 
 // NewBacklogServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -720,6 +741,12 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 		connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItemCost")),
 		connect.WithHandlerOptions(opts...),
 	)
+	backlogServiceGetSessionBacklogIndexHandler := connect.NewUnaryHandler(
+		BacklogServiceGetSessionBacklogIndexProcedure,
+		svc.GetSessionBacklogIndex,
+		connect.WithSchema(backlogServiceMethods.ByName("GetSessionBacklogIndex")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/session.v1.BacklogService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case BacklogServiceCreateBacklogItemProcedure:
@@ -774,6 +801,8 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 			backlogServiceGetBacklogItemDiffHandler.ServeHTTP(w, r)
 		case BacklogServiceGetBacklogItemCostProcedure:
 			backlogServiceGetBacklogItemCostHandler.ServeHTTP(w, r)
+		case BacklogServiceGetSessionBacklogIndexProcedure:
+			backlogServiceGetSessionBacklogIndexHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -885,4 +914,8 @@ func (UnimplementedBacklogServiceHandler) GetBacklogItemDiff(context.Context, *c
 
 func (UnimplementedBacklogServiceHandler) GetBacklogItemCost(context.Context, *connect.Request[v1.GetBacklogItemCostRequest]) (*connect.Response[v1.GetBacklogItemCostResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.GetBacklogItemCost is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) GetSessionBacklogIndex(context.Context, *connect.Request[v1.GetSessionBacklogIndexRequest]) (*connect.Response[v1.GetSessionBacklogIndexResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.GetSessionBacklogIndex is not implemented"))
 }

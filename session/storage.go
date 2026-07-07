@@ -894,6 +894,16 @@ func (s *Storage) UpdateItemSessionSessionUUID(ctx context.Context, id string, s
 	return er.UpdateItemSessionSessionUUID(ctx, id, sessionUUID)
 }
 
+// GetAllItemSessionsWithBacklogInfo returns all item sessions joined with backlog item metadata.
+// Delegates to EntRepository; returns an error for non-ent backends.
+func (s *Storage) GetAllItemSessionsWithBacklogInfo(ctx context.Context) ([]ItemSessionBacklogEntry, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, fmt.Errorf("item sessions not supported by this storage backend")
+	}
+	return er.GetAllItemSessionsWithBacklogInfo(ctx)
+}
+
 // --- Session Goal ---
 
 // SetSessionGoal upserts the goal for a session (1:1 per session_uuid).

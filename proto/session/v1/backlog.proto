@@ -408,6 +408,10 @@ service BacklogService {
 
   // GetBacklogItemCost returns the estimated token cost for all sessions linked to an item.
   rpc GetBacklogItemCost(GetBacklogItemCostRequest) returns (GetBacklogItemCostResponse) {}
+
+  // GetSessionBacklogIndex returns all item sessions mapped to their backlog item metadata.
+  // Used by the Insights dashboard to annotate sessions with backlog context.
+  rpc GetSessionBacklogIndex(GetSessionBacklogIndexRequest) returns (GetSessionBacklogIndexResponse) {}
 }
 
 message ImportGitHubIssueRequest {
@@ -495,4 +499,19 @@ message GetBacklogItemCostRequest {
 message GetBacklogItemCostResponse {
   double total_cost_usd = 1;
   repeated SessionCostEntry sessions = 2;
+}
+
+// BacklogSessionEntry maps a tmux session UUID to the backlog item it belongs to.
+message BacklogSessionEntry {
+  string session_uuid = 1;
+  string item_id = 2;
+  string item_title = 3;
+  string item_status = 4;
+  string session_role = 5;
+}
+
+message GetSessionBacklogIndexRequest {}
+
+message GetSessionBacklogIndexResponse {
+  repeated BacklogSessionEntry entries = 1;
 }
