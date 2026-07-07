@@ -14,6 +14,7 @@ import {
   container, treePane, treePaneCollapsed, contentPane, toolbar, searchInput,
   toolbarLabel, toolbarButton, searchCount, treeWrapper,
   mobilePaneHidden, mobilePaneVisible, mobileBackButton,
+  toolbarButtonMobileHidden, mobileSearchButton, toolbarDivider,
 } from "./FilesTab.css";
 
 // ---- Git status helpers ----
@@ -118,18 +119,20 @@ export function FilesTab({
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
         if (!searchInputRef.current) return;
         if (searchInputRef.current.offsetParent === null) return;
+        if (panel.collapsed) return;
         e.preventDefault();
         searchInputRef.current.focus();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "p") {
         if (!searchInputRef.current || searchInputRef.current.offsetParent === null) return;
+        if (panel.collapsed) return;
         e.preventDefault();
         setIsQuickOpenOpen(true);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [panel.collapsed]);
 
   // Build tree pane class names
   const treePaneClasses = [
@@ -161,7 +164,7 @@ export function FilesTab({
             ref={searchInputRef}
             type="search"
             className={searchInput}
-            placeholder="Search files… (⌘F)"
+            placeholder="Search files…"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             onKeyDown={(e) => {
@@ -170,10 +173,16 @@ export function FilesTab({
                 searchInputRef.current?.blur();
               }
             }}
+            enterKeyHint="search"
             aria-label="Search files"
           />
           {searchResultCount !== null && searchTerm.length >= 2 && (
-            <span className={searchCount} title={searchResultTruncated ? "Results truncated at 500" : undefined}>
+            <span
+              className={searchCount}
+              title={searchResultTruncated ? "Results truncated at 500" : undefined}
+              aria-live="polite"
+              aria-atomic="true"
+            >
               {searchResultCount}{searchResultTruncated ? "+" : ""} match{searchResultCount !== 1 ? "es" : ""}
             </span>
           )}
@@ -186,25 +195,29 @@ export function FilesTab({
             Ignored
           </label>
           <button
-            className={toolbarButton}
+            className={`${toolbarButton} ${toolbarButtonMobileHidden}`}
             onClick={() => fileTreeRef.current?.collapseAll()}
             title="Collapse all directories"
+            aria-label="Collapse all directories"
           >
             ⊟
           </button>
+          <div className={toolbarDivider} />
           {panel.collapsed ? (
             <button
-              className={toolbarButton}
+              className={`${toolbarButton} ${toolbarButtonMobileHidden}`}
               onClick={() => panel.expand()}
               title="Expand file tree panel"
+              aria-label="Expand file tree panel"
             >
               ⊞
             </button>
           ) : (
             <button
-              className={toolbarButton}
+              className={`${toolbarButton} ${toolbarButtonMobileHidden}`}
               onClick={() => panel.collapse()}
               title="Collapse file tree panel"
+              aria-label="Collapse file tree panel"
             >
               ⊠
             </button>
@@ -213,6 +226,7 @@ export function FilesTab({
             className={toolbarButton}
             onClick={() => refreshStatus()}
             title="Refresh git status"
+            aria-label="Refresh git status"
             disabled={vcsLoading}
           >
             {vcsLoading ? "⟳" : "↺"}
@@ -250,6 +264,13 @@ export function FilesTab({
           onClick={() => setMobilePane("tree")}
         >
           ← Files
+        </button>
+        <button
+          className={mobileSearchButton}
+          onClick={() => setIsQuickOpenOpen(true)}
+          aria-label="Search files"
+        >
+          🔍
         </button>
         <FileContentViewer
           sessionId={sessionId}

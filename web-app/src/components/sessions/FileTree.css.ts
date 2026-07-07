@@ -64,6 +64,11 @@ export const node = style({
       background: vars.color.terminalHoverBg,
     },
   },
+  "@media": {
+    "(max-width: 767px)": {
+      minHeight: "44px",
+    },
+  },
 });
 
 export const selected = style({

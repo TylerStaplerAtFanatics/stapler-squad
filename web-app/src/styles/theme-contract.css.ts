@@ -77,6 +77,14 @@ export const vars = createThemeContract({
     logOnAmber: null, // text on amber log badge (warn)
     logLive: null,    // live indicator dot / success accent
 
+    // Git status colors (file-tree badges)
+    gitModified: null,
+    gitAdded: null,
+    gitDeleted: null,
+    gitRenamed: null,
+    gitUntracked: null,
+    gitConflict: null,
+
     // Cyberpunk / glow tokens
     glowPrimary: null,
     glowSecondary: null,
