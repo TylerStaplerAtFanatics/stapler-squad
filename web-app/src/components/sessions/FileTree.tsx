@@ -14,6 +14,7 @@ import {
   searchContainer, searchInput, toolbar, toolbarButton, toolbarLabel,
   treeWrapper, mark, searchEmpty, searchTruncated as searchTruncatedClass,
 } from "./FileTree.css";
+import { vars } from "@/styles/theme.css";
 
 // ---- Data model ----
 
@@ -29,14 +30,14 @@ export interface TreeNode {
   children?: TreeNode[]; // undefined = not loaded, [] = empty dir
 }
 
-// Git status colors.
+// Git status colors — mapped to theme tokens so they respond to light/dark mode.
 const GIT_STATUS_COLORS: Record<string, string> = {
-  M: "#cca700",
-  A: "#2ea043",
-  D: "#f85149",
-  "?": "#3fb950",
-  R: "#58a6ff",
-  U: "#f85149",
+  M: vars.color.gitModified,
+  A: vars.color.gitAdded,
+  D: vars.color.gitDeleted,
+  "?": vars.color.gitUntracked,
+  R: vars.color.gitRenamed,
+  U: vars.color.gitConflict,
 };
 
 // ---- Props ----
@@ -201,7 +202,7 @@ interface NodeRendererProps {
   selectedPath: string | null | undefined;
   includeIgnored: boolean;
   searchTerm: string;
-  maxChars: number;
+  containerWidth: number;
 }
 
 function highlightMatch(name: string, term: string): React.ReactNode {
@@ -226,9 +227,11 @@ function NodeRenderer({
   errorPaths,
   selectedPath,
   searchTerm,
-  maxChars,
+  containerWidth,
 }: NodeRendererProps) {
   const data = node.data;
+  // Per-node char budget accounts for indent depth (16px per level + 8px base padding).
+  const maxChars = Math.floor((containerWidth - 48 - (node.level * 16 + 8)) / 7.5);
   const isSelected = selectedPath === data.id;
   const isLoading = loadingPaths.has(data.id);
   const loadError = errorPaths.get(data.id);
@@ -411,7 +414,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
     loadDirectoryRef.current = loadDirectory;
   }, [loadDirectory]);
 
-  // Load root on mount / when session changes.
+  // Load root on mount and whenever session, base URL, or ignored-files setting changes.
   useEffect(() => {
     setDirContents(new Map());
     setRootLoading(true);
@@ -428,26 +431,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
       .finally(() => {
         setRootLoading(false);
       });
-  }, [sessionId, baseUrl]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Reload when includeIgnored changes.
-  useEffect(() => {
-    setDirContents(new Map());
-    setRootLoading(true);
-    setRootError(null);
-
-    fetchDirectoryFiles(sessionId, ".", includeIgnored, baseUrl)
-      .then((response) => {
-        const nodes = (response.files || []).map(fileNodeToTreeNode);
-        setDirContents(new Map([[".", nodes]]));
-      })
-      .catch((err) => {
-        setRootError(err instanceof Error ? err.message : "Failed to load files");
-      })
-      .finally(() => {
-        setRootLoading(false);
-      });
-  }, [includeIgnored]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionId, baseUrl, includeIgnored]);
 
   // Debounced backend search: fires when searchTerm changes.
   useEffect(() => {
@@ -543,9 +527,8 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
     return s;
   }, [dirContents]);
 
-  // Computed max character budget for middle-truncating file names in the tree.
-  // 48px accounts for indent + icon + badge; 7.5px is approximate char width in mono 13px.
-  const maxChars = useMemo(() => Math.floor((dims.w - 48) / 7.5), [dims.w]);
+  // Row height: 44px on narrow (mobile) viewports for touch target compliance, 28px otherwise.
+  const rowHeight = dims.w < 640 ? 44 : 28;
 
   // AbortController for in-flight revealPath operations — ensures only one runs at a time.
   const revealAbortRef = useRef<AbortController | null>(null);
@@ -742,18 +725,6 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
     );
   }
 
-  // Search loading overlay.
-  if (searchLoading) {
-    return (
-      <div className={container}>
-        <div className={loadingClass}>
-          <span className={spinner} />
-          Searching…
-        </div>
-      </div>
-    );
-  }
-
   // Search empty state.
   if (searchResults !== null && searchResults.length === 0) {
     return (
@@ -777,55 +748,68 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
       ref={containerRef}
       tabIndex={0}
       onKeyDown={handleTreeKeyDown}
+      title="Navigate with j/k/h/l  •  Enter to open  •  gg/G for top/bottom"
+      aria-label="File tree. Use j/k to navigate, l/Enter to open, h to go up."
     >
       {searchTruncated && (
         <div className={searchTruncatedClass}>
           Showing first 500 results — refine your search for more specific matches.
         </div>
       )}
-      <Tree<TreeNode>
-        ref={treeRef}
-        data={displayedData}
-        idAccessor={(node) => node.id}
-        childrenAccessor={(node) => {
-          if (!node.isDir) return null;
-          // Returning [] (not null) for all dirs keeps isLeaf=false so node.toggle() works.
-          // Returning null would make the node a leaf and prevent any toggle from firing.
-          return node.children ?? [];
-        }}
-        disableDrag={true}
-        disableDrop={true}
-        onActivate={handleActivate}
-        onToggle={handleToggle}
-        rowHeight={28}
-        openByDefault={false}
-        width={dims.w}
-        height={dims.h}
-        searchTerm={searchResults === null ? (searchTerm || undefined) : undefined}
-        searchMatch={(node, term) => {
-          const t = term.toLowerCase();
-          return (
-            node.data.name.toLowerCase().includes(t) ||
-            node.data.id.toLowerCase().includes(t)
-          );
-        }}
-      >
-        {({ node, style, dragHandle }) => (
-          <NodeRenderer
-            node={node}
-            style={style}
-            dragHandle={dragHandle}
-            gitStatusMap={gitStatusMap}
-            dirStatusMap={dirStatusMap}
-            loadingPaths={loadingPaths}
-            errorPaths={errorPaths}
-            selectedPath={selectedPath}
-            includeIgnored={includeIgnored}
-            searchTerm={searchTerm}
-            maxChars={maxChars}
-          />
+      <div style={{ position: "relative", flex: 1 }}>
+        {searchLoading && (
+          <div style={{
+            position: "absolute", inset: 0, display: "flex",
+            alignItems: "center", justifyContent: "center",
+            background: "rgba(0,0,0,0.4)", zIndex: 1,
+          }}>
+            <span className={spinner} />
+          </div>
         )}
-      </Tree>
+        <Tree<TreeNode>
+          ref={treeRef}
+          data={displayedData}
+          idAccessor={(node) => node.id}
+          childrenAccessor={(node) => {
+            if (!node.isDir) return null;
+            // Returning [] (not null) for all dirs keeps isLeaf=false so node.toggle() works.
+            // Returning null would make the node a leaf and prevent any toggle from firing.
+            return node.children ?? [];
+          }}
+          disableDrag={true}
+          disableDrop={true}
+          onActivate={handleActivate}
+          onToggle={handleToggle}
+          rowHeight={rowHeight}
+          openByDefault={false}
+          width={dims.w}
+          height={dims.h}
+          searchTerm={searchResults === null ? (searchTerm || undefined) : undefined}
+          searchMatch={(node, term) => {
+            const t = term.toLowerCase();
+            return (
+              node.data.name.toLowerCase().includes(t) ||
+              node.data.id.toLowerCase().includes(t)
+            );
+          }}
+        >
+          {({ node, style, dragHandle }) => (
+            <NodeRenderer
+              node={node}
+              style={style}
+              dragHandle={dragHandle}
+              gitStatusMap={gitStatusMap}
+              dirStatusMap={dirStatusMap}
+              loadingPaths={loadingPaths}
+              errorPaths={errorPaths}
+              selectedPath={selectedPath}
+              includeIgnored={includeIgnored}
+              searchTerm={searchTerm}
+              containerWidth={dims.w}
+            />
+          )}
+        </Tree>
+      </div>
     </div>
   );
 });

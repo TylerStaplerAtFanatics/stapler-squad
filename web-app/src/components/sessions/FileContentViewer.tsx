@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useGetFileContent } from "@/lib/hooks/useFileService";
 import { darkTheme } from "@/styles/theme.css";
 import {
-  container, emptyState, emptyIcon,
+  container, emptyState, emptyIcon, emptyHint,
   loading as loadingClass, error as errorClass, spinner,
   breadcrumb, breadcrumbSegment, breadcrumbCurrent, breadcrumbSep,
   truncationWarning, viewer, shikiOutput, shikiOutputWrap, plainPre, plainPreWrapped, codeMirrorEditor,
@@ -12,6 +12,7 @@ import {
   downloadButton, wrapToggleButton, wrapToggleButtonActive, imageViewer, imagePreview,
   pdfViewer, pdfEmbed,
   videoViewer, videoPlayer, videoMeta,
+  shimmer,
 } from "./FileContentViewer.css";
 
 // Language detection map: file extension → Shiki/CodeMirror language ID.
@@ -123,13 +124,20 @@ function Breadcrumb({ path, onSegmentClick, downloadUrl, openUrl, wrapLines, onT
         const isLast = i === segments.length - 1;
         return (
           <span key={segPath}>
-            <span
-              className={isLast ? breadcrumbCurrent : breadcrumbSegment}
-              onClick={!isLast && onSegmentClick ? () => onSegmentClick(segPath) : undefined}
-              title={segPath}
-            >
-              {seg}
-            </span>
+            {isLast ? (
+              <span className={breadcrumbCurrent} title={segPath}>
+                {seg}
+              </span>
+            ) : (
+              <button
+                className={breadcrumbSegment}
+                onClick={onSegmentClick ? () => onSegmentClick(segPath) : undefined}
+                title={segPath}
+                type="button"
+              >
+                {seg}
+              </button>
+            )}
             {!isLast && <span className={breadcrumbSep}>/</span>}
           </span>
         );
@@ -340,13 +348,18 @@ function ShikiViewer({ content, language, wrapLines }: ShikiViewerProps) {
     return () => { cancelled = true; };
   }, [content, language]);
 
-  if (error || html === null) {
-    // Plain text fallback.
+  if (error) {
+    // Error fallback — render plain text.
     return (
       <pre className={wrapLines ? plainPreWrapped : plainPre}>
         <code>{content}</code>
       </pre>
     );
+  }
+
+  if (html === null) {
+    // Still loading — show shimmer to avoid flash of unstyled plain text.
+    return <div className={shimmer} aria-hidden="true" />;
   }
 
   return (
@@ -398,11 +411,16 @@ export function FileContentViewer({ sessionId, filePath, baseUrl }: FileContentV
   const { data, loading, error } = useGetFileContent(sessionId, filePath, baseUrl);
   const [wrapLines, setWrapLines] = useState(false);
 
+  useEffect(() => {
+    setWrapLines(false);
+  }, [filePath]);
+
   if (!filePath) {
     return (
       <div className={emptyState}>
         <span className={emptyIcon}>📄</span>
         <p>Select a file to view its contents</p>
+        <p className={emptyHint}>Press ⌘P (or Ctrl+P) to quick-open any file</p>
       </div>
     );
   }

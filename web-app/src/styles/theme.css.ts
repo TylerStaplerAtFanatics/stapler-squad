@@ -108,6 +108,9 @@ export const lightTheme = createTheme(vars, {
     logDebug: "#6b7280", logTrace: "#4b5563",
     logOnDark: "#ffffff", logOnAmber: "#1a1a1a", logLive: "#22c55e",
 
+    gitModified: "#d97706", gitAdded: "#16a34a", gitDeleted: "#dc2626",
+    gitRenamed: "#2563eb", gitUntracked: "#6b7280", gitConflict: "#c026d3",
+
     glowPrimary: "rgba(0,112,243,0.4)",
     glowSecondary: "rgba(0,112,243,0.2)",
     scanlineColor: "transparent",
@@ -201,6 +204,9 @@ export const darkTheme = createTheme(vars, {
     logError: "#dc2626", logWarn: "#d97706", logInfo: "#2563eb",
     logDebug: "#6b7280", logTrace: "#4b5563",
     logOnDark: "#ffffff", logOnAmber: "#1a1a1a", logLive: "#22c55e",
+
+    gitModified: "#d97706", gitAdded: "#16a34a", gitDeleted: "#dc2626",
+    gitRenamed: "#2563eb", gitUntracked: "#6b7280", gitConflict: "#c026d3",
 
     glowPrimary: "rgba(45,156,219,0.4)",
     glowSecondary: "rgba(45,156,219,0.2)",
@@ -298,6 +304,9 @@ export const matrixTheme = createTheme(vars, {
     logError: "#cc0033", logWarn: "#cc8800", logInfo: "#00aaff",
     logDebug: "#00802b", logTrace: "#006622",
     logOnDark: "#00ff41", logOnAmber: "#000000", logLive: "#00ff41",
+
+    gitModified: "#ccaa00", gitAdded: "#00ff41", gitDeleted: "#ff3333",
+    gitRenamed: "#00aaff", gitUntracked: "#00802b", gitConflict: "#ff00ff",
 
     glowPrimary: "rgba(0,255,65,0.5)",
     glowSecondary: "rgba(0,255,65,0.25)",
@@ -404,6 +413,9 @@ export const cyberpunk77Theme = createTheme(vars, {
     logDebug: "#9d4edd", logTrace: "#7b2d8b",
     logOnDark: "#ffffff", logOnAmber: "#0d0d1a", logLive: "#00ff9f",
 
+    gitModified: "#ffd700", gitAdded: "#00ff9f", gitDeleted: "#ff2d78",
+    gitRenamed: "#00d4ff", gitUntracked: "#9d4edd", gitConflict: "#ff0099",
+
     glowPrimary: "rgba(255,45,120,0.5)",
     glowSecondary: "rgba(0,212,255,0.4)",
     scanlineColor: "rgba(255,45,120,0.02)",
@@ -509,6 +521,9 @@ export const wh40kTheme = createTheme(vars, {
     logDebug: "#6b6040", logTrace: "#4a4030",
     logOnDark: "#fcee09", logOnAmber: "#0d0b00", logLive: "#c0a020",
 
+    gitModified: "#c0a020", gitAdded: "#5a7a3a", gitDeleted: "#8b1a1a",
+    gitRenamed: "#1a4a8b", gitUntracked: "#786858", gitConflict: "#7a3a5a",
+
     glowPrimary: "rgba(192,160,32,0.4)",
     glowSecondary: "rgba(139,26,26,0.4)",
     scanlineColor: "transparent",
@@ -613,6 +628,9 @@ export const cleanTheme = createTheme(vars, {
     logError: "#dc2626", logWarn: "#d97706", logInfo: "#4f46e5",
     logDebug: "#6b7280", logTrace: "#4b5563",
     logOnDark: "#ffffff", logOnAmber: "#1a1a1a", logLive: "#22c55e",
+
+    gitModified: "#d97706", gitAdded: "#16a34a", gitDeleted: "#dc2626",
+    gitRenamed: "#4f46e5", gitUntracked: "#6b7280", gitConflict: "#c026d3",
 
     glowPrimary: "rgba(99,102,241,0.3)",
     glowSecondary: "rgba(99,102,241,0.15)",
