@@ -218,6 +218,11 @@ message SpawnSessionFromItemRequest {
 
   // Optional: If true, start an AutonomousDriver for the spawned session.
   bool autonomous = 3;
+
+  // Optional: If true, stop any currently active work session for this item and
+  // re-spawn it from scratch (with a new git worktree). Used to restart existing
+  // sessions that were started under the old directory-mode code path.
+  bool force = 4;
 }
 
 message SpawnSessionFromItemResponse {

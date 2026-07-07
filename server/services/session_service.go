@@ -758,6 +758,55 @@ func (s *SessionService) CreateDirectorySession(ctx context.Context, title, path
 	return instance, nil
 }
 
+// CreateWorktreeSession satisfies the services.SessionCreator interface.
+// It spawns a session that uses an already-created git worktree at worktreePath.
+// repoPath is the parent repo (for program resolution). worktreePath must exist on disk.
+func (s *SessionService) CreateWorktreeSession(ctx context.Context, title, repoPath, worktreePath, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error) {
+	cfg := config.LoadConfig()
+	resolved := config.ResolveDefaults(cfg, repoPath, "")
+	opts := session.InstanceOptions{
+		Title:            title,
+		Path:             repoPath,
+		Program:          resolved.Program,
+		PermissionMode:   session.PermissionModeAuto,
+		SessionType:      session.SessionTypeExistingWorktree,
+		ExistingWorktree: worktreePath,
+		Prompt:           prompt,
+		Tags:             tags,
+		OneShot:          oneShot,
+		Hidden:           hidden,
+		MCPServerURL:     s.mcpServerURL,
+		CreateIfMissing:  false,
+	}
+	instance, err := session.NewInstance(opts)
+	if err != nil {
+		return nil, fmt.Errorf("CreateWorktreeSession: %w", err)
+	}
+	if err := instance.Start(true); err != nil {
+		return nil, fmt.Errorf("CreateWorktreeSession start: %w", err)
+	}
+	if s.statusManager != nil {
+		instance.SetStatusManager(s.statusManager)
+		if ctrlErr := instance.StartController(); ctrlErr != nil {
+			log.Warn("[CreateWorktreeSession] failed to start controller after wiring", "session", title, "err", ctrlErr)
+		}
+	}
+	session.StartSessionDriver(instance, repoPath)
+	s.wireCallbacks(instance)
+	if err := s.storage.AddInstance(instance); err != nil {
+		_ = instance.Destroy()
+		return nil, fmt.Errorf("CreateWorktreeSession save: %w", err)
+	}
+	if s.reviewQueuePoller != nil {
+		s.reviewQueuePoller.AddInstance(instance)
+	}
+	s.eventBus.Publish(events.NewSessionCreatedEvent(instance))
+	if s.backlogLifecycleListener != nil {
+		s.backlogLifecycleListener.WireToInstance(instance)
+	}
+	return instance, nil
+}
+
 // SetHistoryLinker wires the HistoryLinker so deleted sessions are also removed
 // from it and cannot be re-persisted by the shutdown hook.
 func (s *SessionService) SetHistoryLinker(hl *session.HistoryLinker) {

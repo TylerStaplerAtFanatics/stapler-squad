@@ -1899,7 +1899,11 @@ type SpawnSessionFromItemRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	ItemId string                 `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
 	// Optional: If true, start an AutonomousDriver for the spawned session.
-	Autonomous    bool `protobuf:"varint,3,opt,name=autonomous,proto3" json:"autonomous,omitempty"`
+	Autonomous bool `protobuf:"varint,3,opt,name=autonomous,proto3" json:"autonomous,omitempty"`
+	// Optional: If true, stop any currently active work session for this item and
+	// re-spawn it from scratch (with a new git worktree). Used to redrive existing
+	// sessions that were started under the old directory-mode code path.
+	Force         bool `protobuf:"varint,4,opt,name=force,proto3" json:"force,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1944,6 +1948,13 @@ func (x *SpawnSessionFromItemRequest) GetItemId() string {
 func (x *SpawnSessionFromItemRequest) GetAutonomous() bool {
 	if x != nil {
 		return x.Autonomous
+	}
+	return false
+}
+
+func (x *SpawnSessionFromItemRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
 	}
 	return false
 }
@@ -4299,12 +4310,13 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x13expected_updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x11expectedUpdatedAt\x12'\n" +
 	"\x0foverride_reason\x18\x05 \x01(\tR\x0eoverrideReason\"R\n" +
 	"#TransitionBacklogItemStatusResponse\x12+\n" +
-	"\x04item\x18\x01 \x01(\v2\x17.session.v1.BacklogItemR\x04item\"V\n" +
+	"\x04item\x18\x01 \x01(\v2\x17.session.v1.BacklogItemR\x04item\"l\n" +
 	"\x1bSpawnSessionFromItemRequest\x12\x17\n" +
 	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x1e\n" +
 	"\n" +
 	"autonomous\x18\x03 \x01(\bR\n" +
-	"autonomous\"}\n" +
+	"autonomous\x12\x14\n" +
+	"\x05force\x18\x04 \x01(\bR\x05force\"}\n" +
 	"\x1cSpawnSessionFromItemResponse\x12!\n" +
 	"\fsession_uuid\x18\x01 \x01(\tR\vsessionUuid\x12:\n" +
 	"\fitem_session\x18\x02 \x01(\v2\x17.session.v1.ItemSessionR\vitemSession\"X\n" +

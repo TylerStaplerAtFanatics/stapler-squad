@@ -55,6 +55,10 @@ const maxTriageSessionAge = 2 * time.Hour
 // SessionCreator allows BacklogService to spawn sessions without importing handler internals.
 type SessionCreator interface {
 	CreateDirectorySession(ctx context.Context, title, path, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error)
+	// CreateWorktreeSession spawns a session inside an already-created git worktree at
+	// worktreePath. repoPath is the parent repo used for program resolution; worktreePath
+	// must already exist on disk before this is called.
+	CreateWorktreeSession(ctx context.Context, title, repoPath, worktreePath, prompt string, tags []string, oneShot bool, hidden bool) (*session.Instance, error)
 }
 
 // AutonomousDriverStarter allows BacklogService to start an AutonomousDriver on an existing instance.
@@ -1162,7 +1166,24 @@ func (s *BacklogService) SpawnSessionFromItem(
 		priorSessions = nil
 	}
 
-	// 7b. Guard against spawning a duplicate work session when one is already active.
+	// 7b. If force=true, stop any live work sessions so we can re-spawn (restart path).
+	if req.Msg.Force {
+		for _, ps := range priorSessions {
+			if ps.SessionRole != string(session.SessionRoleWork) || ps.EndedAt != nil {
+				continue
+			}
+			if s.sessionStopper != nil {
+				_ = s.sessionStopper.StopSessionByUUID(ctx, ps.SessionUUID)
+			}
+			_ = s.storage.UpdateItemSessionEnded(ctx, ps.ID.String(), time.Now())
+		}
+		// Reload so the guard below sees the sessions as ended.
+		if refreshed, refreshErr := s.storage.ListItemSessions(ctx, item.ID); refreshErr == nil {
+			priorSessions = refreshed
+		}
+	}
+
+	// 7c. Guard against spawning a duplicate work session when one is already active.
 	for _, ps := range priorSessions {
 		if ps.SessionRole == session.SessionRoleWork && ps.EndedAt == nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists,
@@ -1203,27 +1224,26 @@ func (s *BacklogService) SpawnSessionFromItem(
 		title = fmt.Sprintf("%s-r%d", baseTitle, workCount+1)
 	}
 
-	// 10. Ensure the worktree path exists and write slash commands + context file BEFORE
-	// spawning the session — the claude process starts executing synchronously inside
-	// CreateDirectorySession (tmux launch), so these files must already be on disk by
-	// then or the agent can find them missing on its first turn. worktreeMu still guards
-	// concurrent spawns from interleaving writes to the same path.
-	//
-	// Resolve through session.ResolveSessionPath first — CreateDirectorySession's
-	// underlying NewInstance does the same tilde-expand + absolute-path resolution on
-	// item.RepoPath, so writing to the raw, unresolved string here could silently
-	// target a different path than the one the spawned Instance actually uses (e.g. a
-	// "~/repo" RepoPath would write files under a literal "~/repo" relative to the
-	// server's CWD instead of the user's real home directory).
-	worktreePath, pathErr := session.ResolveSessionPath(item.RepoPath)
-	if pathErr != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid repo_path: %w", pathErr))
+	// 10. Create a dedicated git worktree for this work session. Falls back to a plain
+	// directory session if the repo is not git-managed (or worktree creation fails for
+	// any other reason — e.g. a bare clone, a detached HEAD, or disk quota hit).
+	// Files must be written to the session path BEFORE spawning.
+	// worktreeMu guards concurrent spawns from interleaving writes to the same path.
+	worktreePath, wtErr := session.CreateBacklogWorktree(item.RepoPath, slugify(title))
+	useWorktree := wtErr == nil
+	if !useWorktree {
+		log.WarningLog.Printf("[SpawnSessionFromItem] worktree creation failed (%v), falling back to directory mode", wtErr)
+		var pathErr error
+		worktreePath, pathErr = session.ResolveSessionPath(item.RepoPath)
+		if pathErr != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid repo_path: %w", pathErr))
+		}
+		if dirErr := session.EnsureDirectorySessionPath(worktreePath); dirErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to prepare session directory: %w", dirErr))
+		}
 	}
+
 	s.worktreeMu.Lock()
-	if err := session.EnsureDirectorySessionPath(worktreePath); err != nil {
-		s.worktreeMu.Unlock()
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to prepare session directory: %w", err))
-	}
 	if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
 		s.worktreeMu.Unlock()
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
@@ -1244,8 +1264,6 @@ func (s *BacklogService) SpawnSessionFromItem(
 	}
 
 	// 11. Spawn session first so we have the real UUID before creating the ItemSession record.
-	// Pass the same resolved worktreePath so CreateDirectorySession's own resolution is a
-	// no-op and both paths are guaranteed to agree.
 	spawnTags := []string{session.TagBacklogWork}
 	if isReopen {
 		spawnTags = append(spawnTags, session.TagBacklogRevision)
@@ -1253,8 +1271,14 @@ func (s *BacklogService) SpawnSessionFromItem(
 	if req.Msg.Autonomous {
 		spawnTags = append(spawnTags, session.TagAutonomous)
 	}
-	inst, err := s.sessionCreator.CreateDirectorySession(ctx, title, worktreePath, prompt,
-		spawnTags, false, false)
+	var inst *session.Instance
+	if useWorktree {
+		inst, err = s.sessionCreator.CreateWorktreeSession(ctx, title, item.RepoPath, worktreePath, prompt,
+			spawnTags, false, false)
+	} else {
+		inst, err = s.sessionCreator.CreateDirectorySession(ctx, title, worktreePath, prompt,
+			spawnTags, false, false)
+	}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn session: %w", err))
 	}
@@ -1973,6 +1997,11 @@ Do not modify the code. Only write the review verdict.
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create re-review item session: %w", err))
+	}
+
+	// Capture the pre-review HEAD SHA so diffs against base..HEAD work correctly.
+	if baseSHA, shaErr := session.GetGitHeadSHA(item.RepoPath); shaErr == nil && baseSHA != "" {
+		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
 	}
 
 	log.InfoLog.Printf("[TriggerReReview] spawned re-review session %s for item %s", inst.UUID, item.ID)

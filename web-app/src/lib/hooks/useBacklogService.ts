@@ -324,7 +324,7 @@ interface UseBacklogServiceReturn {
     toStatus: BacklogItemStatus,
     precondition?: BacklogItemStatus
   ) => Promise<BacklogItem | null>;
-  spawnSessionFromItem: (id: string, options?: { autonomous?: boolean }) => Promise<{ sessionUuid: string } | null>;
+  spawnSessionFromItem: (id: string, options?: { autonomous?: boolean; force?: boolean }) => Promise<{ sessionUuid: string } | null>;
   triggerTriage: (id: string) => Promise<{ itemSessionId: string } | null>;
   cancelTriage: (id: string) => Promise<boolean>;
   approvePlan: (id: string) => Promise<BacklogItem | null>;
@@ -493,13 +493,14 @@ export function useBacklogService(): UseBacklogServiceReturn {
   );
 
   const spawnSessionFromItem = useCallback(
-    async (id: string, options?: { autonomous?: boolean }): Promise<{ sessionUuid: string } | null> => {
+    async (id: string, options?: { autonomous?: boolean; force?: boolean }): Promise<{ sessionUuid: string } | null> => {
       if (!clientRef.current) return null;
       try {
         setLastError(null);
         const resp = await clientRef.current.spawnSessionFromItem({
           itemId: id,
           autonomous: options?.autonomous ?? false,
+          force: options?.force ?? false,
         });
         return { sessionUuid: resp.sessionUuid };
       } catch (err) {

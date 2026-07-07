@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -158,6 +159,26 @@ func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, pa
 	// context file to inst.Path. An empty Path here makes those writes land in
 	// the test process's working directory instead of a sandbox.
 	return &session.Instance{Title: title, Path: path}, nil
+}
+
+// CreateWorktreeSession records the call to the same calls slice as CreateDirectorySession,
+// using worktreePath as the session path (that's where files are written before spawn).
+func (m *mockSessionCreator) CreateWorktreeSession(_ context.Context, title, _, worktreePath, prompt string, tags []string, oneShot bool, _ bool) (*session.Instance, error) {
+	_, contextErr := os.Stat(filepath.Join(worktreePath, ".backlog-context.md"))
+	_, slashErr := os.Stat(filepath.Join(worktreePath, ".claude", "commands", "backlog", "status.md"))
+	m.calls = append(m.calls, mockCreateCall{
+		title:                       title,
+		path:                        worktreePath,
+		prompt:                      prompt,
+		tags:                        tags,
+		oneShot:                     oneShot,
+		contextFileExistedAtSpawn:   contextErr == nil,
+		slashCommandsExistedAtSpawn: slashErr == nil,
+	})
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &session.Instance{Title: title, Path: worktreePath}, nil
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -427,6 +448,28 @@ func TestApprovePlan_HappyPath_SetsPlanApprovedAndTimestamp(t *testing.T) {
 	assert.NotNil(t, approveResp.Msg.Item.PlanApprovedAt)
 }
 
+// initGitRepoWithCommit initialises a minimal git repository with an initial commit so
+// that git worktree operations (which require at least one commit) work in tests.
+// Skips the test if git is unavailable.
+func initGitRepoWithCommit(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test Repo\n"), 0o644); err != nil {
+		t.Skipf("write README: %v", err)
+	}
+	for _, args := range [][]string{
+		{"init", dir},
+		{"-C", dir, "config", "user.email", "test@example.com"},
+		{"-C", dir, "config", "user.name", "Test"},
+		{"-C", dir, "add", "README.md"},
+		{"-C", dir, "commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git %v failed: %v (%s) — cannot run worktree test", args, err, out)
+		}
+	}
+}
+
 // ─── Full lifecycle (audit regression test) ──────────────────────────────────
 
 // TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent exercises
@@ -454,6 +497,9 @@ func TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent(t *te
 	svc.SetAutonomousDriverStarter(starter)
 
 	repoPath := t.TempDir()
+	// SpawnSessionFromItem now creates a real git worktree — requires a valid repo with at least one commit.
+	initGitRepoWithCommit(t, repoPath)
+
 	const description = "Build the zzyzx widget integration end to end"
 	const acText = "widget renders correctly on load"
 
@@ -934,10 +980,14 @@ func TestItemSessionToProto_HandlesInvalidTriageResultJSON(t *testing.T) {
 	})
 }
 
-// errSessionCreator always returns an error from CreateDirectorySession.
+// errSessionCreator always returns an error from CreateDirectorySession and CreateWorktreeSession.
 type errSessionCreator struct{ err error }
 
 func (e *errSessionCreator) CreateDirectorySession(_ context.Context, _, _, _ string, _ []string, _ bool, _ bool) (*session.Instance, error) {
+	return nil, e.err
+}
+
+func (e *errSessionCreator) CreateWorktreeSession(_ context.Context, _, _, _, _ string, _ []string, _ bool, _ bool) (*session.Instance, error) {
 	return nil, e.err
 }
 
