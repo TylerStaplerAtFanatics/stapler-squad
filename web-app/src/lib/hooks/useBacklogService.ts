@@ -63,6 +63,8 @@ export interface LinkedSession {
   };
   triageResult?: TriageResult;
   estimatedCostUsd: number;
+  /** Git branch name for the session's worktree, if one exists. */
+  worktreeBranch?: string;
 }
 
 export interface BacklogItem {
@@ -143,6 +145,7 @@ function mapItemSession(s: ItemSessionProto): LinkedSession {
     startedAt: s.startedAt ? new Date(Number(s.startedAt.seconds) * 1000).toISOString() : undefined,
     endedAt: s.endedAt ? new Date(Number(s.endedAt.seconds) * 1000).toISOString() : undefined,
     estimatedCostUsd: s.estimatedCostUsd ?? 0,
+    worktreeBranch: s.worktreeBranch || undefined,
   };
 
   // Map review verdict if present

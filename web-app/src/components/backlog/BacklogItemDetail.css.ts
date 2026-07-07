@@ -588,6 +588,18 @@ export const planTaskBadge = style({
   whiteSpace: "nowrap",
 });
 
+export const branchBadge = style({
+  fontSize: vars.fontSize.xs,
+  fontFamily: vars.font.mono,
+  padding: `1px ${vars.space["2"]}`,
+  borderRadius: vars.radii.sm,
+  background: vars.color.accentBg,
+  color: vars.color.primary,
+  border: `1px solid ${vars.color.borderMuted}`,
+  whiteSpace: "nowrap",
+  flexShrink: 0,
+});
+
 export const sessionEndedBadge = style({
   fontSize: vars.fontSize.xs,
   padding: `1px ${vars.space["1"]}`,
