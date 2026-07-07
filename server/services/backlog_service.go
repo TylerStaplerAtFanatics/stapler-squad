@@ -1129,47 +1129,20 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
 	}
 
-	// 2. Validate status. Allow ready (first spawn) or in_progress (re-spawn after reopen).
-	isReopen := item.Status == string(session.BacklogStatusInProgress)
-	if item.Status != string(session.BacklogStatusReady) && !isReopen {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("item must be in %q or %q status to spawn a session, got %q",
-				session.BacklogStatusReady, session.BacklogStatusInProgress, item.Status))
-	}
+	// 2. If force=true, clear any in-flight sessions and reset status so the normal
+	// path below can proceed. Handles both in_progress (stop work session) and review
+	// (stop review session + transition back to in_progress so restart begins from
+	// the work phase where the git worktree and slash commands are set up).
+	if req.Msg.Force && (item.Status == string(session.BacklogStatusInProgress) ||
+		item.Status == string(session.BacklogStatusReview)) {
 
-	// 3. Planning gate (only for fresh spawns; on reopen planning is already approved).
-	if !isReopen && !item.SkipPlanning && !item.PlanApproved {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("run TriggerTriage and approve the plan before spawning; set skip_planning=true to bypass"))
-	}
-
-	// 4. Repo path required.
-	if item.RepoPath == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("set repo_path before spawning a session"))
-	}
-
-	// 5. Require SessionCreator before doing any DB writes.
-	// degraded: sessionCreator unavailable — return CodeUnimplemented so callers can detect the gap.
-	if s.sessionCreator == nil {
-		return nil, connect.NewError(connect.CodeUnimplemented,
-			fmt.Errorf("SessionCreator not wired — contact admin"))
-	}
-
-	// 6. Snapshot current AC.
-	acSnapshot := item.AcceptanceCriteria
-
-	// 7. Load prior sessions for context.
-	priorSessions, err := s.storage.ListItemSessions(ctx, item.ID)
-	if err != nil {
-		log.WarningLog.Printf("[SpawnSessionFromItem] failed to load prior sessions for item %s: %v", item.ID, err)
-		priorSessions = nil
-	}
-
-	// 7b. If force=true, stop any live work sessions so we can re-spawn (restart path).
-	if req.Msg.Force {
-		for _, ps := range priorSessions {
-			if ps.SessionRole != string(session.SessionRoleWork) || ps.EndedAt != nil {
+		// Load sessions early so we can stop them before the status transition.
+		earlyPrior, _ := s.storage.ListItemSessions(ctx, item.ID)
+		for _, ps := range earlyPrior {
+			if ps.EndedAt != nil {
+				continue
+			}
+			if ps.SessionRole != string(session.SessionRoleWork) && ps.SessionRole != string(session.SessionRoleReview) {
 				continue
 			}
 			if s.sessionStopper != nil {
@@ -1177,13 +1150,56 @@ func (s *BacklogService) SpawnSessionFromItem(
 			}
 			_ = s.storage.UpdateItemSessionEnded(ctx, ps.ID.String(), time.Now())
 		}
-		// Reload so the guard below sees the sessions as ended.
-		if refreshed, refreshErr := s.storage.ListItemSessions(ctx, item.ID); refreshErr == nil {
-			priorSessions = refreshed
+
+		// If the item is in review, transition it back to in_progress so the spawn
+		// path treats this as a reopen (not a first spawn requiring plan approval).
+		if item.Status == string(session.BacklogStatusReview) {
+			updated, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil)
+			if transErr != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to reset item to in_progress for restart: %w", transErr))
+			}
+			item = updated
 		}
 	}
 
-	// 7c. Guard against spawning a duplicate work session when one is already active.
+	// 3. Validate status. Allow ready (first spawn) or in_progress (re-spawn after reopen).
+	isReopen := item.Status == string(session.BacklogStatusInProgress)
+	if item.Status != string(session.BacklogStatusReady) && !isReopen {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("item must be in %q or %q status to spawn a session, got %q",
+				session.BacklogStatusReady, session.BacklogStatusInProgress, item.Status))
+	}
+
+	// 4. Planning gate (only for fresh spawns; on reopen planning is already approved).
+	if !isReopen && !item.SkipPlanning && !item.PlanApproved {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("run TriggerTriage and approve the plan before spawning; set skip_planning=true to bypass"))
+	}
+
+	// 5. Repo path required.
+	if item.RepoPath == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("set repo_path before spawning a session"))
+	}
+
+	// 6. Require SessionCreator before doing any DB writes.
+	// degraded: sessionCreator unavailable — return CodeUnimplemented so callers can detect the gap.
+	if s.sessionCreator == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented,
+			fmt.Errorf("SessionCreator not wired — contact admin"))
+	}
+
+	// 7. Snapshot current AC.
+	acSnapshot := item.AcceptanceCriteria
+
+	// 8. Load prior sessions for context.
+	priorSessions, err := s.storage.ListItemSessions(ctx, item.ID)
+	if err != nil {
+		log.WarningLog.Printf("[SpawnSessionFromItem] failed to load prior sessions for item %s: %v", item.ID, err)
+		priorSessions = nil
+	}
+
+	// 8b. Guard against spawning a duplicate work session when one is already active.
 	for _, ps := range priorSessions {
 		if ps.SessionRole == session.SessionRoleWork && ps.EndedAt == nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists,
