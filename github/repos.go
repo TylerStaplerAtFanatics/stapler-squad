@@ -91,10 +91,25 @@ func SearchUserRepos(ctx context.Context, query string, limit int) ([]RepoResult
 	}
 	defer resp.Body.Close()
 
-
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+	if resp.StatusCode == 401 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API: unauthorized (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("GitHub API: unauthorized (401): %s", strings.TrimSpace(string(body)))
+	}
+	if resp.StatusCode == 403 {
+		if resp.Header.Get("Retry-After") != "" {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return nil, fmt.Errorf("GitHub API: secondary rate limit (403)")
+		}
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return nil, fmt.Errorf("GitHub API: primary rate limit exhausted (403)")
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GitHub API: forbidden (403): %s", strings.TrimSpace(string(body)))
+	}
+	if resp.StatusCode == 429 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("GitHub API: rate limited (429)")
 	}
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -166,10 +181,25 @@ func ListRepoIssues(ctx context.Context, owner, repo, state, search string, limi
 	}
 	defer resp.Body.Close()
 
-
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+	if resp.StatusCode == 401 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API: unauthorized (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("GitHub API: unauthorized (401): %s", strings.TrimSpace(string(body)))
+	}
+	if resp.StatusCode == 403 {
+		if resp.Header.Get("Retry-After") != "" {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return nil, fmt.Errorf("GitHub API: secondary rate limit (403)")
+		}
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return nil, fmt.Errorf("GitHub API: primary rate limit exhausted (403)")
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GitHub API: forbidden (403): %s", strings.TrimSpace(string(body)))
+	}
+	if resp.StatusCode == 429 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("GitHub API: rate limited (429)")
 	}
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
