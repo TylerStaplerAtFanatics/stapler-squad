@@ -781,6 +781,15 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 >
                   Re-review
                 </button>
+                <button
+                  className={styles.actionButton}
+                  onClick={() => handleAction("restart_session")}
+                  disabled={actionLoading}
+                  title="Stop the review session and restart work from scratch in a fresh git worktree"
+                  data-testid="backlog-action-restart-session"
+                >
+                  Restart
+                </button>
               </>
             )}
 
