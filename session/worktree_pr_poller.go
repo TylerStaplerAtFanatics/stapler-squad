@@ -84,9 +84,8 @@ type WorktreePRPoller struct {
 	authState    atomic.Value //nolint:exhaustruct // stores pollerAuthResult
 	onUpdatedVal atomic.Value //nolint:exhaustruct // stores worktreeOnUpdatedFn
 
-	mu               sync.Mutex
-	rateLimitedUntil time.Time
-	noPRPollAfter    map[string]time.Time // key: worktreeCacheKey
+	mu            sync.Mutex
+	noPRPollAfter map[string]time.Time // key: worktreeCacheKey
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -184,18 +183,17 @@ func (p *WorktreePRPoller) pollLoop() {
 // pollWorktrees iterates scan results, skips session-backed worktrees, and
 // fetches GitHub PR data for the remainder.
 func (p *WorktreePRPoller) pollWorktrees(items []WorktreeScanItem) {
+	if limited, until := github.DefaultRateLimiter.IsLimited(); limited {
+		log.Info("worktree PR poller: rate limited, skipping tick", "until", until)
+		return
+	}
+
 	p.mu.Lock()
-	rateLimitedUntil := p.rateLimitedUntil
 	noPRPollAfter := make(map[string]time.Time, len(p.noPRPollAfter))
 	for k, v := range p.noPRPollAfter {
 		noPRPollAfter[k] = v
 	}
 	p.mu.Unlock()
-
-	if time.Now().Before(rateLimitedUntil) {
-		log.Info("worktree PR poller: rate limited, skipping tick", "until", rateLimitedUntil)
-		return
-	}
 
 	if !p.isAuthOK() {
 		return
@@ -320,16 +318,15 @@ func (p *WorktreePRPoller) isAuthOK() bool {
 	return true
 }
 
-// handleFetchError inspects an error and updates poller state for rate limits / auth failures.
-// Returns true if the error was handled internally (caller should not log separately).
+// handleFetchError inspects an error for rate limits and auth failures.
+// Returns true if the error was handled (caller should not log separately).
+// Rate-limit state is managed by github.DefaultRateLimiter (updated by the
+// transport); this method only needs to detect the error type.
 func (p *WorktreePRPoller) handleFetchError(err error) bool {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "rate limit") || strings.Contains(msg, "429"):
-		log.Warn("worktree PR poller: rate limit hit, pausing for 60s")
-		p.mu.Lock()
-		p.rateLimitedUntil = time.Now().Add(60 * time.Second)
-		p.mu.Unlock()
+		log.Warn("worktree PR poller: rate limit hit")
 		return true
 	case strings.Contains(msg, "401") || strings.Contains(msg, "Unauthorized"):
 		log.Warn("worktree PR poller: auth error, invalidating cache")
