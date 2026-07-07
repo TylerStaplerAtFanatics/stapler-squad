@@ -393,10 +393,6 @@ func GetPRForBranchConditional(ctx context.Context, owner, repo, branch, etag st
 	}
 	defer resp.Body.Close()
 
-	if backoff := checkRateLimitHeaders(resp); backoff > 0 {
-		time.Sleep(backoff)
-	}
-
 	if resp.StatusCode == http.StatusNotModified {
 		return nil, etag, false, nil
 	}
@@ -404,10 +400,19 @@ func GetPRForBranchConditional(ctx context.Context, owner, repo, branch, etag st
 	respEtag := resp.Header.Get("ETag")
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, etag, false, fmt.Errorf("GitHub API: unauthorized (401) – run 'gh auth login'")
+		return nil, etag, false, fmt.Errorf("GitHub API: unauthorized (401)")
 	}
 	if resp.StatusCode == http.StatusForbidden {
-		return nil, etag, false, fmt.Errorf("GitHub API: forbidden (403) – check token permissions")
+		if resp.Header.Get("Retry-After") != "" {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return nil, etag, false, fmt.Errorf("GitHub API: secondary rate limit (403)")
+		}
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return nil, etag, false, fmt.Errorf("GitHub API: primary rate limit exhausted (403)")
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, etag, false, fmt.Errorf("GitHub API: forbidden (403)")
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		_, _ = io.Copy(io.Discard, resp.Body)

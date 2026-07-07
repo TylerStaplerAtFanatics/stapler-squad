@@ -90,7 +90,7 @@ func SearchUserRepos(ctx context.Context, query string, limit int) ([]RepoResult
 		return nil, fmt.Errorf("repos request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	_ = checkRateLimitHeaders(resp)
+
 
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		body, _ := io.ReadAll(resp.Body)
@@ -165,7 +165,7 @@ func ListRepoIssues(ctx context.Context, owner, repo, state, search string, limi
 		return nil, fmt.Errorf("issues request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	_ = checkRateLimitHeaders(resp)
+
 
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		body, _ := io.ReadAll(resp.Body)

@@ -62,9 +62,6 @@ type PRStatusPoller struct {
 	// authState stores pollerAuthResult atomically; readers are lock-free.
 	authState atomic.Value //nolint:exhaustruct
 
-	// Pause polling when rate limited.
-	rateLimitedUntil time.Time
-
 	// noPRPollAfter tracks the earliest time at which we should re-check a
 	// session that had no PR on the previous poll. Keyed by session title.
 	// Guarded by mu.
@@ -186,16 +183,15 @@ func (p *PRStatusPoller) pollLoop() {
 
 // checkAllSessions iterates all monitored instances and updates PR status concurrently.
 func (p *PRStatusPoller) checkAllSessions() {
+	if limited, until := github.DefaultRateLimiter.IsLimited(); limited {
+		log.Info("PR status poller: rate limited, skipping tick", "until", until)
+		return
+	}
+
 	p.mu.RLock()
 	instances := make([]*Instance, len(p.instances))
 	copy(instances, p.instances)
-	rateLimitedUntil := p.rateLimitedUntil
 	p.mu.RUnlock()
-
-	if time.Now().Before(rateLimitedUntil) {
-		log.Info("PR status poller: rate limited, skipping tick", "until", rateLimitedUntil)
-		return
-	}
 
 	if !p.isAuthOK() {
 		return
@@ -331,15 +327,15 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 	p.applyPRUpdate(inst, prInfo)
 }
 
-// handleFetchError inspects an error and updates poller state for rate limits / auth failures.
-// Returns true if the error requires aborting the current session fetch.
+// handleFetchError inspects an error for rate limits and auth failures.
+// Returns true if the error was handled (caller should not log separately).
+// Rate-limit state is managed by github.DefaultRateLimiter (updated by the
+// transport); this method only needs to detect the error type and signal auth
+// cache invalidation.
 func (p *PRStatusPoller) handleFetchError(err error) bool {
 	msg := err.Error()
 	if strings.Contains(msg, "rate limit") || strings.Contains(msg, "429") {
-		log.Warn("PR status poller: github rate limit hit, pausing for 60s")
-		p.mu.Lock()
-		p.rateLimitedUntil = time.Now().Add(60 * time.Second)
-		p.mu.Unlock()
+		log.Warn("PR status poller: github rate limit hit")
 		return true
 	}
 	if strings.Contains(msg, "401") || strings.Contains(msg, "Unauthorized") {

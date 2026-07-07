@@ -560,10 +560,6 @@ func (c *UserPRCache) fetchUserPRsForToken(token string) ([]UserPR, error) {
 		return nil, fmt.Errorf("GraphQL request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	if backoff := checkRateLimitHeaders(resp); backoff > 0 {
-		time.Sleep(backoff)
-	}
-
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, nil
