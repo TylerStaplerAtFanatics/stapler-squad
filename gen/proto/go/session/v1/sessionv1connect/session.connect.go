@@ -174,6 +174,12 @@ const (
 	// SessionServiceBulkUpsertRulesProcedure is the fully-qualified name of the SessionService's
 	// BulkUpsertRules RPC.
 	SessionServiceBulkUpsertRulesProcedure = "/session.v1.SessionService/BulkUpsertRules"
+	// SessionServiceGetConfigFileRulesProcedure is the fully-qualified name of the SessionService's
+	// GetConfigFileRules RPC.
+	SessionServiceGetConfigFileRulesProcedure = "/session.v1.SessionService/GetConfigFileRules"
+	// SessionServiceSaveRulesToConfigFileProcedure is the fully-qualified name of the SessionService's
+	// SaveRulesToConfigFile RPC.
+	SessionServiceSaveRulesToConfigFileProcedure = "/session.v1.SessionService/SaveRulesToConfigFile"
 	// SessionServiceListDatabasesProcedure is the fully-qualified name of the SessionService's
 	// ListDatabases RPC.
 	SessionServiceListDatabasesProcedure = "/session.v1.SessionService/ListDatabases"
@@ -354,6 +360,9 @@ const (
 	// SessionServiceDeleteWorkflowFailedSessionsProcedure is the fully-qualified name of the
 	// SessionService's DeleteWorkflowFailedSessions RPC.
 	SessionServiceDeleteWorkflowFailedSessionsProcedure = "/session.v1.SessionService/DeleteWorkflowFailedSessions"
+	// SessionServiceGetProviderLimitsProcedure is the fully-qualified name of the SessionService's
+	// GetProviderLimits RPC.
+	SessionServiceGetProviderLimitsProcedure = "/session.v1.SessionService/GetProviderLimits"
 	// SessionServiceGetHookStatusProcedure is the fully-qualified name of the SessionService's
 	// GetHookStatus RPC.
 	SessionServiceGetHookStatusProcedure = "/session.v1.SessionService/GetHookStatus"
@@ -487,6 +496,10 @@ type SessionServiceClient interface {
 	// BulkUpsertRules creates or updates multiple user-defined rules in one call.
 	// Rebuilds the in-memory classifier exactly once after all rules are stored.
 	BulkUpsertRules(context.Context, *connect.Request[v1.BulkUpsertRulesRequest]) (*connect.Response[v1.BulkUpsertRulesResponse], error)
+	// GetConfigFileRules returns rules persisted in the shared YAML config file.
+	GetConfigFileRules(context.Context, *connect.Request[v1.GetConfigFileRulesRequest]) (*connect.Response[v1.GetConfigFileRulesResponse], error)
+	// SaveRulesToConfigFile exports one or more rules to the shared YAML config file.
+	SaveRulesToConfigFile(context.Context, *connect.Request[v1.SaveRulesToConfigFileRequest]) (*connect.Response[v1.SaveRulesToConfigFileResponse], error)
 	// ListDatabases returns all discovered workspace databases with metadata.
 	// Used by the workspace switcher UI to show available workspaces.
 	ListDatabases(context.Context, *connect.Request[v1.ListDatabasesRequest]) (*connect.Response[v1.ListDatabasesResponse], error)
@@ -642,6 +655,8 @@ type SessionServiceClient interface {
 	// failed — specifically: Stopped sessions with no meaningful terminal output.
 	// Returns the count of sessions that were archived.
 	DeleteWorkflowFailedSessions(context.Context, *connect.Request[v1.DeleteWorkflowFailedSessionsRequest]) (*connect.Response[v1.DeleteWorkflowFailedSessionsResponse], error)
+	// GetProviderLimits returns the rate limit and usage details for a session.
+	GetProviderLimits(context.Context, *connect.Request[v1.GetProviderLimitsRequest]) (*connect.Response[v1.GetProviderLimitsResponse], error)
 	// GetHookStatus reports whether the global Claude Code hooks (rule enforcement
 	// and notifications) are installed in ~/.claude/settings.json.
 	// +api: hooks:status
@@ -949,6 +964,18 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			httpClient,
 			baseURL+SessionServiceBulkUpsertRulesProcedure,
 			connect.WithSchema(sessionServiceMethods.ByName("BulkUpsertRules")),
+			connect.WithClientOptions(opts...),
+		),
+		getConfigFileRules: connect.NewClient[v1.GetConfigFileRulesRequest, v1.GetConfigFileRulesResponse](
+			httpClient,
+			baseURL+SessionServiceGetConfigFileRulesProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("GetConfigFileRules")),
+			connect.WithClientOptions(opts...),
+		),
+		saveRulesToConfigFile: connect.NewClient[v1.SaveRulesToConfigFileRequest, v1.SaveRulesToConfigFileResponse](
+			httpClient,
+			baseURL+SessionServiceSaveRulesToConfigFileProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("SaveRulesToConfigFile")),
 			connect.WithClientOptions(opts...),
 		),
 		listDatabases: connect.NewClient[v1.ListDatabasesRequest, v1.ListDatabasesResponse](
@@ -1311,6 +1338,12 @@ func NewSessionServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sessionServiceMethods.ByName("DeleteWorkflowFailedSessions")),
 			connect.WithClientOptions(opts...),
 		),
+		getProviderLimits: connect.NewClient[v1.GetProviderLimitsRequest, v1.GetProviderLimitsResponse](
+			httpClient,
+			baseURL+SessionServiceGetProviderLimitsProcedure,
+			connect.WithSchema(sessionServiceMethods.ByName("GetProviderLimits")),
+			connect.WithClientOptions(opts...),
+		),
 		getHookStatus: connect.NewClient[v1.GetHookStatusRequest, v1.GetHookStatusResponse](
 			httpClient,
 			baseURL+SessionServiceGetHookStatusProcedure,
@@ -1376,6 +1409,8 @@ type sessionServiceClient struct {
 	validateRules                *connect.Client[v1.ValidateRulesRequest, v1.ValidateRulesResponse]
 	exportRules                  *connect.Client[v1.ExportRulesRequest, v1.ExportRulesResponse]
 	bulkUpsertRules              *connect.Client[v1.BulkUpsertRulesRequest, v1.BulkUpsertRulesResponse]
+	getConfigFileRules           *connect.Client[v1.GetConfigFileRulesRequest, v1.GetConfigFileRulesResponse]
+	saveRulesToConfigFile        *connect.Client[v1.SaveRulesToConfigFileRequest, v1.SaveRulesToConfigFileResponse]
 	listDatabases                *connect.Client[v1.ListDatabasesRequest, v1.ListDatabasesResponse]
 	getCurrentDatabase           *connect.Client[v1.GetCurrentDatabaseRequest, v1.GetCurrentDatabaseResponse]
 	switchDatabase               *connect.Client[v1.SwitchDatabaseRequest, v1.SwitchDatabaseResponse]
@@ -1436,6 +1471,7 @@ type sessionServiceClient struct {
 	unarchiveSession             *connect.Client[v1.UnarchiveSessionRequest, v1.UnarchiveSessionResponse]
 	archiveWorkflowSessions      *connect.Client[v1.ArchiveWorkflowSessionsRequest, v1.ArchiveWorkflowSessionsResponse]
 	deleteWorkflowFailedSessions *connect.Client[v1.DeleteWorkflowFailedSessionsRequest, v1.DeleteWorkflowFailedSessionsResponse]
+	getProviderLimits            *connect.Client[v1.GetProviderLimitsRequest, v1.GetProviderLimitsResponse]
 	getHookStatus                *connect.Client[v1.GetHookStatusRequest, v1.GetHookStatusResponse]
 	installHooks                 *connect.Client[v1.InstallHooksRequest, v1.InstallHooksResponse]
 }
@@ -1678,6 +1714,16 @@ func (c *sessionServiceClient) ExportRules(ctx context.Context, req *connect.Req
 // BulkUpsertRules calls session.v1.SessionService.BulkUpsertRules.
 func (c *sessionServiceClient) BulkUpsertRules(ctx context.Context, req *connect.Request[v1.BulkUpsertRulesRequest]) (*connect.Response[v1.BulkUpsertRulesResponse], error) {
 	return c.bulkUpsertRules.CallUnary(ctx, req)
+}
+
+// GetConfigFileRules calls session.v1.SessionService.GetConfigFileRules.
+func (c *sessionServiceClient) GetConfigFileRules(ctx context.Context, req *connect.Request[v1.GetConfigFileRulesRequest]) (*connect.Response[v1.GetConfigFileRulesResponse], error) {
+	return c.getConfigFileRules.CallUnary(ctx, req)
+}
+
+// SaveRulesToConfigFile calls session.v1.SessionService.SaveRulesToConfigFile.
+func (c *sessionServiceClient) SaveRulesToConfigFile(ctx context.Context, req *connect.Request[v1.SaveRulesToConfigFileRequest]) (*connect.Response[v1.SaveRulesToConfigFileResponse], error) {
+	return c.saveRulesToConfigFile.CallUnary(ctx, req)
 }
 
 // ListDatabases calls session.v1.SessionService.ListDatabases.
@@ -1980,6 +2026,11 @@ func (c *sessionServiceClient) DeleteWorkflowFailedSessions(ctx context.Context,
 	return c.deleteWorkflowFailedSessions.CallUnary(ctx, req)
 }
 
+// GetProviderLimits calls session.v1.SessionService.GetProviderLimits.
+func (c *sessionServiceClient) GetProviderLimits(ctx context.Context, req *connect.Request[v1.GetProviderLimitsRequest]) (*connect.Response[v1.GetProviderLimitsResponse], error) {
+	return c.getProviderLimits.CallUnary(ctx, req)
+}
+
 // GetHookStatus calls session.v1.SessionService.GetHookStatus.
 func (c *sessionServiceClient) GetHookStatus(ctx context.Context, req *connect.Request[v1.GetHookStatusRequest]) (*connect.Response[v1.GetHookStatusResponse], error) {
 	return c.getHookStatus.CallUnary(ctx, req)
@@ -2115,6 +2166,10 @@ type SessionServiceHandler interface {
 	// BulkUpsertRules creates or updates multiple user-defined rules in one call.
 	// Rebuilds the in-memory classifier exactly once after all rules are stored.
 	BulkUpsertRules(context.Context, *connect.Request[v1.BulkUpsertRulesRequest]) (*connect.Response[v1.BulkUpsertRulesResponse], error)
+	// GetConfigFileRules returns rules persisted in the shared YAML config file.
+	GetConfigFileRules(context.Context, *connect.Request[v1.GetConfigFileRulesRequest]) (*connect.Response[v1.GetConfigFileRulesResponse], error)
+	// SaveRulesToConfigFile exports one or more rules to the shared YAML config file.
+	SaveRulesToConfigFile(context.Context, *connect.Request[v1.SaveRulesToConfigFileRequest]) (*connect.Response[v1.SaveRulesToConfigFileResponse], error)
 	// ListDatabases returns all discovered workspace databases with metadata.
 	// Used by the workspace switcher UI to show available workspaces.
 	ListDatabases(context.Context, *connect.Request[v1.ListDatabasesRequest]) (*connect.Response[v1.ListDatabasesResponse], error)
@@ -2270,6 +2325,8 @@ type SessionServiceHandler interface {
 	// failed — specifically: Stopped sessions with no meaningful terminal output.
 	// Returns the count of sessions that were archived.
 	DeleteWorkflowFailedSessions(context.Context, *connect.Request[v1.DeleteWorkflowFailedSessionsRequest]) (*connect.Response[v1.DeleteWorkflowFailedSessionsResponse], error)
+	// GetProviderLimits returns the rate limit and usage details for a session.
+	GetProviderLimits(context.Context, *connect.Request[v1.GetProviderLimitsRequest]) (*connect.Response[v1.GetProviderLimitsResponse], error)
 	// GetHookStatus reports whether the global Claude Code hooks (rule enforcement
 	// and notifications) are installed in ~/.claude/settings.json.
 	// +api: hooks:status
@@ -2573,6 +2630,18 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		SessionServiceBulkUpsertRulesProcedure,
 		svc.BulkUpsertRules,
 		connect.WithSchema(sessionServiceMethods.ByName("BulkUpsertRules")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceGetConfigFileRulesHandler := connect.NewUnaryHandler(
+		SessionServiceGetConfigFileRulesProcedure,
+		svc.GetConfigFileRules,
+		connect.WithSchema(sessionServiceMethods.ByName("GetConfigFileRules")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sessionServiceSaveRulesToConfigFileHandler := connect.NewUnaryHandler(
+		SessionServiceSaveRulesToConfigFileProcedure,
+		svc.SaveRulesToConfigFile,
+		connect.WithSchema(sessionServiceMethods.ByName("SaveRulesToConfigFile")),
 		connect.WithHandlerOptions(opts...),
 	)
 	sessionServiceListDatabasesHandler := connect.NewUnaryHandler(
@@ -2935,6 +3004,12 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sessionServiceMethods.ByName("DeleteWorkflowFailedSessions")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sessionServiceGetProviderLimitsHandler := connect.NewUnaryHandler(
+		SessionServiceGetProviderLimitsProcedure,
+		svc.GetProviderLimits,
+		connect.WithSchema(sessionServiceMethods.ByName("GetProviderLimits")),
+		connect.WithHandlerOptions(opts...),
+	)
 	sessionServiceGetHookStatusHandler := connect.NewUnaryHandler(
 		SessionServiceGetHookStatusProcedure,
 		svc.GetHookStatus,
@@ -3045,6 +3120,10 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceExportRulesHandler.ServeHTTP(w, r)
 		case SessionServiceBulkUpsertRulesProcedure:
 			sessionServiceBulkUpsertRulesHandler.ServeHTTP(w, r)
+		case SessionServiceGetConfigFileRulesProcedure:
+			sessionServiceGetConfigFileRulesHandler.ServeHTTP(w, r)
+		case SessionServiceSaveRulesToConfigFileProcedure:
+			sessionServiceSaveRulesToConfigFileHandler.ServeHTTP(w, r)
 		case SessionServiceListDatabasesProcedure:
 			sessionServiceListDatabasesHandler.ServeHTTP(w, r)
 		case SessionServiceGetCurrentDatabaseProcedure:
@@ -3165,6 +3244,8 @@ func NewSessionServiceHandler(svc SessionServiceHandler, opts ...connect.Handler
 			sessionServiceArchiveWorkflowSessionsHandler.ServeHTTP(w, r)
 		case SessionServiceDeleteWorkflowFailedSessionsProcedure:
 			sessionServiceDeleteWorkflowFailedSessionsHandler.ServeHTTP(w, r)
+		case SessionServiceGetProviderLimitsProcedure:
+			sessionServiceGetProviderLimitsHandler.ServeHTTP(w, r)
 		case SessionServiceGetHookStatusProcedure:
 			sessionServiceGetHookStatusHandler.ServeHTTP(w, r)
 		case SessionServiceInstallHooksProcedure:
@@ -3368,6 +3449,14 @@ func (UnimplementedSessionServiceHandler) ExportRules(context.Context, *connect.
 
 func (UnimplementedSessionServiceHandler) BulkUpsertRules(context.Context, *connect.Request[v1.BulkUpsertRulesRequest]) (*connect.Response[v1.BulkUpsertRulesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.BulkUpsertRules is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) GetConfigFileRules(context.Context, *connect.Request[v1.GetConfigFileRulesRequest]) (*connect.Response[v1.GetConfigFileRulesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetConfigFileRules is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) SaveRulesToConfigFile(context.Context, *connect.Request[v1.SaveRulesToConfigFileRequest]) (*connect.Response[v1.SaveRulesToConfigFileResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.SaveRulesToConfigFile is not implemented"))
 }
 
 func (UnimplementedSessionServiceHandler) ListDatabases(context.Context, *connect.Request[v1.ListDatabasesRequest]) (*connect.Response[v1.ListDatabasesResponse], error) {
@@ -3608,6 +3697,10 @@ func (UnimplementedSessionServiceHandler) ArchiveWorkflowSessions(context.Contex
 
 func (UnimplementedSessionServiceHandler) DeleteWorkflowFailedSessions(context.Context, *connect.Request[v1.DeleteWorkflowFailedSessionsRequest]) (*connect.Response[v1.DeleteWorkflowFailedSessionsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.DeleteWorkflowFailedSessions is not implemented"))
+}
+
+func (UnimplementedSessionServiceHandler) GetProviderLimits(context.Context, *connect.Request[v1.GetProviderLimitsRequest]) (*connect.Response[v1.GetProviderLimitsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.SessionService.GetProviderLimits is not implemented"))
 }
 
 func (UnimplementedSessionServiceHandler) GetHookStatus(context.Context, *connect.Request[v1.GetHookStatusRequest]) (*connect.Response[v1.GetHookStatusResponse], error) {

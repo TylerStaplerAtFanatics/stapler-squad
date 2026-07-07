@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -360,6 +361,55 @@ func (s *Storage) ListInstanceData() ([]InstanceData, error) {
 	return s.repo.List(context.Background())
 }
 
+// GetStableID mirrors Instance.GetStableID for InstanceData: returns UUID when set,
+// Title otherwise. Used by Registry.AcquireAll and ListInstanceIDs to produce stable
+// per-session keys without constructing live Instance objects.
+func (d InstanceData) GetStableID() string {
+	if d.UUID != "" {
+		return d.UUID
+	}
+	return d.Title
+}
+
+// MatchesID reports whether id refers to this InstanceData. Unlike Instance.MatchesID,
+// there is no tmux-name arm because InstanceData has no GetTmuxSessionName (that method
+// requires the live processManager). For tmux-name matching, call Instance.MatchesID.
+func (d InstanceData) MatchesID(id string) bool {
+	return d.Title == id || d.GetStableID() == id
+}
+
+// ErrInstanceDataNotFound is returned by FindInstanceDataByID when no match exists.
+var ErrInstanceDataNotFound = errors.New("instance data not found")
+
+// FindInstanceDataByID finds the first InstanceData whose stable ID or title matches id.
+// Returns ErrInstanceDataNotFound when no match exists.
+func (s *Storage) FindInstanceDataByID(id string) (*InstanceData, error) {
+	all, err := s.ListInstanceData()
+	if err != nil {
+		return nil, err
+	}
+	for i := range all {
+		if all[i].MatchesID(id) {
+			return &all[i], nil
+		}
+	}
+	return nil, ErrInstanceDataNotFound
+}
+
+// ListInstanceIDs returns the stable ID (UUID if set, else Title) for every stored
+// InstanceData. Used by Registry.AcquireAll to seed the initial live-handle set.
+func (s *Storage) ListInstanceIDs() ([]string, error) {
+	all, err := s.ListInstanceData()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(all))
+	for i, d := range all {
+		ids[i] = d.GetStableID()
+	}
+	return ids, nil
+}
+
 // ListSessionRecords returns a snapshot of all sessions as SessionRecords,
 // for use by the tokens.Associator to match JSONL files to stapler-squad sessions.
 func (s *Storage) ListSessionRecords() []tokens.SessionRecord {
@@ -651,6 +701,11 @@ func (s *Storage) ArchiveBacklogItem(ctx context.Context, id string) (*BacklogIt
 	return s.repo.ArchiveBacklogItem(ctx, id)
 }
 
+// DeleteBacklogItem permanently removes an item and all its child records.
+func (s *Storage) DeleteBacklogItem(ctx context.Context, id string) error {
+	return s.repo.DeleteBacklogItem(ctx, id)
+}
+
 // TransitionBacklogItemStatus changes the status of a backlog item.
 func (s *Storage) TransitionBacklogItemStatus(ctx context.Context, id string, toStatus BacklogStatus, precondition *BacklogItemPrecondition) (*BacklogItemData, error) {
 	return s.repo.TransitionBacklogItemStatus(ctx, id, toStatus, precondition)
@@ -676,6 +731,26 @@ func (s *Storage) UpdateItemSource(ctx context.Context, id string, update ItemSo
 // DeleteItemSource removes an item source by UUID string.
 func (s *Storage) DeleteItemSource(ctx context.Context, id string) error {
 	return s.repo.DeleteItemSource(ctx, id)
+}
+
+// ListSourceSyncEvents returns sync history events for an item source, most
+// recent first. Direct EntRepository delegation, like GetItemSession below.
+func (s *Storage) ListSourceSyncEvents(ctx context.Context, sourceID string) (events []*ent.SourceSyncEvent, truncated bool, err error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, false, ErrNotFound
+	}
+	return er.ListSourceSyncEvents(ctx, sourceID)
+}
+
+// CreateSourceSyncEvent records a sync run for an item source. Direct EntRepository
+// delegation, like ListSourceSyncEvents above.
+func (s *Storage) CreateSourceSyncEvent(ctx context.Context, sourceID, cursorAfter string, created, updated, skipped, errored int, errMsg string, startedAt, finishedAt time.Time) error {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return ErrNotFound
+	}
+	return er.CreateSourceSyncEvent(ctx, sourceID, cursorAfter, created, updated, skipped, errored, errMsg, startedAt, finishedAt)
 }
 
 // --- ItemSession (direct EntRepository delegation) ---

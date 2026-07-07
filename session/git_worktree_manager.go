@@ -132,6 +132,16 @@ func (gm *GitWorktreeManager) IsDirty() (bool, error) {
 	return gm.worktree.IsDirty()
 }
 
+// InvalidateDirtyCache clears the IsDirty TTL cache so the next call re-runs git status.
+// Call after transitions that may change worktree dirty state (Resume, Stop).
+// No-op if no worktree is set.
+func (gm *GitWorktreeManager) InvalidateDirtyCache() {
+	if gm.worktree == nil {
+		return
+	}
+	gm.worktree.InvalidateDirtyCache()
+}
+
 // CommitChanges stages all changes and creates a commit.
 func (gm *GitWorktreeManager) CommitChanges(commitMsg string) error {
 	if gm.worktree == nil {
@@ -166,7 +176,7 @@ func (gm *GitWorktreeManager) OpenBranchURL() error {
 
 // ComputeDiffIfReady checks if the worktree path exists and computes a new diff.
 // Returns (stats, needsPause) where needsPause is true if the worktree directory is missing.
-// This method performs I/O and should be called WITHOUT holding Instance.stateMutex.
+// This method performs I/O and should be called WITHOUT holding Instance.mu.
 // Returns (nil, false) if no worktree is set.
 func (gm *GitWorktreeManager) ComputeDiffIfReady() (stats *git.DiffStats, needsPause bool) {
 	if gm.worktree == nil {
@@ -231,6 +241,7 @@ type GitManager interface {
 	Remove() error
 	Prune() error
 	IsDirty() (bool, error)
+	InvalidateDirtyCache()
 	CommitChanges(commitMsg string) error
 	PushChanges(commitMsg string, open bool) error
 	IsBranchCheckedOut() (bool, error)

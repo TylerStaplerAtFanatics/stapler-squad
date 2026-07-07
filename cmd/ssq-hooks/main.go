@@ -21,6 +21,7 @@ import (
 	"github.com/tstapler/stapler-squad/internal/claudehooks"
 	"github.com/tstapler/stapler-squad/pkg/classifier"
 	"github.com/tstapler/stapler-squad/session"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -487,9 +488,103 @@ func loadClassifier(storage *session.Storage) *classifier.RuleBasedClassifier {
 			}
 			cr.FilePattern = compiled
 		}
+		// Populate Criteria from structured fields (mirrors specsToRules in rules_store.go).
+		if len(r.Programs) > 0 || len(r.Subcommands) > 0 || len(r.BlockedSubcommands) > 0 ||
+			len(r.RequiredFlags) > 0 || len(r.ForbiddenFlags) > 0 || len(r.RequiredFlagPrefixes) > 0 ||
+			len(r.PythonModes) > 0 || r.SafePythonImportsOnly {
+			cr.Criteria = &classifier.CommandCriteria{
+				Programs:              r.Programs,
+				Subcommands:           r.Subcommands,
+				BlockedSubcommands:    r.BlockedSubcommands,
+				RequiredFlags:         r.RequiredFlags,
+				ForbiddenFlags:        r.ForbiddenFlags,
+				RequiredFlagPrefixes:  r.RequiredFlagPrefixes,
+				PythonModes:           r.PythonModes,
+				SafePythonImportsOnly: r.SafePythonImportsOnly,
+			}
+		}
 		classifierRules = append(classifierRules, cr)
 	}
 	c.AddRules(classifierRules)
+
+	// Also load config file rules from ~/.config/stapler-squad/shared_rules.yaml.
+	configPath := filepath.Join(os.Getenv("HOME"), ".config", "stapler-squad", "shared_rules.yaml")
+	if data, err := os.ReadFile(configPath); err == nil {
+		var configFile struct {
+			Rules []struct {
+				Name           string   `yaml:"name"`
+				Tool           string   `yaml:"tool"`
+				ToolPattern    string   `yaml:"tool_pattern"`
+				Programs       []string `yaml:"programs"`
+				Subcommands    []string `yaml:"subcommands"`
+				BlockedSubs    []string `yaml:"blocked_subcommands"`
+				CommandPattern string   `yaml:"command_pattern"`
+				FilePattern    string   `yaml:"file_pattern"`
+				Decision       string   `yaml:"decision"`
+				Priority       int      `yaml:"priority"`
+				Enabled        *bool    `yaml:"enabled"`
+			} `yaml:"rules"`
+		}
+		if yamlErr := yaml.Unmarshal(data, &configFile); yamlErr == nil {
+			var configRules []classifier.Rule
+			for _, r := range configFile.Rules {
+				if r.Name == "" {
+					continue
+				}
+				enabled := true
+				if r.Enabled != nil {
+					enabled = *r.Enabled
+				}
+				priority := r.Priority
+				if priority == 0 {
+					priority = 10
+				}
+				decision := classifier.Escalate
+				switch r.Decision {
+				case "allow":
+					decision = classifier.AutoAllow
+				case "deny":
+					decision = classifier.AutoDeny
+				}
+				cr := classifier.Rule{
+					ID:       "config-" + strings.ReplaceAll(r.Name, " ", "-"),
+					Name:     r.Name,
+					ToolName: r.Tool,
+					Decision: decision,
+					Priority: priority,
+					Enabled:  enabled,
+					Source:   "config",
+				}
+				if r.ToolPattern != "" {
+					if compiled, err := regexp.Compile(r.ToolPattern); err == nil {
+						cr.ToolPattern = compiled
+					}
+				}
+				if r.CommandPattern != "" {
+					if compiled, err := regexp.Compile(r.CommandPattern); err == nil {
+						cr.CommandPattern = compiled
+					}
+				}
+				if r.FilePattern != "" {
+					if compiled, err := regexp.Compile(r.FilePattern); err == nil {
+						cr.FilePattern = compiled
+					}
+				}
+				if len(r.Programs) > 0 || len(r.Subcommands) > 0 || len(r.BlockedSubs) > 0 {
+					cr.Criteria = &classifier.CommandCriteria{
+						Programs:           r.Programs,
+						Subcommands:        r.Subcommands,
+						BlockedSubcommands: r.BlockedSubs,
+					}
+				}
+				configRules = append(configRules, cr)
+			}
+			if len(configRules) > 0 {
+				c.AddRules(configRules)
+			}
+		}
+	}
+
 	return c
 }
 
@@ -793,22 +888,95 @@ func installAgy() {
 		os.Exit(1)
 	}
 	fmt.Printf("Installed binary: %s\n", destBin)
-	// 2. Patch ~/.gemini/config/hooks.json (authoritative global path) and ~/.gemini/antigravity-cli/hooks.json (fallback).
-	hooksPaths := []string{
-		filepath.Join(home, ".gemini", "config", "hooks.json"),
+	// 2. Discover agy hooks file — patch only the first found (mirrors installGemini).
+	// ~/.gemini/antigravity-cli/ is agy's primary runtime state dir.
+	// ~/.gemini/config/hooks.json is the fallback global config location.
+	candidates := []string{
 		filepath.Join(home, ".gemini", "antigravity-cli", "hooks.json"),
+		filepath.Join(home, ".gemini", "config", "hooks.json"),
 	}
-	for _, hooksPath := range hooksPaths {
-		if err := patchAntigravityHooks(hooksPath, destBin); err != nil {
-			fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", hooksPath, err)
-			os.Exit(1)
+	hooksPath := ""
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			hooksPath = c
+			break
 		}
-		fmt.Printf("Updated hook:     %s\n", hooksPath)
+	}
+	if hooksPath == "" {
+		// Neither found: create the primary (antigravity-cli is where agy reads hooks).
+		hooksPath = candidates[0]
+	}
+	// 3. Patch the selected file.
+	if err := patchAntigravityHooks(hooksPath, destBin); err != nil {
+		fmt.Fprintf(os.Stderr, "Error updating %s: %v\n", hooksPath, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Updated hook:     %s\n", hooksPath)
+	// 4. Cleanup: remove any stale ssq-hooks entry from the other candidate.
+	// This handles users who ran an old version that patched both paths.
+	for _, c := range candidates {
+		if c != hooksPath {
+			_ = removeAntigravityHookEntry(c)
+		}
 	}
 	fmt.Println("Done. Restart agy for the hook to take effect.")
 }
 
-// patchAntigravityHooks patches ~/.gemini/antigravity-cli/hooks.json to register the ssq-hooks check command.
+// removeAntigravityHookEntry removes the "stapler-squad" key from hooksPath if it
+// contains any ssq-hooks check --antigravity command. No-ops if the file doesn't
+// exist, the key is absent, or no matching command is found.
+func removeAntigravityHookEntry(hooksPath string) error {
+	raw, err := os.ReadFile(hooksPath)
+	if err != nil {
+		return nil // file absent — nothing to clean up
+	}
+	var hooksData map[string]interface{}
+	if err := json.Unmarshal(raw, &hooksData); err != nil {
+		return nil // not valid JSON — leave it alone
+	}
+	existing, ok := hooksData["stapler-squad"]
+	if !ok {
+		return nil // no entry — nothing to clean up
+	}
+	existingMap, ok := existing.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	preToolUse, _ := existingMap["PreToolUse"].([]interface{})
+	found := false
+	for _, entry := range preToolUse {
+		m, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		innerHooks, _ := m["hooks"].([]interface{})
+		for _, h := range innerHooks {
+			hm, ok := h.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if cmd, _ := hm["command"].(string); strings.HasSuffix(cmd, " check --antigravity") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		return nil // our command not present — leave it alone
+	}
+	delete(hooksData, "stapler-squad")
+	out, err := json.MarshalIndent(hooksData, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmpPath := hooksPath + ".tmp"
+	if err := os.WriteFile(tmpPath, append(out, '\n'), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, hooksPath)
+}
+
+// patchAntigravityHooks patches the agy hooks.json file to register the ssq-hooks check command.
 func patchAntigravityHooks(hooksPath, binPath string) error {
 	hookCmd := binPath + " check --antigravity"
 

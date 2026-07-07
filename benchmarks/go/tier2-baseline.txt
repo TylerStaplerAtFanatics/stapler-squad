@@ -17,8 +17,11 @@ FAIL	github.com/tstapler/stapler-squad/server/services [setup failed]
 FAIL	github.com/tstapler/stapler-squad/server/ssp [setup failed]
 FAIL	github.com/tstapler/stapler-squad/server/terminal [setup failed]
 FAIL	github.com/tstapler/stapler-squad/server/web [setup failed]
+FAIL	github.com/tstapler/stapler-squad/server/workflows [setup failed]
 FAIL	github.com/tstapler/stapler-squad/session [setup failed]
+FAIL	github.com/tstapler/stapler-squad/session/detection [setup failed]
 FAIL	github.com/tstapler/stapler-squad/session/framebuffer [setup failed]
+FAIL	github.com/tstapler/stapler-squad/session/queue [setup failed]
 FAIL	github.com/tstapler/stapler-squad/session/search [setup failed]
 FAIL	github.com/tstapler/stapler-squad/session/unfinished [setup failed]
 FAIL	github.com/tstapler/stapler-squad/session/workspace [setup failed]
@@ -35,156 +38,156 @@ FAIL	github.com/tstapler/stapler-squad/testutil [setup failed]
 ═══════════════════════════════════════════════════════════════
 
 PASS
-ok  	github.com/tstapler/stapler-squad/config	0.009s
+ok  	github.com/tstapler/stapler-squad/config	0.010s
 goos: linux
 goarch: amd64
 pkg: github.com/tstapler/stapler-squad/executor
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkAuditEmit-4                       	100000000	        10.99 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAuditEmit-4                       	178628451	         6.048 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAuditEmit-4                       	202263051	         5.929 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAuditEmit-4                       	202506524	         5.933 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAuditEmit-4                       	202232936	         5.937 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAuditEmit-4                       	202312714	         5.934 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAuditEmit-4                       	202258026	         5.966 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAuditEmit-4                       	201808018	         5.926 ns/op	       0 B/op	       0 allocs/op
-BenchmarkAuditEmit_withHook-4              	 6056067	       172.4 ns/op	     484 B/op	       0 allocs/op
-BenchmarkAuditEmit_withHook-4              	 8294937	       154.2 ns/op	     552 B/op	       0 allocs/op
-BenchmarkAuditEmit_withHook-4              	 8457434	       149.7 ns/op	     542 B/op	       0 allocs/op
-BenchmarkAuditEmit_withHook-4              	 8768566	       140.2 ns/op	     523 B/op	       0 allocs/op
-BenchmarkAuditEmit_withHook-4              	 9142293	       135.8 ns/op	     501 B/op	       0 allocs/op
-BenchmarkAuditEmit_withHook-4              	 8717145	       129.9 ns/op	     526 B/op	       0 allocs/op
-BenchmarkAuditEmit_withHook-4              	 9218295	       136.9 ns/op	     497 B/op	       0 allocs/op
-BenchmarkAuditEmit_withHook-4              	 8499835	       145.1 ns/op	     539 B/op	       0 allocs/op
-BenchmarkTimeoutExecutor_FastCommand-4     	    1364	    871468 ns/op	   25947 B/op	     162 allocs/op
-BenchmarkTimeoutExecutor_FastCommand-4     	    1263	    876422 ns/op	   25916 B/op	     162 allocs/op
-BenchmarkTimeoutExecutor_FastCommand-4     	    1352	    873187 ns/op	   25918 B/op	     162 allocs/op
-BenchmarkTimeoutExecutor_FastCommand-4     	    1352	    867410 ns/op	   25912 B/op	     162 allocs/op
-BenchmarkTimeoutExecutor_FastCommand-4     	    1369	    868271 ns/op	   25921 B/op	     162 allocs/op
-BenchmarkTimeoutExecutor_FastCommand-4     	    1338	    872505 ns/op	   25915 B/op	     162 allocs/op
-BenchmarkTimeoutExecutor_FastCommand-4     	    1372	    866468 ns/op	   25924 B/op	     162 allocs/op
-BenchmarkTimeoutExecutor_FastCommand-4     	    1348	    868961 ns/op	   25921 B/op	     162 allocs/op
-BenchmarkTimeoutExecutor_OutputCapture-4   	    1309	    908223 ns/op	   27867 B/op	     175 allocs/op
-BenchmarkTimeoutExecutor_OutputCapture-4   	    1309	    900528 ns/op	   27868 B/op	     175 allocs/op
-BenchmarkTimeoutExecutor_OutputCapture-4   	    1326	    895630 ns/op	   27868 B/op	     175 allocs/op
-BenchmarkTimeoutExecutor_OutputCapture-4   	    1310	    900240 ns/op	   27872 B/op	     175 allocs/op
-BenchmarkTimeoutExecutor_OutputCapture-4   	    1327	    899012 ns/op	   27866 B/op	     175 allocs/op
-BenchmarkTimeoutExecutor_OutputCapture-4   	    1314	    896943 ns/op	   27870 B/op	     175 allocs/op
-BenchmarkTimeoutExecutor_OutputCapture-4   	    1321	    903127 ns/op	   27869 B/op	     175 allocs/op
-BenchmarkTimeoutExecutor_OutputCapture-4   	    1306	    903388 ns/op	   27878 B/op	     175 allocs/op
+BenchmarkAuditEmit-4                       	100000000	        11.76 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuditEmit-4                       	93165632	        11.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuditEmit-4                       	175610632	         5.935 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuditEmit-4                       	201486644	         5.953 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuditEmit-4                       	202005892	         5.937 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuditEmit-4                       	201960874	         5.937 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuditEmit-4                       	202284896	         5.949 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuditEmit-4                       	200374154	         5.932 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuditEmit_withHook-4              	 7473784	       138.0 ns/op	     490 B/op	       0 allocs/op
+BenchmarkAuditEmit_withHook-4              	 8043943	       152.8 ns/op	     570 B/op	       0 allocs/op
+BenchmarkAuditEmit_withHook-4              	 8605312	       149.2 ns/op	     532 B/op	       0 allocs/op
+BenchmarkAuditEmit_withHook-4              	 8670808	       149.1 ns/op	     528 B/op	       0 allocs/op
+BenchmarkAuditEmit_withHook-4              	 8836567	       129.3 ns/op	     518 B/op	       0 allocs/op
+BenchmarkAuditEmit_withHook-4              	 9148401	       139.7 ns/op	     501 B/op	       0 allocs/op
+BenchmarkAuditEmit_withHook-4              	 8930326	       136.7 ns/op	     513 B/op	       0 allocs/op
+BenchmarkAuditEmit_withHook-4              	 8769456	       151.0 ns/op	     522 B/op	       0 allocs/op
+BenchmarkTimeoutExecutor_FastCommand-4     	    1306	    913113 ns/op	   25952 B/op	     162 allocs/op
+BenchmarkTimeoutExecutor_FastCommand-4     	    1315	    910742 ns/op	   25919 B/op	     162 allocs/op
+BenchmarkTimeoutExecutor_FastCommand-4     	    1282	    910321 ns/op	   25914 B/op	     162 allocs/op
+BenchmarkTimeoutExecutor_FastCommand-4     	    1309	    906782 ns/op	   25919 B/op	     162 allocs/op
+BenchmarkTimeoutExecutor_FastCommand-4     	    1304	    913277 ns/op	   25908 B/op	     162 allocs/op
+BenchmarkTimeoutExecutor_FastCommand-4     	    1285	    907278 ns/op	   25914 B/op	     162 allocs/op
+BenchmarkTimeoutExecutor_FastCommand-4     	    1282	    916381 ns/op	   25922 B/op	     162 allocs/op
+BenchmarkTimeoutExecutor_FastCommand-4     	    1296	    915139 ns/op	   25918 B/op	     162 allocs/op
+BenchmarkTimeoutExecutor_OutputCapture-4   	    1275	    941793 ns/op	   27871 B/op	     175 allocs/op
+BenchmarkTimeoutExecutor_OutputCapture-4   	    1251	    935230 ns/op	   27872 B/op	     175 allocs/op
+BenchmarkTimeoutExecutor_OutputCapture-4   	    1266	    933137 ns/op	   27868 B/op	     175 allocs/op
+BenchmarkTimeoutExecutor_OutputCapture-4   	    1281	    933080 ns/op	   27870 B/op	     175 allocs/op
+BenchmarkTimeoutExecutor_OutputCapture-4   	    1272	    939127 ns/op	   27869 B/op	     175 allocs/op
+BenchmarkTimeoutExecutor_OutputCapture-4   	    1267	    935224 ns/op	   27869 B/op	     175 allocs/op
+BenchmarkTimeoutExecutor_OutputCapture-4   	    1268	    938079 ns/op	   27869 B/op	     175 allocs/op
+BenchmarkTimeoutExecutor_OutputCapture-4   	    1276	    935527 ns/op	   27874 B/op	     175 allocs/op
 PASS
-ok  	github.com/tstapler/stapler-squad/executor	46.426s
+ok  	github.com/tstapler/stapler-squad/executor	46.246s
 ?   	github.com/tstapler/stapler-squad/executor/safeexec	[no test files]
 PASS
 ok  	github.com/tstapler/stapler-squad/github	0.004s
+PASS
+ok  	github.com/tstapler/stapler-squad/internal/claudehooks	0.003s
 PASS
 ok  	github.com/tstapler/stapler-squad/log	0.002s
 goos: linux
 goarch: amd64
 pkg: github.com/tstapler/stapler-squad/pkg/analytics
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkEscapeParser4KB-4        	   18979	     62736 ns/op	  65.29 MB/s	   48953 B/op	     765 allocs/op
-BenchmarkEscapeParser4KB-4        	   19108	     63305 ns/op	  64.70 MB/s	   48953 B/op	     765 allocs/op
-BenchmarkEscapeParser4KB-4        	   19069	     62812 ns/op	  65.21 MB/s	   48953 B/op	     765 allocs/op
-BenchmarkEscapeParser4KB-4        	   19123	     65834 ns/op	  62.22 MB/s	   48953 B/op	     765 allocs/op
-BenchmarkEscapeParser4KB-4        	   19075	     62992 ns/op	  65.02 MB/s	   48953 B/op	     765 allocs/op
-BenchmarkEscapeParser4KB-4        	   18913	     62976 ns/op	  65.04 MB/s	   48953 B/op	     765 allocs/op
-BenchmarkEscapeParser4KB-4        	   19042	     63745 ns/op	  64.26 MB/s	   48953 B/op	     765 allocs/op
-BenchmarkEscapeParser4KB-4        	   18994	     62988 ns/op	  65.03 MB/s	   48953 B/op	     765 allocs/op
-BenchmarkEscapeParserNoWriter-4   	   34573	     34849 ns/op	 117.53 MB/s	   45920 B/op	     513 allocs/op
-BenchmarkEscapeParserNoWriter-4   	   34368	     35400 ns/op	 115.70 MB/s	   45920 B/op	     513 allocs/op
-BenchmarkEscapeParserNoWriter-4   	   34214	     35283 ns/op	 116.09 MB/s	   45920 B/op	     513 allocs/op
-BenchmarkEscapeParserNoWriter-4   	   34374	     34893 ns/op	 117.39 MB/s	   45920 B/op	     513 allocs/op
-BenchmarkEscapeParserNoWriter-4   	   33872	     34853 ns/op	 117.52 MB/s	   45920 B/op	     513 allocs/op
-BenchmarkEscapeParserNoWriter-4   	   34038	     35534 ns/op	 115.27 MB/s	   45920 B/op	     513 allocs/op
-BenchmarkEscapeParserNoWriter-4   	   33916	     35021 ns/op	 116.96 MB/s	   45920 B/op	     513 allocs/op
-BenchmarkEscapeParserNoWriter-4   	   34147	     35497 ns/op	 115.39 MB/s	   45920 B/op	     513 allocs/op
+BenchmarkEscapeParser4KB-4        	   19542	     61380 ns/op	  66.73 MB/s	   48953 B/op	     765 allocs/op
+BenchmarkEscapeParser4KB-4        	   19390	     61887 ns/op	  66.18 MB/s	   48953 B/op	     765 allocs/op
+BenchmarkEscapeParser4KB-4        	   19005	     61876 ns/op	  66.20 MB/s	   48953 B/op	     765 allocs/op
+BenchmarkEscapeParser4KB-4        	   19227	     61786 ns/op	  66.29 MB/s	   48953 B/op	     765 allocs/op
+BenchmarkEscapeParser4KB-4        	   19292	     63417 ns/op	  64.59 MB/s	   48953 B/op	     765 allocs/op
+BenchmarkEscapeParser4KB-4        	   19318	     61733 ns/op	  66.35 MB/s	   48953 B/op	     765 allocs/op
+BenchmarkEscapeParser4KB-4        	   18818	     61830 ns/op	  66.25 MB/s	   48953 B/op	     765 allocs/op
+BenchmarkEscapeParser4KB-4        	   19255	     62123 ns/op	  65.93 MB/s	   48953 B/op	     765 allocs/op
+BenchmarkEscapeParserNoWriter-4   	   35829	     33539 ns/op	 122.13 MB/s	   45920 B/op	     513 allocs/op
+BenchmarkEscapeParserNoWriter-4   	   35552	     33536 ns/op	 122.14 MB/s	   45920 B/op	     513 allocs/op
+BenchmarkEscapeParserNoWriter-4   	   35814	     33680 ns/op	 121.61 MB/s	   45920 B/op	     513 allocs/op
+BenchmarkEscapeParserNoWriter-4   	   35956	     33505 ns/op	 122.25 MB/s	   45920 B/op	     513 allocs/op
+BenchmarkEscapeParserNoWriter-4   	   35122	     34012 ns/op	 120.43 MB/s	   45920 B/op	     513 allocs/op
+BenchmarkEscapeParserNoWriter-4   	   35277	     34285 ns/op	 119.47 MB/s	   45920 B/op	     513 allocs/op
+BenchmarkEscapeParserNoWriter-4   	   35568	     33468 ns/op	 122.39 MB/s	   45920 B/op	     513 allocs/op
+BenchmarkEscapeParserNoWriter-4   	   35343	     33526 ns/op	 122.17 MB/s	   45920 B/op	     513 allocs/op
 PASS
-ok  	github.com/tstapler/stapler-squad/pkg/analytics	27.249s
+ok  	github.com/tstapler/stapler-squad/pkg/analytics	26.939s
 PASS
 ok  	github.com/tstapler/stapler-squad/pkg/classifier	0.003s
 PASS
-ok  	github.com/tstapler/stapler-squad/pkg/warren	0.003s
+ok  	github.com/tstapler/stapler-squad/pkg/warren	0.002s
 ?   	github.com/tstapler/stapler-squad/profiling	[no test files]
 ?   	github.com/tstapler/stapler-squad/server/auth	[no test files]
 PASS
 ok  	github.com/tstapler/stapler-squad/server/compression	0.002s
-?   	github.com/tstapler/stapler-squad/server/interceptors	[no test files]
+PASS
+ok  	github.com/tstapler/stapler-squad/server/featureregistry	0.002s
+PASS
+ok  	github.com/tstapler/stapler-squad/server/features	0.002s
+PASS
+ok  	github.com/tstapler/stapler-squad/server/interceptors	0.003s
 ?   	github.com/tstapler/stapler-squad/server/middleware	[no test files]
 PASS
 ok  	github.com/tstapler/stapler-squad/server/protocol	0.002s
 PASS
-ok  	github.com/tstapler/stapler-squad/session/cdp	0.003s
-goos: linux
-goarch: amd64
-pkg: github.com/tstapler/stapler-squad/session/detection
-cpu: AMD EPYC 7763 64-Core Processor                
-Benchmark_ApprovalDetector_Detect-4            	   13008	     93323 ns/op	    2477 B/op	      31 allocs/op
-Benchmark_ApprovalDetector_Detect-4            	   13012	     92177 ns/op	    2474 B/op	      31 allocs/op
-Benchmark_ApprovalDetector_Detect-4            	   13017	     92205 ns/op	    2483 B/op	      31 allocs/op
-Benchmark_ApprovalDetector_Detect-4            	   13027	     91322 ns/op	    2478 B/op	      31 allocs/op
-Benchmark_ApprovalDetector_Detect-4            	   13077	     92145 ns/op	    2483 B/op	      31 allocs/op
-Benchmark_ApprovalDetector_Detect-4            	   12996	     93086 ns/op	    2480 B/op	      31 allocs/op
-Benchmark_ApprovalDetector_Detect-4            	   13148	     91733 ns/op	    2480 B/op	      31 allocs/op
-Benchmark_ApprovalDetector_Detect-4            	   13138	     92454 ns/op	    2480 B/op	      31 allocs/op
-Benchmark_ApprovalDetector_AddPattern-4        	  501639	      3691 ns/op	    2613 B/op	      27 allocs/op
-Benchmark_ApprovalDetector_AddPattern-4        	  517570	      3654 ns/op	    2612 B/op	      27 allocs/op
-Benchmark_ApprovalDetector_AddPattern-4        	  554084	      3605 ns/op	    2609 B/op	      27 allocs/op
-Benchmark_ApprovalDetector_AddPattern-4        	  557376	      3627 ns/op	    2608 B/op	      27 allocs/op
-Benchmark_ApprovalDetector_AddPattern-4        	  558992	      3594 ns/op	    2608 B/op	      27 allocs/op
-Benchmark_ApprovalDetector_AddPattern-4        	  548712	      3625 ns/op	    2609 B/op	      27 allocs/op
-Benchmark_ApprovalDetector_AddPattern-4        	  552456	      3666 ns/op	    2609 B/op	      27 allocs/op
-Benchmark_ApprovalDetector_AddPattern-4        	  493819	      3689 ns/op	    2614 B/op	      27 allocs/op
-Benchmark_StatusDetector_Detect-4              	   32210	     36694 ns/op	     224 B/op	       5 allocs/op
-Benchmark_StatusDetector_Detect-4              	   32714	     36847 ns/op	     225 B/op	       5 allocs/op
-Benchmark_StatusDetector_Detect-4              	   32680	     36701 ns/op	     226 B/op	       5 allocs/op
-Benchmark_StatusDetector_Detect-4              	   32358	     37145 ns/op	     226 B/op	       5 allocs/op
-Benchmark_StatusDetector_Detect-4              	   32040	     36735 ns/op	     225 B/op	       5 allocs/op
-Benchmark_StatusDetector_Detect-4              	   32474	     36773 ns/op	     225 B/op	       5 allocs/op
-Benchmark_StatusDetector_Detect-4              	   32817	     36726 ns/op	     225 B/op	       5 allocs/op
-Benchmark_StatusDetector_Detect-4              	   32770	     37067 ns/op	     224 B/op	       5 allocs/op
-Benchmark_StatusDetector_DetectWithContext-4   	 3187714	       359.4 ns/op	     128 B/op	       5 allocs/op
-Benchmark_StatusDetector_DetectWithContext-4   	 3284940	       359.6 ns/op	     128 B/op	       5 allocs/op
-Benchmark_StatusDetector_DetectWithContext-4   	 3325326	       361.5 ns/op	     128 B/op	       5 allocs/op
-Benchmark_StatusDetector_DetectWithContext-4   	 3320554	       362.0 ns/op	     128 B/op	       5 allocs/op
-Benchmark_StatusDetector_DetectWithContext-4   	 3294666	       360.3 ns/op	     128 B/op	       5 allocs/op
-Benchmark_StatusDetector_DetectWithContext-4   	 3316240	       361.1 ns/op	     128 B/op	       5 allocs/op
-Benchmark_StatusDetector_DetectWithContext-4   	 3334070	       360.5 ns/op	     128 B/op	       5 allocs/op
-Benchmark_StatusDetector_DetectWithContext-4   	 3287985	       359.9 ns/op	     128 B/op	       5 allocs/op
+ok  	github.com/tstapler/stapler-squad/session/artifacts	0.002s
 PASS
-ok  	github.com/tstapler/stapler-squad/session/detection	57.964s
+ok  	github.com/tstapler/stapler-squad/session/cdp	0.003s
+PASS
+ok  	github.com/tstapler/stapler-squad/session/detection/binaries	0.002s
+?   	github.com/tstapler/stapler-squad/session/detection/dtypes	[no test files]
 goos: linux
 goarch: amd64
 pkg: github.com/tstapler/stapler-squad/session/detection/ratelimit
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkStripANSI_PlainText-4           	173621056	         6.889 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSI_PlainText-4           	173426996	         6.894 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSI_PlainText-4           	174821214	         6.840 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSI_PlainText-4           	175738132	         6.849 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSI_PlainText-4           	175448620	         6.854 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSI_PlainText-4           	174562232	         6.864 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSI_PlainText-4           	175048665	         6.851 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSI_PlainText-4           	174981536	         6.847 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSI_WithEscapes-4         	 1630257	       730.5 ns/op	     136 B/op	       5 allocs/op
-BenchmarkStripANSI_WithEscapes-4         	 1662890	       722.8 ns/op	     136 B/op	       5 allocs/op
-BenchmarkStripANSI_WithEscapes-4         	 1634388	       730.3 ns/op	     136 B/op	       5 allocs/op
-BenchmarkStripANSI_WithEscapes-4         	 1661588	       723.3 ns/op	     136 B/op	       5 allocs/op
-BenchmarkStripANSI_WithEscapes-4         	 1656628	       723.5 ns/op	     136 B/op	       5 allocs/op
-BenchmarkStripANSI_WithEscapes-4         	 1654065	       725.0 ns/op	     136 B/op	       5 allocs/op
-BenchmarkStripANSI_WithEscapes-4         	 1663570	       720.8 ns/op	     136 B/op	       5 allocs/op
-BenchmarkStripANSI_WithEscapes-4         	 1662765	       721.8 ns/op	     136 B/op	       5 allocs/op
-BenchmarkProcessOutput_InactiveState-4   	198156223	         6.045 ns/op	       0 B/op	       0 allocs/op
-BenchmarkProcessOutput_InactiveState-4   	198078704	         6.050 ns/op	       0 B/op	       0 allocs/op
-BenchmarkProcessOutput_InactiveState-4   	198678019	         6.042 ns/op	       0 B/op	       0 allocs/op
-BenchmarkProcessOutput_InactiveState-4   	199634416	         6.019 ns/op	       0 B/op	       0 allocs/op
-BenchmarkProcessOutput_InactiveState-4   	198704958	         6.030 ns/op	       0 B/op	       0 allocs/op
-BenchmarkProcessOutput_InactiveState-4   	198034756	         6.045 ns/op	       0 B/op	       0 allocs/op
-BenchmarkProcessOutput_InactiveState-4   	198537801	         6.043 ns/op	       0 B/op	       0 allocs/op
-BenchmarkProcessOutput_InactiveState-4   	199453219	         6.031 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_PlainText-4           	173561684	         6.902 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_PlainText-4           	174716631	         6.911 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_PlainText-4           	174804358	         6.867 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_PlainText-4           	174463190	         6.873 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_PlainText-4           	174765648	         6.870 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_PlainText-4           	174430940	         6.879 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_PlainText-4           	174766128	         6.869 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_PlainText-4           	174373468	         6.881 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSI_WithEscapes-4         	 1596781	       749.2 ns/op	     136 B/op	       5 allocs/op
+BenchmarkStripANSI_WithEscapes-4         	 1595217	       754.2 ns/op	     136 B/op	       5 allocs/op
+BenchmarkStripANSI_WithEscapes-4         	 1596609	       751.5 ns/op	     136 B/op	       5 allocs/op
+BenchmarkStripANSI_WithEscapes-4         	 1602896	       749.9 ns/op	     136 B/op	       5 allocs/op
+BenchmarkStripANSI_WithEscapes-4         	 1595876	       753.5 ns/op	     136 B/op	       5 allocs/op
+BenchmarkStripANSI_WithEscapes-4         	 1586935	       756.1 ns/op	     136 B/op	       5 allocs/op
+BenchmarkStripANSI_WithEscapes-4         	 1574024	       758.7 ns/op	     136 B/op	       5 allocs/op
+BenchmarkStripANSI_WithEscapes-4         	 1591648	       752.7 ns/op	     136 B/op	       5 allocs/op
+BenchmarkProcessOutput_InactiveState-4   	199029424	         6.030 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProcessOutput_InactiveState-4   	198629370	         6.038 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProcessOutput_InactiveState-4   	197677436	         6.053 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProcessOutput_InactiveState-4   	198337984	         6.038 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProcessOutput_InactiveState-4   	198719008	         6.033 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProcessOutput_InactiveState-4   	198530163	         6.033 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProcessOutput_InactiveState-4   	198991681	         6.027 ns/op	       0 B/op	       0 allocs/op
+BenchmarkProcessOutput_InactiveState-4   	198298416	         6.047 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/tstapler/stapler-squad/session/detection/ratelimit	28.787s
+ok  	github.com/tstapler/stapler-squad/session/detection/ratelimit	28.805s
 ?   	github.com/tstapler/stapler-squad/session/ent	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/analyticsevent	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/approvalrule	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/backlogitem	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/backlogstatusevent	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/classificationanalytics	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/claudemetadata	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/claudesession	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/diffstats	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/enttest	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/errorevent	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/escapeevent	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/hook	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/itemsession	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/itemsource	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/migrate	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/predicate	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/project	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/reviewverdict	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/runtime	[no test files]
 ?   	github.com/tstapler/stapler-squad/session/ent/schema	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/session	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/sessiongoal	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/shell	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/sourcesyncevent	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/tag	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/workflow	[no test files]
+?   	github.com/tstapler/stapler-squad/session/ent/worktree	[no test files]
 PASS
 ok  	github.com/tstapler/stapler-squad/session/git	0.005s
 PASS
@@ -202,150 +205,128 @@ PASS
 ok  	github.com/tstapler/stapler-squad/session/prompts	0.002s
 goos: linux
 goarch: amd64
-pkg: github.com/tstapler/stapler-squad/session/queue
-cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkReviewQueue_ConcurrentReads-4   	14182075	        94.20 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReviewQueue_ConcurrentReads-4   	14203663	        93.78 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReviewQueue_ConcurrentReads-4   	12813310	        81.74 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReviewQueue_ConcurrentReads-4   	14145144	        93.65 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReviewQueue_ConcurrentReads-4   	12827896	        83.54 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReviewQueue_ConcurrentReads-4   	14349068	        93.53 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReviewQueue_ConcurrentReads-4   	12691723	        84.49 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReviewQueue_ConcurrentReads-4   	12805100	        83.65 ns/op	       0 B/op	       0 allocs/op
-BenchmarkReviewQueue_Add-4               	 2901804	       414.1 ns/op	     640 B/op	       4 allocs/op
-BenchmarkReviewQueue_Add-4               	 2903041	       415.2 ns/op	     640 B/op	       4 allocs/op
-BenchmarkReviewQueue_Add-4               	 2883836	       415.4 ns/op	     640 B/op	       4 allocs/op
-BenchmarkReviewQueue_Add-4               	 2778750	       420.3 ns/op	     640 B/op	       4 allocs/op
-BenchmarkReviewQueue_Add-4               	 2909169	       413.0 ns/op	     640 B/op	       4 allocs/op
-BenchmarkReviewQueue_Add-4               	 2907200	       414.5 ns/op	     640 B/op	       4 allocs/op
-BenchmarkReviewQueue_Add-4               	 2900217	       421.6 ns/op	     640 B/op	       4 allocs/op
-BenchmarkReviewQueue_Add-4               	 2890932	       414.8 ns/op	     640 B/op	       4 allocs/op
-PASS
-ok  	github.com/tstapler/stapler-squad/session/queue	19.946s
-goos: linux
-goarch: amd64
 pkg: github.com/tstapler/stapler-squad/session/scrollback
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  389888	      3437 ns/op	    6208 B/op	       2 allocs/op
-BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  354306	      3491 ns/op	    6208 B/op	       2 allocs/op
-BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  357709	      3517 ns/op	    6208 B/op	       2 allocs/op
-BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  340045	      3420 ns/op	    6208 B/op	       2 allocs/op
-BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  362293	      3432 ns/op	    6208 B/op	       2 allocs/op
-BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  366402	      3415 ns/op	    6208 B/op	       2 allocs/op
-BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  364014	      3446 ns/op	    6208 B/op	       2 allocs/op
-BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  353664	      3419 ns/op	    6208 B/op	       2 allocs/op
-BenchmarkCircularBuffer_BurstAppend-4            	    9745	    103004 ns/op	 621.34 MB/s	   64000 B/op	    1000 allocs/op
-BenchmarkCircularBuffer_BurstAppend-4            	   10000	    104807 ns/op	 610.64 MB/s	   64000 B/op	    1000 allocs/op
-BenchmarkCircularBuffer_BurstAppend-4            	   10000	    102479 ns/op	 624.52 MB/s	   64000 B/op	    1000 allocs/op
-BenchmarkCircularBuffer_BurstAppend-4            	   10000	    102742 ns/op	 622.92 MB/s	   64000 B/op	    1000 allocs/op
-BenchmarkCircularBuffer_BurstAppend-4            	   10000	    102276 ns/op	 625.76 MB/s	   64000 B/op	    1000 allocs/op
-BenchmarkCircularBuffer_BurstAppend-4            	   10000	    104621 ns/op	 611.73 MB/s	   64000 B/op	    1000 allocs/op
-BenchmarkCircularBuffer_BurstAppend-4            	   10000	    102662 ns/op	 623.41 MB/s	   64000 B/op	    1000 allocs/op
-BenchmarkCircularBuffer_BurstAppend-4            	    9967	    103124 ns/op	 620.61 MB/s	   64000 B/op	    1000 allocs/op
-BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   72938	     16556 ns/op	   57344 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   72846	     16834 ns/op	   57344 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   72615	     16392 ns/op	   57344 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   69726	     16454 ns/op	   57344 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   67674	     16427 ns/op	   57344 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   75540	     16695 ns/op	   57344 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   70977	     16050 ns/op	   57344 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   75204	     16890 ns/op	   57344 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetRange_Sequential-4    	  120711	     10547 ns/op	   28672 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetRange_Sequential-4    	  123066	     10348 ns/op	   28672 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetRange_Sequential-4    	  104610	     10533 ns/op	   28672 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetRange_Sequential-4    	  114738	     10203 ns/op	   28672 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetRange_Sequential-4    	  122725	     10003 ns/op	   28672 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetRange_Sequential-4    	  100754	     10430 ns/op	   28672 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetRange_Sequential-4    	  122191	     10235 ns/op	   28672 B/op	       1 allocs/op
-BenchmarkCircularBuffer_GetRange_Sequential-4    	  122556	     10651 ns/op	   28672 B/op	       1 allocs/op
-BenchmarkCircularBufferAppend-4                  	11968034	       100.6 ns/op	      24 B/op	       1 allocs/op
-BenchmarkCircularBufferAppend-4                  	12047688	       100.0 ns/op	      24 B/op	       1 allocs/op
-BenchmarkCircularBufferAppend-4                  	12046692	        99.67 ns/op	      24 B/op	       1 allocs/op
-BenchmarkCircularBufferAppend-4                  	12120031	        99.68 ns/op	      24 B/op	       1 allocs/op
-BenchmarkCircularBufferAppend-4                  	12023745	        99.16 ns/op	      24 B/op	       1 allocs/op
-BenchmarkCircularBufferAppend-4                  	12075259	        99.40 ns/op	      24 B/op	       1 allocs/op
-BenchmarkCircularBufferAppend-4                  	12143068	        99.52 ns/op	      24 B/op	       1 allocs/op
-BenchmarkCircularBufferAppend-4                  	12032529	       100.7 ns/op	      24 B/op	       1 allocs/op
-BenchmarkCircularBufferGetLastN-4                	  597098	      1949 ns/op	    6144 B/op	       1 allocs/op
-BenchmarkCircularBufferGetLastN-4                	  535918	      1923 ns/op	    6144 B/op	       1 allocs/op
-BenchmarkCircularBufferGetLastN-4                	  567502	      1950 ns/op	    6144 B/op	       1 allocs/op
-BenchmarkCircularBufferGetLastN-4                	  625204	      1932 ns/op	    6144 B/op	       1 allocs/op
-BenchmarkCircularBufferGetLastN-4                	  586476	      1960 ns/op	    6144 B/op	       1 allocs/op
-BenchmarkCircularBufferGetLastN-4                	  604812	      1998 ns/op	    6144 B/op	       1 allocs/op
-BenchmarkCircularBufferGetLastN-4                	  607576	      1944 ns/op	    6144 B/op	       1 allocs/op
-BenchmarkCircularBufferGetLastN-4                	  612241	      1970 ns/op	    6144 B/op	       1 allocs/op
-BenchmarkCircularBufferConcurrentAppend-4        	 9096937	       128.5 ns/op	      32 B/op	       1 allocs/op
-BenchmarkCircularBufferConcurrentAppend-4        	 9047176	       129.1 ns/op	      32 B/op	       1 allocs/op
-BenchmarkCircularBufferConcurrentAppend-4        	 8929858	       129.8 ns/op	      32 B/op	       1 allocs/op
-BenchmarkCircularBufferConcurrentAppend-4        	 8955442	       128.8 ns/op	      32 B/op	       1 allocs/op
-BenchmarkCircularBufferConcurrentAppend-4        	 9146967	       128.5 ns/op	      32 B/op	       1 allocs/op
-BenchmarkCircularBufferConcurrentAppend-4        	 9029253	       128.8 ns/op	      32 B/op	       1 allocs/op
-BenchmarkCircularBufferConcurrentAppend-4        	 9181504	       128.3 ns/op	      32 B/op	       1 allocs/op
-BenchmarkCircularBufferConcurrentAppend-4        	 9073634	       128.7 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  391516	      3530 ns/op	    6208 B/op	       2 allocs/op
+BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  362826	      3490 ns/op	    6208 B/op	       2 allocs/op
+BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  343242	      3592 ns/op	    6208 B/op	       2 allocs/op
+BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  344629	      3531 ns/op	    6208 B/op	       2 allocs/op
+BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  343106	      3483 ns/op	    6208 B/op	       2 allocs/op
+BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  357714	      3531 ns/op	    6208 B/op	       2 allocs/op
+BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  341811	      3620 ns/op	    6208 B/op	       2 allocs/op
+BenchmarkCircularBuffer_ConcurrentReadWrite-4    	  326064	      3520 ns/op	    6208 B/op	       2 allocs/op
+BenchmarkCircularBuffer_BurstAppend-4            	   11691	    102706 ns/op	 623.14 MB/s	   64000 B/op	    1000 allocs/op
+BenchmarkCircularBuffer_BurstAppend-4            	   10000	    103468 ns/op	 618.55 MB/s	   64000 B/op	    1000 allocs/op
+BenchmarkCircularBuffer_BurstAppend-4            	   10000	    103313 ns/op	 619.48 MB/s	   64000 B/op	    1000 allocs/op
+BenchmarkCircularBuffer_BurstAppend-4            	   10000	    105982 ns/op	 603.88 MB/s	   64000 B/op	    1000 allocs/op
+BenchmarkCircularBuffer_BurstAppend-4            	   10000	    103579 ns/op	 617.89 MB/s	   64000 B/op	    1000 allocs/op
+BenchmarkCircularBuffer_BurstAppend-4            	   10000	    102722 ns/op	 623.04 MB/s	   64000 B/op	    1000 allocs/op
+BenchmarkCircularBuffer_BurstAppend-4            	   10000	    106171 ns/op	 602.80 MB/s	   64000 B/op	    1000 allocs/op
+BenchmarkCircularBuffer_BurstAppend-4            	   10000	    103118 ns/op	 620.65 MB/s	   64000 B/op	    1000 allocs/op
+BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   68004	     17951 ns/op	   57344 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   62144	     18136 ns/op	   57344 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   67872	     18004 ns/op	   57344 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   69188	     17650 ns/op	   57344 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   66201	     17826 ns/op	   57344 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   67364	     18292 ns/op	   57344 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   62859	     17919 ns/op	   57344 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetLastN_LargeBuffer-4   	   60219	     18441 ns/op	   57344 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetRange_Sequential-4    	  130178	      9443 ns/op	   28672 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetRange_Sequential-4    	  125314	      9499 ns/op	   28672 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetRange_Sequential-4    	  125694	      9506 ns/op	   28672 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetRange_Sequential-4    	  125984	      9574 ns/op	   28672 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetRange_Sequential-4    	  120632	      9503 ns/op	   28672 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetRange_Sequential-4    	  121711	      9423 ns/op	   28672 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetRange_Sequential-4    	  124806	      9421 ns/op	   28672 B/op	       1 allocs/op
+BenchmarkCircularBuffer_GetRange_Sequential-4    	  126661	      9618 ns/op	   28672 B/op	       1 allocs/op
+BenchmarkCircularBufferAppend-4                  	11964691	        98.10 ns/op	      24 B/op	       1 allocs/op
+BenchmarkCircularBufferAppend-4                  	12171211	        97.95 ns/op	      24 B/op	       1 allocs/op
+BenchmarkCircularBufferAppend-4                  	12093097	        98.26 ns/op	      24 B/op	       1 allocs/op
+BenchmarkCircularBufferAppend-4                  	11996224	        98.08 ns/op	      24 B/op	       1 allocs/op
+BenchmarkCircularBufferAppend-4                  	12191305	        97.67 ns/op	      24 B/op	       1 allocs/op
+BenchmarkCircularBufferAppend-4                  	12112464	        97.46 ns/op	      24 B/op	       1 allocs/op
+BenchmarkCircularBufferAppend-4                  	12107094	        97.42 ns/op	      24 B/op	       1 allocs/op
+BenchmarkCircularBufferAppend-4                  	12212380	        97.79 ns/op	      24 B/op	       1 allocs/op
+BenchmarkCircularBufferGetLastN-4                	  642493	      1787 ns/op	    6144 B/op	       1 allocs/op
+BenchmarkCircularBufferGetLastN-4                	  679624	      1757 ns/op	    6144 B/op	       1 allocs/op
+BenchmarkCircularBufferGetLastN-4                	  676029	      1755 ns/op	    6144 B/op	       1 allocs/op
+BenchmarkCircularBufferGetLastN-4                	  619789	      1753 ns/op	    6144 B/op	       1 allocs/op
+BenchmarkCircularBufferGetLastN-4                	  716670	      1753 ns/op	    6144 B/op	       1 allocs/op
+BenchmarkCircularBufferGetLastN-4                	  636571	      1737 ns/op	    6144 B/op	       1 allocs/op
+BenchmarkCircularBufferGetLastN-4                	  667375	      1791 ns/op	    6144 B/op	       1 allocs/op
+BenchmarkCircularBufferGetLastN-4                	  666511	      1749 ns/op	    6144 B/op	       1 allocs/op
+BenchmarkCircularBufferConcurrentAppend-4        	 8987536	       130.3 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCircularBufferConcurrentAppend-4        	 9095449	       130.4 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCircularBufferConcurrentAppend-4        	 9124230	       128.7 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCircularBufferConcurrentAppend-4        	 9160461	       128.3 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCircularBufferConcurrentAppend-4        	 9132436	       129.2 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCircularBufferConcurrentAppend-4        	 9203332	       128.3 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCircularBufferConcurrentAppend-4        	 9092916	       130.0 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCircularBufferConcurrentAppend-4        	 9060704	       129.6 ns/op	      32 B/op	       1 allocs/op
 PASS
-ok  	github.com/tstapler/stapler-squad/session/scrollback	71.439s
+ok  	github.com/tstapler/stapler-squad/session/scrollback	72.304s
 goos: linux
 goarch: amd64
 pkg: github.com/tstapler/stapler-squad/session/tmux
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkStripANSICodes_PlainText-4     	174504766	         6.875 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSICodes_PlainText-4     	174436732	         6.878 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSICodes_PlainText-4     	172817438	         6.927 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSICodes_PlainText-4     	174779923	         6.864 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSICodes_PlainText-4     	174541531	         6.871 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSICodes_PlainText-4     	174619947	         6.875 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSICodes_PlainText-4     	169704394	         6.991 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSICodes_PlainText-4     	174614834	         6.870 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStripANSICodes_WithEscapes-4   	 1873640	       641.1 ns/op	      56 B/op	       4 allocs/op
-BenchmarkStripANSICodes_WithEscapes-4   	 1869480	       641.0 ns/op	      56 B/op	       4 allocs/op
-BenchmarkStripANSICodes_WithEscapes-4   	 1869742	       641.4 ns/op	      56 B/op	       4 allocs/op
-BenchmarkStripANSICodes_WithEscapes-4   	 1872398	       641.5 ns/op	      56 B/op	       4 allocs/op
-BenchmarkStripANSICodes_WithEscapes-4   	 1860310	       643.9 ns/op	      56 B/op	       4 allocs/op
-BenchmarkStripANSICodes_WithEscapes-4   	 1865515	       641.4 ns/op	      56 B/op	       4 allocs/op
-BenchmarkStripANSICodes_WithEscapes-4   	 1866902	       642.3 ns/op	      56 B/op	       4 allocs/op
-BenchmarkStripANSICodes_WithEscapes-4   	 1874073	       639.5 ns/op	      56 B/op	       4 allocs/op
-BenchmarkIsBanner_PlainText-4           	 2605381	       460.0 ns/op	       0 B/op	       0 allocs/op
-BenchmarkIsBanner_PlainText-4           	 2594463	       459.8 ns/op	       0 B/op	       0 allocs/op
-BenchmarkIsBanner_PlainText-4           	 2624925	       457.5 ns/op	       0 B/op	       0 allocs/op
-BenchmarkIsBanner_PlainText-4           	 2623642	       456.6 ns/op	       0 B/op	       0 allocs/op
-BenchmarkIsBanner_PlainText-4           	 2619067	       457.7 ns/op	       0 B/op	       0 allocs/op
-BenchmarkIsBanner_PlainText-4           	 2621906	       457.9 ns/op	       0 B/op	       0 allocs/op
-BenchmarkIsBanner_PlainText-4           	 2623430	       457.4 ns/op	       0 B/op	       0 allocs/op
-BenchmarkIsBanner_PlainText-4           	 2626683	       457.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_PlainText-4     	174197028	         6.880 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_PlainText-4     	172300366	         6.929 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_PlainText-4     	174745158	         6.865 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_PlainText-4     	174687224	         6.868 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_PlainText-4     	174704721	         6.871 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_PlainText-4     	174137752	         6.881 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_PlainText-4     	174468565	         6.928 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_PlainText-4     	174503584	         6.872 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStripANSICodes_WithEscapes-4   	 1634635	       733.5 ns/op	      56 B/op	       4 allocs/op
+BenchmarkStripANSICodes_WithEscapes-4   	 1635004	       743.9 ns/op	      56 B/op	       4 allocs/op
+BenchmarkStripANSICodes_WithEscapes-4   	 1569958	       756.4 ns/op	      56 B/op	       4 allocs/op
+BenchmarkStripANSICodes_WithEscapes-4   	 1639168	       731.7 ns/op	      56 B/op	       4 allocs/op
+BenchmarkStripANSICodes_WithEscapes-4   	 1629060	       735.5 ns/op	      56 B/op	       4 allocs/op
+BenchmarkStripANSICodes_WithEscapes-4   	 1634168	       733.6 ns/op	      56 B/op	       4 allocs/op
+BenchmarkStripANSICodes_WithEscapes-4   	 1643403	       731.9 ns/op	      56 B/op	       4 allocs/op
+BenchmarkStripANSICodes_WithEscapes-4   	 1626531	       737.8 ns/op	      56 B/op	       4 allocs/op
+BenchmarkIsBanner_PlainText-4           	 2563459	       468.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsBanner_PlainText-4           	 2552923	       470.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsBanner_PlainText-4           	 2555853	       468.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsBanner_PlainText-4           	 2557264	       469.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsBanner_PlainText-4           	 2555542	       492.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsBanner_PlainText-4           	 2556861	       468.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsBanner_PlainText-4           	 2557022	       469.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkIsBanner_PlainText-4           	 2568520	       467.8 ns/op	       0 B/op	       0 allocs/op
 PASS
-ok  	github.com/tstapler/stapler-squad/session/tmux	28.784s
+ok  	github.com/tstapler/stapler-squad/session/tmux	28.877s
 goos: linux
 goarch: amd64
 pkg: github.com/tstapler/stapler-squad/session/tokens
 cpu: AMD EPYC 7763 64-Core Processor                
-BenchmarkTokenParser_ProcessUserEntry-4   	     229	   5180208 ns/op	11552284 B/op	      34 allocs/op
-BenchmarkTokenParser_ProcessUserEntry-4   	     228	   5226951 ns/op	11552309 B/op	      34 allocs/op
-BenchmarkTokenParser_ProcessUserEntry-4   	     225	   5198583 ns/op	11552277 B/op	      34 allocs/op
-BenchmarkTokenParser_ProcessUserEntry-4   	     231	   5193276 ns/op	11552280 B/op	      34 allocs/op
-BenchmarkTokenParser_ProcessUserEntry-4   	     231	   5178267 ns/op	11552274 B/op	      34 allocs/op
-BenchmarkTokenParser_ProcessUserEntry-4   	     228	   5216059 ns/op	11552272 B/op	      34 allocs/op
-BenchmarkTokenParser_ProcessUserEntry-4   	     229	   5183617 ns/op	11552276 B/op	      34 allocs/op
-BenchmarkTokenParser_ProcessUserEntry-4   	     230	   5202011 ns/op	11552274 B/op	      34 allocs/op
-BenchmarkDetectCommandsInText/NoSlash-4   	166971528	         7.183 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetectCommandsInText/NoSlash-4   	167366860	         7.175 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetectCommandsInText/NoSlash-4   	166817024	         7.194 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetectCommandsInText/NoSlash-4   	166785831	         7.225 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetectCommandsInText/NoSlash-4   	167180960	         7.177 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetectCommandsInText/NoSlash-4   	167146951	         7.183 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetectCommandsInText/NoSlash-4   	167091709	         7.183 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetectCommandsInText/NoSlash-4   	167181709	         7.185 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDetectCommandsInText/WithCommand-4         	  675856	      1595 ns/op	     433 B/op	       6 allocs/op
-BenchmarkDetectCommandsInText/WithCommand-4         	  716899	      1587 ns/op	     433 B/op	       6 allocs/op
-BenchmarkDetectCommandsInText/WithCommand-4         	  712170	      1598 ns/op	     433 B/op	       6 allocs/op
-BenchmarkDetectCommandsInText/WithCommand-4         	  737494	      1594 ns/op	     433 B/op	       6 allocs/op
-BenchmarkDetectCommandsInText/WithCommand-4         	  746791	      1591 ns/op	     433 B/op	       6 allocs/op
-BenchmarkDetectCommandsInText/WithCommand-4         	  728286	      1593 ns/op	     433 B/op	       6 allocs/op
-BenchmarkDetectCommandsInText/WithCommand-4         	  732013	      1591 ns/op	     433 B/op	       6 allocs/op
-BenchmarkDetectCommandsInText/WithCommand-4         	  636486	      1622 ns/op	     433 B/op	       6 allocs/op
+BenchmarkTokenParser_ProcessUserEntry-4   	     222	   5491062 ns/op	11552308 B/op	      34 allocs/op
+BenchmarkTokenParser_ProcessUserEntry-4   	     210	   5482713 ns/op	11552280 B/op	      34 allocs/op
+BenchmarkTokenParser_ProcessUserEntry-4   	     220	   5392499 ns/op	11552279 B/op	      34 allocs/op
+BenchmarkTokenParser_ProcessUserEntry-4   	     220	   5428986 ns/op	11552277 B/op	      34 allocs/op
+BenchmarkTokenParser_ProcessUserEntry-4   	     219	   5449171 ns/op	11552278 B/op	      34 allocs/op
+BenchmarkTokenParser_ProcessUserEntry-4   	     222	   5397332 ns/op	11552279 B/op	      34 allocs/op
+BenchmarkTokenParser_ProcessUserEntry-4   	     219	   5454944 ns/op	11552280 B/op	      34 allocs/op
+BenchmarkTokenParser_ProcessUserEntry-4   	     220	   5552226 ns/op	11552283 B/op	      34 allocs/op
+BenchmarkDetectCommandsInText/NoSlash-4   	166862428	         7.189 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetectCommandsInText/NoSlash-4   	162623720	         7.501 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetectCommandsInText/NoSlash-4   	164182336	         7.334 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetectCommandsInText/NoSlash-4   	162956452	         7.371 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetectCommandsInText/NoSlash-4   	163027568	         7.366 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetectCommandsInText/NoSlash-4   	165908805	         7.219 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetectCommandsInText/NoSlash-4   	162971947	         7.366 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetectCommandsInText/NoSlash-4   	162787243	         7.376 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDetectCommandsInText/WithCommand-4         	  663267	      1629 ns/op	     433 B/op	       6 allocs/op
+BenchmarkDetectCommandsInText/WithCommand-4         	  715269	      1627 ns/op	     433 B/op	       6 allocs/op
+BenchmarkDetectCommandsInText/WithCommand-4         	  643113	      1640 ns/op	     433 B/op	       6 allocs/op
+BenchmarkDetectCommandsInText/WithCommand-4         	  700080	      1621 ns/op	     434 B/op	       6 allocs/op
+BenchmarkDetectCommandsInText/WithCommand-4         	  718819	      1608 ns/op	     434 B/op	       6 allocs/op
+BenchmarkDetectCommandsInText/WithCommand-4         	  735138	      1636 ns/op	     433 B/op	       6 allocs/op
+BenchmarkDetectCommandsInText/WithCommand-4         	  717962	      1614 ns/op	     433 B/op	       6 allocs/op
+BenchmarkDetectCommandsInText/WithCommand-4         	  700339	      1648 ns/op	     433 B/op	       6 allocs/op
 PASS
-ok  	github.com/tstapler/stapler-squad/session/tokens	32.449s
+ok  	github.com/tstapler/stapler-squad/session/tokens	32.729s
 PASS
-ok  	github.com/tstapler/stapler-squad/session/vc	0.002s
+ok  	github.com/tstapler/stapler-squad/session/vc	0.003s
 ?   	github.com/tstapler/stapler-squad/session/vcs	[no test files]
 PASS
 ok  	github.com/tstapler/stapler-squad/session/vnc	0.003s

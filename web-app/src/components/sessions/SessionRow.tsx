@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef } from "react";
+import { useSessionActions } from "@/lib/hooks/useSessionActions";
 import { Session, SessionStatus, SubStatus } from "@/gen/session/v1/types_pb";
 import { Tooltip } from "../ui/Tooltip";
 import { SessionActionsOverflow, SessionActionsOverflowHandle } from "./SessionActionsOverflow";
@@ -150,6 +151,7 @@ export function SessionRow({
   onToggleSelect,
 }: SessionRowProps) {
   const overflowRef = useRef<SessionActionsOverflowHandle>(null);
+  const sessionActions = useSessionActions(session.id);
 
   const dotStatus = getStatusDotValue(session.status);
   const isPaused = session.status === SessionStatus.PAUSED;
@@ -397,6 +399,7 @@ export function SessionRow({
           onSteerAutonomousSession={onSteerAutonomousSession}
           onClearConversationState={onClearConversationState}
           onUpdateTags={onUpdateTags}
+          onChangeProgram={(_id, program) => { void sessionActions.update({ program }); }}
         />
       </span>
     </div>

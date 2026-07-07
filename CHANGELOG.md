@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.34.0](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.33.1...v1.34.0) (2026-07-03)
+
+
+### Features
+
+* **backlog:** add hard delete for backlog items ([56483ca](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/56483ca2ffa65f7b0b60c7a12d40f52df6481875))
+* **backlog:** import backlog items from GitHub issues ([46cf6d4](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/46cf6d431f8604be9c645b7614278cf73f24bfdf))
+* **perf:** add singleflight + hasUncommitted TTL cache to GoGitVCSReader ([6fc0fb2](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/6fc0fb20f187116698196946f82d707e3dc21f7a))
+* **perf:** invalidate IsDirty cache on session Pause and Resume ([4cee38d](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/4cee38dc0ffd2f164ce19dad01e4fab7fb543955))
+
+
+### Bug Fixes
+
+* autonomous sessions rejected with "path is required" via omnibar ([#157](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/157)) ([5ab6c4a](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/5ab6c4a08a03dbb6b28e5ae98975a72b543878d6))
+* **nav:** add Feature Flags to navigation menu ([3fa665c](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/3fa665cf20b250f51d09bb880fdcd9f1a7164c94))
+* **perf:** release entry.mu before OS stat walk in HasUncommitted; typed nil returns in Do bodies ([71f52b3](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/71f52b39bc907b69b7c6103db641ed59c6e92db0))
+* **perf:** rename misleading panic test, add scope comment, move InvalidateDirtyCache post-transition ([799a352](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/799a3521a5a040772cf9aa23a071b4a84361eaf0))
+* **service:** fall back to launchctl load when bootstrap fails on macOS ([46bd0ea](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/46bd0ea9f5d92153f7bb279f56b2cbc0fcfdca56))
+* **terminal:** correctly scan OSC/DCS escape sequences to stop render artifacts ([#156](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/156)) ([2151b4b](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/2151b4b2186627c64c1be1617e4e096918d5b491))
+
+## [1.33.1](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.33.0...v1.33.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **analytics:** escape analytics session_id mismatch and dead mangle detection ([#149](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/149)) ([a121de8](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/a121de83717185a5a42183288ffde1f8e0a298cf))
+* backlog/triage sessions die on launch (shell injection + flag-parsing crash) ([#150](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/150)) ([8016921](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/8016921fa302c01ed9c16c5f568e410b9081b2b7))
+* **backlog:** GitHub URL repo-path support, first-visit tour, and two related bugs ([#152](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/152)) ([6ef8164](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/6ef8164b215f0c08c4a497b00fd33da516e9a288))
+* web-build target doesn't generate proto bindings on a clean clone ([#155](https://github.com/TylerStaplerAtFanatics/stapler-squad/issues/155)) ([1bb135e](https://github.com/TylerStaplerAtFanatics/stapler-squad/commit/1bb135e8d93456c70db12ceb77b9f335369925f9))
+
 ## [1.33.0](https://github.com/TylerStaplerAtFanatics/stapler-squad/compare/v1.32.0...v1.33.0) (2026-07-02)
 
 

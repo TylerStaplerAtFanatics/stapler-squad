@@ -27,6 +27,19 @@ import (
 // live tmux process and can be safely tombstoned on re-trigger.
 const headlessTriageUUIDPrefix = "headless-triage-"
 
+// defaultTriageCleanupTimeout bounds the DB writes TriggerTriage's goroutine makes
+// after its headless LLM call returns (persist result, update plan_artifacts_path,
+// transition idea->ready, mark session ended). See BacklogService.triageCleanupTimeout
+// for why this needed to become configurable rather than a global.
+const defaultTriageCleanupTimeout = 10 * time.Second
+
+// defaultTriggerSyncTimeout bounds a single manual TriggerSync RPC call. The
+// GitHub PRs plugin issues one extra HTTP call per open PR (for CI status), so
+// this is generous relative to the "seconds, not minutes" expectation for a
+// single page of items — without it, a slow/rate-limited GitHub response would
+// block the RPC handler for however long the client's transport allows.
+const defaultTriggerSyncTimeout = 2 * time.Minute
+
 // maxTriageSessionAge is the maximum age of an open triage ItemSession before it is
 // treated as orphaned in the re-trigger guard. This prevents a hung or leaked session
 // from blocking re-trigger indefinitely.
@@ -84,6 +97,35 @@ type BacklogService struct {
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 	triageSem      chan struct{}
+
+	// triageCleanupTimeout bounds the post-LLM-call DB writes in TriggerTriage's
+	// goroutine. An instance field (not a package var) so tests can override it on
+	// their own *BacklogService without any shared global state or data-race risk
+	// across concurrently running tests — see SetTriageCleanupTimeout and
+	// TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext, a regression test
+	// for a bug where this timeout used to start counting down BEFORE the
+	// (7-15 minute) LLM call instead of after it, so it was always already expired
+	// by the time these persistence calls ran and every successful triage
+	// silently failed to ever mark the item ready.
+	triageCleanupTimeout time.Duration
+
+	// pluginRegistry and syncKeyFunc back TriggerSync / GetSyncHistory. Both are
+	// optional: if pluginRegistry is nil, TriggerSync degrades to CodeUnimplemented
+	// the same way sessionCreator-dependent RPCs degrade when unwired.
+	pluginRegistry *session.PluginRegistry
+	syncKeyFunc    func() ([]byte, error)
+
+	// syncFeatureEnabled reports whether the backlog feature (and therefore its
+	// sync capability) is currently enabled. Optional: if nil, TriggerSync is
+	// never gated by feature state (matches the other ItemSource RPCs, which
+	// also don't self-gate). Wired to BacklogController.IsEnabled in production
+	// so a manually-triggered sync can't run while the feature is toggled off.
+	syncFeatureEnabled func() bool
+
+	// resolveGitHubInput resolves a GitHub URL/shorthand to a local clone path,
+	// cloning it if necessary. Defaults to session.ResolveGitHubInput; overridable
+	// via SetGitHubResolver so tests don't need real network/git access.
+	resolveGitHubInput func(input string) (string, *session.GitHubRef, error)
 }
 
 // NewBacklogService creates a BacklogService with all optional dependencies.
@@ -99,20 +141,48 @@ func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *co
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &BacklogService{
-		storage:        storage,
-		sourceBackend:  storage,
-		sessionCreator: creator,
-		cfg:            cfg,
-		engine:         engine,
-		shutdownCtx:    ctx,
-		shutdownCancel: cancel,
-		triageSem:      make(chan struct{}, 8),
+		storage:              storage,
+		sourceBackend:        storage,
+		sessionCreator:       creator,
+		cfg:                  cfg,
+		engine:               engine,
+		shutdownCtx:          ctx,
+		shutdownCancel:       cancel,
+		triageSem:            make(chan struct{}, 8),
+		triageCleanupTimeout: defaultTriageCleanupTimeout,
+		resolveGitHubInput:   session.ResolveGitHubInput,
 	}
 }
 
 // SetHeadlessPool wires the headless pool for autonomous triage calls.
 func (s *BacklogService) SetHeadlessPool(pool headless.PoolClient) {
 	s.headlessPool = pool
+}
+
+// SetTriageCleanupTimeout overrides the default timeout for TriggerTriage's
+// post-LLM-call DB writes. Exposed for tests; production callers should rely
+// on the default.
+func (s *BacklogService) SetTriageCleanupTimeout(d time.Duration) {
+	s.triageCleanupTimeout = d
+}
+
+// SetPluginRegistry wires the item-source plugin registry, enabling TriggerSync.
+func (s *BacklogService) SetPluginRegistry(registry *session.PluginRegistry) {
+	s.pluginRegistry = registry
+}
+
+// SetSyncKeyFunc wires the encryption key provider used to decrypt item source
+// tokens during a manual sync. May be left nil if no sources use encrypted
+// tokens; SyncByID degrades gracefully (see session.SyncLoop.decryptConfigToken).
+func (s *BacklogService) SetSyncKeyFunc(keyFunc func() ([]byte, error)) {
+	s.syncKeyFunc = keyFunc
+}
+
+// SetSyncFeatureEnabledCheck wires a callback TriggerSync uses to refuse
+// running while the backlog feature is disabled. Pass nil (the default) to
+// leave TriggerSync ungated.
+func (s *BacklogService) SetSyncFeatureEnabledCheck(check func() bool) {
+	s.syncFeatureEnabled = check
 }
 
 // Shutdown cancels the service's background context, unblocking any goroutines
@@ -130,6 +200,27 @@ func (s *BacklogService) SetSessionStopper(stopper SessionStopper) {
 // When set, SpawnSessionFromItem with autonomous=true will start an AutonomousDriver on the spawned instance.
 func (s *BacklogService) SetAutonomousDriverStarter(starter AutonomousDriverStarter) {
 	s.autonomousStarter = starter
+}
+
+// SetGitHubResolver overrides how GitHub URLs are resolved to local clone paths.
+// Used by tests to avoid real network/git access; production wiring uses the
+// session.ResolveGitHubInput default set in NewBacklogService.
+func (s *BacklogService) SetGitHubResolver(fn func(input string) (string, *session.GitHubRef, error)) {
+	s.resolveGitHubInput = fn
+}
+
+// resolveRepoPathInput resolves a GitHub URL/shorthand repo_path to a local clone
+// path, cloning it if necessary (mirrors SessionService.CreateSession's handling
+// of GitHub URLs). Plain filesystem paths pass through unchanged.
+func (s *BacklogService) resolveRepoPathInput(input string) (string, error) {
+	if input == "" || !session.IsGitHubURL(input) {
+		return input, nil
+	}
+	localPath, _, err := s.resolveGitHubInput(input)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve GitHub URL %q: %w", input, err)
+	}
+	return localPath, nil
 }
 
 // encryptAndMergeToken produces a token config JSON string suitable for storage.
@@ -282,9 +373,9 @@ func itemSessionToProto(is *ent.ItemSession) *sessionv1.ItemSession {
 // by itemSessionToProto. Uses canonical session.TriageSuggestion / session.TriageTask
 // to keep the schema in sync across the MCP tool, headless path, and proto conversion.
 type triageResultJSON struct {
-	Summary             string                    `json:"summary"`
+	Summary             string                     `json:"summary"`
 	Suggestions         []session.TriageSuggestion `json:"suggestions"`
-	ClarifyingQuestions []string                  `json:"clarifying_questions,omitempty"`
+	ClarifyingQuestions []string                   `json:"clarifying_questions,omitempty"`
 	Tasks               []session.TriageTask       `json:"tasks,omitempty"`
 }
 
@@ -374,6 +465,23 @@ func itemSourceToProto(src *session.ItemSourceData) *sessionv1.ItemSource {
 	return p
 }
 
+// sourceSyncEventToProto converts an ent.SourceSyncEvent to its proto representation.
+func sourceSyncEventToProto(ev *ent.SourceSyncEvent) *sessionv1.SourceSyncEvent {
+	p := &sessionv1.SourceSyncEvent{
+		Id:           ev.ID.String(),
+		StartedAt:    timestamppb.New(ev.StartedAt),
+		ItemsCreated: int32(ev.ItemsCreated),
+		ItemsUpdated: int32(ev.ItemsUpdated),
+		ItemsSkipped: int32(ev.ItemsSkipped),
+		ItemsErrored: int32(ev.ItemsErrored),
+		ErrorMessage: ev.ErrorMessage,
+	}
+	if ev.FinishedAt != nil {
+		p.FinishedAt = timestamppb.New(*ev.FinishedAt)
+	}
+	return p
+}
+
 // acCriteriaToJSON serializes proto AcCriterion slice to JSON string for storage.
 func acCriteriaToJSON(protoAC []*sessionv1.AcCriterion) (string, error) {
 	if len(protoAC) == 0 {
@@ -419,13 +527,18 @@ func (s *BacklogService) CreateBacklogItem(
 		priority = session.DefaultBacklogPriority
 	}
 
+	repoPath, err := s.resolveRepoPathInput(req.Msg.RepoPath)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	data := session.BacklogItemData{
 		Title:              req.Msg.Title,
 		Description:        req.Msg.Description,
 		AcceptanceCriteria: acJSON,
 		Priority:           priority,
 		Status:             string(session.BacklogStatusIdea),
-		RepoPath:           req.Msg.RepoPath,
+		RepoPath:           repoPath,
 		SkipReviewGate:     req.Msg.SkipReviewGate,
 		SkipPlanning:       req.Msg.SkipPlanning,
 		Notes:              req.Msg.Notes,
@@ -569,7 +682,10 @@ func (s *BacklogService) UpdateBacklogItem(
 		update.Priority = &prio
 	}
 	if req.Msg.RepoPath != "" {
-		rp := req.Msg.RepoPath
+		rp, resolveErr := s.resolveRepoPathInput(req.Msg.RepoPath)
+		if resolveErr != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, resolveErr)
+		}
 		update.RepoPath = &rp
 	}
 	skipRG := req.Msg.SkipReviewGate
@@ -631,6 +747,28 @@ func (s *BacklogService) ArchiveBacklogItem(
 	return connect.NewResponse(&sessionv1.ArchiveBacklogItemResponse{
 		Item: backlogItemToProto(archived),
 	}), nil
+}
+
+// --- DeleteBacklogItem ---
+
+// DeleteBacklogItem permanently removes an item and all its child records.
+// +api: backlog:delete-item
+func (s *BacklogService) DeleteBacklogItem(
+	ctx context.Context,
+	req *connect.Request[sessionv1.DeleteBacklogItemRequest],
+) (*connect.Response[sessionv1.DeleteBacklogItemResponse], error) {
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+
+	if err := s.storage.DeleteBacklogItem(ctx, req.Msg.ItemId); err != nil {
+		if ent.IsNotFound(err) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete backlog item: %w", err))
+	}
+
+	return connect.NewResponse(&sessionv1.DeleteBacklogItemResponse{}), nil
 }
 
 // --- TransitionBacklogItemStatus ---
@@ -953,15 +1091,45 @@ func (s *BacklogService) SpawnSessionFromItem(
 		SkipPlanning:       item.SkipPlanning,
 	}
 	prompt := session.BuildTokenBudgetedPrompt(entItem, priorSessions)
-	if item.PlanArtifactsPath != "" {
-		prompt += fmt.Sprintf("\nYour plan is at `%s/plan.md`. Read plan.md and validation.md before writing code.\n", item.PlanArtifactsPath)
-	}
 
 	// 9. Generate session title.
 	title := "backlog:" + slugify(item.Title)
 
-	// 10. Spawn session first so we have the real UUID before creating the ItemSession record.
-	inst, err := s.sessionCreator.CreateDirectorySession(ctx, title, item.RepoPath, prompt,
+	// 10. Ensure the worktree path exists and write slash commands + context file BEFORE
+	// spawning the session — the claude process starts executing synchronously inside
+	// CreateDirectorySession (tmux launch), so these files must already be on disk by
+	// then or the agent can find them missing on its first turn. worktreeMu still guards
+	// concurrent spawns from interleaving writes to the same path.
+	//
+	// Resolve through session.ResolveSessionPath first — CreateDirectorySession's
+	// underlying NewInstance does the same tilde-expand + absolute-path resolution on
+	// item.RepoPath, so writing to the raw, unresolved string here could silently
+	// target a different path than the one the spawned Instance actually uses (e.g. a
+	// "~/repo" RepoPath would write files under a literal "~/repo" relative to the
+	// server's CWD instead of the user's real home directory).
+	worktreePath, pathErr := session.ResolveSessionPath(item.RepoPath)
+	if pathErr != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid repo_path: %w", pathErr))
+	}
+	s.worktreeMu.Lock()
+	if err := session.EnsureDirectorySessionPath(worktreePath); err != nil {
+		s.worktreeMu.Unlock()
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to prepare session directory: %w", err))
+	}
+	if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
+		s.worktreeMu.Unlock()
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
+	}
+	if wErr := session.WriteBacklogContextFile(entItem, priorSessions, worktreePath); wErr != nil {
+		s.worktreeMu.Unlock()
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
+	}
+	s.worktreeMu.Unlock()
+
+	// 11. Spawn session first so we have the real UUID before creating the ItemSession record.
+	// Pass the same resolved worktreePath so CreateDirectorySession's own resolution is a
+	// no-op and both paths are guaranteed to agree.
+	inst, err := s.sessionCreator.CreateDirectorySession(ctx, title, worktreePath, prompt,
 		[]string{"backlog:work"}, false, false)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn session: %w", err))
@@ -971,7 +1139,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 		s.autonomousStarter.StartAutonomousDriverForInstance(inst)
 	}
 
-	// 11. Create ItemSession with the real session UUID (avoids "<pending>" orphan records on failure).
+	// 12. Create ItemSession with the real session UUID (avoids "<pending>" orphan records on failure).
 	is, err := s.storage.CreateItemSession(ctx, session.ItemSessionData{
 		ItemID:      item.ID,
 		SessionUUID: inst.UUID,
@@ -981,20 +1149,6 @@ func (s *BacklogService) SpawnSessionFromItem(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create item session: %w", err))
 	}
-
-	// 12. Write slash commands and context file synchronously under a mutex so
-	// concurrent spawn calls cannot interleave writes to the same worktree path.
-	worktreePath := inst.Path
-	s.worktreeMu.Lock()
-	if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
-		s.worktreeMu.Unlock()
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
-	}
-	if wErr := session.WriteBacklogContextFile(entItem, worktreePath); wErr != nil {
-		s.worktreeMu.Unlock()
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
-	}
-	s.worktreeMu.Unlock()
 
 	// 13. Transition item to in_progress.
 	if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil); transErr != nil {
@@ -1045,7 +1199,16 @@ func (s *BacklogService) AttachSessionToItem(
 	// 3. Snapshot current AC.
 	acSnapshot := item.AcceptanceCriteria
 
-	// 4. Create ItemSession.
+	// 4. Load prior sessions BEFORE creating this attach's own ItemSession, so the
+	// "prior sessions" list passed to WriteBacklogContextFile never transiently includes
+	// the session being attached (mirrors SpawnSessionFromItem's ordering).
+	attachPriorSessions, priorErr := s.storage.ListItemSessions(ctx, item.ID)
+	if priorErr != nil {
+		log.WarningLog.Printf("[AttachSessionToItem] failed to load prior sessions for item %s: %v", item.ID, priorErr)
+		attachPriorSessions = nil
+	}
+
+	// 5. Create ItemSession.
 	is, err := s.storage.CreateItemSession(ctx, session.ItemSessionData{
 		ItemID:      item.ID,
 		SessionUUID: req.Msg.SessionUuid,
@@ -1056,7 +1219,7 @@ func (s *BacklogService) AttachSessionToItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create item session: %w", err))
 	}
 
-	// 5. Write slash commands to session worktree if instance is reachable.
+	// 6. Write slash commands to session worktree if instance is reachable.
 	attachItemUUID, _ := uuid.Parse(item.ID)
 	entItem := &ent.BacklogItem{
 		ID:                 attachItemUUID,
@@ -1066,7 +1229,11 @@ func (s *BacklogService) AttachSessionToItem(
 		Priority:           item.Priority,
 		Status:             item.Status,
 		Notes:              item.Notes,
+		PlanArtifactsPath:  item.PlanArtifactsPath,
+		PlanApproved:       item.PlanApproved,
+		SkipPlanning:       item.SkipPlanning,
 	}
+
 	instances, loadErr := s.storage.LoadInstances()
 	if loadErr == nil {
 		for _, inst := range instances {
@@ -1078,7 +1245,7 @@ func (s *BacklogService) AttachSessionToItem(
 					s.worktreeMu.Unlock()
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
 				}
-				if wErr := session.WriteBacklogContextFile(entItem, worktreePath); wErr != nil {
+				if wErr := session.WriteBacklogContextFile(entItem, attachPriorSessions, worktreePath); wErr != nil {
 					s.worktreeMu.Unlock()
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
 				}
@@ -1088,7 +1255,7 @@ func (s *BacklogService) AttachSessionToItem(
 		}
 	}
 
-	// 6. Transition item to in_progress (only if the state machine permits it).
+	// 7. Transition item to in_progress (only if the state machine permits it).
 	if session.CanTransitionBacklog(session.BacklogStatus(item.Status), session.BacklogStatusInProgress) {
 		if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil); transErr != nil {
 			log.ErrorLog.Printf("[AttachSessionToItem] failed to transition item to in_progress: %v", transErr)
@@ -1220,10 +1387,6 @@ func (s *BacklogService) TriggerTriage(
 		}
 		defer func() { <-s.triageSem }()
 
-		// cleanupCtx outlives shutdownCtx so DB writes succeed even during graceful shutdown.
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cleanupCancel()
-
 		triageCtx, cancel := context.WithTimeout(s.shutdownCtx, 30*time.Minute)
 		defer cancel()
 
@@ -1233,6 +1396,17 @@ func (s *BacklogService) TriggerTriage(
 			triagePrompt,
 			headless.CallOptions{WorkDir: itemRepoPath},
 		)
+
+		// cleanupCtx outlives shutdownCtx so DB writes succeed even during graceful
+		// shutdown. Created HERE, after CallBlockingWithOptions returns, not before
+		// it: the LLM call above routinely takes 7-15 minutes (4 parallel research
+		// subagents), so a cleanupCtx created before it would have its 10s budget
+		// already expired by the time these persistence calls run below — every
+		// successful triage would silently fail to ever mark the item ready. This
+		// was a live, 100%-reproducible bug: see the backlog cross-platform audit.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), s.triageCleanupTimeout)
+		defer cleanupCancel()
+
 		if callErr != nil {
 			log.ErrorLog.Printf("[TriggerTriage] headless triage failed item=%s: %v", itemID, callErr)
 			_ = s.storage.UpdateItemSessionEnded(cleanupCtx, isID, time.Now())
@@ -1592,20 +1766,89 @@ Do not modify the code. Only write the review verdict.
 	}), nil
 }
 
-// TriggerSync initiates a sync run for an external item source.
+// TriggerSync initiates a synchronous, on-demand sync run for an external item
+// source, regardless of its Enabled flag. Runs inline (not backgrounded like
+// TriggerTriage) because a single external-API fetch is expected to complete
+// in seconds, not the 7-15 minutes a headless LLM triage call takes.
 // +api: backlog:trigger-sync
 func (s *BacklogService) TriggerSync(
-	_ context.Context,
-	_ *connect.Request[sessionv1.TriggerSyncRequest],
+	ctx context.Context,
+	req *connect.Request[sessionv1.TriggerSyncRequest],
 ) (*connect.Response[sessionv1.TriggerSyncResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("TriggerSync not yet implemented"))
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+	if s.pluginRegistry == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("sync not configured — no plugin registry wired"))
+	}
+	if s.syncFeatureEnabled != nil && !s.syncFeatureEnabled() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("backlog sync is disabled"))
+	}
+	if req.Msg.SourceId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source_id is required"))
+	}
+	if _, parseErr := uuid.Parse(req.Msg.SourceId); parseErr != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid source_id %q: %w", req.Msg.SourceId, parseErr))
+	}
+
+	var sl *session.SyncLoop
+	if s.syncKeyFunc != nil {
+		sl = session.NewSyncLoopWithKeyProvider(s.storage, s.pluginRegistry, s.syncKeyFunc)
+	} else {
+		sl = session.NewSyncLoop(s.storage, s.pluginRegistry)
+	}
+
+	syncCtx, cancel := context.WithTimeout(ctx, defaultTriggerSyncTimeout)
+	defer cancel()
+
+	if err := sl.SyncByID(syncCtx, req.Msg.SourceId); err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("item source %q not found", req.Msg.SourceId))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("sync failed: %w", err))
+	}
+
+	return connect.NewResponse(&sessionv1.TriggerSyncResponse{}), nil
 }
 
-// GetSyncHistory returns the sync event history for an item source.
+// GetSyncHistory returns the sync event history for an item source, most
+// recent first.
 // +api: backlog:get-sync-history
 func (s *BacklogService) GetSyncHistory(
-	_ context.Context,
-	_ *connect.Request[sessionv1.GetSyncHistoryRequest],
+	ctx context.Context,
+	req *connect.Request[sessionv1.GetSyncHistoryRequest],
 ) (*connect.Response[sessionv1.GetSyncHistoryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("GetSyncHistory not yet implemented"))
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+	if req.Msg.SourceId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source_id is required"))
+	}
+	if _, parseErr := uuid.Parse(req.Msg.SourceId); parseErr != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid source_id %q: %w", req.Msg.SourceId, parseErr))
+	}
+
+	events, truncated, err := s.storage.ListSourceSyncEvents(ctx, req.Msg.SourceId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list sync history: %w", err))
+	}
+
+	protoEvents := make([]*sessionv1.SourceSyncEvent, 0, len(events))
+	for _, ev := range events {
+		protoEvents = append(protoEvents, sourceSyncEventToProto(ev))
+	}
+
+	return connect.NewResponse(&sessionv1.GetSyncHistoryResponse{Events: protoEvents, Truncated: truncated}), nil
+}
+
+func (s *BacklogService) ImportGitHubIssue(ctx context.Context, req *connect.Request[sessionv1.ImportGitHubIssueRequest]) (*connect.Response[sessionv1.ImportGitHubIssueResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ImportGitHubIssue not yet implemented"))
+}
+
+func (s *BacklogService) SearchGitHubRepos(ctx context.Context, req *connect.Request[sessionv1.SearchGitHubReposRequest]) (*connect.Response[sessionv1.SearchGitHubReposResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("SearchGitHubRepos not yet implemented"))
+}
+
+func (s *BacklogService) ListGitHubIssues(ctx context.Context, req *connect.Request[sessionv1.ListGitHubIssuesRequest]) (*connect.Response[sessionv1.ListGitHubIssuesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ListGitHubIssues not yet implemented"))
 }

@@ -595,10 +595,10 @@ func TestOutputShowsConversationStarted(t *testing.T) {
 
 func TestScanTerminalForPRURL(t *testing.T) {
 	cases := []struct {
-		name        string
-		output      string
-		wantURL     string
-		wantPRNum   int
+		name      string
+		output    string
+		wantURL   string
+		wantPRNum int
 	}{
 		{
 			name: "git push output with PR create link",

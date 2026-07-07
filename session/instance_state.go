@@ -16,7 +16,7 @@ import (
 // loadStatus sets Status directly without state machine validation.
 // Call ONLY from FromInstanceData() deserialization or test setup.
 // Never call from operational code paths.
-// Must be called with i.stateMutex held (or before the instance is shared).
+// Must be called with i.mu held (or before the instance is shared).
 func (i *Instance) loadStatus(status Status) {
 	i.Status = status
 }
@@ -28,7 +28,7 @@ func (i *Instance) setStatus(status Status) {
 }
 
 // transitionTo validates and executes a state transition using the TransitionDef table.
-// Must be called with i.stateMutex held.
+// Must be called with i.mu held.
 func (i *Instance) transitionTo(ctx context.Context, to Status) error {
 	def, ok := transitionIndex[transitionKey{i.Status, to}]
 	if !ok {
@@ -40,52 +40,92 @@ func (i *Instance) transitionTo(ctx context.Context, to Status) error {
 		}
 	}
 	i.Status = to
+	// Store before calling After: After hooks may spawn goroutines that race with
+	// a post-After snapshot read of the same fields.
+	i.snapshot.Store(buildSnapshot(i))
 	if def.After != nil {
 		def.After(ctx, i)
 	}
 	return nil
 }
 
+// transitionToLocked executes a state transition from within an actor command.
+// Does NOT invoke def.After hooks; hibernate/resume side-effects are handled
+// inline by hibernateProcessLocked/resumeFromHibernationLocked so that heavy
+// I/O is dispatched to goroutines without blocking the actor.
+// Must only be called from within sendSyncErr/send/sendCtx closures.
+func transitionToLocked(s *instanceState, ctx context.Context, to Status) error {
+	i := s.inst
+	def, ok := transitionIndex[transitionKey{i.Status, to}]
+	if !ok {
+		return ErrInvalidTransition{From: i.Status, To: to}
+	}
+	if def.Guard != nil {
+		if err := def.Guard(ctx, i); err != nil {
+			return fmt.Errorf("transition %s → %s blocked: %w", i.Status, to, err)
+		}
+	}
+	from := i.Status
+	i.Status = to
+	i.snapshot.Store(buildSnapshot(i))
+	// Trigger side-effects inline instead of via def.After so the actor goroutine
+	// doesn't block waiting for the hook to complete.
+	switch (transitionKey{from, to}) {
+	case transitionKey{Active, Hibernated}:
+		hibernateProcessLocked(s, ctx)
+	case transitionKey{Hibernated, Active}:
+		resumeFromHibernationLocked(s, ctx)
+	}
+	return nil
+}
+
+// approveLocked transitions the instance to Active from within an actor command.
+func approveLocked(s *instanceState) error {
+	if err := transitionToLocked(s, context.Background(), Active); err != nil {
+		return fmt.Errorf("approve: %w", err)
+	}
+	return nil
+}
+
+// denyLocked transitions the instance to Paused from within an actor command.
+func denyLocked(s *instanceState) error {
+	if err := transitionToLocked(s, context.Background(), Paused); err != nil {
+		return fmt.Errorf("deny: %w", err)
+	}
+	return nil
+}
+
 // IsCreating returns true if the instance is in the Creating state.
+//
+// Reads via Snapshot(), not i.mu.RLock() — see GetStatus's doc comment for why
+// an RLock here doesn't actually synchronize with the actor's status writes.
 func (i *Instance) IsCreating() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.Status == Creating
+	return i.Snapshot().Status == Creating
 }
 
 // IsActive returns true if the instance has a live AI process.
 func (i *Instance) IsActive() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.Status == Active
+	return i.Snapshot().Status == Active
 }
 
 // IsPaused returns true if the instance is paused (worktree removed, branch preserved).
 func (i *Instance) IsPaused() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.Status == Paused
+	return i.Snapshot().Status == Paused
 }
 
 // IsStopped returns true if the instance is in the terminal Stopped state.
 func (i *Instance) IsStopped() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.Status == Stopped
+	return i.Snapshot().Status == Stopped
 }
 
 // IsHibernated returns true if the instance has been hibernated (checkpoint written, tmux killed).
 func (i *Instance) IsHibernated() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.Status == Hibernated
+	return i.Snapshot().Status == Hibernated
 }
 
 // GetLifecycleStatus returns the current lifecycle status as a typed Status value.
 func (i *Instance) GetLifecycleStatus() Status {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.Status
+	return i.Snapshot().Status
 }
 
 // GetCategoryPath returns the category path as a slice of strings for nested category support
@@ -106,25 +146,28 @@ func (i *Instance) GetCategoryPath() []string {
 
 // MarkViewed records that the user has viewed this session.
 func (i *Instance) MarkViewed() {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.LastViewed = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // MarkUserResponded records that the user has responded to this session.
 // Returns the timestamp that was set so callers can persist it without a second lock acquisition.
 func (i *Instance) MarkUserResponded() time.Time {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.LastUserResponse = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 	return i.LastUserResponse
 }
 
 // MarkAcknowledged records that the user has acknowledged (dismissed) this session from the review queue.
 func (i *Instance) MarkAcknowledged() {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.LastAcknowledged = time.Now()
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // MarkNeedsApproval is a no-op: NeedsApproval is no longer a lifecycle state.
@@ -135,17 +178,23 @@ func (i *Instance) MarkNeedsApproval() error {
 }
 
 // LastMeaningfulOutputTime returns the time of the last meaningful terminal output.
+//
+// Fast path: the atomic shadow (no lock), same as GetTimeSinceLastMeaningfulOutput.
+// Fallback: Snapshot(), not a fresh i.mu-guarded read — i.mu doesn't synchronize
+// with actor commands' direct field writes (see GetStatus's doc comment).
 func (i *Instance) LastMeaningfulOutputTime() time.Time {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.LastMeaningfulOutput
+	if ns := i.loadLastMeaningfulOutputNs(); ns != 0 {
+		return time.Unix(0, ns)
+	}
+	return i.Snapshot().LastMeaningfulOutput
 }
 
 // SetLastMeaningfulOutput sets the time of the last meaningful terminal output.
 func (i *Instance) SetLastMeaningfulOutput(t time.Time) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.LastMeaningfulOutput = t
+	i.snapshot.Store(buildSnapshot(i))
 }
 
 // GetEffectiveStatus returns the most accurate status for this instance,
@@ -155,27 +204,27 @@ func (i *Instance) SetLastMeaningfulOutput(t time.Time) {
 func (i *Instance) GetEffectiveStatus() Status {
 	mgr := i.GetStatusManager()
 	if mgr == nil {
-		i.stateMutex.RLock()
-		s := i.Status
-		i.stateMutex.RUnlock()
-		return s
+		return i.Snapshot().Status
 	}
 	statusInfo := mgr.GetStatus(i)
 	if !statusInfo.IsControllerActive || statusInfo.ClaudeStatus == 0 { // 0 = StatusUnknown
-		i.stateMutex.RLock()
-		s := i.Status
-		i.stateMutex.RUnlock()
-		return s
+		return i.Snapshot().Status
 	}
 	return StatusFromDetected(statusInfo.ClaudeStatus)
 }
 
 // GetStatus returns the current lifecycle status of this instance as an int.
 // This is intentionally returns int to implement the SessionAccessor interface.
+//
+// Reads via Snapshot(), not i.mu.RLock(): actor commands (transitionToLocked
+// and friends) write i.Status directly while running inside the actor's own
+// serialization, not under i.mu, and only publish the change by atomically
+// storing a fresh snapshot. An RLock here doesn't synchronize with that write
+// at all — caught by -race via a concurrent GetStatus() poll during Start().
+// Do not call this from within a sendSyncErr/send/sendCtx closure (see
+// Snapshot's reentrancy note).
 func (i *Instance) GetStatus() int {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return int(i.Status)
+	return int(i.Snapshot().Status)
 }
 
 // GetDetectedStatus returns the raw DetectedStatus from the terminal detection layer.
@@ -210,37 +259,23 @@ func (i *Instance) GetDetectedContext() string {
 // Approve transitions the instance to Active (approval granted).
 // Returns an error if the current state does not allow this transition.
 func (i *Instance) Approve() error {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
-	if err := i.transitionTo(context.Background(), Active); err != nil {
-		return fmt.Errorf("approve: %w", err)
-	}
-	return nil
+	return i.sendSyncErr(func(s *instanceState) error { return approveLocked(s) })
 }
 
 // Deny transitions the instance to Paused (approval denied).
 // Returns an error if the current state does not allow this transition.
 func (i *Instance) Deny() error {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
-	if err := i.transitionTo(context.Background(), Paused); err != nil {
-		return fmt.Errorf("deny: %w", err)
-	}
-	return nil
+	return i.sendSyncErr(func(s *instanceState) error { return denyLocked(s) })
 }
 
 // Paused returns true if the instance is paused.
 func (i *Instance) Paused() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.Status == Paused
+	return i.Snapshot().Status == Paused
 }
 
 // Hibernated returns true if the instance is hibernated.
 func (i *Instance) Hibernated() bool {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
-	return i.Status == Hibernated
+	return i.Snapshot().Status == Hibernated
 }
 
 // Started returns true if the instance has been started.
@@ -253,11 +288,12 @@ func (i *Instance) Started() bool {
 // the tmux session is confirmed alive; it bypasses the state machine intentionally.
 // Deprecated: prefer transitionTo(ctx, Active) on the Stopped→Active path.
 func (i *Instance) RecoverFromStopped() {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if i.Status == Stopped {
 		i.loadStatus(Creating)
 		i.started.Store(false)
+		i.snapshot.Store(buildSnapshot(i))
 	}
 }
 
@@ -266,19 +302,8 @@ func (i *Instance) RecoverFromStopped() {
 // (e.g. the async-creation goroutine cannot cleanly call Stop() because the session
 // was never fully started). Callers must hold no locks.
 func (i *Instance) ForceStatus(s Status) {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.loadStatus(s)
-}
-
-// SetArchivedAtIfNil sets ArchivedAt to t only if it is currently nil.
-// Returns true if the value was set (CAS semantics). Thread-safe via stateMutex.
-func (i *Instance) SetArchivedAtIfNil(t time.Time) bool {
-	i.stateMutex.Lock()
-	defer i.stateMutex.Unlock()
-	if i.ArchivedAt != nil {
-		return false
-	}
-	i.ArchivedAt = &t
-	return true
+	i.snapshot.Store(buildSnapshot(i))
 }

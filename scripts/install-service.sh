@@ -92,6 +92,17 @@ install_linux() {
     mkdir -p "$service_dir"
     mkdir -p "$log_dir"
 
+    # Build a PATH that preserves the current shell's PATH first (so custom
+    # tools, nvm/asdf shims, etc. resolve identically to an interactive shell)
+    # but appends standard fallback locations, mirroring install_macos's
+    # LaunchAgent PATH below. Without this, the unit bakes in a raw PATH
+    # snapshot from install time with no fallback: if claude/tmux/git later
+    # move (nvm/asdf reinstall, a fresh `pip install --user`/npm global
+    # install to ~/.local/bin) without a subsequent `make install-service`,
+    # the headless LLM pool's exec.LookPath("claude") silently fails and
+    # backlog triage no-ops with only a log warning (see server/dependencies.go).
+    service_path="$PATH:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
     cat > "$service_file" << EOF
 [Unit]
 Description=Stapler Squad — AI Agent Session Manager
@@ -107,8 +118,8 @@ RestartSec=5s
 KillMode=process
 StandardOutput=append:$log_dir/service.log
 StandardError=append:$log_dir/service.log
-Environment=HOME=$HOME
-Environment=PATH=$PATH
+Environment="HOME=$HOME"
+Environment="PATH=$service_path"
 
 [Install]
 WantedBy=default.target
@@ -324,12 +335,17 @@ EOF
     sleep 0.5
 
     log_info "Starting updated service..."
-    if ! launchctl bootstrap "gui/$(id -u)" "$plist_file"; then
-        log_error "launchctl bootstrap failed — service may not start on login."
-        log_error "Try: launchctl bootstrap gui/$(id -u) $plist_file"
-        exit 1
+    if ! launchctl bootstrap "gui/$(id -u)" "$plist_file" 2>/dev/null; then
+        # bootstrap can fail with I/O error on some macOS versions; fall back to legacy load
+        if ! launchctl load "$plist_file" 2>/dev/null; then
+            log_error "launchctl bootstrap failed — service may not start on login."
+            log_error "Try: launchctl bootstrap gui/$(id -u) $plist_file"
+            exit 1
+        fi
+        log_success "Service started via launchctl load (bootstrap fallback)."
+    else
+        log_success "Service started via launchctl bootstrap."
     fi
-    log_success "Service started via launchctl bootstrap."
 
     echo ""
     log_info "Check status:  launchctl list | grep stapler-squad"

@@ -1,11 +1,14 @@
 "use client";
 
-import { useMemo, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApprovalRules } from "@/lib/hooks/useApprovalRules";
 import { useApprovalAnalytics } from "@/lib/hooks/useApprovalAnalytics";
 import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
 import { useExportRules } from "@/lib/hooks/useExportRules";
 import { ApprovalRuleProto, AutoDecision, SuggestionSource } from "@/gen/session/v1/types_pb";
+
+type SortKey = "name" | "decision" | "priority" | "hits";
+type SortDir = "asc" | "desc";
 import { SuggestedRuleCard } from "./SuggestedRuleCard";
 import { ImportRulesModal } from "./ImportRulesModal";
 import { RuleBuilderPrefill } from "@/lib/ruleBuilderPrefill";
@@ -22,28 +25,15 @@ import {
   tableWrapper, table, th, td, tdCenter, row, rowDisabled,
   ruleName, ruleReason, ruleAlt, matchChip,
   decisionBadge, decisionAllow, decisionDeny, decisionEscalate,
-  sourceBadge, toggle, toggleOn, toggleOff, deleteButton, builtInBadge,
+  sourceBadge, configFileBadge, toggle, toggleOn, toggleOff, deleteButton, builtInBadge,
   addButton, mobileAddFab, headerButtonsHiddenOnMobile,
   formSection,
   generateButtonRow, generateButton, cancelGenerateButton,
   generateErrorBanner, dismissErrorButton, suggestionsContainer,
   ruleModalContent, rowCount,
+  searchBar, thSortable, hitBadge, hitBadgeActive,
+  configFileHint,
 } from "./ApprovalRulesPanel.css";
-
-// ── types ────────────────────────────────────────────────────────────────────
-
-/** Minimal form state shape used for URL-param pre-fill tracking. */
-interface RuleFormState {
-  name: string;
-  toolName: string;
-  commandPattern: string;
-}
-
-const emptyForm: RuleFormState = {
-  name: "",
-  toolName: "",
-  commandPattern: "",
-};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,6 +63,7 @@ function sourceLabel(s: string): string {
     case "user":            return "Custom";
     case "seed":            return "Built-in";
     case "claude-settings": return "Claude Settings";
+    case "config":          return "Config File";
     default:                return s;
   }
 }
@@ -102,103 +93,116 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
     clear,
   } = useGenerateRule();
 
-  // ── Epic 6: command-sample generation hook (second useGenerateRule instance) ─
+  // ── Epic 6: command-sample generate hook (for the in-form "Generate from command" section) ─
   const {
     suggestions: cmdSuggestions,
     loading: cmdLoading,
     generate: cmdGenerate,
+    cancel: cmdCancel,
     clear: cmdClear,
   } = useGenerateRule();
 
+  const [cmdSampleText, setCmdSampleText] = useState("");
+
   const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("priority");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [importModalOpen, setImportModalOpen] = useState(false);
-  const [showBuilder, setShowBuilder] = useState(!!prefill);
+
+  // ── URL param pre-fill ───────────────────────────────────────────────────
+  const urlPrefill = useMemo<RuleBuilderPrefill | null>(() => {
+    if (typeof window === "undefined") return null;
+    const p = new URLSearchParams(window.location.search);
+    const tool = p.get("tool");
+    const program = p.get("program");
+    const subcommand = p.get("subcommand");
+    const open = p.get("open");
+    if (tool) return { toolName: tool, initialName: `Allow ${tool}` };
+    if (program) {
+      const name = subcommand ? `Allow ${program} ${subcommand}` : `Allow ${program}`;
+      return { programs: [program], subcommands: subcommand ? [subcommand] : undefined, initialName: name };
+    }
+    if (open) return {};
+    return null;
+  }, []);
+
+  const hasUrlParams = urlPrefill !== null;
+  const [showBuilder, setShowBuilder] = useState(!!prefill || hasUrlParams);
   const [editingRule, setEditingRule] = useState<ApprovalRuleProto | null>(null);
   const [templateSeed, setTemplateSeed] = useState<RuleTemplate | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
-  // Prefill derived from URL params, passed to RuleBuilderForm
-  const [urlPrefill, setUrlPrefill] = useState<RuleBuilderPrefill | null>(null);
 
-  // State and refs for URL-param pre-fill flow (mirrors old inline-form API).
-  const setShowForm = setShowBuilder;
-  const [, setForm] = useState<RuleFormState>(emptyForm);
-  const [, setFormError] = useState<string | null>(null);
-  const [, setAiPrefilled] = useState(false);
-  const [, setCmdSampleValue] = useState("");
-  const formSectionRef = useRef<HTMLElement | null>(null);
-
-  // Track which form fields the user has manually edited (not overwritten by AI pre-fill).
-  const touchedFieldsRef = useRef<Set<keyof RuleFormState>>(new Set());
-
-  // ── URL param pre-fill (from analytics "Add rule →" links) ───────────────
-  // Runs once on mount (client only). Reads window.location.search directly to
-  // avoid useSearchParams + Suspense complications in the static export.
+  // ── Escape key to close builder ──────────────────────────────────────────
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const tool = params.get("tool");
-    const program = params.get("program");
-    const subcommand = params.get("subcommand");
-    const openParam = params.get("open");
+    if (!showBuilder) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setShowBuilder(false); setEditingRule(null); setTemplateSeed(null); }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [showBuilder]);
 
-    // Allow ?open=1 to open a blank dialog
-    if (!tool && !program && !openParam) return;
+  // Merge prop prefill, URL prefill, and cmd suggestions into effective prefill
+  const cmdSuggestion = cmdSuggestions[0] ?? null;
+  const effectivePrefill: RuleBuilderPrefill | null = (() => {
+    const base = prefill ?? urlPrefill;
+    if (!cmdSuggestion) return base;
+    return { ...base, commandPattern: cmdSuggestion.commandPattern, isAiGenerated: true };
+  })();
 
-    const builtPrefill: RuleBuilderPrefill = {};
-    const formPrefill: Partial<RuleFormState> = {};
-    if (tool) {
-      builtPrefill.toolName = tool;
-      builtPrefill.suggestedDecision = AutoDecision.ALLOW as number;
-      builtPrefill.initialName = `Allow ${tool}`;
-      formPrefill.toolName = tool;
-      formPrefill.name = `Allow ${tool}`;
-    } else if (program) {
-      // Escape regex metacharacters so values like "docker-compose" or "node.js"
-      // produce valid patterns. Use (?:^|\s) / (?:\s|$) word boundaries because
-      // \b does not match at hyphen boundaries.
-      const esc = escapeRegex(program);
-      // Don't set toolName in builtPrefill for program-based prefill:
-      // auto-name should derive name from programs array (e.g. "Allow git"), not toolName.
-      builtPrefill.suggestedDecision = AutoDecision.ALLOW as number;
-      formPrefill.toolName = "Bash";
-      if (subcommand) {
-        const escSub = escapeRegex(subcommand);
-        const pattern = `(?:^|\\s)${esc}(?:\\s|$).*(?:^|\\s)${escSub}(?:\\s|$)`;
-        builtPrefill.commandPattern = pattern;
-        builtPrefill.programs = [program];
-        builtPrefill.subcommands = [subcommand];
-        builtPrefill.initialName = `Allow ${program} ${subcommand}`;
-        formPrefill.commandPattern = pattern;
-        formPrefill.name = `Allow ${program} ${subcommand}`;
-      } else {
-        const pattern = `(?:^|\\s)${esc}(?:\\s|$)`;
-        builtPrefill.commandPattern = pattern;
-        builtPrefill.programs = [program];
-        builtPrefill.initialName = `Allow ${program}`;
-        formPrefill.commandPattern = pattern;
-        formPrefill.name = `Allow ${program}`;
-      }
+  // ── hit counts from analytics ─────────────────────────────────────────────
+
+  const hitCountByRuleId = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of summary?.topTriggeredRules ?? []) {
+      m.set(r.ruleId, (m.get(r.ruleId) ?? 0) + r.count);
     }
+    return m;
+  }, [summary]);
 
-    setUrlPrefill(Object.keys(builtPrefill).length > 0 ? builtPrefill : null);
-    setShowForm(true);
-    setForm({ ...emptyForm, ...formPrefill });
-    setFormError(null);
-    setAiPrefilled(false);
-    setCmdSampleValue("");
-    touchedFieldsRef.current = new Set();
-    cmdClear();
+  // ── sort toggle ───────────────────────────────────────────────────────────
 
-    setTimeout(() => {
-      formSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 100);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "priority" || key === "hits" ? "desc" : "asc");
+    }
+  }
 
-  // ── filter ────────────────────────────────────────────────────────────────
+  function sortIcon(key: SortKey) {
+    if (sortKey !== key) return " ↕";
+    return sortDir === "asc" ? " ↑" : " ↓";
+  }
 
-  const visibleRules = sourceFilter === "all"
-    ? rules
-    : rules.filter((r) => r.source === sourceFilter);
+  // ── filter + sort ─────────────────────────────────────────────────────────
+
+  const visibleRules = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    let filtered = sourceFilter === "all" ? rules : rules.filter((r) => r.source === sourceFilter);
+    if (q) {
+      filtered = filtered.filter((r) =>
+        r.name.toLowerCase().includes(q) ||
+        r.reason.toLowerCase().includes(q) ||
+        r.toolName.toLowerCase().includes(q) ||
+        r.toolPattern.toLowerCase().includes(q) ||
+        r.commandPattern.toLowerCase().includes(q) ||
+        r.programs.some((p) => p.toLowerCase().includes(q))
+      );
+    }
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      switch (sortKey) {
+        case "name":     cmp = a.name.localeCompare(b.name); break;
+        case "decision": cmp = a.decision - b.decision; break;
+        case "priority": cmp = a.priority - b.priority; break;
+        case "hits":     cmp = (hitCountByRuleId.get(a.id) ?? 0) - (hitCountByRuleId.get(b.id) ?? 0); break;
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [rules, sourceFilter, searchQuery, sortKey, sortDir, hitCountByRuleId]);
 
   // ── save ──────────────────────────────────────────────────────────────────
 
@@ -207,28 +211,15 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
     setShowBuilder(false);
     setEditingRule(null);
     setTemplateSeed(null);
-    setUrlPrefill(null);
-    cmdClear();
   };
 
   const handleCancel = () => {
     setShowBuilder(false);
     setEditingRule(null);
     setTemplateSeed(null);
-    setUrlPrefill(null);
     cmdClear();
+    setCmdSampleText("");
   };
-
-  // Global Escape key handler to close the dialog
-  useEffect(() => {
-    if (!showBuilder) return;
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") handleCancel();
-    };
-    document.addEventListener("keydown", handleEscape);
-    return () => document.removeEventListener("keydown", handleEscape);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBuilder]);
 
   const handleEdit = (rule: ApprovalRuleProto) => {
     setEditingRule(rule);
@@ -277,9 +268,6 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
       console.error("Failed to toggle rule:", e);
     }
   };
-
-  // Merge prop prefill with any URL-param derived prefill (prop takes priority).
-  const effectivePrefill = prefill ?? null;
 
   // ── Epic 3: handle suggestion cards ──────────────────────────────────────
 
@@ -432,12 +420,22 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
         </div>
       )}
 
+      {/* ── Search ── */}
+      <input
+        className={searchBar}
+        type="search"
+        placeholder="Search by name, tool, program, pattern…"
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        aria-label="Search rules"
+      />
+
       {/* ── Source filter tabs ── */}
       <div className={tabs}>
-        {(["all", "user", "seed", "claude-settings"] as const).map((src) => {
+        {(["all", "user", "config", "seed", "claude-settings"] as const).map((src) => {
           const count = src === "all" ? rules.length : rules.filter((r) => r.source === src).length;
           const fullLabel = src === "all" ? "All" : sourceLabel(src);
-          const shortLabel = src === "claude-settings" ? "Settings" : fullLabel;
+          const shortLabel = src === "claude-settings" ? "Settings" : src === "config" ? "Config" : fullLabel;
           return (
             <button
               key={src}
@@ -451,6 +449,12 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
           );
         })}
       </div>
+      {/* ── Config file path hint (shown when viewing config tab) ── */}
+      {sourceFilter === "config" && (
+        <div className={configFileHint}>
+          Stored in ~/.config/stapler-squad/shared_rules.yaml
+        </div>
+      )}
 
       {/* ── Error ── */}
       {error && (
@@ -473,18 +477,18 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
               <p>
                 <button
                   style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", textDecoration: "underline", padding: 0 }}
-                  onClick={() => { setTemplateSeed(null); setEditingRule(null); setUrlPrefill(null); cmdClear(); setShowBuilder(true); }}
+                  onClick={() => { setTemplateSeed(null); setEditingRule(null); setShowBuilder(true); }}
                 >
                   Add Rule
                 </button>
-                {" "}or{" "}
+                {" "}using the builder below or{" "}
                 <button
                   style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", textDecoration: "underline", padding: 0 }}
                   onClick={() => setImportModalOpen(true)}
                 >
                   Import YAML
                 </button>
-                {" "}to get started.
+                {" "}to import from a file.
               </p>
             )}
             {sourceFilter === "seed" && (
@@ -493,16 +497,36 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
             {sourceFilter === "claude-settings" && (
               <p>No rules from your ~/.claude/settings.json file were found.</p>
             )}
+            {sourceFilter === "config" && (
+              <p>No rules in your config file yet. Use the &quot;→ Config&quot; button on a custom rule to copy it to <code>~/.config/stapler-squad/shared_rules.yaml</code>, or create a new rule and select &quot;Save to Config File&quot;.</p>
+            )}
           </div>
         ) : (
           <table className={table}>
             <thead>
               <tr>
-                <th className={th}>Name</th>
+                <th className={`${th} ${thSortable}`} onClick={() => handleSort("name")}>
+                  Name{sortIcon("name")}
+                </th>
                 <th className={th}>Match</th>
-                <th className={th}>Decision</th>
+                <th className={`${th} ${thSortable}`} onClick={() => handleSort("decision")}>
+                  Decision{sortIcon("decision")}
+                </th>
                 <th className={th}>Source</th>
-                <th className={th} title="Lower numbers run first. Custom rules (default: 10) are evaluated before built-in rules (default: 1000).">Priority ⓘ</th>
+                <th
+                  className={`${th} ${thSortable}`}
+                  title="Higher priority fires first. Custom rules default to 10; built-in rules default to 100–1000."
+                  onClick={() => handleSort("priority")}
+                >
+                  Priority ⓘ{sortIcon("priority")}
+                </th>
+                <th
+                  className={`${th} ${thSortable}`}
+                  title="Number of times this rule fired in the last 7 days"
+                  onClick={() => handleSort("hits")}
+                >
+                  Hits (7d){sortIcon("hits")}
+                </th>
                 <th className={th}>Enabled</th>
                 <th className={th}></th>
               </tr>
@@ -525,12 +549,14 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
                   </td>
                   <td className={td}>
                     <span
-                      className={sourceBadge}
+                      className={rule.source === "config" ? configFileBadge : sourceBadge}
                       title={
                         rule.source === "seed"
                           ? "These rules ship with stapler-squad and cannot be deleted"
                           : rule.source === "claude-settings"
                           ? "These rules come from your ~/.claude/settings.json file"
+                          : rule.source === "config"
+                          ? "This rule is stored in ~/.config/stapler-squad/shared_rules.yaml and can be shared"
                           : undefined
                       }
                     >
@@ -538,6 +564,14 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
                     </span>
                   </td>
                   <td className={`${td} ${tdCenter}`}>{rule.priority}</td>
+                  <td className={`${td} ${tdCenter}`}>
+                    {(() => {
+                      const hits = hitCountByRuleId.get(rule.id) ?? 0;
+                      return hits > 0
+                        ? <span className={`${hitBadge} ${hitBadgeActive}`}>{hits.toLocaleString()}</span>
+                        : <span className={hitBadge}>—</span>;
+                    })()}
+                  </td>
                   <td className={`${td} ${tdCenter}`}>
                     {rule.source === "user" ? (
                       <button
@@ -586,68 +620,89 @@ export function ApprovalRulesPanel({ prefill }: ApprovalRulesPanelProps) {
       {visibleRules.length > 0 && (
         <div className={rowCount}>
           {visibleRules.length} rule{visibleRules.length !== 1 ? "s" : ""}
-          {sourceFilter !== "all" && ` (filtered from ${rules.length} total)`}
+          {(sourceFilter !== "all" || searchQuery.trim()) && ` (filtered from ${rules.length} total)`}
         </div>
       )}
 
       {/* ── Mobile FAB ── */}
       <button
         className={mobileAddFab}
-        onClick={() => { setTemplateSeed(null); setEditingRule(null); setUrlPrefill(null); cmdClear(); setShowBuilder(true); }}
+        onClick={() => { setTemplateSeed(null); setEditingRule(null); setShowBuilder(true); }}
         aria-label="Add rule"
-        data-testid="add-rule-button"
+        data-testid="add-rule-fab"
       >
         +
       </button>
 
-      {/* ── Rule Builder Dialog ── */}
-      {showBuilder && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={editingRule ? `Edit rule: ${editingRule.name}` : "Add Rule"}
-          style={{
-            position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-            background: "rgba(0,0,0,0.5)", zIndex: 1000,
-            display: "flex", alignItems: "flex-start", justifyContent: "center",
-            padding: "48px 16px",
-            overflowY: "auto",
-          }}
-          onClick={(e) => { if (e.target === e.currentTarget) handleCancel(); }}
-          onKeyDown={(e) => { if (e.key === "Escape") handleCancel(); }}
-        >
-          <div
-            style={{
-              background: "var(--card-background, #1a1a2e)", borderRadius: "8px",
-              padding: "24px", maxWidth: "640px", width: "100%",
-              position: "relative",
-            }}
-          >
-            <button
-              aria-label="Close dialog"
-              onClick={handleCancel}
-              style={{
-                position: "absolute", top: "12px", right: "12px",
-                background: "none", border: "none", cursor: "pointer",
-                fontSize: "1.25rem", lineHeight: 1, color: "inherit",
-              }}
-            >
-              ×
+      {/* ── Rule Builder ── */}
+      <div className={formSection} id="rule-builder" {...(showBuilder ? { role: "dialog" } : {})}>
+        {!showBuilder ? (
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button data-testid="add-rule-button" className={addButton} onClick={() => { setTemplateSeed(null); setEditingRule(null); setShowBuilder(true); }}>
+              + Add Custom Rule
             </button>
+            <button
+              className={addButton}
+              style={{ background: "transparent", border: "1px solid var(--border-color)", color: "inherit" }}
+              onClick={() => setShowTemplates(true)}
+            >
+              Start from Template
+            </button>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+              <button
+                aria-label="Close dialog"
+                onClick={handleCancel}
+                style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "var(--text-secondary)", lineHeight: 1 }}
+              >
+                ×
+              </button>
+            </div>
+            {/* ── Epic 6: Generate from command section ── */}
+            <details data-testid="generate-from-command-details" style={{ marginBottom: 12 }}>
+              <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--text-secondary)" }}>Generate from command sample</summary>
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                <textarea
+                  data-testid="command-sample-textarea"
+                  value={cmdSampleText}
+                  onChange={(e) => setCmdSampleText(e.target.value)}
+                  placeholder="Paste a command you ran, e.g. git push origin main"
+                  rows={3}
+                  style={{ width: "100%", fontFamily: "monospace", fontSize: 12, padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border-color)", background: "var(--input-background)", color: "var(--input-text)", resize: "vertical" }}
+                />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    data-testid="command-sample-generate-button"
+                    disabled={!cmdSampleText.trim() || cmdLoading}
+                    onClick={() => { void cmdGenerate({ source: SuggestionSource.COMMAND_SAMPLE, commandSample: cmdSampleText }); }}
+                    style={{ padding: "4px 12px", fontSize: 12, borderRadius: 6, border: "none", cursor: cmdSampleText.trim() ? "pointer" : "default", background: "var(--primary)", color: "var(--primary-text)" }}
+                  >
+                    {cmdLoading ? "Generating…" : "Generate"}
+                  </button>
+                  {cmdLoading && (
+                    <button
+                      onClick={cmdCancel}
+                      style={{ padding: "4px 12px", fontSize: 12, borderRadius: 6, border: "1px solid var(--border-color)", background: "none", cursor: "pointer" }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              </div>
+            </details>
             <RuleBuilderForm
               editRule={editingRule}
-              prefill={urlPrefill ?? (showBuilder ? effectivePrefill : null)}
+              prefill={showBuilder ? effectivePrefill : null}
               templateSeed={templateSeed}
               onSave={handleSave}
               onCancel={handleCancel}
-              onCmdGenerate={cmdGenerate}
-              cmdSuggestions={cmdSuggestions}
-              cmdLoading={cmdLoading}
-              cmdClear={cmdClear}
+              subcommandStats={summary?.commandSubcommandStats ?? []}
             />
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       <TemplateLibrary
         open={showTemplates}

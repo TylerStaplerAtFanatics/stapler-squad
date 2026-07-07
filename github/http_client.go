@@ -15,6 +15,10 @@ import (
 // The 30-second timeout matches the existing gh CLI call timeout.
 var ghHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
+// GhBaseURL is the GitHub REST API base URL. Tests override this to point at
+// an httptest.Server so requests never reach the real API.
+var GhBaseURL = "https://api.github.com/"
+
 // getGHToken returns a GitHub personal access token for native HTTP calls.
 // Precedence: GITHUB_TOKEN env → GH_TOKEN env → OS keychain.
 // Returns an empty string (not an error) when no token source is available so
@@ -83,7 +87,7 @@ func newGHRequest(ctx context.Context, path string) (*http.Request, error) {
 
 // newGHRequestWithToken creates a GET request authenticated with an explicit token.
 func newGHRequestWithToken(ctx context.Context, path, token string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, GhBaseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +101,7 @@ func newGHRequestWithToken(ctx context.Context, path, token string) (*http.Reque
 
 // newGHPostRequestWithToken creates a POST request authenticated with an explicit token.
 func newGHPostRequestWithToken(ctx context.Context, path string, body io.Reader, token string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.github.com/"+path, body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, GhBaseURL+path, body)
 	if err != nil {
 		return nil, err
 	}

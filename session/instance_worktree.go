@@ -67,16 +67,32 @@ func (i *Instance) setupFirstTimeWorktree() error {
 	default: // SessionTypeDirectory and unknown types → no worktree
 		log.Info("directory session, no git worktree", "session", i.Title, "path", i.Path)
 		if i.CreateIfMissing {
-			if _, err := os.Stat(i.Path); os.IsNotExist(err) {
-				if err := git.InitializeProjectDirectory(i.Path); err != nil {
-					return fmt.Errorf("failed to create directory for session: %w", err)
-				}
+			if err := EnsureDirectorySessionPath(i.Path); err != nil {
+				return fmt.Errorf("failed to create directory for session: %w", err)
 			}
 		}
 		i.gitManager.SetWorktree(nil)
 		i.Branch = ""
 	}
 	return nil
+}
+
+// EnsureDirectorySessionPath creates and git-inits path if it does not already exist —
+// the same directory-creation step SessionTypeDirectory takes when CreateIfMissing is set.
+// Callers that need path to exist before spawning a directory session (e.g. to write files
+// into the worktree ahead of the claude process starting) should call this first so the
+// spawn's own CreateIfMissing check finds the directory already present and correctly
+// git-initialized, rather than skipping git-init because the path merely exists.
+func EnsureDirectorySessionPath(path string) error {
+	_, err := os.Stat(path)
+	switch {
+	case os.IsNotExist(err):
+		return git.InitializeProjectDirectory(path)
+	case err != nil:
+		return fmt.Errorf("failed to stat session path %q: %w", path, err)
+	default:
+		return nil
+	}
 }
 
 // resolveStartPath returns the effective start directory, applying WorkingDir on top of basePath.
@@ -162,28 +178,28 @@ func (i *Instance) SetGitWorktree(worktree *git.GitWorktree) {
 // Performs I/O (git diff) outside the lock, then updates state under the write lock.
 func (i *Instance) UpdateDiffStats() error {
 	// Read lock for initial state checks
-	i.stateMutex.RLock()
+	i.mu.RLock()
 	if !i.started.Load() {
 		i.gitManager.ClearDiffStats()
-		i.stateMutex.RUnlock()
+		i.mu.RUnlock()
 		return nil
 	}
 	if i.Status == Paused {
-		i.stateMutex.RUnlock()
+		i.mu.RUnlock()
 		return nil
 	}
 	if !i.gitManager.HasWorktree() {
 		i.gitManager.ClearDiffStats()
-		i.stateMutex.RUnlock()
+		i.mu.RUnlock()
 		return nil
 	}
-	i.stateMutex.RUnlock()
+	i.mu.RUnlock()
 
 	// I/O outside lock: check worktree existence and compute diff
 	stats, needsPause := i.gitManager.ComputeDiffIfReady()
 
 	// Write lock to update state — keep non-logging work only to minimise hold time.
-	i.stateMutex.Lock()
+	i.mu.Lock()
 	var transitionErr error
 	var didTransitionToPaused bool
 	if needsPause {
@@ -192,7 +208,7 @@ func (i *Instance) UpdateDiffStats() error {
 			transitionErr = i.transitionTo(context.Background(), Paused)
 		}
 		i.gitManager.ClearDiffStats()
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		if didTransitionToPaused {
 			log.Warn("worktree directory doesn't exist, marking as paused", "session", i.Title)
 		}
@@ -204,21 +220,21 @@ func (i *Instance) UpdateDiffStats() error {
 	if stats != nil && stats.Error != nil {
 		if strings.Contains(stats.Error.Error(), "base commit SHA not set") {
 			i.gitManager.ClearDiffStats()
-			i.stateMutex.Unlock()
+			i.mu.Unlock()
 			return nil
 		}
-		i.stateMutex.Unlock()
+		i.mu.Unlock()
 		return fmt.Errorf("failed to get diff stats: %w", stats.Error)
 	}
 	i.gitManager.SetDiffStats(stats)
-	i.stateMutex.Unlock()
+	i.mu.Unlock()
 	return nil
 }
 
 // GetDiffStats returns the current git diff statistics.
 func (i *Instance) GetDiffStats() *git.DiffStats {
-	i.stateMutex.RLock()
-	defer i.stateMutex.RUnlock()
+	i.mu.RLock()
+	defer i.mu.RUnlock()
 	return i.gitManager.GetDiffStats()
 }
 
