@@ -756,7 +756,6 @@ func GetOwnerRepoFromRemote(repoPath string) (RepoRef, error) {
 	return r, nil
 }
 
-
 // GeneratePRPrompt generates a context prompt from PR information
 // This can be used to initialize a Claude Code session with PR context
 func GeneratePRPrompt(pr *PRInfo, includeDescription bool) string {

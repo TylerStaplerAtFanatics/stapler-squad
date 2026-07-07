@@ -67,6 +67,10 @@ type PRStatusPoller struct {
 	// Guarded by mu.
 	noPRPollAfter map[string]time.Time
 
+	// listEtags stores ETags for the branch→PR list endpoint, keyed by
+	// "owner/repo/branch". Allows 304 responses during PR discovery.
+	listEtags sync.Map
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -281,15 +285,31 @@ func (p *PRStatusPoller) fetchAndUpdatePRStatus(inst *Instance) {
 		if branch == "" {
 			return
 		}
-		prInfo, err := github.GetPRForBranch(ctx, owner, repo, branch)
+		listKey := owner + "/" + repo + "/" + branch
+		var listEtag string
+		if v, ok := p.listEtags.Load(listKey); ok {
+			listEtag = v.(string)
+		}
+		prInfo, newEtag, changed, err := github.GetPRForBranchConditional(ctx, owner, repo, branch, listEtag)
+		if newEtag != "" {
+			p.listEtags.Store(listKey, newEtag)
+		}
+		if !changed {
+			// 304: branch list unchanged, still no PR — re-arm backoff to avoid constant polling.
+			if p.config.NoPRBackoff > 0 {
+				p.mu.Lock()
+				p.noPRPollAfter[inst.Title] = time.Now().Add(p.config.NoPRBackoff)
+				p.mu.Unlock()
+			}
+			return
+		}
 		if err != nil {
 			if errors.Is(err, github.ErrNoPR) {
-				// No PR exists yet for this branch
 				p.applyNoPR(inst)
 				return
 			}
 			if p.handleFetchError(err) {
-				return // rate limit or auth error handled
+				return
 			}
 			log.Warn("PR status poller: PR discovery failed", "session", inst.Title, "owner", owner, "repo", repo, "branch", branch, "err", err)
 			return
