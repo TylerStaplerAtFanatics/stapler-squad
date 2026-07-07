@@ -1901,7 +1901,7 @@ type SpawnSessionFromItemRequest struct {
 	// Optional: If true, start an AutonomousDriver for the spawned session.
 	Autonomous bool `protobuf:"varint,3,opt,name=autonomous,proto3" json:"autonomous,omitempty"`
 	// Optional: If true, stop any currently active work session for this item and
-	// re-spawn it from scratch (with a new git worktree). Used to redrive existing
+	// re-spawn it from scratch (with a new git worktree). Used to restart existing
 	// sessions that were started under the old directory-mode code path.
 	Force         bool `protobuf:"varint,4,opt,name=force,proto3" json:"force,omitempty"`
 	unknownFields protoimpl.UnknownFields
