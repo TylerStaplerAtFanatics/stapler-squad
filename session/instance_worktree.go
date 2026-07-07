@@ -97,6 +97,24 @@ func EnsureDirectorySessionPath(path string) error {
 	}
 }
 
+// CreateBacklogWorktree creates a git worktree for a backlog work session.
+// It creates a branch named "backlog/<branchSuffix>" and returns the on-disk worktree path.
+// The caller is responsible for writing files to the path before spawning the session.
+func CreateBacklogWorktree(repoPath, branchSuffix string) (string, error) {
+	resolvedRepo, err := ResolveSessionPath(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("CreateBacklogWorktree: %w", err)
+	}
+	wt, _, err := git.NewGitWorktreeWithBranch(resolvedRepo, branchSuffix, "backlog/"+branchSuffix)
+	if err != nil {
+		return "", fmt.Errorf("CreateBacklogWorktree: %w", err)
+	}
+	if err := wt.Setup(); err != nil {
+		return "", fmt.Errorf("CreateBacklogWorktree setup: %w", err)
+	}
+	return wt.GetWorktreePath(), nil
+}
+
 // resolveStartPath returns the effective start directory, applying WorkingDir on top of basePath.
 // Falls back to basePath if the resolved directory does not exist.
 // For worktree sessions, absolute WorkingDir paths outside the worktree are ignored to prevent

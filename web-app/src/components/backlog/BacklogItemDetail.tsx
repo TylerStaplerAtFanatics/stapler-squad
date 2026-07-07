@@ -148,6 +148,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           case "spawn_session_autonomous":
             await spawnSessionFromItem(item.id, { autonomous: true });
             break;
+          case "restart_session":
+            await spawnSessionFromItem(item.id, { force: true });
+            break;
           case "approve_plan":
             await approvePlan(item.id);
             break;
@@ -740,13 +743,24 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             )}
 
             {item.status === "in_progress" && item.linkedSessions.length > 0 && (
-              <a
-                className={styles.actionButton}
-                href={`/?session=${item.linkedSessions[item.linkedSessions.length - 1].sessionId}`}
-                data-testid="backlog-action-view-session"
-              >
-                View Session
-              </a>
+              <>
+                <a
+                  className={styles.actionButton}
+                  href={`/?session=${item.linkedSessions[item.linkedSessions.length - 1].sessionId}`}
+                  data-testid="backlog-action-view-session"
+                >
+                  View Session
+                </a>
+                <button
+                  className={styles.actionButton}
+                  onClick={() => handleAction("restart_session")}
+                  disabled={actionLoading}
+                  title="Stop the current session and re-spawn it in a fresh git worktree"
+                  data-testid="backlog-action-restart-session"
+                >
+                  Restart
+                </button>
+              </>
             )}
 
             {item.status === "review" && (
