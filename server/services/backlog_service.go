@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/config"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
-	gh "github.com/tstapler/stapler-squad/github"
+	"github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/ent"
@@ -45,6 +46,9 @@ const defaultTriggerSyncTimeout = 2 * time.Minute
 // treated as orphaned in the re-trigger guard. This prevents a hung or leaked session
 // from blocking re-trigger indefinitely.
 const maxTriageSessionAge = 2 * time.Hour
+
+// ownerRepoPattern validates GitHub owner and repo name segments.
+var ownerRepoPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 
 // SessionCreator allows BacklogService to spawn sessions without importing handler internals.
 type SessionCreator interface {
@@ -1846,77 +1850,99 @@ func (s *BacklogService) ImportGitHubIssue(ctx context.Context, req *connect.Req
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ImportGitHubIssue not yet implemented"))
 }
 
-// defaultGitHubListLimit is used for SearchGitHubRepos/ListGitHubIssues when
-// the caller doesn't specify a limit (or specifies a non-positive one).
-const defaultGitHubListLimit = 30
-
+// SearchGitHubRepos returns GitHub repositories matching the given query.
 // +api: backlog:search-github-repos
-func (s *BacklogService) SearchGitHubRepos(ctx context.Context, req *connect.Request[sessionv1.SearchGitHubReposRequest]) (*connect.Response[sessionv1.SearchGitHubReposResponse], error) {
+func (s *BacklogService) SearchGitHubRepos(
+	ctx context.Context,
+	req *connect.Request[sessionv1.SearchGitHubReposRequest],
+) (*connect.Response[sessionv1.SearchGitHubReposResponse], error) {
 	if s.storage == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
 	}
 
 	limit := int(req.Msg.Limit)
 	if limit <= 0 {
-		limit = defaultGitHubListLimit
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
 	}
 
-	repos, err := gh.SearchUserRepos(ctx, req.Msg.Query, limit)
+	results, err := github.SearchUserRepos(ctx, req.Msg.Query, limit)
 	if err != nil {
-		if errors.Is(err, gh.ErrNotAuthenticated) {
-			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		if errors.Is(err, github.ErrNotAuthenticated) {
+			log.WarningLog.Printf("[SearchGitHubRepos] GitHub token unavailable; returning CodeUnavailable")
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("GitHub not authenticated: set GITHUB_TOKEN or run 'gh auth login'"))
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("search github repos: %w", err))
+		log.WarningLog.Printf("[SearchGitHubRepos] GitHub API request failed: %v", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("GitHub API request failed: %w", err))
 	}
 
-	entries := make([]*sessionv1.GitHubRepoEntry, 0, len(repos))
-	for _, r := range repos {
-		entries = append(entries, &sessionv1.GitHubRepoEntry{
+	repos := make([]*sessionv1.GitHubRepoEntry, 0, len(results))
+	for _, r := range results {
+		repos = append(repos, &sessionv1.GitHubRepoEntry{
 			Owner:       r.Owner,
 			Repo:        r.Repo,
 			Description: r.Description,
 		})
 	}
 
-	return connect.NewResponse(&sessionv1.SearchGitHubReposResponse{Repos: entries}), nil
+	return connect.NewResponse(&sessionv1.SearchGitHubReposResponse{Repos: repos}), nil
 }
 
+// ListGitHubIssues returns issues for a specific GitHub repo.
 // +api: backlog:list-github-issues
-func (s *BacklogService) ListGitHubIssues(ctx context.Context, req *connect.Request[sessionv1.ListGitHubIssuesRequest]) (*connect.Response[sessionv1.ListGitHubIssuesResponse], error) {
+func (s *BacklogService) ListGitHubIssues(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ListGitHubIssuesRequest],
+) (*connect.Response[sessionv1.ListGitHubIssuesResponse], error) {
 	if s.storage == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
 	}
-	if req.Msg.Owner == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("owner is required"))
+
+	owner := req.Msg.Owner
+	repo := req.Msg.Repo
+	if owner == "" || repo == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("owner and repo are required"))
 	}
-	if req.Msg.Repo == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo is required"))
+	if !ownerRepoPattern.MatchString(owner) || !ownerRepoPattern.MatchString(repo) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("owner and repo must match [a-zA-Z0-9_.-]+"))
 	}
-	if !gh.IsValidGitHubName(req.Msg.Owner) || !gh.IsValidGitHubName(req.Msg.Repo) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid owner or repo name"))
+
+	state := req.Msg.State
+	if state == "" {
+		state = "open"
 	}
 
 	limit := int(req.Msg.Limit)
 	if limit <= 0 {
-		limit = defaultGitHubListLimit
+		limit = 30
+	}
+	if limit > 100 {
+		limit = 100
 	}
 
-	issues, err := gh.ListRepoIssues(ctx, req.Msg.Owner, req.Msg.Repo, req.Msg.State, req.Msg.Search, limit)
+	results, err := github.ListRepoIssues(ctx, owner, repo, state, req.Msg.Search, limit)
 	if err != nil {
-		if errors.Is(err, gh.ErrNotAuthenticated) {
-			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		if errors.Is(err, github.ErrNotAuthenticated) {
+			log.WarningLog.Printf("[ListGitHubIssues] GitHub token unavailable; returning CodeUnavailable")
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("GitHub not authenticated: set GITHUB_TOKEN or run 'gh auth login'"))
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list github issues: %w", err))
+		log.WarningLog.Printf("[ListGitHubIssues] GitHub API request failed for %s/%s: %v", owner, repo, err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("GitHub API request failed: %w", err))
 	}
 
-	entries := make([]*sessionv1.GitHubIssueEntry, 0, len(issues))
-	for _, iss := range issues {
+	entries := make([]*sessionv1.GitHubIssueEntry, 0, len(results))
+	for _, r := range results {
 		entries = append(entries, &sessionv1.GitHubIssueEntry{
-			Number: int32(iss.Number),
-			Title:  iss.Title,
-			State:  iss.State,
-			Url:    iss.URL,
-			Labels: iss.Labels,
+			Number:    int32(r.Number),
+			Title:     r.Title,
+			State:     strings.ToUpper(r.State),
+			Url:       r.URL,
+			Labels:    r.Labels,
+			CreatedAt: timestamppb.New(r.CreatedAt),
+			UpdatedAt: timestamppb.New(r.UpdatedAt),
+			IsPr:      r.IsPR,
 		})
 	}
 

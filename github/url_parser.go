@@ -441,12 +441,6 @@ func IsGitHubRef(input string) bool {
 	return false
 }
 
-// IsValidGitHubName reports whether name could be a valid GitHub username or
-// repo name (used to validate owner/repo path segments before hitting the API).
-func IsValidGitHubName(name string) bool {
-	return isValidGitHubName(name)
-}
-
 // isValidGitHubName checks if a string could be a valid GitHub username or repo name
 func isValidGitHubName(name string) bool {
 	if name == "" || len(name) > 100 {
