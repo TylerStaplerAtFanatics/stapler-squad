@@ -969,7 +969,7 @@ export type SpawnSessionFromItemRequest = Message<"session.v1.SpawnSessionFromIt
 
   /**
    * Optional: If true, stop any currently active work session for this item and
-   * re-spawn it from scratch (with a new git worktree). Used to redrive existing
+   * re-spawn it from scratch (with a new git worktree). Used to restart existing
    * sessions that were started under the old directory-mode code path.
    *
    * @generated from field: bool force = 4;
