@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/config"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
+	gh "github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/ent"
@@ -1845,12 +1846,79 @@ func (s *BacklogService) ImportGitHubIssue(ctx context.Context, req *connect.Req
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ImportGitHubIssue not yet implemented"))
 }
 
+// defaultGitHubListLimit is used for SearchGitHubRepos/ListGitHubIssues when
+// the caller doesn't specify a limit (or specifies a non-positive one).
+const defaultGitHubListLimit = 30
+
 // +api: backlog:search-github-repos
 func (s *BacklogService) SearchGitHubRepos(ctx context.Context, req *connect.Request[sessionv1.SearchGitHubReposRequest]) (*connect.Response[sessionv1.SearchGitHubReposResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("SearchGitHubRepos not yet implemented"))
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+
+	limit := int(req.Msg.Limit)
+	if limit <= 0 {
+		limit = defaultGitHubListLimit
+	}
+
+	repos, err := gh.SearchUserRepos(ctx, req.Msg.Query, limit)
+	if err != nil {
+		if errors.Is(err, gh.ErrNotAuthenticated) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("search github repos: %w", err))
+	}
+
+	entries := make([]*sessionv1.GitHubRepoEntry, 0, len(repos))
+	for _, r := range repos {
+		entries = append(entries, &sessionv1.GitHubRepoEntry{
+			Owner:       r.Owner,
+			Repo:        r.Repo,
+			Description: r.Description,
+		})
+	}
+
+	return connect.NewResponse(&sessionv1.SearchGitHubReposResponse{Repos: entries}), nil
 }
 
 // +api: backlog:list-github-issues
 func (s *BacklogService) ListGitHubIssues(ctx context.Context, req *connect.Request[sessionv1.ListGitHubIssuesRequest]) (*connect.Response[sessionv1.ListGitHubIssuesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ListGitHubIssues not yet implemented"))
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+	if req.Msg.Owner == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("owner is required"))
+	}
+	if req.Msg.Repo == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo is required"))
+	}
+	if !gh.IsValidGitHubName(req.Msg.Owner) || !gh.IsValidGitHubName(req.Msg.Repo) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid owner or repo name"))
+	}
+
+	limit := int(req.Msg.Limit)
+	if limit <= 0 {
+		limit = defaultGitHubListLimit
+	}
+
+	issues, err := gh.ListRepoIssues(ctx, req.Msg.Owner, req.Msg.Repo, req.Msg.State, req.Msg.Search, limit)
+	if err != nil {
+		if errors.Is(err, gh.ErrNotAuthenticated) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list github issues: %w", err))
+	}
+
+	entries := make([]*sessionv1.GitHubIssueEntry, 0, len(issues))
+	for _, iss := range issues {
+		entries = append(entries, &sessionv1.GitHubIssueEntry{
+			Number: int32(iss.Number),
+			Title:  iss.Title,
+			State:  iss.State,
+			Url:    iss.URL,
+			Labels: iss.Labels,
+		})
+	}
+
+	return connect.NewResponse(&sessionv1.ListGitHubIssuesResponse{Issues: entries}), nil
 }
