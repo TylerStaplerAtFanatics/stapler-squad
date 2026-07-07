@@ -888,11 +888,14 @@ func startLocked(actorState *instanceState, firstTimeSetup bool) error {
 	} else {
 		basePath := i.Path
 		if i.gitManager.HasWorktree() {
-			log.Info("setting up git worktree", "session", i.Title)
-			if err := i.gitManager.Setup(); err != nil {
-				log.ForSession(i.Title).Error("failed to setup git worktree", "err", err)
-				setupErr = fmt.Errorf("failed to setup git worktree: %w", err)
-				return setupErr
+			// ExistingWorktree sessions have a pre-created worktree; Setup() would tear it down.
+			if i.SessionType != SessionTypeExistingWorktree {
+				log.Info("setting up git worktree", "session", i.Title)
+				if err := i.gitManager.Setup(); err != nil {
+					log.ForSession(i.Title).Error("failed to setup git worktree", "err", err)
+					setupErr = fmt.Errorf("failed to setup git worktree: %w", err)
+					return setupErr
+				}
 			}
 			basePath = i.gitManager.GetWorktreePath()
 		}
@@ -1085,11 +1088,14 @@ func (i *Instance) start(firstTimeSetup bool, setupCleanup bool, cleanup *tmux.C
 	} else {
 		basePath := i.Path
 		if i.gitManager.HasWorktree() {
-			log.Info("setting up git worktree", "session", i.Title)
-			if err := i.gitManager.Setup(); err != nil {
-				log.ForSession(i.Title).Error("failed to setup git worktree", "err", err)
-				setupErr = fmt.Errorf("failed to setup git worktree: %w", err)
-				return setupErr
+			// ExistingWorktree sessions have a pre-created worktree; Setup() would tear it down.
+			if i.SessionType != SessionTypeExistingWorktree {
+				log.Info("setting up git worktree", "session", i.Title)
+				if err := i.gitManager.Setup(); err != nil {
+					log.ForSession(i.Title).Error("failed to setup git worktree", "err", err)
+					setupErr = fmt.Errorf("failed to setup git worktree: %w", err)
+					return setupErr
+				}
 			}
 			basePath = i.gitManager.GetWorktreePath()
 		}
