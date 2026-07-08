@@ -41,6 +41,8 @@ const (
 	FieldLastProgressAt = "last_progress_at"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
+	// FieldEstimatedCostUsd holds the string denoting the estimated_cost_usd field in the database.
+	FieldEstimatedCostUsd = "estimated_cost_usd"
 	// EdgeBacklogItem holds the string denoting the backlog_item edge name in mutations.
 	EdgeBacklogItem = "backlog_item"
 	// EdgeReviewVerdict holds the string denoting the review_verdict edge name in mutations.
@@ -79,6 +81,7 @@ var Columns = []string{
 	FieldLastFileTouchAt,
 	FieldLastProgressAt,
 	FieldCreatedAt,
+	FieldEstimatedCostUsd,
 }
 
 // ForeignKeys holds the SQL foreign-keys that are owned by the "item_sessions"
@@ -107,6 +110,8 @@ var (
 	DefaultCommitCountSinceSpawn int
 	// DefaultCreatedAt holds the default value on creation for the "created_at" field.
 	DefaultCreatedAt func() time.Time
+	// DefaultEstimatedCostUsd holds the default value on creation for the "estimated_cost_usd" field.
+	DefaultEstimatedCostUsd float64
 	// DefaultID holds the default value on creation for the "id" field.
 	DefaultID func() uuid.UUID
 )
@@ -182,6 +187,11 @@ func ByLastProgressAt(opts ...sql.OrderTermOption) OrderOption {
 // ByCreatedAt orders the results by the created_at field.
 func ByCreatedAt(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldCreatedAt, opts...).ToFunc()
+}
+
+// ByEstimatedCostUsd orders the results by the estimated_cost_usd field.
+func ByEstimatedCostUsd(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldEstimatedCostUsd, opts...).ToFunc()
 }
 
 // ByBacklogItemField orders the results by backlog_item field.

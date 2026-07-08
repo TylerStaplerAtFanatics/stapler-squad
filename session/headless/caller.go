@@ -453,22 +453,38 @@ func (p *Pool) CallBlocking(ctx context.Context, key FeatureKey, systemPrompt, u
 	return drainChannel(ch)
 }
 
+// CallBlockingWithCost is like CallBlocking but also returns the cost in USD reported by claude.
+func (p *Pool) CallBlockingWithCost(ctx context.Context, key FeatureKey, systemPrompt, userPrompt string) (string, float64, error) {
+	ch, err := p.Call(ctx, key, systemPrompt, userPrompt)
+	if err != nil {
+		return "", 0, err
+	}
+	return drainChannelWithCost(ch)
+}
+
 // drainChannel collects all StreamChunk text from ch until Done=true or Err!=nil.
 func drainChannel(ch <-chan StreamChunk) (string, error) {
+	text, _, err := drainChannelWithCost(ch)
+	return text, err
+}
+
+// drainChannelWithCost is like drainChannel but also returns the CostUSD from the Done chunk.
+func drainChannelWithCost(ch <-chan StreamChunk) (string, float64, error) {
 	var sb strings.Builder
+	var costUSD float64
 	for chunk := range ch {
 		if chunk.Err != nil {
-			return sb.String(), chunk.Err
+			return sb.String(), costUSD, chunk.Err
 		}
 		if chunk.Text != "" {
 			sb.WriteString(chunk.Text)
 		}
 		if chunk.Done {
+			costUSD = chunk.CostUSD
 			break
 		}
 	}
-	// Drain remaining chunks in case the channel has extras.
 	for range ch {
 	}
-	return sb.String(), nil
+	return sb.String(), costUSD, nil
 }

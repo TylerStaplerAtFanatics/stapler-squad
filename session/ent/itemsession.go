@@ -46,6 +46,8 @@ type ItemSession struct {
 	LastProgressAt *time.Time `json:"last_progress_at,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
+	// Cost in USD; populated for headless sessions from claude -p output
+	EstimatedCostUsd float64 `json:"estimated_cost_usd,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the ItemSessionQuery when eager-loading is set.
 	Edges                      ItemSessionEdges `json:"edges"`
@@ -91,6 +93,8 @@ func (*ItemSession) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
+		case itemsession.FieldEstimatedCostUsd:
+			values[i] = new(sql.NullFloat64)
 		case itemsession.FieldCommitCountSinceSpawn:
 			values[i] = new(sql.NullInt64)
 		case itemsession.FieldSessionUUID, itemsession.FieldSessionRole, itemsession.FieldAcSnapshot, itemsession.FieldTriageResult, itemsession.FieldLastCommitSha, itemsession.FieldLastCommitMessage:
@@ -205,6 +209,12 @@ func (_m *ItemSession) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.CreatedAt = value.Time
 			}
+		case itemsession.FieldEstimatedCostUsd:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field estimated_cost_usd", values[i])
+			} else if value.Valid {
+				_m.EstimatedCostUsd = value.Float64
+			}
 		case itemsession.ForeignKeys[0]:
 			if value, ok := values[i].(*sql.NullScanner); !ok {
 				return fmt.Errorf("unexpected type %T for field backlog_item_item_sessions", values[i])
@@ -306,6 +316,9 @@ func (_m *ItemSession) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))
+	builder.WriteString(", ")
+	builder.WriteString("estimated_cost_usd=")
+	builder.WriteString(fmt.Sprintf("%v", _m.EstimatedCostUsd))
 	builder.WriteByte(')')
 	return builder.String()
 }

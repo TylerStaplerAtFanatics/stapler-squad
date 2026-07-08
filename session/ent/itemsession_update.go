@@ -260,6 +260,33 @@ func (_u *ItemSessionUpdate) ClearLastProgressAt() *ItemSessionUpdate {
 	return _u
 }
 
+// SetEstimatedCostUsd sets the "estimated_cost_usd" field.
+func (_u *ItemSessionUpdate) SetEstimatedCostUsd(v float64) *ItemSessionUpdate {
+	_u.mutation.ResetEstimatedCostUsd()
+	_u.mutation.SetEstimatedCostUsd(v)
+	return _u
+}
+
+// SetNillableEstimatedCostUsd sets the "estimated_cost_usd" field if the given value is not nil.
+func (_u *ItemSessionUpdate) SetNillableEstimatedCostUsd(v *float64) *ItemSessionUpdate {
+	if v != nil {
+		_u.SetEstimatedCostUsd(*v)
+	}
+	return _u
+}
+
+// AddEstimatedCostUsd adds value to the "estimated_cost_usd" field.
+func (_u *ItemSessionUpdate) AddEstimatedCostUsd(v float64) *ItemSessionUpdate {
+	_u.mutation.AddEstimatedCostUsd(v)
+	return _u
+}
+
+// ClearEstimatedCostUsd clears the value of the "estimated_cost_usd" field.
+func (_u *ItemSessionUpdate) ClearEstimatedCostUsd() *ItemSessionUpdate {
+	_u.mutation.ClearEstimatedCostUsd()
+	return _u
+}
+
 // SetBacklogItemID sets the "backlog_item" edge to the BacklogItem entity by ID.
 func (_u *ItemSessionUpdate) SetBacklogItemID(id uuid.UUID) *ItemSessionUpdate {
 	_u.mutation.SetBacklogItemID(id)
@@ -419,6 +446,15 @@ func (_u *ItemSessionUpdate) sqlSave(ctx context.Context) (_node int, err error)
 	}
 	if _u.mutation.LastProgressAtCleared() {
 		_spec.ClearField(itemsession.FieldLastProgressAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.EstimatedCostUsd(); ok {
+		_spec.SetField(itemsession.FieldEstimatedCostUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedEstimatedCostUsd(); ok {
+		_spec.AddField(itemsession.FieldEstimatedCostUsd, field.TypeFloat64, value)
+	}
+	if _u.mutation.EstimatedCostUsdCleared() {
+		_spec.ClearField(itemsession.FieldEstimatedCostUsd, field.TypeFloat64)
 	}
 	if _u.mutation.BacklogItemCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -727,6 +763,33 @@ func (_u *ItemSessionUpdateOne) ClearLastProgressAt() *ItemSessionUpdateOne {
 	return _u
 }
 
+// SetEstimatedCostUsd sets the "estimated_cost_usd" field.
+func (_u *ItemSessionUpdateOne) SetEstimatedCostUsd(v float64) *ItemSessionUpdateOne {
+	_u.mutation.ResetEstimatedCostUsd()
+	_u.mutation.SetEstimatedCostUsd(v)
+	return _u
+}
+
+// SetNillableEstimatedCostUsd sets the "estimated_cost_usd" field if the given value is not nil.
+func (_u *ItemSessionUpdateOne) SetNillableEstimatedCostUsd(v *float64) *ItemSessionUpdateOne {
+	if v != nil {
+		_u.SetEstimatedCostUsd(*v)
+	}
+	return _u
+}
+
+// AddEstimatedCostUsd adds value to the "estimated_cost_usd" field.
+func (_u *ItemSessionUpdateOne) AddEstimatedCostUsd(v float64) *ItemSessionUpdateOne {
+	_u.mutation.AddEstimatedCostUsd(v)
+	return _u
+}
+
+// ClearEstimatedCostUsd clears the value of the "estimated_cost_usd" field.
+func (_u *ItemSessionUpdateOne) ClearEstimatedCostUsd() *ItemSessionUpdateOne {
+	_u.mutation.ClearEstimatedCostUsd()
+	return _u
+}
+
 // SetBacklogItemID sets the "backlog_item" edge to the BacklogItem entity by ID.
 func (_u *ItemSessionUpdateOne) SetBacklogItemID(id uuid.UUID) *ItemSessionUpdateOne {
 	_u.mutation.SetBacklogItemID(id)
@@ -916,6 +979,15 @@ func (_u *ItemSessionUpdateOne) sqlSave(ctx context.Context) (_node *ItemSession
 	}
 	if _u.mutation.LastProgressAtCleared() {
 		_spec.ClearField(itemsession.FieldLastProgressAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.EstimatedCostUsd(); ok {
+		_spec.SetField(itemsession.FieldEstimatedCostUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedEstimatedCostUsd(); ok {
+		_spec.AddField(itemsession.FieldEstimatedCostUsd, field.TypeFloat64, value)
+	}
+	if _u.mutation.EstimatedCostUsdCleared() {
+		_spec.ClearField(itemsession.FieldEstimatedCostUsd, field.TypeFloat64)
 	}
 	if _u.mutation.BacklogItemCleared() {
 		edge := &sqlgraph.EdgeSpec{

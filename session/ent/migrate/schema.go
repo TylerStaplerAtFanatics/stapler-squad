@@ -426,6 +426,7 @@ var (
 		{Name: "last_file_touch_at", Type: field.TypeTime, Nullable: true},
 		{Name: "last_progress_at", Type: field.TypeTime, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime},
+		{Name: "estimated_cost_usd", Type: field.TypeFloat64, Nullable: true, Default: 0},
 		{Name: "backlog_item_item_sessions", Type: field.TypeUUID},
 	}
 	// ItemSessionsTable holds the schema information for the "item_sessions" table.
@@ -436,7 +437,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "item_sessions_backlog_items_item_sessions",
-				Columns:    []*schema.Column{ItemSessionsColumns[14]},
+				Columns:    []*schema.Column{ItemSessionsColumns[15]},
 				RefColumns: []*schema.Column{BacklogItemsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -450,7 +451,7 @@ var (
 			{
 				Name:    "itemsession_created_at_backlog_item_item_sessions",
 				Unique:  false,
-				Columns: []*schema.Column{ItemSessionsColumns[13], ItemSessionsColumns[14]},
+				Columns: []*schema.Column{ItemSessionsColumns[13], ItemSessionsColumns[15]},
 			},
 		},
 	}

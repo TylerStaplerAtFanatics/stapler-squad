@@ -441,6 +441,10 @@ func itemSessionToProto(is *ent.ItemSession, costFor func(tmuxUUID string) float
 	if costFor != nil && is.SessionUUID != "" {
 		p.EstimatedCostUsd = costFor(is.SessionUUID)
 	}
+	// Fall back to the persisted cost for headless sessions where live lookup returns 0.
+	if p.EstimatedCostUsd == 0 && is.EstimatedCostUsd > 0 {
+		p.EstimatedCostUsd = is.EstimatedCostUsd
+	}
 	return p
 }
 
@@ -676,13 +680,15 @@ func (s *BacklogService) GetBacklogItem(
 		log.ErrorLog.Printf("[GetBacklogItem] failed to load item sessions for %s: %v", req.Msg.ItemId, isErr)
 		// Non-fatal: return item without sessions.
 	} else {
-		// Tombstone any stale headless-triage sessions (no endedAt) so they don't
-		// appear as "running" indefinitely after the triage process has exited.
+		// Tombstone stale headless-triage sessions (no endedAt, older than maxTriageSessionAge)
+		// so they don't appear as "running" indefinitely after the triage process has exited.
+		// Sessions younger than maxTriageSessionAge are still running their goroutine — leave them alone.
 		now := time.Now()
 		for _, is := range isSessions {
 			if is.SessionRole == string(session.SessionRoleTriage) &&
 				is.EndedAt == nil &&
-				strings.HasPrefix(is.SessionUUID, headlessTriageUUIDPrefix) {
+				strings.HasPrefix(is.SessionUUID, headlessTriageUUIDPrefix) &&
+				time.Since(is.CreatedAt) > maxTriageSessionAge {
 				_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
 				is.EndedAt = &now
 			}
@@ -1294,15 +1300,6 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
 	}
 	s.worktreeMu.Unlock()
-
-	// 10b. Inject the stdio MCP config so the spawned session can call backlog tools.
-	// STAPLER_SESSION_UUID is set in the tmux session env by initTmuxSession (instance_tmux.go),
-	// so the stdio subprocess inherits it automatically — no UUID needs to go into this file.
-	if binaryPath, execErr := os.Executable(); execErr == nil {
-		if mcpErr := InjectMCPConfig(worktreePath, binaryPath); mcpErr != nil {
-			log.WarningLog.Printf("[SpawnSessionFromItem] InjectMCPConfig failed (non-fatal): %v", mcpErr)
-		}
-	}
 
 	// 11. Spawn session first so we have the real UUID before creating the ItemSession record.
 	spawnTags := []string{session.TagBacklogWork}
@@ -2020,6 +2017,14 @@ Do not modify the code. Only write the review verdict.
 	slug := slugify(item.Title)
 	title := "re-review:" + slug
 	useAutonomous := s.autonomousStarter != nil
+
+	// Kill any stale tmux session with this title so the new session gets a fresh
+	// pane and the autonomous driver can deliver its prompt without attaching to an
+	// old, idle session that was left behind from a previous (possibly crashed) attempt.
+	if s.sessionStopper != nil {
+		_ = s.sessionStopper.KillTmuxSessionByTitle(ctx, title)
+	}
+
 	inst, spawnErr := s.sessionCreator.CreateDirectorySession(ctx, title, item.RepoPath, reReviewPrompt,
 		[]string{"backlog:review"}, !useAutonomous /*oneShot*/, true /*hidden*/)
 	if spawnErr != nil {

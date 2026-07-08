@@ -14,11 +14,12 @@ import (
 
 // ItemSessionData is the input data for creating a new ItemSession.
 type ItemSessionData struct {
-	ItemID       string // BacklogItem UUID
-	SessionUUID  string
-	SessionRole  string
-	AcSnapshot   string // JSON
-	TriageResult string
+	ItemID           string // BacklogItem UUID
+	SessionUUID      string
+	SessionRole      string
+	AcSnapshot       string // JSON
+	TriageResult     string
+	EstimatedCostUsd float64 // Only set for headless sessions where cost is known at creation time
 }
 
 // ReviewVerdictData is the input data for saving a ReviewVerdict.
@@ -45,13 +46,16 @@ func (r *EntRepository) CreateItemSession(ctx context.Context, data ItemSessionD
 		return nil, fmt.Errorf("invalid item id %q: %w", data.ItemID, err)
 	}
 
-	is, err := r.client.ItemSession.Create().
+	q := r.client.ItemSession.Create().
 		SetSessionUUID(data.SessionUUID).
 		SetSessionRole(data.SessionRole).
 		SetBacklogItemID(parsedItemID).
 		SetNillableAcSnapshot(nilIfEmpty(data.AcSnapshot)).
-		SetNillableTriageResult(nilIfEmpty(data.TriageResult)).
-		Save(ctx)
+		SetNillableTriageResult(nilIfEmpty(data.TriageResult))
+	if data.EstimatedCostUsd > 0 {
+		q = q.SetEstimatedCostUsd(data.EstimatedCostUsd)
+	}
+	is, err := q.Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create item session: %w", err)
 	}
@@ -345,13 +349,16 @@ func (r *EntRepository) CreateItemSessionWithVerdict(ctx context.Context, isData
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	is, err := tx.ItemSession.Create().
+	isq := tx.ItemSession.Create().
 		SetSessionUUID(isData.SessionUUID).
 		SetSessionRole(isData.SessionRole).
 		SetBacklogItemID(parsedItemID).
 		SetNillableAcSnapshot(nilIfEmpty(isData.AcSnapshot)).
-		SetNillableTriageResult(nilIfEmpty(isData.TriageResult)).
-		Save(ctx)
+		SetNillableTriageResult(nilIfEmpty(isData.TriageResult))
+	if isData.EstimatedCostUsd > 0 {
+		isq = isq.SetEstimatedCostUsd(isData.EstimatedCostUsd)
+	}
+	is, err := isq.Save(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create item session: %w", err)
 	}

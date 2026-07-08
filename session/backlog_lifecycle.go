@@ -317,7 +317,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		defer reviewCancel()
 
 		headlessPrompt := BuildHeadlessReviewPrompt(item, acSnapshot, diff, truncated)
-		reviewResult, callErr := pool.CallBlocking(reviewCtx, headless.FeatureKeyReview, headless.HeadlessReviewSystemPrompt(), headlessPrompt)
+		reviewResult, callCostUSD, callErr := pool.CallBlockingWithCost(reviewCtx, headless.FeatureKeyReview, headless.HeadlessReviewSystemPrompt(), headlessPrompt)
 		if callErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate headless.CallBlocking item=%s: %v", item.ID, callErr)
 			// Record a FAIL verdict so the item is not stuck in review with no actionable result.
@@ -346,10 +346,11 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		// is never a dangling session with no verdict if the verdict write fails.
 		reviewSessionUUID := "headless-review-" + uuid.New().String()
 		reviewIS, _, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
-			ItemID:      item.ID.String(),
-			SessionUUID: reviewSessionUUID,
-			SessionRole: SessionRoleReview,
-			AcSnapshot:  is.AcSnapshot,
+			ItemID:           item.ID.String(),
+			SessionUUID:      reviewSessionUUID,
+			SessionRole:      SessionRoleReview,
+			AcSnapshot:       is.AcSnapshot,
+			EstimatedCostUsd: callCostUSD,
 		}, ReviewVerdictData{
 			OverallOutcome: overall,
 			PerCriterion:   string(perCriterionJSON),

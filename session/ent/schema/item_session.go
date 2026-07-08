@@ -54,6 +54,10 @@ func (ItemSession) Fields() []ent.Field {
 		field.Time("created_at").
 			Default(time.Now).
 			Immutable(),
+		field.Float("estimated_cost_usd").
+			Default(0).
+			Optional().
+			Comment("Cost in USD; populated for headless sessions from claude -p output"),
 	}
 }
 

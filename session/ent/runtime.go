@@ -300,6 +300,10 @@ func init() {
 	itemsessionDescCreatedAt := itemsessionFields[13].Descriptor()
 	// itemsession.DefaultCreatedAt holds the default value on creation for the created_at field.
 	itemsession.DefaultCreatedAt = itemsessionDescCreatedAt.Default.(func() time.Time)
+	// itemsessionDescEstimatedCostUsd is the schema descriptor for estimated_cost_usd field.
+	itemsessionDescEstimatedCostUsd := itemsessionFields[14].Descriptor()
+	// itemsession.DefaultEstimatedCostUsd holds the default value on creation for the estimated_cost_usd field.
+	itemsession.DefaultEstimatedCostUsd = itemsessionDescEstimatedCostUsd.Default.(float64)
 	// itemsessionDescID is the schema descriptor for id field.
 	itemsessionDescID := itemsessionFields[0].Descriptor()
 	// itemsession.DefaultID holds the default value on creation for the id field.

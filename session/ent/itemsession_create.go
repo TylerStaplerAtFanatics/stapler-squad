@@ -192,6 +192,20 @@ func (_c *ItemSessionCreate) SetNillableCreatedAt(v *time.Time) *ItemSessionCrea
 	return _c
 }
 
+// SetEstimatedCostUsd sets the "estimated_cost_usd" field.
+func (_c *ItemSessionCreate) SetEstimatedCostUsd(v float64) *ItemSessionCreate {
+	_c.mutation.SetEstimatedCostUsd(v)
+	return _c
+}
+
+// SetNillableEstimatedCostUsd sets the "estimated_cost_usd" field if the given value is not nil.
+func (_c *ItemSessionCreate) SetNillableEstimatedCostUsd(v *float64) *ItemSessionCreate {
+	if v != nil {
+		_c.SetEstimatedCostUsd(*v)
+	}
+	return _c
+}
+
 // SetID sets the "id" field.
 func (_c *ItemSessionCreate) SetID(v uuid.UUID) *ItemSessionCreate {
 	_c.mutation.SetID(v)
@@ -278,6 +292,10 @@ func (_c *ItemSessionCreate) defaults() {
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		v := itemsession.DefaultCreatedAt()
 		_c.mutation.SetCreatedAt(v)
+	}
+	if _, ok := _c.mutation.EstimatedCostUsd(); !ok {
+		v := itemsession.DefaultEstimatedCostUsd
+		_c.mutation.SetEstimatedCostUsd(v)
 	}
 	if _, ok := _c.mutation.ID(); !ok {
 		v := itemsession.DefaultID()
@@ -389,6 +407,10 @@ func (_c *ItemSessionCreate) createSpec() (*ItemSession, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(itemsession.FieldCreatedAt, field.TypeTime, value)
 		_node.CreatedAt = value
+	}
+	if value, ok := _c.mutation.EstimatedCostUsd(); ok {
+		_spec.SetField(itemsession.FieldEstimatedCostUsd, field.TypeFloat64, value)
+		_node.EstimatedCostUsd = value
 	}
 	if nodes := _c.mutation.BacklogItemIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -679,6 +701,30 @@ func (u *ItemSessionUpsert) ClearLastProgressAt() *ItemSessionUpsert {
 	return u
 }
 
+// SetEstimatedCostUsd sets the "estimated_cost_usd" field.
+func (u *ItemSessionUpsert) SetEstimatedCostUsd(v float64) *ItemSessionUpsert {
+	u.Set(itemsession.FieldEstimatedCostUsd, v)
+	return u
+}
+
+// UpdateEstimatedCostUsd sets the "estimated_cost_usd" field to the value that was provided on create.
+func (u *ItemSessionUpsert) UpdateEstimatedCostUsd() *ItemSessionUpsert {
+	u.SetExcluded(itemsession.FieldEstimatedCostUsd)
+	return u
+}
+
+// AddEstimatedCostUsd adds v to the "estimated_cost_usd" field.
+func (u *ItemSessionUpsert) AddEstimatedCostUsd(v float64) *ItemSessionUpsert {
+	u.Add(itemsession.FieldEstimatedCostUsd, v)
+	return u
+}
+
+// ClearEstimatedCostUsd clears the value of the "estimated_cost_usd" field.
+func (u *ItemSessionUpsert) ClearEstimatedCostUsd() *ItemSessionUpsert {
+	u.SetNull(itemsession.FieldEstimatedCostUsd)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create except the ID field.
 // Using this option is equivalent to using:
 //
@@ -965,6 +1011,34 @@ func (u *ItemSessionUpsertOne) UpdateLastProgressAt() *ItemSessionUpsertOne {
 func (u *ItemSessionUpsertOne) ClearLastProgressAt() *ItemSessionUpsertOne {
 	return u.Update(func(s *ItemSessionUpsert) {
 		s.ClearLastProgressAt()
+	})
+}
+
+// SetEstimatedCostUsd sets the "estimated_cost_usd" field.
+func (u *ItemSessionUpsertOne) SetEstimatedCostUsd(v float64) *ItemSessionUpsertOne {
+	return u.Update(func(s *ItemSessionUpsert) {
+		s.SetEstimatedCostUsd(v)
+	})
+}
+
+// AddEstimatedCostUsd adds v to the "estimated_cost_usd" field.
+func (u *ItemSessionUpsertOne) AddEstimatedCostUsd(v float64) *ItemSessionUpsertOne {
+	return u.Update(func(s *ItemSessionUpsert) {
+		s.AddEstimatedCostUsd(v)
+	})
+}
+
+// UpdateEstimatedCostUsd sets the "estimated_cost_usd" field to the value that was provided on create.
+func (u *ItemSessionUpsertOne) UpdateEstimatedCostUsd() *ItemSessionUpsertOne {
+	return u.Update(func(s *ItemSessionUpsert) {
+		s.UpdateEstimatedCostUsd()
+	})
+}
+
+// ClearEstimatedCostUsd clears the value of the "estimated_cost_usd" field.
+func (u *ItemSessionUpsertOne) ClearEstimatedCostUsd() *ItemSessionUpsertOne {
+	return u.Update(func(s *ItemSessionUpsert) {
+		s.ClearEstimatedCostUsd()
 	})
 }
 
@@ -1421,6 +1495,34 @@ func (u *ItemSessionUpsertBulk) UpdateLastProgressAt() *ItemSessionUpsertBulk {
 func (u *ItemSessionUpsertBulk) ClearLastProgressAt() *ItemSessionUpsertBulk {
 	return u.Update(func(s *ItemSessionUpsert) {
 		s.ClearLastProgressAt()
+	})
+}
+
+// SetEstimatedCostUsd sets the "estimated_cost_usd" field.
+func (u *ItemSessionUpsertBulk) SetEstimatedCostUsd(v float64) *ItemSessionUpsertBulk {
+	return u.Update(func(s *ItemSessionUpsert) {
+		s.SetEstimatedCostUsd(v)
+	})
+}
+
+// AddEstimatedCostUsd adds v to the "estimated_cost_usd" field.
+func (u *ItemSessionUpsertBulk) AddEstimatedCostUsd(v float64) *ItemSessionUpsertBulk {
+	return u.Update(func(s *ItemSessionUpsert) {
+		s.AddEstimatedCostUsd(v)
+	})
+}
+
+// UpdateEstimatedCostUsd sets the "estimated_cost_usd" field to the value that was provided on create.
+func (u *ItemSessionUpsertBulk) UpdateEstimatedCostUsd() *ItemSessionUpsertBulk {
+	return u.Update(func(s *ItemSessionUpsert) {
+		s.UpdateEstimatedCostUsd()
+	})
+}
+
+// ClearEstimatedCostUsd clears the value of the "estimated_cost_usd" field.
+func (u *ItemSessionUpsertBulk) ClearEstimatedCostUsd() *ItemSessionUpsertBulk {
+	return u.Update(func(s *ItemSessionUpsert) {
+		s.ClearEstimatedCostUsd()
 	})
 }
 
