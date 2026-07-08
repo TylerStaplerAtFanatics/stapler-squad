@@ -10967,6 +10967,8 @@ type ItemSessionMutation struct {
 	last_file_touch_at          *time.Time
 	last_progress_at            *time.Time
 	created_at                  *time.Time
+	estimated_cost_usd          *float64
+	addestimated_cost_usd       *float64
 	clearedFields               map[string]struct{}
 	backlog_item                *uuid.UUID
 	clearedbacklog_item         bool
@@ -11686,6 +11688,76 @@ func (m *ItemSessionMutation) ResetCreatedAt() {
 	m.created_at = nil
 }
 
+// SetEstimatedCostUsd sets the "estimated_cost_usd" field.
+func (m *ItemSessionMutation) SetEstimatedCostUsd(f float64) {
+	m.estimated_cost_usd = &f
+	m.addestimated_cost_usd = nil
+}
+
+// EstimatedCostUsd returns the value of the "estimated_cost_usd" field in the mutation.
+func (m *ItemSessionMutation) EstimatedCostUsd() (r float64, exists bool) {
+	v := m.estimated_cost_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEstimatedCostUsd returns the old "estimated_cost_usd" field's value of the ItemSession entity.
+// If the ItemSession object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ItemSessionMutation) OldEstimatedCostUsd(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEstimatedCostUsd is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEstimatedCostUsd requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEstimatedCostUsd: %w", err)
+	}
+	return oldValue.EstimatedCostUsd, nil
+}
+
+// AddEstimatedCostUsd adds f to the "estimated_cost_usd" field.
+func (m *ItemSessionMutation) AddEstimatedCostUsd(f float64) {
+	if m.addestimated_cost_usd != nil {
+		*m.addestimated_cost_usd += f
+	} else {
+		m.addestimated_cost_usd = &f
+	}
+}
+
+// AddedEstimatedCostUsd returns the value that was added to the "estimated_cost_usd" field in this mutation.
+func (m *ItemSessionMutation) AddedEstimatedCostUsd() (r float64, exists bool) {
+	v := m.addestimated_cost_usd
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearEstimatedCostUsd clears the value of the "estimated_cost_usd" field.
+func (m *ItemSessionMutation) ClearEstimatedCostUsd() {
+	m.estimated_cost_usd = nil
+	m.addestimated_cost_usd = nil
+	m.clearedFields[itemsession.FieldEstimatedCostUsd] = struct{}{}
+}
+
+// EstimatedCostUsdCleared returns if the "estimated_cost_usd" field was cleared in this mutation.
+func (m *ItemSessionMutation) EstimatedCostUsdCleared() bool {
+	_, ok := m.clearedFields[itemsession.FieldEstimatedCostUsd]
+	return ok
+}
+
+// ResetEstimatedCostUsd resets all changes to the "estimated_cost_usd" field.
+func (m *ItemSessionMutation) ResetEstimatedCostUsd() {
+	m.estimated_cost_usd = nil
+	m.addestimated_cost_usd = nil
+	delete(m.clearedFields, itemsession.FieldEstimatedCostUsd)
+}
+
 // SetBacklogItemID sets the "backlog_item" edge to the BacklogItem entity by id.
 func (m *ItemSessionMutation) SetBacklogItemID(id uuid.UUID) {
 	m.backlog_item = &id
@@ -11798,7 +11870,7 @@ func (m *ItemSessionMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *ItemSessionMutation) Fields() []string {
-	fields := make([]string, 0, 13)
+	fields := make([]string, 0, 14)
 	if m.session_uuid != nil {
 		fields = append(fields, itemsession.FieldSessionUUID)
 	}
@@ -11838,6 +11910,9 @@ func (m *ItemSessionMutation) Fields() []string {
 	if m.created_at != nil {
 		fields = append(fields, itemsession.FieldCreatedAt)
 	}
+	if m.estimated_cost_usd != nil {
+		fields = append(fields, itemsession.FieldEstimatedCostUsd)
+	}
 	return fields
 }
 
@@ -11872,6 +11947,8 @@ func (m *ItemSessionMutation) Field(name string) (ent.Value, bool) {
 		return m.LastProgressAt()
 	case itemsession.FieldCreatedAt:
 		return m.CreatedAt()
+	case itemsession.FieldEstimatedCostUsd:
+		return m.EstimatedCostUsd()
 	}
 	return nil, false
 }
@@ -11907,6 +11984,8 @@ func (m *ItemSessionMutation) OldField(ctx context.Context, name string) (ent.Va
 		return m.OldLastProgressAt(ctx)
 	case itemsession.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
+	case itemsession.FieldEstimatedCostUsd:
+		return m.OldEstimatedCostUsd(ctx)
 	}
 	return nil, fmt.Errorf("unknown ItemSession field %s", name)
 }
@@ -12007,6 +12086,13 @@ func (m *ItemSessionMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetCreatedAt(v)
 		return nil
+	case itemsession.FieldEstimatedCostUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEstimatedCostUsd(v)
+		return nil
 	}
 	return fmt.Errorf("unknown ItemSession field %s", name)
 }
@@ -12018,6 +12104,9 @@ func (m *ItemSessionMutation) AddedFields() []string {
 	if m.addcommit_count_since_spawn != nil {
 		fields = append(fields, itemsession.FieldCommitCountSinceSpawn)
 	}
+	if m.addestimated_cost_usd != nil {
+		fields = append(fields, itemsession.FieldEstimatedCostUsd)
+	}
 	return fields
 }
 
@@ -12028,6 +12117,8 @@ func (m *ItemSessionMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
 	case itemsession.FieldCommitCountSinceSpawn:
 		return m.AddedCommitCountSinceSpawn()
+	case itemsession.FieldEstimatedCostUsd:
+		return m.AddedEstimatedCostUsd()
 	}
 	return nil, false
 }
@@ -12043,6 +12134,13 @@ func (m *ItemSessionMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddCommitCountSinceSpawn(v)
+		return nil
+	case itemsession.FieldEstimatedCostUsd:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddEstimatedCostUsd(v)
 		return nil
 	}
 	return fmt.Errorf("unknown ItemSession numeric field %s", name)
@@ -12078,6 +12176,9 @@ func (m *ItemSessionMutation) ClearedFields() []string {
 	}
 	if m.FieldCleared(itemsession.FieldLastProgressAt) {
 		fields = append(fields, itemsession.FieldLastProgressAt)
+	}
+	if m.FieldCleared(itemsession.FieldEstimatedCostUsd) {
+		fields = append(fields, itemsession.FieldEstimatedCostUsd)
 	}
 	return fields
 }
@@ -12119,6 +12220,9 @@ func (m *ItemSessionMutation) ClearField(name string) error {
 		return nil
 	case itemsession.FieldLastProgressAt:
 		m.ClearLastProgressAt()
+		return nil
+	case itemsession.FieldEstimatedCostUsd:
+		m.ClearEstimatedCostUsd()
 		return nil
 	}
 	return fmt.Errorf("unknown ItemSession nullable field %s", name)
@@ -12166,6 +12270,9 @@ func (m *ItemSessionMutation) ResetField(name string) error {
 		return nil
 	case itemsession.FieldCreatedAt:
 		m.ResetCreatedAt()
+		return nil
+	case itemsession.FieldEstimatedCostUsd:
+		m.ResetEstimatedCostUsd()
 		return nil
 	}
 	return fmt.Errorf("unknown ItemSession field %s", name)

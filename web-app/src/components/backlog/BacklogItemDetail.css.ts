@@ -598,6 +598,9 @@ export const branchBadge = style({
   border: `1px solid ${vars.color.borderMuted}`,
   whiteSpace: "nowrap",
   flexShrink: 0,
+  maxWidth: "8rem",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
 });
 
 export const sessionEndedBadge = style({

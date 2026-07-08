@@ -90,3 +90,18 @@ func newGHPostRequestWithToken(ctx context.Context, path string, body io.Reader,
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	return req, nil
 }
+
+// newGHWriteRequest creates an authenticated request for write operations (POST, PUT, PATCH).
+func newGHWriteRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, GhBaseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if tok := getGHToken(ctx); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	return req, nil
+}

@@ -121,6 +121,11 @@ func CreatedAt(v time.Time) predicate.ItemSession {
 	return predicate.ItemSession(sql.FieldEQ(FieldCreatedAt, v))
 }
 
+// EstimatedCostUsd applies equality check predicate on the "estimated_cost_usd" field. It's identical to EstimatedCostUsdEQ.
+func EstimatedCostUsd(v float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldEQ(FieldEstimatedCostUsd, v))
+}
+
 // SessionUUIDEQ applies the EQ predicate on the "session_uuid" field.
 func SessionUUIDEQ(v string) predicate.ItemSession {
 	return predicate.ItemSession(sql.FieldEQ(FieldSessionUUID, v))
@@ -879,6 +884,56 @@ func CreatedAtLT(v time.Time) predicate.ItemSession {
 // CreatedAtLTE applies the LTE predicate on the "created_at" field.
 func CreatedAtLTE(v time.Time) predicate.ItemSession {
 	return predicate.ItemSession(sql.FieldLTE(FieldCreatedAt, v))
+}
+
+// EstimatedCostUsdEQ applies the EQ predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdEQ(v float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldEQ(FieldEstimatedCostUsd, v))
+}
+
+// EstimatedCostUsdNEQ applies the NEQ predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdNEQ(v float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldNEQ(FieldEstimatedCostUsd, v))
+}
+
+// EstimatedCostUsdIn applies the In predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdIn(vs ...float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldIn(FieldEstimatedCostUsd, vs...))
+}
+
+// EstimatedCostUsdNotIn applies the NotIn predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdNotIn(vs ...float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldNotIn(FieldEstimatedCostUsd, vs...))
+}
+
+// EstimatedCostUsdGT applies the GT predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdGT(v float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldGT(FieldEstimatedCostUsd, v))
+}
+
+// EstimatedCostUsdGTE applies the GTE predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdGTE(v float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldGTE(FieldEstimatedCostUsd, v))
+}
+
+// EstimatedCostUsdLT applies the LT predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdLT(v float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldLT(FieldEstimatedCostUsd, v))
+}
+
+// EstimatedCostUsdLTE applies the LTE predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdLTE(v float64) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldLTE(FieldEstimatedCostUsd, v))
+}
+
+// EstimatedCostUsdIsNil applies the IsNil predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdIsNil() predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldIsNull(FieldEstimatedCostUsd))
+}
+
+// EstimatedCostUsdNotNil applies the NotNil predicate on the "estimated_cost_usd" field.
+func EstimatedCostUsdNotNil() predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldNotNull(FieldEstimatedCostUsd))
 }
 
 // HasBacklogItem applies the HasEdge predicate on the "backlog_item" edge.

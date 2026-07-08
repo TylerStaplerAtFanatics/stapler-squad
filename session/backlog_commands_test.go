@@ -24,7 +24,7 @@ func makeTestBacklogItemWithID(id uuid.UUID, title, acJSON string) *ent.BacklogI
 }
 
 // TestWriteSlashCommands_CreatesCorrectFileCount verifies that 2 AC criteria produce
-// status.md + done-0.md + fail-0.md + done-1.md + fail-1.md + review.md + help.md = 7 files.
+// status.md + done-0.md + fail-0.md + done-1.md + fail-1.md + review.md + ship.md + help.md = 8 files.
 func TestWriteSlashCommands_CreatesCorrectFileCount(t *testing.T) {
 	worktree := t.TempDir()
 	ac := `[{"index":0,"text":"First criterion","status":"pending"},{"index":1,"text":"Second criterion","status":"pending"}]`
@@ -47,6 +47,7 @@ func TestWriteSlashCommands_CreatesCorrectFileCount(t *testing.T) {
 		"done-1.md",
 		"fail-1.md",
 		"review.md",
+		"ship.md",
 		"help.md",
 	}
 	if len(entries) != len(wantFiles) {
