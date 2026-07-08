@@ -64,6 +64,16 @@ func TestStreamTerminal_SendsRawOutput(t *testing.T) {
 	svc.SetReviewQueuePoller(poller)
 	svc.SetStatusManager(statusMgr)
 
+	// Wire the actor registry exactly as production does (server/dependencies.go):
+	// without it, CreateSession never wraps the new Instance in a LiveInstance, so
+	// every actor-routed mutation (transitionToLocked, UpdateTerminalTimestamps,
+	// etc.) silently falls back to running synchronously on the calling goroutine
+	// with no cross-goroutine synchronization at all — a real -race finding in
+	// this test, caused by the test omitting production wiring rather than by any
+	// bug in the actor itself.
+	registry := session.NewRegistry(nil, svc.WireInstanceCallbacks)
+	svc.SetRegistry(registry)
+
 	client := sessionv1connect.NewSessionServiceClient(srv.Client(), srv.URL)
 
 	resp, err := client.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{

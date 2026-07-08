@@ -104,8 +104,14 @@ func (i *Instance) combineErrors(errs []error) error {
 
 // Preview returns the current visible terminal content.
 // Prefers the in-memory PTY buffer from ClaudeController; falls back to capture-pane.
+//
+// Reads Status via Snapshot(), not a bare field read: actor commands
+// (transitionToLocked et al.) write i.Status directly while running inside
+// the actor's own serialization, not under i.mu, so an unguarded read here
+// doesn't synchronize with that write at all (see GetStatus's doc comment).
 func (i *Instance) Preview() (string, error) {
-	if !i.started.Load() || i.Status == Paused || i.Status == Stopped {
+	status := i.Snapshot().Status
+	if !i.started.Load() || status == Paused || status == Stopped {
 		return "", nil
 	}
 

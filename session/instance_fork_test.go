@@ -161,10 +161,10 @@ func TestForkFromCheckpoint_ForkedFileHasCorrectContent(t *testing.T) {
 	srcInst := &Instance{
 		Title:           "src-session",
 		Path:            t.TempDir(),
-		started:         true,
 		HistoryFilePath: historyFile,
 		claudeSession:   &ClaudeSessionData{ConversationUUID: "conv-real"},
 	}
+	srcInst.started.Store(true)
 
 	// Checkpoint after 6 turns.
 	cp, err := srcInst.CreateCheckpoint("mid-point", 0)
@@ -229,9 +229,9 @@ func TestForkFromCheckpoint_ConvLineCount_AccurateForLargeLines(t *testing.T) {
 	inst := &Instance{
 		Title:           "large-line-session",
 		Path:            t.TempDir(),
-		started:         true,
 		HistoryFilePath: historyFile,
 	}
+	inst.started.Store(true)
 
 	cp, err := inst.CreateCheckpoint("snap", 0)
 	require.NoError(t, err)

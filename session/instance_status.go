@@ -76,7 +76,10 @@ func (ism *InstanceStatusManager) GetStatus(instance *Instance) InstanceStatusIn
 	ism.mu.RUnlock()
 
 	info := InstanceStatusInfo{
-		BasicStatus:        instance.Status,
+		// Snapshot(), not instance.Status directly — an unguarded read of instance.Status
+		// doesn't synchronize with actor commands' direct field writes (see
+		// Instance.GetStatus's doc comment).
+		BasicStatus:        instance.Snapshot().Status,
 		IsControllerActive: exists && controller != nil && controller.IsStarted(),
 	}
 
