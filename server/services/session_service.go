@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
@@ -2040,12 +2039,13 @@ func (s *SessionService) StreamTerminal(
 	// its own independent *os.File/poll.FD — closing or setting a deadline
 	// on readFile has no effect on ptyFile or its other readers, since the
 	// underlying open file description is only released once every fd
-	// referencing it is closed.
-	dupFd, err := syscall.Dup(int(ptyFile.Fd()))
+	// referencing it is closed. dupPTYFile is platform-specific
+	// (dup_fd_unix.go / dup_fd_windows.go) since syscall.Dup isn't available
+	// on Windows.
+	readFile, err := dupPTYFile(ptyFile)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("failed to duplicate PTY fd: %w", err))
+		return connect.NewError(connect.CodeInternal, err)
 	}
-	readFile := os.NewFile(uintptr(dupFd), ptyFile.Name())
 
 	// Create context for managing goroutines
 	streamCtx, cancel := context.WithCancel(ctx)
