@@ -146,6 +146,14 @@ describe("StatusBadge with detectedStatus", () => {
     const { container } = renderBadge({ detectedStatus: DetectedStatus.UNSPECIFIED });
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("renders null (nothing) instead of throwing for an unrecognized DetectedStatus value", () => {
+    // Simulates a newer server sending a DetectedStatus value this client
+    // bundle doesn't know about yet — proto enums are forward-compatible, so
+    // this must degrade gracefully rather than crash the sessions UI.
+    const { container } = renderBadge({ detectedStatus: 999 as unknown as DetectedStatus });
+    expect(container).toBeEmptyDOMElement();
+  });
 });
 
 // ---------------------------------------------------------------------------

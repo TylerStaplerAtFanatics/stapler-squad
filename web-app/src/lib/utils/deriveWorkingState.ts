@@ -1,5 +1,4 @@
 import { DetectedStatus, SubStatus, WorkingState } from "@/gen/session/v1/types_pb";
-import { assertNever } from "@/lib/utils/assertNever";
 
 /**
  * Derives the effective WorkingState for a session from its SubStatus and DetectedStatus.
@@ -45,8 +44,17 @@ export function deriveWorkingState(session: {
       // may omit it, and it should behave identically to an unset/UNSPECIFIED
       // sub-status rather than throwing.
       break;
-    default:
-      return assertNever(session.subStatus);
+    default: {
+      // Proto enums are forward-compatible: a newer server can send a SubStatus
+      // value this deployed client bundle doesn't know about yet. Fall through
+      // to the detectedStatus-based fallback (same as UNSPECIFIED) instead of
+      // throwing, so one unrecognized wire value can't crash session rendering.
+      // `_exhaustive: never` still gives a compile error if a new case is added
+      // to the switch above without also being handled here.
+      const _exhaustive: never = session.subStatus;
+      console.warn("deriveWorkingState: unrecognized SubStatus value", _exhaustive);
+      break;
+    }
   }
 
   // detectedStatus-based fallback (used when subStatus is UNSPECIFIED)
@@ -68,7 +76,12 @@ export function deriveWorkingState(session: {
     case DetectedStatus.UNSPECIFIED:
     case undefined:
       return WorkingState.UNSPECIFIED;
-    default:
-      return assertNever(session.detectedStatus);
+    default: {
+      // See the comment on the subStatus switch above: don't throw on a
+      // forward-compatible enum value the deployed client doesn't recognize.
+      const _exhaustive: never = session.detectedStatus;
+      console.warn("deriveWorkingState: unrecognized DetectedStatus value", _exhaustive);
+      return WorkingState.UNSPECIFIED;
+    }
   }
 }

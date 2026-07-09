@@ -1,7 +1,6 @@
 "use client";
 
 import { AttentionReason, DetectedStatus } from "@/gen/session/v1/types_pb";
-import { assertNever } from "@/lib/utils/assertNever";
 import * as styles from "./StatusBadge.css";
 
 type ReasonVariant = keyof typeof styles.reasonVariants;
@@ -72,8 +71,16 @@ export function getDetectedStatusInfo(status: DetectedStatus): StatusInfo | null
       return null;
     case DetectedStatus.UNSPECIFIED:
       return null;
-    default:
-      return assertNever(status);
+    default: {
+      // Proto enums are forward-compatible: a newer server can send a
+      // DetectedStatus value this deployed client bundle doesn't know about
+      // yet. Render nothing rather than throwing, so one unrecognized wire
+      // value can't crash the sessions UI. `_exhaustive: never` still gives a
+      // compile error if a new case is added without also being handled here.
+      const _exhaustive: never = status;
+      console.warn("getDetectedStatusInfo: unrecognized DetectedStatus value", _exhaustive);
+      return null;
+    }
   }
 }
 /* eslint-enable no-restricted-syntax */

@@ -138,11 +138,39 @@ describe("deriveWorkingState — subStatus is undefined at runtime", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Forward-compatible enum values (unrecognized wire values must not throw)
+// ---------------------------------------------------------------------------
+
+describe("deriveWorkingState — unrecognized enum values", () => {
+  it("deriveWorkingState_should_fallThroughToDetectedStatus_When_subStatus_is_unrecognized", () => {
+    // Simulates a newer server sending a SubStatus value this client bundle
+    // doesn't know about yet. Must fall through like UNSPECIFIED, not throw.
+    expect(
+      deriveWorkingState({
+        subStatus: 999 as unknown as SubStatus,
+        detectedStatus: DetectedStatus.EXECUTING,
+      })
+    ).toBe(WorkingState.ACTIVE);
+  });
+
+  it("deriveWorkingState_should_returnUNSPECIFIED_When_detectedStatus_is_unrecognized", () => {
+    // Simulates a newer server sending a DetectedStatus value this client
+    // bundle doesn't know about yet. Must return a safe fallback, not throw.
+    expect(
+      deriveWorkingState({
+        subStatus: SubStatus.UNSPECIFIED,
+        detectedStatus: 999 as unknown as DetectedStatus,
+      })
+    ).toBe(WorkingState.UNSPECIFIED);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SubStatus takes precedence over detectedStatus
 // ---------------------------------------------------------------------------
 
 describe("deriveWorkingState — SubStatus precedence", () => {
-  it("deriveWorkingState_should_ignoreDerectedStatus_When_subStatus_is_set", () => {
+  it("deriveWorkingState_should_ignoreDetectedStatus_When_subStatus_is_set", () => {
     // Even if detectedStatus says EXECUTING, subStatus.IDLE wins
     expect(
       deriveWorkingState({

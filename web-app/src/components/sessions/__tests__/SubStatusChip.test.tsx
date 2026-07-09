@@ -89,4 +89,12 @@ describe("SubStatusChip", () => {
     const { container } = renderChip(null);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("renders nothing instead of throwing for an unrecognized SubStatus value", () => {
+    // Simulates a newer server sending a SubStatus value this client bundle
+    // doesn't know about yet — proto enums are forward-compatible, so this
+    // must degrade gracefully rather than crash the sessions UI.
+    const { container } = renderChip(999 as unknown as SubStatus);
+    expect(container).toBeEmptyDOMElement();
+  });
 });
