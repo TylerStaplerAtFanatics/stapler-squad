@@ -125,6 +125,14 @@ func TestApprove_FromHibernated_Succeeds(t *testing.T) {
 		Status: Hibernated,
 	}
 	inst.started.Store(true)
+	// transitionToLocked dispatches resumeFromHibernationLocked in a background
+	// goroutine that calls Start()/StartController()/StartSessionDriver — real,
+	// long-lived work this test isn't exercising or able to await. Pre-set
+	// driverRunning so StartSessionDriver's CAS guard (see
+	// TestStartSessionDriver_Idempotent) makes it a no-op, preventing a leaked
+	// ticker-loop goroutine from outliving this test (caught by goleak in
+	// TestActorNoLeak/TestActorStopIdempotent under CI's slower scheduling).
+	inst.driverRunning.Store(true)
 
 	err := inst.Approve()
 	if err != nil {
@@ -194,6 +202,10 @@ func TestApprove_AllSourceStatuses(t *testing.T) {
 				Status: tt.from,
 			}
 			inst.started.Store(true)
+			// See TestApprove_FromHibernated_Succeeds: suppresses the real
+			// StartSessionDriver goroutine that Hibernated->Active's resume
+			// path would otherwise leak past this test's lifetime.
+			inst.driverRunning.Store(true)
 			err := inst.Approve()
 			if tt.expectPass && err != nil {
 				t.Errorf("expected Approve to succeed from %s, got: %v", tt.from, err)
