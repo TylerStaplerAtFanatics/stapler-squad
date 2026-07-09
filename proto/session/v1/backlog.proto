@@ -53,6 +53,12 @@ message TriageResult {
   repeated TriageSuggestion suggestions = 2;
   repeated string clarifying_questions = 3;
   repeated TriageTask tasks = 4;
+  // iteration is 1 for the initial triage run, incrementing by one for each
+  // feedback-driven re-triage of the same item.
+  int32 iteration = 5;
+  // feedback is the free-text feedback that produced this iteration, empty
+  // for the initial (non-refined) triage run.
+  string feedback = 6;
 }
 
 // ItemSession records a session that was spawned or attached to a backlog item.
@@ -244,6 +250,10 @@ message AttachSessionToItemResponse {
 
 message TriggerTriageRequest {
   string item_id = 1;
+  // feedback, if non-empty, requests a refinement of the item's most recent
+  // completed triage result instead of a fresh triage run. Requires a prior
+  // completed triage result to exist.
+  string feedback = 2;
 }
 
 message TriggerTriageResponse {

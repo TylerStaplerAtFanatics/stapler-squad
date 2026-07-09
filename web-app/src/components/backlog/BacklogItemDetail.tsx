@@ -246,6 +246,15 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     }
   }, [item, triggerTriage, load]);
 
+  const handleRefineTriage = useCallback(
+    async (feedback: string) => {
+      if (!item) return;
+      await triggerTriage(item.id, feedback);
+      await load();
+    },
+    [item, triggerTriage, load]
+  );
+
   const handleApplyTriageSuggestions = useCallback(
     async (preApplyCriteria: AcCriterion[]) => {
       if (!item) return;
@@ -547,6 +556,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 onApply={handleApplyTriageSuggestions}
                 onUndoApply={handleUndoTriageSuggestions}
                 onSkip={() => { void load(); }}
+                onRefine={handleRefineTriage}
               />
             </div>
           )}

@@ -46,6 +46,10 @@ export interface TriageResult {
   suggestions: TriageSuggestion[];
   clarifyingQuestions: string[];
   tasks?: TriageTask[];
+  /** 1 for the initial triage run, incrementing for each feedback-driven refine. */
+  iteration?: number;
+  /** Feedback text that produced this iteration, empty for the initial run. */
+  feedback?: string;
 }
 
 export interface LinkedSession {
@@ -186,6 +190,8 @@ function mapItemSession(s: ItemSessionProto): LinkedSession {
         estimate: t.estimate,
         category: t.category,
       })),
+      iteration: tr.iteration,
+      feedback: tr.feedback,
     };
   }
 
@@ -334,7 +340,7 @@ interface UseBacklogServiceReturn {
     precondition?: BacklogItemStatus
   ) => Promise<BacklogItem | null>;
   spawnSessionFromItem: (id: string, options?: { autonomous?: boolean; force?: boolean }) => Promise<{ sessionUuid: string } | null>;
-  triggerTriage: (id: string) => Promise<{ itemSessionId: string } | null>;
+  triggerTriage: (id: string, feedback?: string) => Promise<{ itemSessionId: string } | null>;
   cancelTriage: (id: string) => Promise<boolean>;
   approvePlan: (id: string) => Promise<BacklogItem | null>;
   overrideVerdict: (id: string, overrideReason: string, toStatus?: string) => Promise<boolean>;
@@ -522,10 +528,10 @@ export function useBacklogService(): UseBacklogServiceReturn {
   );
 
   const triggerTriage = useCallback(
-    async (id: string): Promise<{ itemSessionId: string } | null> => {
+    async (id: string, feedback?: string): Promise<{ itemSessionId: string } | null> => {
       if (!clientRef.current) return null;
       try {
-        const resp = await clientRef.current.triggerTriage({ itemId: id });
+        const resp = await clientRef.current.triggerTriage({ itemId: id, feedback: feedback ?? "" });
         return { itemSessionId: resp.itemSession?.id ?? "" };
       } catch (err) {
         console.error("[useBacklogService] triggerTriage:", err);
