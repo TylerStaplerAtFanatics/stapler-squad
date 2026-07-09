@@ -47,6 +47,10 @@ const (
 	FieldUserModifiedStatusAt = "user_modified_status_at"
 	// FieldArchivedAt holds the string denoting the archived_at field in the database.
 	FieldArchivedAt = "archived_at"
+	// FieldPrURL holds the string denoting the pr_url field in the database.
+	FieldPrURL = "pr_url"
+	// FieldPrNumber holds the string denoting the pr_number field in the database.
+	FieldPrNumber = "pr_number"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
@@ -108,6 +112,8 @@ var Columns = []string{
 	FieldExternalID,
 	FieldUserModifiedStatusAt,
 	FieldArchivedAt,
+	FieldPrURL,
+	FieldPrNumber,
 	FieldCreatedAt,
 	FieldUpdatedAt,
 }
@@ -154,6 +160,8 @@ var (
 	DefaultSkipPlanning bool
 	// DefaultPlanApproved holds the default value on creation for the "plan_approved" field.
 	DefaultPlanApproved bool
+	// DefaultPrNumber holds the default value on creation for the "pr_number" field.
+	DefaultPrNumber int
 	// DefaultCreatedAt holds the default value on creation for the "created_at" field.
 	DefaultCreatedAt func() time.Time
 	// DefaultUpdatedAt holds the default value on creation for the "updated_at" field.
@@ -250,6 +258,16 @@ func ByUserModifiedStatusAt(opts ...sql.OrderTermOption) OrderOption {
 // ByArchivedAt orders the results by the archived_at field.
 func ByArchivedAt(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldArchivedAt, opts...).ToFunc()
+}
+
+// ByPrURL orders the results by the pr_url field.
+func ByPrURL(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldPrURL, opts...).ToFunc()
+}
+
+// ByPrNumber orders the results by the pr_number field.
+func ByPrNumber(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldPrNumber, opts...).ToFunc()
 }
 
 // ByCreatedAt orders the results by the created_at field.

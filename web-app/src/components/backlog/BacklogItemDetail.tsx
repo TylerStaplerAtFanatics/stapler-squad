@@ -104,11 +104,11 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   // Poll for updated item data while triage is running or while in review (waiting for gate verdict).
   // Suspend polling while the edit form is open so a background refresh can't clobber unsaved edits.
   useEffect(() => {
-    const shouldPoll = (item?.triageStatus === "running" || (item?.status === "review" && (!item?.gateVerdict || item.gateVerdict === "PENDING"))) && !editMode;
+    const shouldPoll = (item?.triageStatus === "running" || (item?.status === "review" && (!item?.gateVerdict || item.gateVerdict === "PENDING")) || item?.status === "pr_pending") && !editMode;
     if (!shouldPoll) return;
     const interval = setInterval(() => { void load(); }, 5_000);
     return () => clearInterval(interval);
-  }, [item?.triageStatus, item?.status, item?.gateVerdict, editMode, load]);
+  }, [item?.triageStatus, item?.status, item?.gateVerdict, editMode, load]); // item.status covers pr_pending polling
 
   // Track triage progress: increment elapsed time while triageStatus === "running"
   useEffect(() => {
@@ -153,6 +153,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             break;
           case "approve_plan":
             await approvePlan(item.id);
+            break;
+          case "mark_done":
+            await transitionStatus(item.id, "done");
             break;
           case "override_done": {
             const reviewSession = item.linkedSessions.filter((s) => s.role === "review").at(-1);
@@ -656,6 +659,46 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             </>
           );
         })()}
+
+        {/* PR Pending */}
+        {item.status === "pr_pending" && (
+          <div className={styles.section}>
+            <h3 className={styles.sectionTitle}>Pull Request</h3>
+            <div className={styles.reviewContextBox}>
+              <div className={styles.reviewContextInfo}>
+                {item.prUrl ? (
+                  <>
+                    <span className={styles.reviewContextLabel}>
+                      PR #{item.prNumber} — waiting for merge
+                    </span>
+                    <a
+                      className={styles.reviewContextSessionId}
+                      href={item.prUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open pull request on GitHub"
+                    >
+                      {item.prUrl}
+                    </a>
+                  </>
+                ) : (
+                  <span className={styles.reviewContextLabel}>
+                    PR pending — no URL recorded yet
+                  </span>
+                )}
+              </div>
+              <button
+                className={styles.actionButton}
+                onClick={() => handleAction("mark_done")}
+                disabled={actionLoading}
+                title="Mark done manually (if PR already merged)"
+                data-testid="backlog-action-mark-done"
+              >
+                Mark Done
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Description */}
         <div className={styles.section}>

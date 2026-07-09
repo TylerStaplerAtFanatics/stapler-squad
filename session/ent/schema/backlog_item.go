@@ -60,6 +60,11 @@ func (BacklogItem) Fields() []ent.Field {
 		field.Time("archived_at").
 			Optional().
 			Nillable(),
+		field.String("pr_url").
+			Optional(),
+		field.Int("pr_number").
+			Optional().
+			Default(0),
 		field.Time("created_at").
 			Default(time.Now).
 			Immutable(),

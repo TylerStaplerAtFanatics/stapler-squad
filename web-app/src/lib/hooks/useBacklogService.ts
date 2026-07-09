@@ -17,7 +17,7 @@ import {
 // Domain types exposed to UI (mapped from proto, but without Message<> noise)
 // ---------------------------------------------------------------------------
 
-export type KnownBacklogStatus = "idea" | "refining" | "ready" | "in_progress" | "review" | "done" | "archived";
+export type KnownBacklogStatus = "idea" | "refining" | "ready" | "in_progress" | "review" | "pr_pending" | "done" | "archived";
 // (string & {}) preserves autocomplete for KnownBacklogStatus values while still
 // accepting unknown statuses returned by newer server versions.
 export type BacklogItemStatus = KnownBacklogStatus | (string & {});
@@ -96,6 +96,10 @@ export interface BacklogItem {
   statusEvents: StatusEvent[];
   /** Sum of estimated USD cost across all linked sessions */
   totalEstimatedCostUsd: number;
+  /** GitHub PR URL when item is in pr_pending status */
+  prUrl?: string;
+  /** GitHub PR number when item is in pr_pending status */
+  prNumber?: number;
 }
 
 export interface StatusEvent {
@@ -265,6 +269,8 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
     triageResult,
     statusEvents: (p.statusEvents ?? []).map(mapStatusEvent),
     totalEstimatedCostUsd: p.totalEstimatedCostUsd ?? 0,
+    prUrl: p.prUrl || undefined,
+    prNumber: p.prNumber || undefined,
   };
 }
 

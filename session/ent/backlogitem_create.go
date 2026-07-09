@@ -244,6 +244,34 @@ func (_c *BacklogItemCreate) SetNillableArchivedAt(v *time.Time) *BacklogItemCre
 	return _c
 }
 
+// SetPrURL sets the "pr_url" field.
+func (_c *BacklogItemCreate) SetPrURL(v string) *BacklogItemCreate {
+	_c.mutation.SetPrURL(v)
+	return _c
+}
+
+// SetNillablePrURL sets the "pr_url" field if the given value is not nil.
+func (_c *BacklogItemCreate) SetNillablePrURL(v *string) *BacklogItemCreate {
+	if v != nil {
+		_c.SetPrURL(*v)
+	}
+	return _c
+}
+
+// SetPrNumber sets the "pr_number" field.
+func (_c *BacklogItemCreate) SetPrNumber(v int) *BacklogItemCreate {
+	_c.mutation.SetPrNumber(v)
+	return _c
+}
+
+// SetNillablePrNumber sets the "pr_number" field if the given value is not nil.
+func (_c *BacklogItemCreate) SetNillablePrNumber(v *int) *BacklogItemCreate {
+	if v != nil {
+		_c.SetPrNumber(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *BacklogItemCreate) SetCreatedAt(v time.Time) *BacklogItemCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -405,6 +433,10 @@ func (_c *BacklogItemCreate) defaults() {
 		v := backlogitem.DefaultPlanApproved
 		_c.mutation.SetPlanApproved(v)
 	}
+	if _, ok := _c.mutation.PrNumber(); !ok {
+		v := backlogitem.DefaultPrNumber
+		_c.mutation.SetPrNumber(v)
+	}
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		v := backlogitem.DefaultCreatedAt()
 		_c.mutation.SetCreatedAt(v)
@@ -554,6 +586,14 @@ func (_c *BacklogItemCreate) createSpec() (*BacklogItem, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ArchivedAt(); ok {
 		_spec.SetField(backlogitem.FieldArchivedAt, field.TypeTime, value)
 		_node.ArchivedAt = &value
+	}
+	if value, ok := _c.mutation.PrURL(); ok {
+		_spec.SetField(backlogitem.FieldPrURL, field.TypeString, value)
+		_node.PrURL = value
+	}
+	if value, ok := _c.mutation.PrNumber(); ok {
+		_spec.SetField(backlogitem.FieldPrNumber, field.TypeInt, value)
+		_node.PrNumber = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(backlogitem.FieldCreatedAt, field.TypeTime, value)
@@ -938,6 +978,48 @@ func (u *BacklogItemUpsert) ClearArchivedAt() *BacklogItemUpsert {
 	return u
 }
 
+// SetPrURL sets the "pr_url" field.
+func (u *BacklogItemUpsert) SetPrURL(v string) *BacklogItemUpsert {
+	u.Set(backlogitem.FieldPrURL, v)
+	return u
+}
+
+// UpdatePrURL sets the "pr_url" field to the value that was provided on create.
+func (u *BacklogItemUpsert) UpdatePrURL() *BacklogItemUpsert {
+	u.SetExcluded(backlogitem.FieldPrURL)
+	return u
+}
+
+// ClearPrURL clears the value of the "pr_url" field.
+func (u *BacklogItemUpsert) ClearPrURL() *BacklogItemUpsert {
+	u.SetNull(backlogitem.FieldPrURL)
+	return u
+}
+
+// SetPrNumber sets the "pr_number" field.
+func (u *BacklogItemUpsert) SetPrNumber(v int) *BacklogItemUpsert {
+	u.Set(backlogitem.FieldPrNumber, v)
+	return u
+}
+
+// UpdatePrNumber sets the "pr_number" field to the value that was provided on create.
+func (u *BacklogItemUpsert) UpdatePrNumber() *BacklogItemUpsert {
+	u.SetExcluded(backlogitem.FieldPrNumber)
+	return u
+}
+
+// AddPrNumber adds v to the "pr_number" field.
+func (u *BacklogItemUpsert) AddPrNumber(v int) *BacklogItemUpsert {
+	u.Add(backlogitem.FieldPrNumber, v)
+	return u
+}
+
+// ClearPrNumber clears the value of the "pr_number" field.
+func (u *BacklogItemUpsert) ClearPrNumber() *BacklogItemUpsert {
+	u.SetNull(backlogitem.FieldPrNumber)
+	return u
+}
+
 // SetUpdatedAt sets the "updated_at" field.
 func (u *BacklogItemUpsert) SetUpdatedAt(v time.Time) *BacklogItemUpsert {
 	u.Set(backlogitem.FieldUpdatedAt, v)
@@ -1299,6 +1381,55 @@ func (u *BacklogItemUpsertOne) UpdateArchivedAt() *BacklogItemUpsertOne {
 func (u *BacklogItemUpsertOne) ClearArchivedAt() *BacklogItemUpsertOne {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.ClearArchivedAt()
+	})
+}
+
+// SetPrURL sets the "pr_url" field.
+func (u *BacklogItemUpsertOne) SetPrURL(v string) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetPrURL(v)
+	})
+}
+
+// UpdatePrURL sets the "pr_url" field to the value that was provided on create.
+func (u *BacklogItemUpsertOne) UpdatePrURL() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdatePrURL()
+	})
+}
+
+// ClearPrURL clears the value of the "pr_url" field.
+func (u *BacklogItemUpsertOne) ClearPrURL() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.ClearPrURL()
+	})
+}
+
+// SetPrNumber sets the "pr_number" field.
+func (u *BacklogItemUpsertOne) SetPrNumber(v int) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetPrNumber(v)
+	})
+}
+
+// AddPrNumber adds v to the "pr_number" field.
+func (u *BacklogItemUpsertOne) AddPrNumber(v int) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.AddPrNumber(v)
+	})
+}
+
+// UpdatePrNumber sets the "pr_number" field to the value that was provided on create.
+func (u *BacklogItemUpsertOne) UpdatePrNumber() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdatePrNumber()
+	})
+}
+
+// ClearPrNumber clears the value of the "pr_number" field.
+func (u *BacklogItemUpsertOne) ClearPrNumber() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.ClearPrNumber()
 	})
 }
 
@@ -1832,6 +1963,55 @@ func (u *BacklogItemUpsertBulk) UpdateArchivedAt() *BacklogItemUpsertBulk {
 func (u *BacklogItemUpsertBulk) ClearArchivedAt() *BacklogItemUpsertBulk {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.ClearArchivedAt()
+	})
+}
+
+// SetPrURL sets the "pr_url" field.
+func (u *BacklogItemUpsertBulk) SetPrURL(v string) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetPrURL(v)
+	})
+}
+
+// UpdatePrURL sets the "pr_url" field to the value that was provided on create.
+func (u *BacklogItemUpsertBulk) UpdatePrURL() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdatePrURL()
+	})
+}
+
+// ClearPrURL clears the value of the "pr_url" field.
+func (u *BacklogItemUpsertBulk) ClearPrURL() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.ClearPrURL()
+	})
+}
+
+// SetPrNumber sets the "pr_number" field.
+func (u *BacklogItemUpsertBulk) SetPrNumber(v int) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetPrNumber(v)
+	})
+}
+
+// AddPrNumber adds v to the "pr_number" field.
+func (u *BacklogItemUpsertBulk) AddPrNumber(v int) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.AddPrNumber(v)
+	})
+}
+
+// UpdatePrNumber sets the "pr_number" field to the value that was provided on create.
+func (u *BacklogItemUpsertBulk) UpdatePrNumber() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdatePrNumber()
+	})
+}
+
+// ClearPrNumber clears the value of the "pr_number" field.
+func (u *BacklogItemUpsertBulk) ClearPrNumber() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.ClearPrNumber()
 	})
 }
 

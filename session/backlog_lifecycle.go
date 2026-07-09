@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
@@ -379,15 +380,11 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 			}()
 		}
 
-		// Auto-transition to done on PASS so headless reviews complete the full loop
-		// without requiring manual intervention.
+		// On PASS: push the branch, create a PR, and move to pr_pending so the work
+		// is visible on GitHub and a human (or the reconciler) can merge it to done.
+		// Falls back to direct done transition when no worktree is available.
 		if overall == ReviewVerdictPass {
-			precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview)}
-			if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusDone, precondition); transErr != nil {
-				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate auto-done transition item=%s: %v", item.ID, transErr)
-			} else {
-				log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate auto-transitioned item %s to done (headless PASS)", item.ID)
-			}
+			l.pushAndCreatePR(ctx, item, is)
 		}
 		return
 	}
@@ -470,5 +467,105 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 			defer func() { <-l.reviewSem }()
 			l.spawnReviewGate(itemCopy, isCopy)
 		}(item, is)
+	}
+
+	// Poll pr_pending items: auto-transition to done when the PR is merged.
+	l.ReconcilePRPending(ctx, er)
+}
+
+// pushAndCreatePR commits any dirty state, pushes the branch, creates a GitHub PR,
+// stores the PR URL and number on the item, then transitions to pr_pending.
+// Falls back to direct done transition when no worktree exists or gh CLI is unavailable.
+func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *ent.BacklogItem, is *ent.ItemSession) {
+	fallbackToDone := func(reason string) {
+		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s falling back to done: %s", item.ID, reason)
+		precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview)}
+		if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusDone, precondition); transErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] pushAndCreatePR fallback done item=%s: %v", item.ID, transErr)
+		}
+	}
+
+	wt, wtErr := l.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
+	if wtErr != nil || wt.WorktreePath == "" {
+		fallbackToDone("no worktree")
+		return
+	}
+
+	g := git.NewGitWorktreeFromStorage(wt.RepoPath, wt.WorktreePath, wt.SessionName, wt.BranchName, wt.BaseCommitSHA)
+
+	// Commit any remaining dirty state.
+	commitMsg := fmt.Sprintf("[claudesquad] work complete for %q (pre-PR)", item.Title)
+	if commitErr := g.CommitChanges(commitMsg); commitErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR commit item=%s: %v", item.ID, commitErr)
+	}
+
+	// Push branch to origin.
+	if pushErr := g.PushBranch(); pushErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR push item=%s: %v", item.ID, pushErr)
+		fallbackToDone("push failed")
+		return
+	}
+
+	// Create the PR.
+	prTitle := item.Title
+	prBody := fmt.Sprintf("Automated PR for backlog item: %s\n\nItem ID: %s", item.Title, item.ID)
+	prURL, prNumber, prErr := g.CreatePR(prTitle, prBody)
+	if prErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR create PR item=%s: %v", item.ID, prErr)
+		fallbackToDone("PR creation failed")
+		return
+	}
+
+	// Cache PR URL + number on the item so the reconciler and UI can use them.
+	prURLCopy := prURL
+	prNumCopy := prNumber
+	if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
+		PrURL:    &prURLCopy,
+		PrNumber: &prNumCopy,
+	}, nil); updateErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR store PR fields item=%s: %v", item.ID, updateErr)
+	}
+
+	// Transition to pr_pending.
+	precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview)}
+	if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusPRPending, precondition); transErr != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] pushAndCreatePR pr_pending transition item=%s: %v", item.ID, transErr)
+	} else {
+		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s → pr_pending (PR #%d %s)", item.ID, prNumber, prURL)
+	}
+}
+
+// ReconcilePRPending polls items in pr_pending status and auto-transitions to done
+// when their GitHub PR has been merged.
+func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *EntRepository) {
+	items, err := er.FindPRPendingItems(ctx)
+	if err != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending query error: %v", err)
+		return
+	}
+	for _, item := range items {
+		if item.PrNumber == 0 || item.PrURL == "" {
+			continue
+		}
+		// Need a worktree path for gh CLI; use repo_path as working dir.
+		repoPath := item.RepoPath
+		if repoPath == "" {
+			continue
+		}
+		g := git.NewGitWorktreeFromStorage(repoPath, repoPath, "", "", "")
+		merged, mergedErr := g.IsPRMerged(item.PrNumber)
+		if mergedErr != nil {
+			log.DebugLog.Printf("[BacklogLifecycle] ReconcilePRPending IsPRMerged item=%s pr=%d: %v", item.ID, item.PrNumber, mergedErr)
+			continue
+		}
+		if !merged {
+			continue
+		}
+		precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusPRPending)}
+		if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusDone, precondition); transErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending done transition item=%s: %v", item.ID, transErr)
+		} else {
+			log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s → done (PR #%d merged)", item.ID, item.PrNumber)
+		}
 	}
 }

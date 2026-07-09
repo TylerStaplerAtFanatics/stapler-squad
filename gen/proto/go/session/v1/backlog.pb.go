@@ -703,6 +703,8 @@ type BacklogItem struct {
 	SourceId              string                 `protobuf:"bytes,19,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
 	StatusEvents          []*BacklogStatusEvent  `protobuf:"bytes,20,rep,name=status_events,json=statusEvents,proto3" json:"status_events,omitempty"`
 	TotalEstimatedCostUsd float64                `protobuf:"fixed64,21,opt,name=total_estimated_cost_usd,json=totalEstimatedCostUsd,proto3" json:"total_estimated_cost_usd,omitempty"`
+	PrUrl                 string                 `protobuf:"bytes,22,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
+	PrNumber              int32                  `protobuf:"varint,23,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -880,6 +882,20 @@ func (x *BacklogItem) GetStatusEvents() []*BacklogStatusEvent {
 func (x *BacklogItem) GetTotalEstimatedCostUsd() float64 {
 	if x != nil {
 		return x.TotalEstimatedCostUsd
+	}
+	return 0
+}
+
+func (x *BacklogItem) GetPrUrl() string {
+	if x != nil {
+		return x.PrUrl
+	}
+	return ""
+}
+
+func (x *BacklogItem) GetPrNumber() int32 {
+	if x != nil {
+		return x.PrNumber
 	}
 	return 0
 }
@@ -4214,7 +4230,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\tto_status\x18\x03 \x01(\tR\btoStatus\x12!\n" +
 	"\ftriggered_by\x18\x04 \x01(\tR\vtriggeredBy\x129\n" +
 	"\n" +
-	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x9d\a\n" +
+	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xd1\a\n" +
 	"\vBacklogItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -4241,7 +4257,9 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\ritem_sessions\x18\x12 \x03(\v2\x17.session.v1.ItemSessionR\fitemSessions\x12\x1b\n" +
 	"\tsource_id\x18\x13 \x01(\tR\bsourceId\x12C\n" +
 	"\rstatus_events\x18\x14 \x03(\v2\x1e.session.v1.BacklogStatusEventR\fstatusEvents\x127\n" +
-	"\x18total_estimated_cost_usd\x18\x15 \x01(\x01R\x15totalEstimatedCostUsd\"\xd9\x02\n" +
+	"\x18total_estimated_cost_usd\x18\x15 \x01(\x01R\x15totalEstimatedCostUsd\x12\x15\n" +
+	"\x06pr_url\x18\x16 \x01(\tR\x05prUrl\x12\x1b\n" +
+	"\tpr_number\x18\x17 \x01(\x05R\bprNumber\"\xd9\x02\n" +
 	"\n" +
 	"ItemSource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +

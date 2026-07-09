@@ -14,6 +14,7 @@ const (
 	BacklogStatusReady      BacklogStatus = "ready"
 	BacklogStatusInProgress BacklogStatus = "in_progress"
 	BacklogStatusReview     BacklogStatus = "review"
+	BacklogStatusPRPending  BacklogStatus = "pr_pending"
 	BacklogStatusDone       BacklogStatus = "done"
 	BacklogStatusArchived   BacklogStatus = "archived"
 )
@@ -146,8 +147,14 @@ var validTransitions = map[BacklogStatus]map[BacklogStatus]bool{
 		BacklogStatusReady:  true,
 	},
 	BacklogStatusReview: {
+		BacklogStatusPRPending:  true,
 		BacklogStatusDone:       true,
 		BacklogStatusInProgress: true,
+	},
+	BacklogStatusPRPending: {
+		BacklogStatusDone:       true,
+		BacklogStatusInProgress: true,
+		BacklogStatusReview:     true,
 	},
 	BacklogStatusDone: {
 		BacklogStatusReview:   true,
