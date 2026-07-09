@@ -409,6 +409,8 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   const canSpawnSession =
     item.status === "ready" &&
     (item.skipPlanning || item.planApproved);
+  // Autonomous mode does its own planning — no plan-approval gate needed.
+  const canRunAutonomously = item.status === "ready";
 
   if (editMode) {
     return (
@@ -731,11 +733,11 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 <button
                   className={styles.actionButton}
                   onClick={() => handleAction("spawn_session_autonomous")}
-                  disabled={actionLoading || !canSpawnSession}
-                  aria-disabled={!canSpawnSession}
+                  disabled={actionLoading || !canRunAutonomously}
+                  aria-disabled={!canRunAutonomously}
                   title={
-                    !canSpawnSession
-                      ? "Approve the plan or enable skip_planning to run autonomously"
+                    !canRunAutonomously
+                      ? "Item must be in Ready status to run autonomously"
                       : "Run the agent without human approval for tool calls"
                   }
                   data-testid="backlog-action-run-autonomously"

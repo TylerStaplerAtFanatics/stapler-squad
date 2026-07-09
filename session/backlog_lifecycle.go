@@ -378,6 +378,17 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 				}
 			}()
 		}
+
+		// Auto-transition to done on PASS so headless reviews complete the full loop
+		// without requiring manual intervention.
+		if overall == ReviewVerdictPass {
+			precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview)}
+			if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusDone, precondition); transErr != nil {
+				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate auto-done transition item=%s: %v", item.ID, transErr)
+			} else {
+				log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate auto-transitioned item %s to done (headless PASS)", item.ID)
+			}
+		}
 		return
 	}
 

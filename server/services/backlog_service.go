@@ -2374,6 +2374,11 @@ func (s *BacklogService) cleanupItemWorktrees(ctx context.Context, sessions []*e
 			continue
 		}
 		g := git.NewGitWorktreeFromStorage(wt.RepoPath, wt.WorktreePath, wt.SessionName, wt.BranchName, wt.BaseCommitSHA)
+		// Commit any uncommitted changes before removing the worktree so work is not lost.
+		commitMsg := fmt.Sprintf("[claudesquad] save work before done (session %s)", is.SessionUUID)
+		if commitErr := g.CommitChanges(commitMsg); commitErr != nil {
+			log.WarningLog.Printf("[cleanupItemWorktrees] failed to commit before cleanup path=%s: %v", wt.WorktreePath, commitErr)
+		}
 		if cleanErr := g.Cleanup(); cleanErr != nil {
 			log.WarningLog.Printf("[cleanupItemWorktrees] failed to cleanup worktree path=%s: %v", wt.WorktreePath, cleanErr)
 		}
