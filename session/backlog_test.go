@@ -38,10 +38,8 @@ func TestCanTransition_AllInvalidPaths(t *testing.T) {
 		to   BacklogStatus
 	}{
 		{BacklogStatusIdea, BacklogStatusDone},
-		{BacklogStatusDone, BacklogStatusInProgress},
 		{BacklogStatusReady, BacklogStatusDone},
 		{BacklogStatusArchived, BacklogStatusReview},
-		{BacklogStatusInProgress, BacklogStatusIdea},
 	}
 	for _, tc := range cases {
 		if CanTransitionBacklog(tc.from, tc.to) {

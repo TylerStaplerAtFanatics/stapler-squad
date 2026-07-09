@@ -986,6 +986,21 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 		}
 	}
 
+	// Backward to idea/refining: reset planning approval so triage must re-run.
+	// Best-effort — a warning is logged but the transition itself is already committed.
+	if to == session.BacklogStatusIdea || to == session.BacklogStatusRefining {
+		planApproved := false
+		planArtifactsPath := ""
+		if upd, resetErr := s.storage.UpdateBacklogItem(ctx, req.Msg.ItemId, session.BacklogItemUpdate{
+			PlanApproved:      &planApproved,
+			PlanArtifactsPath: &planArtifactsPath,
+		}, nil); resetErr != nil {
+			log.WarningLog.Printf("[TransitionBacklogItemStatus] failed to reset planning state for item %s: %v", req.Msg.ItemId, resetErr)
+		} else {
+			updated = upd
+		}
+	}
+
 	return connect.NewResponse(&sessionv1.TransitionBacklogItemStatusResponse{
 		Item: backlogItemToProto(updated, s.buildCostLookup()),
 	}), nil

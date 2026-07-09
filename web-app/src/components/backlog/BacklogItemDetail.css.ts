@@ -270,6 +270,17 @@ export const actionButton = style({
   },
 });
 
+export const actionButtonSecondary = style({
+  background: "transparent",
+  color: vars.color.textMuted,
+  borderColor: vars.color.borderMuted,
+  ":hover": {
+    background: vars.color.accentHover,
+    borderColor: vars.color.textMuted,
+    color: vars.color.textPrimary,
+  },
+});
+
 export const actionButtonDanger = style({
   background: vars.color.errorBg,
   color: vars.color.error,
