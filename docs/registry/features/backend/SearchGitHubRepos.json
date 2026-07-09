@@ -1,0 +1,15 @@
+{
+  "id": "SearchGitHubRepos",
+  "type": "backend",
+  "service": "BacklogService",
+  "method": "SearchGitHubRepos",
+  "protoFile": "proto/session/v1/backlog.proto",
+  "markerFound": false,
+  "tested": true,
+  "testIds": [
+    "TestSearchGitHubRepos_NilStorage",
+    "TestSearchGitHubRepos_DefaultLimit",
+    "TestSearchGitHubRepos_ReturnsRepos"
+  ],
+  "lastModified": "2026-07-06T14:19:06.143721817-07:00"
+}
