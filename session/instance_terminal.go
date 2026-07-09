@@ -111,7 +111,7 @@ func (i *Instance) combineErrors(errs []error) error {
 // doesn't synchronize with that write at all (see GetStatus's doc comment).
 func (i *Instance) Preview() (string, error) {
 	status := i.Snapshot().Status
-	if !i.started.Load() || status == Paused || status == Stopped {
+	if !i.started.Load() || status == Paused || status == Stopped || status == Hibernated {
 		return "", nil
 	}
 
@@ -134,7 +134,7 @@ func (i *Instance) Preview() (string, error) {
 
 // PreviewFullHistory captures the entire tmux pane output including full scrollback history.
 func (i *Instance) PreviewFullHistory() (string, error) {
-	if !i.started.Load() || i.Status == Paused || i.Status == Stopped {
+	if !i.started.Load() || i.Status == Paused || i.Status == Stopped || i.Status == Hibernated {
 		return "", nil
 	}
 

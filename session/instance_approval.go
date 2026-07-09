@@ -80,13 +80,16 @@ func (i *Instance) UpdateTerminalTimestamps(content string, forceUpdate bool) {
 	}
 
 	i.send(func(s *instanceState) {
-		s.inst.UpdateTimestamps(content, filteredContent, shouldUpdateMeaningful, s.inst.Title)
 		// send() only auto-republishes the snapshot when a live actor is running
 		// (runActor's loop, after every command); in the actor-less fallback path
 		// (li == nil — e.g. plain-struct-literal tests) nothing else does this, so
 		// the mutation above would never become visible via Snapshot(). Publish
-		// unconditionally here, matching transitionToLocked's own discipline.
-		s.inst.snapshot.Store(buildSnapshot(s.inst))
+		// explicitly here, matching transitionToLocked's own discipline — but only
+		// when UpdateTimestamps actually changed something, so a terminal frame
+		// with no meaningful content doesn't force a snapshot rebuild.
+		if s.inst.UpdateTimestamps(content, filteredContent, shouldUpdateMeaningful, s.inst.Title) {
+			s.inst.snapshot.Store(buildSnapshot(s.inst))
+		}
 	})
 }
 
