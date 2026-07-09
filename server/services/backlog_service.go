@@ -435,6 +435,8 @@ func itemSessionToProto(is *ent.ItemSession, costFor func(tmuxUUID string) float
 				Suggestions:         suggs,
 				ClarifyingQuestions: clarifying,
 				Tasks:               tasks,
+				Iteration:           int32(tr.Iteration),
+				Feedback:            tr.Feedback,
 			}
 		}
 	}
@@ -456,6 +458,8 @@ type triageResultJSON struct {
 	Suggestions         []session.TriageSuggestion `json:"suggestions"`
 	ClarifyingQuestions []string                   `json:"clarifying_questions,omitempty"`
 	Tasks               []session.TriageTask       `json:"tasks,omitempty"`
+	Iteration           int                        `json:"iteration,omitempty"`
+	Feedback            string                     `json:"feedback,omitempty"`
 }
 
 // backlogItemToProto maps a BacklogItemData to the proto BacklogItem message.
@@ -1604,6 +1608,28 @@ func (s *BacklogService) TriggerTriage(
 		}
 	}
 
+	// 3c. Feedback-driven refine: find the most recent completed triage result to
+	// revise. Refining requires one to exist — feedback on an item with no completed
+	// triage falls back to a confusing fresh run, so reject explicitly instead.
+	feedback := strings.TrimSpace(req.Msg.Feedback)
+	var priorResult session.HeadlessTriageResult
+	var havePrior bool
+	for i := len(existingSessions) - 1; i >= 0; i-- {
+		is := existingSessions[i]
+		if is.SessionRole != string(session.SessionRoleTriage) || is.TriageResult == "" {
+			continue
+		}
+		if jsonErr := json.Unmarshal([]byte(is.TriageResult), &priorResult); jsonErr == nil {
+			havePrior = true
+			break
+		}
+	}
+	if feedback != "" && !havePrior {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("no completed triage result to refine for item %s — trigger initial triage first", req.Msg.ItemId))
+	}
+	nextIteration := priorResult.Iteration + 1
+
 	// 4. Build artifact dir path under ~/.stapler-squad/triage-artifacts/<item-id>/
 	//    so triage workers don't write into the item's git repo.
 	triageBase, triageBaseErr := s.cfg.TriageArtifactDirOrDefault()
@@ -1625,8 +1651,14 @@ func (s *BacklogService) TriggerTriage(
 			fmt.Errorf("headless pool not available — ensure claude binary is installed"))
 	}
 
-	// 7. Build triage prompt.
-	triagePrompt := session.BuildHeadlessTriagePrompt(item, artifactAbsPath)
+	// 7. Build triage prompt — a fresh triage, or a feedback-driven refine of the
+	// most recent completed result.
+	var triagePrompt string
+	if feedback != "" {
+		triagePrompt = session.BuildHeadlessRetriagePrompt(item, artifactAbsPath, priorResult, feedback)
+	} else {
+		triagePrompt = session.BuildHeadlessTriagePrompt(item, artifactAbsPath)
+	}
 
 	// 8. Create ItemSession synchronously before goroutine (prevents TOCTOU on orphan guard).
 	triageSessionUUID := headlessTriageUUIDPrefix + uuid.New().String()
@@ -1646,6 +1678,7 @@ func (s *BacklogService) TriggerTriage(
 	itemID := item.ID
 	itemRepoPath := item.RepoPath
 	isID := is.ID.String()
+	iteration := nextIteration
 	go func() {
 		// Acquire concurrency semaphore (max 8 concurrent triage calls).
 		select {
@@ -1693,6 +1726,8 @@ func (s *BacklogService) TriggerTriage(
 			_ = s.storage.UpdateItemSessionEnded(cleanupCtx, isID, time.Now())
 			return
 		}
+		result.Iteration = iteration
+		result.Feedback = feedback
 
 		payloadJSON, marshalErr := json.Marshal(result)
 		if marshalErr != nil {
