@@ -844,6 +844,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// the periodic SyncLoop's behavior.
 	backlogSvc.SetSyncFeatureEnabledCheck(backlogCtrl.IsEnabled)
 	backlogLifecycleListener.SetAutoReopener(backlogSvc)
+	backlogLifecycleListener.SetPRFixSpawner(backlogSvc)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 

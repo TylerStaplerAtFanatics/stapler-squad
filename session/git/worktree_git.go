@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -209,12 +210,19 @@ func (g *GitWorktree) PushBranch() error {
 
 // CreatePR creates a GitHub pull request for the current branch and returns the
 // PR URL and number. Title defaults to the branch name if empty.
+// If a PR already exists for the branch it is returned without creating a new one.
 func (g *GitWorktree) CreatePR(title, body string) (prURL string, prNumber int, err error) {
 	if err := checkGHCLI(); err != nil {
 		return "", 0, err
 	}
 	if title == "" {
 		title = strings.ReplaceAll(g.branchName, "-", " ")
+	}
+
+	// Check for an existing PR on this branch first.
+	existingURL, existingNumber, existsErr := g.findExistingPR()
+	if existsErr == nil && existingNumber > 0 {
+		return existingURL, existingNumber, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -225,6 +233,10 @@ func (g *GitWorktree) CreatePR(title, body string) (prURL string, prNumber int, 
 	cmd.Dir = g.worktreePath
 	out, runErr := g.runCombinedOutput(cmd)
 	if runErr != nil {
+		// A race: PR was created between our check and now. Re-check once.
+		if u, n, err2 := g.findExistingPR(); err2 == nil && n > 0 {
+			return u, n, nil
+		}
 		return "", 0, fmt.Errorf("gh pr create failed: %s (%w)", out, runErr)
 	}
 
@@ -243,6 +255,144 @@ func (g *GitWorktree) CreatePR(title, body string) (prURL string, prNumber int, 
 	}
 
 	return prURL, prNumber, nil
+}
+
+// findExistingPR looks up an open PR for the branch. Returns (url, number, nil)
+// if found, or ("", 0, err) if not found or on error.
+func (g *GitWorktree) findExistingPR() (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := safeexec.CommandContext(ctx, "gh", "pr", "list", "--head", g.branchName,
+		"--json", "number,url", "--jq", ".[0] | .number, .url")
+	cmd.Dir = g.worktreePath
+	out, err := g.runCombinedOutput(cmd)
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return "", 0, fmt.Errorf("no existing PR")
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		return "", 0, fmt.Errorf("unexpected output")
+	}
+	num, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
+	url := strings.TrimSpace(lines[1])
+	if num == 0 {
+		return "", 0, fmt.Errorf("no PR found")
+	}
+	return url, num, nil
+}
+
+// PRStatus holds the CI and review state for a pull request.
+type PRStatus struct {
+	// CIFailing is true when at least one CI check has a terminal failure.
+	CIFailing bool
+	// HasBlockingReviews is true when a reviewer has requested changes.
+	HasBlockingReviews bool
+	// FeedbackText is a combined human-readable summary for the fix agent.
+	FeedbackText string
+}
+
+// GetPRStatus fetches the combined CI check status, reviewer decisions, and
+// PR comments for the given pull request number.
+func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
+	if err := checkGHCLI(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := safeexec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber),
+		"--json", "statusCheckRollup,reviews,comments")
+	cmd.Dir = g.worktreePath
+	raw, err := g.runCombinedOutput(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view failed: %s (%w)", raw, err)
+	}
+
+	var payload struct {
+		StatusCheckRollup []struct {
+			Typename   string `json:"__typename"`
+			Name       string `json:"name"`
+			Context    string `json:"context"` // for StatusContext checks
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			State      string `json:"state"` // for StatusContext checks
+			DetailsURL string `json:"detailsUrl"`
+			TargetURL  string `json:"targetUrl"`
+		} `json:"statusCheckRollup"`
+		Reviews []struct {
+			State  string `json:"state"`
+			Body   string `json:"body"`
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"reviews"`
+		Comments []struct {
+			Body   string `json:"body"`
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"comments"`
+	}
+	if jsonErr := json.Unmarshal([]byte(raw), &payload); jsonErr != nil {
+		return nil, fmt.Errorf("parse pr status: %w", jsonErr)
+	}
+
+	status := &PRStatus{}
+	var sb strings.Builder
+
+	// Evaluate CI checks.
+	var failedChecks []string
+	for _, check := range payload.StatusCheckRollup {
+		name := check.Name
+		if name == "" {
+			name = check.Context
+		}
+		// Terminal failures: FAILURE conclusion or failed state.
+		conclusion := strings.ToUpper(check.Conclusion)
+		state := strings.ToUpper(check.State)
+		if conclusion == "FAILURE" || conclusion == "TIMED_OUT" || conclusion == "CANCELLED" ||
+			state == "FAILURE" || state == "ERROR" {
+			status.CIFailing = true
+			url := check.DetailsURL
+			if url == "" {
+				url = check.TargetURL
+			}
+			entry := name + " FAILED"
+			if url != "" {
+				entry += " (" + url + ")"
+			}
+			failedChecks = append(failedChecks, entry)
+		}
+	}
+	if len(failedChecks) > 0 {
+		sb.WriteString("## Failing CI checks\n")
+		for _, fc := range failedChecks {
+			sb.WriteString("- " + fc + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Evaluate reviews.
+	for _, r := range payload.Reviews {
+		if strings.ToUpper(r.State) == "CHANGES_REQUESTED" {
+			status.HasBlockingReviews = true
+			sb.WriteString("## Review: changes requested by @" + r.Author.Login + "\n")
+			if r.Body != "" {
+				sb.WriteString(r.Body + "\n\n")
+			}
+		}
+	}
+
+	// Include general PR comments as context.
+	if len(payload.Comments) > 0 {
+		sb.WriteString("## PR comments\n")
+		for _, c := range payload.Comments {
+			sb.WriteString("@" + c.Author.Login + ": " + c.Body + "\n\n")
+		}
+	}
+
+	status.FeedbackText = sb.String()
+	return status, nil
 }
 
 // IsPRMerged reports whether the given PR number has been merged.
