@@ -12,6 +12,12 @@ import (
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
+// ReviewGateTrigger is implemented by BacklogLifecycleListener to fire an
+// immediate headless review when an autonomous work session completes.
+type ReviewGateTrigger interface {
+	TriggerReviewForSession(workSessionUUID string)
+}
+
 // AutonomousOrchestrationService manages the lifecycle of AutonomousDriver instances:
 // registering them on session creation, stopping them on deletion/hibernate, and
 // handling their completion callbacks.
@@ -34,6 +40,15 @@ type AutonomousOrchestrationService struct {
 	// storageGetter returns the concrete backing store for backlog item transitions.
 	// Wired at construction time via a closure over the InstanceStore.
 	storageGetter func() *session.Storage
+
+	// reviewGateTrigger fires an immediate headless review when a work session
+	// completes under autonomous mode. Optional — if nil, review runs on next ReconcileStuck tick.
+	reviewGateTrigger ReviewGateTrigger
+}
+
+// SetReviewGateTrigger wires the review gate trigger (typically BacklogLifecycleListener).
+func (a *AutonomousOrchestrationService) SetReviewGateTrigger(t ReviewGateTrigger) {
+	a.reviewGateTrigger = t
 }
 
 // NewAutonomousOrchestrationService creates a new service.
@@ -255,6 +270,10 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 						log.Warn("[AutonomousDriver] failed to transition backlog item", "item", item.ID, "to", toStatus, "err", transErr)
 					} else {
 						log.Info("[AutonomousDriver] backlog item transitioned", "item", item.ID, "to", toStatus, "done", outcome.Done)
+						// Immediately kick off headless review for completed work sessions.
+						if toStatus == session.BacklogStatusReview && a.reviewGateTrigger != nil {
+							a.reviewGateTrigger.TriggerReviewForSession(sessionUUID)
+						}
 					}
 				}
 			}

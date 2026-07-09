@@ -702,6 +702,12 @@ func (s *SessionService) SetBacklogLifecycleListener(l *session.BacklogLifecycle
 	s.backlogLifecycleListener = l
 }
 
+// SetReviewGateTrigger wires the review gate trigger into the autonomous orchestration
+// service so that completed work sessions immediately kick off headless review.
+func (s *SessionService) SetReviewGateTrigger(t ReviewGateTrigger) {
+	s.autonomousSvc.SetReviewGateTrigger(t)
+}
+
 // SpawnReviewSession satisfies the session.ReviewGateSpawner interface so that
 // BacklogLifecycleListener can spawn one-shot review sessions automatically when
 // a work session exits. The session is tagged "backlog:review" and runs one-shot.
@@ -4033,6 +4039,11 @@ func (s *SessionService) UpdateSessionProgram(ctx context.Context, sessionID str
 	s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"program"}))
 
 	return nil
+}
+
+// SetResolveConversationUUID wires the tmux-UUID → Claude-UUID resolver into the search service.
+func (s *SessionService) SetResolveConversationUUID(fn func(ctx context.Context, tmuxUUID string) (string, error)) {
+	s.searchSvc.SetResolveConversationUUID(fn)
 }
 
 // SetTokenStoreReader wires the global parsed token store into the capacity monitor.
