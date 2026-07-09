@@ -441,6 +441,29 @@ func (r *EntRepository) ReconcileStuckItems(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// FindReviewItemsWithoutGate returns backlog items in "review" status that have
+// no review ItemSession. These are items where the review gate was never spawned
+// (e.g. the headless pool was unavailable at the time of the work session exit).
+// Each returned item has its ItemSessions edge loaded (work sessions only).
+func (r *EntRepository) FindReviewItemsWithoutGate(ctx context.Context) ([]*ent.BacklogItem, error) {
+	items, err := r.client.BacklogItem.Query().
+		Where(
+			backlogitem.Status(string(BacklogStatusReview)),
+			backlogitem.SkipReviewGate(false),
+			backlogitem.Not(backlogitem.HasItemSessionsWith(itemsession.SessionRole(SessionRoleReview))),
+		).
+		WithItemSessions(func(q *ent.ItemSessionQuery) {
+			q.Where(itemsession.SessionRole(SessionRoleWork)).
+				Order(ent.Desc(itemsession.FieldCreatedAt)).
+				Limit(1)
+		}).
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query review items without gate: %w", err)
+	}
+	return items, nil
+}
+
 // --- ReviewVerdict lookup ---
 
 // GetMostRecentReviewVerdictForItem returns the OverallOutcome string from the
