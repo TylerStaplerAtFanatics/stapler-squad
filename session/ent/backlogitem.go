@@ -51,6 +51,10 @@ type BacklogItem struct {
 	UserModifiedStatusAt *time.Time `json:"user_modified_status_at,omitempty"`
 	// ArchivedAt holds the value of the "archived_at" field.
 	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	// PrURL holds the value of the "pr_url" field.
+	PrURL string `json:"pr_url,omitempty"`
+	// PrNumber holds the value of the "pr_number" field.
+	PrNumber int `json:"pr_number,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// UpdatedAt holds the value of the "updated_at" field.
@@ -122,9 +126,9 @@ func (*BacklogItem) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case backlogitem.FieldSkipReviewGate, backlogitem.FieldSkipPlanning, backlogitem.FieldPlanApproved:
 			values[i] = new(sql.NullBool)
-		case backlogitem.FieldPriority:
+		case backlogitem.FieldPriority, backlogitem.FieldPrNumber:
 			values[i] = new(sql.NullInt64)
-		case backlogitem.FieldTitle, backlogitem.FieldDescription, backlogitem.FieldAcceptanceCriteria, backlogitem.FieldStatus, backlogitem.FieldRepoPath, backlogitem.FieldPlanArtifactsPath, backlogitem.FieldUserModifiedFields, backlogitem.FieldNotes, backlogitem.FieldExternalID:
+		case backlogitem.FieldTitle, backlogitem.FieldDescription, backlogitem.FieldAcceptanceCriteria, backlogitem.FieldStatus, backlogitem.FieldRepoPath, backlogitem.FieldPlanArtifactsPath, backlogitem.FieldUserModifiedFields, backlogitem.FieldNotes, backlogitem.FieldExternalID, backlogitem.FieldPrURL:
 			values[i] = new(sql.NullString)
 		case backlogitem.FieldPlanApprovedAt, backlogitem.FieldUserModifiedStatusAt, backlogitem.FieldArchivedAt, backlogitem.FieldCreatedAt, backlogitem.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -251,6 +255,18 @@ func (_m *BacklogItem) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.ArchivedAt = new(time.Time)
 				*_m.ArchivedAt = value.Time
+			}
+		case backlogitem.FieldPrURL:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field pr_url", values[i])
+			} else if value.Valid {
+				_m.PrURL = value.String
+			}
+		case backlogitem.FieldPrNumber:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field pr_number", values[i])
+			} else if value.Valid {
+				_m.PrNumber = int(value.Int64)
 			}
 		case backlogitem.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -380,6 +396,12 @@ func (_m *BacklogItem) String() string {
 		builder.WriteString("archived_at=")
 		builder.WriteString(v.Format(time.ANSIC))
 	}
+	builder.WriteString(", ")
+	builder.WriteString("pr_url=")
+	builder.WriteString(_m.PrURL)
+	builder.WriteString(", ")
+	builder.WriteString("pr_number=")
+	builder.WriteString(fmt.Sprintf("%v", _m.PrNumber))
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))

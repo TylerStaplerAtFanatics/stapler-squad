@@ -2994,6 +2994,9 @@ type BacklogItemMutation struct {
 	external_id             *string
 	user_modified_status_at *time.Time
 	archived_at             *time.Time
+	pr_url                  *string
+	pr_number               *int
+	addpr_number            *int
 	created_at              *time.Time
 	updated_at              *time.Time
 	clearedFields           map[string]struct{}
@@ -3843,6 +3846,125 @@ func (m *BacklogItemMutation) ResetArchivedAt() {
 	delete(m.clearedFields, backlogitem.FieldArchivedAt)
 }
 
+// SetPrURL sets the "pr_url" field.
+func (m *BacklogItemMutation) SetPrURL(s string) {
+	m.pr_url = &s
+}
+
+// PrURL returns the value of the "pr_url" field in the mutation.
+func (m *BacklogItemMutation) PrURL() (r string, exists bool) {
+	v := m.pr_url
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPrURL returns the old "pr_url" field's value of the BacklogItem entity.
+// If the BacklogItem object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogItemMutation) OldPrURL(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPrURL is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPrURL requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPrURL: %w", err)
+	}
+	return oldValue.PrURL, nil
+}
+
+// ClearPrURL clears the value of the "pr_url" field.
+func (m *BacklogItemMutation) ClearPrURL() {
+	m.pr_url = nil
+	m.clearedFields[backlogitem.FieldPrURL] = struct{}{}
+}
+
+// PrURLCleared returns if the "pr_url" field was cleared in this mutation.
+func (m *BacklogItemMutation) PrURLCleared() bool {
+	_, ok := m.clearedFields[backlogitem.FieldPrURL]
+	return ok
+}
+
+// ResetPrURL resets all changes to the "pr_url" field.
+func (m *BacklogItemMutation) ResetPrURL() {
+	m.pr_url = nil
+	delete(m.clearedFields, backlogitem.FieldPrURL)
+}
+
+// SetPrNumber sets the "pr_number" field.
+func (m *BacklogItemMutation) SetPrNumber(i int) {
+	m.pr_number = &i
+	m.addpr_number = nil
+}
+
+// PrNumber returns the value of the "pr_number" field in the mutation.
+func (m *BacklogItemMutation) PrNumber() (r int, exists bool) {
+	v := m.pr_number
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPrNumber returns the old "pr_number" field's value of the BacklogItem entity.
+// If the BacklogItem object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogItemMutation) OldPrNumber(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPrNumber is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPrNumber requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPrNumber: %w", err)
+	}
+	return oldValue.PrNumber, nil
+}
+
+// AddPrNumber adds i to the "pr_number" field.
+func (m *BacklogItemMutation) AddPrNumber(i int) {
+	if m.addpr_number != nil {
+		*m.addpr_number += i
+	} else {
+		m.addpr_number = &i
+	}
+}
+
+// AddedPrNumber returns the value that was added to the "pr_number" field in this mutation.
+func (m *BacklogItemMutation) AddedPrNumber() (r int, exists bool) {
+	v := m.addpr_number
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearPrNumber clears the value of the "pr_number" field.
+func (m *BacklogItemMutation) ClearPrNumber() {
+	m.pr_number = nil
+	m.addpr_number = nil
+	m.clearedFields[backlogitem.FieldPrNumber] = struct{}{}
+}
+
+// PrNumberCleared returns if the "pr_number" field was cleared in this mutation.
+func (m *BacklogItemMutation) PrNumberCleared() bool {
+	_, ok := m.clearedFields[backlogitem.FieldPrNumber]
+	return ok
+}
+
+// ResetPrNumber resets all changes to the "pr_number" field.
+func (m *BacklogItemMutation) ResetPrNumber() {
+	m.pr_number = nil
+	m.addpr_number = nil
+	delete(m.clearedFields, backlogitem.FieldPrNumber)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *BacklogItemMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -4150,7 +4272,7 @@ func (m *BacklogItemMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *BacklogItemMutation) Fields() []string {
-	fields := make([]string, 0, 18)
+	fields := make([]string, 0, 20)
 	if m.title != nil {
 		fields = append(fields, backlogitem.FieldTitle)
 	}
@@ -4199,6 +4321,12 @@ func (m *BacklogItemMutation) Fields() []string {
 	if m.archived_at != nil {
 		fields = append(fields, backlogitem.FieldArchivedAt)
 	}
+	if m.pr_url != nil {
+		fields = append(fields, backlogitem.FieldPrURL)
+	}
+	if m.pr_number != nil {
+		fields = append(fields, backlogitem.FieldPrNumber)
+	}
 	if m.created_at != nil {
 		fields = append(fields, backlogitem.FieldCreatedAt)
 	}
@@ -4245,6 +4373,10 @@ func (m *BacklogItemMutation) Field(name string) (ent.Value, bool) {
 		return m.UserModifiedStatusAt()
 	case backlogitem.FieldArchivedAt:
 		return m.ArchivedAt()
+	case backlogitem.FieldPrURL:
+		return m.PrURL()
+	case backlogitem.FieldPrNumber:
+		return m.PrNumber()
 	case backlogitem.FieldCreatedAt:
 		return m.CreatedAt()
 	case backlogitem.FieldUpdatedAt:
@@ -4290,6 +4422,10 @@ func (m *BacklogItemMutation) OldField(ctx context.Context, name string) (ent.Va
 		return m.OldUserModifiedStatusAt(ctx)
 	case backlogitem.FieldArchivedAt:
 		return m.OldArchivedAt(ctx)
+	case backlogitem.FieldPrURL:
+		return m.OldPrURL(ctx)
+	case backlogitem.FieldPrNumber:
+		return m.OldPrNumber(ctx)
 	case backlogitem.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	case backlogitem.FieldUpdatedAt:
@@ -4415,6 +4551,20 @@ func (m *BacklogItemMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetArchivedAt(v)
 		return nil
+	case backlogitem.FieldPrURL:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPrURL(v)
+		return nil
+	case backlogitem.FieldPrNumber:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPrNumber(v)
+		return nil
 	case backlogitem.FieldCreatedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -4440,6 +4590,9 @@ func (m *BacklogItemMutation) AddedFields() []string {
 	if m.addpriority != nil {
 		fields = append(fields, backlogitem.FieldPriority)
 	}
+	if m.addpr_number != nil {
+		fields = append(fields, backlogitem.FieldPrNumber)
+	}
 	return fields
 }
 
@@ -4450,6 +4603,8 @@ func (m *BacklogItemMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
 	case backlogitem.FieldPriority:
 		return m.AddedPriority()
+	case backlogitem.FieldPrNumber:
+		return m.AddedPrNumber()
 	}
 	return nil, false
 }
@@ -4465,6 +4620,13 @@ func (m *BacklogItemMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddPriority(v)
+		return nil
+	case backlogitem.FieldPrNumber:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddPrNumber(v)
 		return nil
 	}
 	return fmt.Errorf("unknown BacklogItem numeric field %s", name)
@@ -4503,6 +4665,12 @@ func (m *BacklogItemMutation) ClearedFields() []string {
 	}
 	if m.FieldCleared(backlogitem.FieldArchivedAt) {
 		fields = append(fields, backlogitem.FieldArchivedAt)
+	}
+	if m.FieldCleared(backlogitem.FieldPrURL) {
+		fields = append(fields, backlogitem.FieldPrURL)
+	}
+	if m.FieldCleared(backlogitem.FieldPrNumber) {
+		fields = append(fields, backlogitem.FieldPrNumber)
 	}
 	return fields
 }
@@ -4547,6 +4715,12 @@ func (m *BacklogItemMutation) ClearField(name string) error {
 		return nil
 	case backlogitem.FieldArchivedAt:
 		m.ClearArchivedAt()
+		return nil
+	case backlogitem.FieldPrURL:
+		m.ClearPrURL()
+		return nil
+	case backlogitem.FieldPrNumber:
+		m.ClearPrNumber()
 		return nil
 	}
 	return fmt.Errorf("unknown BacklogItem nullable field %s", name)
@@ -4603,6 +4777,12 @@ func (m *BacklogItemMutation) ResetField(name string) error {
 		return nil
 	case backlogitem.FieldArchivedAt:
 		m.ResetArchivedAt()
+		return nil
+	case backlogitem.FieldPrURL:
+		m.ResetPrURL()
+		return nil
+	case backlogitem.FieldPrNumber:
+		m.ResetPrNumber()
 		return nil
 	case backlogitem.FieldCreatedAt:
 		m.ResetCreatedAt()

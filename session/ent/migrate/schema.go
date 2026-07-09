@@ -123,6 +123,8 @@ var (
 		{Name: "external_id", Type: field.TypeString, Nullable: true},
 		{Name: "user_modified_status_at", Type: field.TypeTime, Nullable: true},
 		{Name: "archived_at", Type: field.TypeTime, Nullable: true},
+		{Name: "pr_url", Type: field.TypeString, Nullable: true},
+		{Name: "pr_number", Type: field.TypeInt, Nullable: true, Default: 0},
 		{Name: "created_at", Type: field.TypeTime},
 		{Name: "updated_at", Type: field.TypeTime},
 		{Name: "item_source_backlog_items", Type: field.TypeUUID, Nullable: true},
@@ -135,7 +137,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "backlog_items_item_sources_backlog_items",
-				Columns:    []*schema.Column{BacklogItemsColumns[19]},
+				Columns:    []*schema.Column{BacklogItemsColumns[21]},
 				RefColumns: []*schema.Column{ItemSourcesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -149,7 +151,7 @@ var (
 			{
 				Name:    "backlogitem_status_updated_at",
 				Unique:  false,
-				Columns: []*schema.Column{BacklogItemsColumns[5], BacklogItemsColumns[18]},
+				Columns: []*schema.Column{BacklogItemsColumns[5], BacklogItemsColumns[20]},
 			},
 			{
 				Name:    "backlogitem_external_id",

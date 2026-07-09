@@ -464,6 +464,21 @@ func (r *EntRepository) FindReviewItemsWithoutGate(ctx context.Context) ([]*ent.
 	return items, nil
 }
 
+// FindPRPendingItems returns backlog items in "pr_pending" status that have a
+// PR number set. Used by ReconcilePRPending to poll for merged PRs.
+func (r *EntRepository) FindPRPendingItems(ctx context.Context) ([]*ent.BacklogItem, error) {
+	items, err := r.client.BacklogItem.Query().
+		Where(
+			backlogitem.Status(string(BacklogStatusPRPending)),
+			backlogitem.PrNumberGT(0),
+		).
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pr_pending items: %w", err)
+	}
+	return items, nil
+}
+
 // --- ReviewVerdict lookup ---
 
 // GetMostRecentReviewVerdictForItem returns the OverallOutcome string from the

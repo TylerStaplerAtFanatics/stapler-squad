@@ -274,6 +274,8 @@ type BacklogItemData struct {
 	ExternalID         string
 	ArchivedAt         *time.Time
 	SourceID           string
+	PrURL              string
+	PrNumber           int
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	// ItemSessions holds the eagerly-loaded item sessions for this backlog item.
@@ -323,6 +325,8 @@ type BacklogItemUpdate struct {
 	PlanApproved       *bool
 	PlanApprovedAt     *time.Time
 	PlanArtifactsPath  *string
+	PrURL              *string
+	PrNumber           *int
 }
 
 // BacklogItemPrecondition is used for optimistic locking on update/transition.

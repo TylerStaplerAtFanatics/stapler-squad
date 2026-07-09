@@ -136,6 +136,16 @@ func ArchivedAt(v time.Time) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldEQ(FieldArchivedAt, v))
 }
 
+// PrURL applies equality check predicate on the "pr_url" field. It's identical to PrURLEQ.
+func PrURL(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldPrURL, v))
+}
+
+// PrNumber applies equality check predicate on the "pr_number" field. It's identical to PrNumberEQ.
+func PrNumber(v int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldPrNumber, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldEQ(FieldCreatedAt, v))
@@ -1019,6 +1029,131 @@ func ArchivedAtIsNil() predicate.BacklogItem {
 // ArchivedAtNotNil applies the NotNil predicate on the "archived_at" field.
 func ArchivedAtNotNil() predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldNotNull(FieldArchivedAt))
+}
+
+// PrURLEQ applies the EQ predicate on the "pr_url" field.
+func PrURLEQ(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldPrURL, v))
+}
+
+// PrURLNEQ applies the NEQ predicate on the "pr_url" field.
+func PrURLNEQ(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNEQ(FieldPrURL, v))
+}
+
+// PrURLIn applies the In predicate on the "pr_url" field.
+func PrURLIn(vs ...string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldIn(FieldPrURL, vs...))
+}
+
+// PrURLNotIn applies the NotIn predicate on the "pr_url" field.
+func PrURLNotIn(vs ...string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNotIn(FieldPrURL, vs...))
+}
+
+// PrURLGT applies the GT predicate on the "pr_url" field.
+func PrURLGT(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldGT(FieldPrURL, v))
+}
+
+// PrURLGTE applies the GTE predicate on the "pr_url" field.
+func PrURLGTE(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldGTE(FieldPrURL, v))
+}
+
+// PrURLLT applies the LT predicate on the "pr_url" field.
+func PrURLLT(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldLT(FieldPrURL, v))
+}
+
+// PrURLLTE applies the LTE predicate on the "pr_url" field.
+func PrURLLTE(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldLTE(FieldPrURL, v))
+}
+
+// PrURLContains applies the Contains predicate on the "pr_url" field.
+func PrURLContains(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldContains(FieldPrURL, v))
+}
+
+// PrURLHasPrefix applies the HasPrefix predicate on the "pr_url" field.
+func PrURLHasPrefix(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldHasPrefix(FieldPrURL, v))
+}
+
+// PrURLHasSuffix applies the HasSuffix predicate on the "pr_url" field.
+func PrURLHasSuffix(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldHasSuffix(FieldPrURL, v))
+}
+
+// PrURLIsNil applies the IsNil predicate on the "pr_url" field.
+func PrURLIsNil() predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldIsNull(FieldPrURL))
+}
+
+// PrURLNotNil applies the NotNil predicate on the "pr_url" field.
+func PrURLNotNil() predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNotNull(FieldPrURL))
+}
+
+// PrURLEqualFold applies the EqualFold predicate on the "pr_url" field.
+func PrURLEqualFold(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEqualFold(FieldPrURL, v))
+}
+
+// PrURLContainsFold applies the ContainsFold predicate on the "pr_url" field.
+func PrURLContainsFold(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldContainsFold(FieldPrURL, v))
+}
+
+// PrNumberEQ applies the EQ predicate on the "pr_number" field.
+func PrNumberEQ(v int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldPrNumber, v))
+}
+
+// PrNumberNEQ applies the NEQ predicate on the "pr_number" field.
+func PrNumberNEQ(v int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNEQ(FieldPrNumber, v))
+}
+
+// PrNumberIn applies the In predicate on the "pr_number" field.
+func PrNumberIn(vs ...int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldIn(FieldPrNumber, vs...))
+}
+
+// PrNumberNotIn applies the NotIn predicate on the "pr_number" field.
+func PrNumberNotIn(vs ...int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNotIn(FieldPrNumber, vs...))
+}
+
+// PrNumberGT applies the GT predicate on the "pr_number" field.
+func PrNumberGT(v int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldGT(FieldPrNumber, v))
+}
+
+// PrNumberGTE applies the GTE predicate on the "pr_number" field.
+func PrNumberGTE(v int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldGTE(FieldPrNumber, v))
+}
+
+// PrNumberLT applies the LT predicate on the "pr_number" field.
+func PrNumberLT(v int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldLT(FieldPrNumber, v))
+}
+
+// PrNumberLTE applies the LTE predicate on the "pr_number" field.
+func PrNumberLTE(v int) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldLTE(FieldPrNumber, v))
+}
+
+// PrNumberIsNil applies the IsNil predicate on the "pr_number" field.
+func PrNumberIsNil() predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldIsNull(FieldPrNumber))
+}
+
+// PrNumberNotNil applies the NotNil predicate on the "pr_number" field.
+func PrNumberNotNil() predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNotNull(FieldPrNumber))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

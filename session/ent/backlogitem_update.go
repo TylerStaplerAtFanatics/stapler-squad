@@ -324,6 +324,53 @@ func (_u *BacklogItemUpdate) ClearArchivedAt() *BacklogItemUpdate {
 	return _u
 }
 
+// SetPrURL sets the "pr_url" field.
+func (_u *BacklogItemUpdate) SetPrURL(v string) *BacklogItemUpdate {
+	_u.mutation.SetPrURL(v)
+	return _u
+}
+
+// SetNillablePrURL sets the "pr_url" field if the given value is not nil.
+func (_u *BacklogItemUpdate) SetNillablePrURL(v *string) *BacklogItemUpdate {
+	if v != nil {
+		_u.SetPrURL(*v)
+	}
+	return _u
+}
+
+// ClearPrURL clears the value of the "pr_url" field.
+func (_u *BacklogItemUpdate) ClearPrURL() *BacklogItemUpdate {
+	_u.mutation.ClearPrURL()
+	return _u
+}
+
+// SetPrNumber sets the "pr_number" field.
+func (_u *BacklogItemUpdate) SetPrNumber(v int) *BacklogItemUpdate {
+	_u.mutation.ResetPrNumber()
+	_u.mutation.SetPrNumber(v)
+	return _u
+}
+
+// SetNillablePrNumber sets the "pr_number" field if the given value is not nil.
+func (_u *BacklogItemUpdate) SetNillablePrNumber(v *int) *BacklogItemUpdate {
+	if v != nil {
+		_u.SetPrNumber(*v)
+	}
+	return _u
+}
+
+// AddPrNumber adds value to the "pr_number" field.
+func (_u *BacklogItemUpdate) AddPrNumber(v int) *BacklogItemUpdate {
+	_u.mutation.AddPrNumber(v)
+	return _u
+}
+
+// ClearPrNumber clears the value of the "pr_number" field.
+func (_u *BacklogItemUpdate) ClearPrNumber() *BacklogItemUpdate {
+	_u.mutation.ClearPrNumber()
+	return _u
+}
+
 // SetUpdatedAt sets the "updated_at" field.
 func (_u *BacklogItemUpdate) SetUpdatedAt(v time.Time) *BacklogItemUpdate {
 	_u.mutation.SetUpdatedAt(v)
@@ -611,6 +658,21 @@ func (_u *BacklogItemUpdate) sqlSave(ctx context.Context) (_node int, err error)
 	}
 	if _u.mutation.ArchivedAtCleared() {
 		_spec.ClearField(backlogitem.FieldArchivedAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.PrURL(); ok {
+		_spec.SetField(backlogitem.FieldPrURL, field.TypeString, value)
+	}
+	if _u.mutation.PrURLCleared() {
+		_spec.ClearField(backlogitem.FieldPrURL, field.TypeString)
+	}
+	if value, ok := _u.mutation.PrNumber(); ok {
+		_spec.SetField(backlogitem.FieldPrNumber, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedPrNumber(); ok {
+		_spec.AddField(backlogitem.FieldPrNumber, field.TypeInt, value)
+	}
+	if _u.mutation.PrNumberCleared() {
+		_spec.ClearField(backlogitem.FieldPrNumber, field.TypeInt)
 	}
 	if value, ok := _u.mutation.UpdatedAt(); ok {
 		_spec.SetField(backlogitem.FieldUpdatedAt, field.TypeTime, value)
@@ -1090,6 +1152,53 @@ func (_u *BacklogItemUpdateOne) ClearArchivedAt() *BacklogItemUpdateOne {
 	return _u
 }
 
+// SetPrURL sets the "pr_url" field.
+func (_u *BacklogItemUpdateOne) SetPrURL(v string) *BacklogItemUpdateOne {
+	_u.mutation.SetPrURL(v)
+	return _u
+}
+
+// SetNillablePrURL sets the "pr_url" field if the given value is not nil.
+func (_u *BacklogItemUpdateOne) SetNillablePrURL(v *string) *BacklogItemUpdateOne {
+	if v != nil {
+		_u.SetPrURL(*v)
+	}
+	return _u
+}
+
+// ClearPrURL clears the value of the "pr_url" field.
+func (_u *BacklogItemUpdateOne) ClearPrURL() *BacklogItemUpdateOne {
+	_u.mutation.ClearPrURL()
+	return _u
+}
+
+// SetPrNumber sets the "pr_number" field.
+func (_u *BacklogItemUpdateOne) SetPrNumber(v int) *BacklogItemUpdateOne {
+	_u.mutation.ResetPrNumber()
+	_u.mutation.SetPrNumber(v)
+	return _u
+}
+
+// SetNillablePrNumber sets the "pr_number" field if the given value is not nil.
+func (_u *BacklogItemUpdateOne) SetNillablePrNumber(v *int) *BacklogItemUpdateOne {
+	if v != nil {
+		_u.SetPrNumber(*v)
+	}
+	return _u
+}
+
+// AddPrNumber adds value to the "pr_number" field.
+func (_u *BacklogItemUpdateOne) AddPrNumber(v int) *BacklogItemUpdateOne {
+	_u.mutation.AddPrNumber(v)
+	return _u
+}
+
+// ClearPrNumber clears the value of the "pr_number" field.
+func (_u *BacklogItemUpdateOne) ClearPrNumber() *BacklogItemUpdateOne {
+	_u.mutation.ClearPrNumber()
+	return _u
+}
+
 // SetUpdatedAt sets the "updated_at" field.
 func (_u *BacklogItemUpdateOne) SetUpdatedAt(v time.Time) *BacklogItemUpdateOne {
 	_u.mutation.SetUpdatedAt(v)
@@ -1407,6 +1516,21 @@ func (_u *BacklogItemUpdateOne) sqlSave(ctx context.Context) (_node *BacklogItem
 	}
 	if _u.mutation.ArchivedAtCleared() {
 		_spec.ClearField(backlogitem.FieldArchivedAt, field.TypeTime)
+	}
+	if value, ok := _u.mutation.PrURL(); ok {
+		_spec.SetField(backlogitem.FieldPrURL, field.TypeString, value)
+	}
+	if _u.mutation.PrURLCleared() {
+		_spec.ClearField(backlogitem.FieldPrURL, field.TypeString)
+	}
+	if value, ok := _u.mutation.PrNumber(); ok {
+		_spec.SetField(backlogitem.FieldPrNumber, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedPrNumber(); ok {
+		_spec.AddField(backlogitem.FieldPrNumber, field.TypeInt, value)
+	}
+	if _u.mutation.PrNumberCleared() {
+		_spec.ClearField(backlogitem.FieldPrNumber, field.TypeInt)
 	}
 	if value, ok := _u.mutation.UpdatedAt(); ok {
 		_spec.SetField(backlogitem.FieldUpdatedAt, field.TypeTime, value)

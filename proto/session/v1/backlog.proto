@@ -105,6 +105,8 @@ message BacklogItem {
   string source_id = 19;
   repeated BacklogStatusEvent status_events = 20;
   double total_estimated_cost_usd = 21;
+  string pr_url = 22;
+  int32 pr_number = 23;
 }
 
 // ItemSource represents an external plugin source that syncs items into the

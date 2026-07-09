@@ -3,11 +3,13 @@ package git
 import (
 	"context"
 	"fmt"
-	"github.com/tstapler/stapler-squad/executor/safeexec"
-	"github.com/tstapler/stapler-squad/log"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/log"
 )
 
 // runGitCommand executes a git command and returns any error.
@@ -190,6 +192,73 @@ func (g *GitWorktree) IsBranchCheckedOut() (bool, error) {
 		return false, fmt.Errorf("failed to get current branch: %w", err)
 	}
 	return strings.TrimSpace(string(output)) == g.branchName, nil
+}
+
+// PushBranch pushes the current branch to origin without committing.
+// Use CommitChanges first if there are uncommitted changes.
+func (g *GitWorktree) PushBranch() error {
+	pushCtx, pushCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer pushCancel()
+	cmd := safeexec.CommandContext(pushCtx, "git", "push", "-u", "origin", g.branchName)
+	cmd.Dir = g.worktreePath
+	if out, err := g.runCombinedOutput(cmd); err != nil {
+		return fmt.Errorf("failed to push branch: %s (%w)", out, err)
+	}
+	return nil
+}
+
+// CreatePR creates a GitHub pull request for the current branch and returns the
+// PR URL and number. Title defaults to the branch name if empty.
+func (g *GitWorktree) CreatePR(title, body string) (prURL string, prNumber int, err error) {
+	if err := checkGHCLI(); err != nil {
+		return "", 0, err
+	}
+	if title == "" {
+		title = strings.ReplaceAll(g.branchName, "-", " ")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	args := []string{"pr", "create", "--title", title, "--body", body, "--head", g.branchName}
+	cmd := safeexec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = g.worktreePath
+	out, runErr := g.runCombinedOutput(cmd)
+	if runErr != nil {
+		return "", 0, fmt.Errorf("gh pr create failed: %s (%w)", out, runErr)
+	}
+
+	// gh pr create prints the PR URL as the last line.
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	prURL = strings.TrimSpace(lines[len(lines)-1])
+
+	// Fetch the PR number from the URL.
+	numCtx, numCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer numCancel()
+	numCmd := safeexec.CommandContext(numCtx, "gh", "pr", "view", "--json", "number", "--jq", ".number", "--head", g.branchName)
+	numCmd.Dir = g.worktreePath
+	numOut, numErr := g.runCombinedOutput(numCmd)
+	if numErr == nil {
+		prNumber, _ = strconv.Atoi(strings.TrimSpace(string(numOut)))
+	}
+
+	return prURL, prNumber, nil
+}
+
+// IsPRMerged reports whether the given PR number has been merged.
+func (g *GitWorktree) IsPRMerged(prNumber int) (bool, error) {
+	if err := checkGHCLI(); err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := safeexec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber), "--json", "state", "--jq", ".state")
+	cmd.Dir = g.worktreePath
+	out, err := g.runCombinedOutput(cmd)
+	if err != nil {
+		return false, fmt.Errorf("gh pr view failed: %s (%w)", out, err)
+	}
+	return strings.TrimSpace(string(out)) == "MERGED", nil
 }
 
 // OpenBranchURL opens the branch URL in the default browser

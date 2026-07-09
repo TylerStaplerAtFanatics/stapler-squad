@@ -36,6 +36,8 @@ func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 		Notes:              item.Notes,
 		ExternalID:         item.ExternalID,
 		ArchivedAt:         item.ArchivedAt,
+		PrURL:              item.PrURL,
+		PrNumber:           item.PrNumber,
 		CreatedAt:          item.CreatedAt,
 		UpdatedAt:          item.UpdatedAt,
 	}
@@ -241,6 +243,12 @@ func (r *EntRepository) UpdateBacklogItem(ctx context.Context, id string, update
 	}
 	if update.PlanArtifactsPath != nil {
 		u.SetPlanArtifactsPath(*update.PlanArtifactsPath)
+	}
+	if update.PrURL != nil {
+		u.SetPrURL(*update.PrURL)
+	}
+	if update.PrNumber != nil {
+		u.SetPrNumber(*update.PrNumber)
 	}
 
 	item, err := u.Save(ctx)

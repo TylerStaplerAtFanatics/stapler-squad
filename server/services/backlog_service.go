@@ -474,6 +474,8 @@ func backlogItemToProto(item *session.BacklogItemData, costFor func(tmuxUUID str
 		Notes:             item.Notes,
 		ExternalId:        item.ExternalID,
 		SourceId:          item.SourceID,
+		PrUrl:             item.PrURL,
+		PrNumber:          int32(item.PrNumber),
 		CreatedAt:         timestamppb.New(item.CreatedAt),
 		UpdatedAt:         timestamppb.New(item.UpdatedAt),
 	}
