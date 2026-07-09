@@ -102,16 +102,24 @@ func (i *Instance) combineErrors(errs []error) error {
 	return fmt.Errorf("%s", errMsg)
 }
 
-// Preview returns the current visible terminal content.
-// Prefers the in-memory PTY buffer from ClaudeController; falls back to capture-pane.
+// previewBlocked reports whether preview capture should be skipped for this instance -
+// either because it hasn't started yet, or because its lifecycle status makes a live
+// terminal capture meaningless (Paused/Stopped/Hibernated).
 //
 // Reads Status via Snapshot(), not a bare field read: actor commands
 // (transitionToLocked et al.) write i.Status directly while running inside
 // the actor's own serialization, not under i.mu, so an unguarded read here
 // doesn't synchronize with that write at all (see GetStatus's doc comment).
-func (i *Instance) Preview() (string, error) {
+// Preview() and PreviewFullHistory() share this check so the two can't drift.
+func (i *Instance) previewBlocked() bool {
 	status := i.Snapshot().Status
-	if !i.started.Load() || status == Paused || status == Stopped || status == Hibernated {
+	return !i.started.Load() || status == Paused || status == Stopped || status == Hibernated
+}
+
+// Preview returns the current visible terminal content.
+// Prefers the in-memory PTY buffer from ClaudeController; falls back to capture-pane.
+func (i *Instance) Preview() (string, error) {
+	if i.previewBlocked() {
 		return "", nil
 	}
 
@@ -134,7 +142,7 @@ func (i *Instance) Preview() (string, error) {
 
 // PreviewFullHistory captures the entire tmux pane output including full scrollback history.
 func (i *Instance) PreviewFullHistory() (string, error) {
-	if !i.started.Load() || i.Status == Paused || i.Status == Stopped || i.Status == Hibernated {
+	if i.previewBlocked() {
 		return "", nil
 	}
 

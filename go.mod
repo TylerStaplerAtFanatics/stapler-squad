@@ -31,13 +31,13 @@ require (
 	github.com/xeipuuv/gojsonschema v1.2.0
 	github.com/zalando/go-keyring v0.2.8
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
-	go.opentelemetry.io/otel v1.43.0
+	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.39.0
-	go.opentelemetry.io/otel/sdk v1.43.0
-	go.opentelemetry.io/otel/trace v1.43.0
+	go.opentelemetry.io/otel/sdk v1.44.0
+	go.opentelemetry.io/otel/trace v1.44.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.52.0
-	golang.org/x/sys v0.43.0
+	golang.org/x/sys v0.45.0
 	golang.org/x/term v0.42.0
 	golang.org/x/time v0.15.0
 	google.golang.org/protobuf v1.36.11
@@ -51,7 +51,6 @@ require (
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/petermattis/goid v0.0.0-20250813065127-a731cc31b4fe // indirect
-	gvisor.dev/gvisor v0.0.0-20260708184533-3ca8cd96a7a4 // indirect
 )
 
 require (
@@ -172,7 +171,7 @@ require (
 	go.lsp.dev/uri v0.3.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.39.0 // indirect
-	go.opentelemetry.io/otel/metric v1.43.0 // indirect
+	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
 	go.uber.org/mock v0.6.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
