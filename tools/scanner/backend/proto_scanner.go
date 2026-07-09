@@ -152,6 +152,9 @@ var methodToID = map[string]string{
 	"UpdateItemSource":            "backlog:update-source",
 	"DeleteItemSource":            "backlog:delete-source",
 	"GetSyncHistory":              "backlog:get-sync-history",
+	"SearchGitHubRepos":           "backlog:search-github-repos",
+	"ListGitHubIssues":            "backlog:list-github-issues",
+	"ImportGitHubIssue":           "backlog:import-github-issue",
 	// Session lifecycle RPCs
 	"ArchiveSession":          "session:archive",
 	"UnarchiveSession":        "session:unarchive",
