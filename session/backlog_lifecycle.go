@@ -428,4 +428,36 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 	} else {
 		log.DebugLog.Printf("[BacklogLifecycle] ReconcileStuckItems: no stuck items found")
 	}
+
+	// Re-spawn review gates for items stuck in "review" with no review session.
+	// Occurs when the headless pool was unavailable at the time of the work session exit.
+	if l.getHeadlessPool() == nil && l.sessionCreator == nil {
+		return
+	}
+	items, gateErr := er.FindReviewItemsWithoutGate(ctx)
+	if gateErr != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] FindReviewItemsWithoutGate error: %v", gateErr)
+		return
+	}
+	for _, item := range items {
+		var workSession *ent.ItemSession
+		if len(item.Edges.ItemSessions) > 0 {
+			workSession = item.Edges.ItemSessions[0]
+		}
+		if workSession == nil {
+			log.DebugLog.Printf("[BacklogLifecycle] ReconcileStuckReviewGates: item %s has no work session, skipping", item.ID)
+			continue
+		}
+		log.InfoLog.Printf("[BacklogLifecycle] ReconcileStuckReviewGates: re-spawning review gate for item %s", item.ID)
+		is := workSession
+		go func(itemCopy *ent.BacklogItem, isCopy *ent.ItemSession) {
+			select {
+			case l.reviewSem <- struct{}{}:
+			case <-l.shutdownCtx.Done():
+				return
+			}
+			defer func() { <-l.reviewSem }()
+			l.spawnReviewGate(itemCopy, isCopy)
+		}(item, is)
+	}
 }

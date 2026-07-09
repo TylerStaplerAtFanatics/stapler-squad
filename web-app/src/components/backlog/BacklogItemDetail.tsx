@@ -104,11 +104,11 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   // Poll for updated item data while triage is running or while in review (waiting for gate verdict).
   // Suspend polling while the edit form is open so a background refresh can't clobber unsaved edits.
   useEffect(() => {
-    const shouldPoll = (item?.triageStatus === "running" || item?.status === "review") && !editMode;
+    const shouldPoll = (item?.triageStatus === "running" || (item?.status === "review" && (!item?.gateVerdict || item.gateVerdict === "PENDING"))) && !editMode;
     if (!shouldPoll) return;
     const interval = setInterval(() => { void load(); }, 5_000);
     return () => clearInterval(interval);
-  }, [item?.triageStatus, item?.status, editMode, load]);
+  }, [item?.triageStatus, item?.status, item?.gateVerdict, editMode, load]);
 
   // Track triage progress: increment elapsed time while triageStatus === "running"
   useEffect(() => {
@@ -577,6 +577,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         {/* Gate Verdict + review context */}
         {item.status === "review" && (() => {
           const workSession = [...item.linkedSessions].reverse().find((s) => s.role === "work");
+          const activeReviewSession = [...item.linkedSessions].reverse().find((s) => s.role === "review" && !s.endedAt && !s.sessionId.startsWith("headless-") && !s.sessionId.startsWith("review-blocked-"));
           return (
             <>
               <div className={styles.section}>
@@ -601,6 +602,18 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                       </>
                     ) : (
                       <span className={styles.reviewContextLabel}>No work session found</span>
+                    )}
+                    {activeReviewSession && (
+                      <>
+                        <span className={styles.reviewContextLabel}>Review session</span>
+                        <a
+                          className={styles.reviewContextSessionId}
+                          href={`/?session=${activeReviewSession.sessionId}`}
+                          title="Open review session in terminal"
+                        >
+                          {activeReviewSession.sessionId}
+                        </a>
+                      </>
                     )}
                   </div>
                   {workSession && (
@@ -746,7 +759,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               <>
                 <a
                   className={styles.actionButton}
-                  href={`/?session=${item.linkedSessions[item.linkedSessions.length - 1].sessionId}`}
+                  href={`/?session=${([...item.linkedSessions].reverse().find(s => s.role === "work") ?? item.linkedSessions[item.linkedSessions.length - 1]).sessionId}`}
                   data-testid="backlog-action-view-session"
                 >
                   View Session
