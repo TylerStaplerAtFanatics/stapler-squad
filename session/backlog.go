@@ -134,31 +134,45 @@ var validTransitions = map[BacklogStatus]map[BacklogStatus]bool{
 		BacklogStatusArchived: true,
 	},
 	BacklogStatusRefining: {
-		BacklogStatusReady:    true,
+		BacklogStatusIdea:    true, // backward: re-triage
+		BacklogStatusReady:   true,
 		BacklogStatusArchived: true,
 	},
 	BacklogStatusReady: {
 		BacklogStatusInProgress: true,
-		BacklogStatusIdea:       true,
+		BacklogStatusIdea:       true, // backward: re-triage
+		BacklogStatusRefining:   true, // backward: refine ACs
 		BacklogStatusArchived:   true,
 	},
 	BacklogStatusInProgress: {
-		BacklogStatusReview: true,
-		BacklogStatusReady:  true,
+		BacklogStatusReview:   true,
+		BacklogStatusReady:    true,
+		BacklogStatusRefining: true, // backward: refine ACs/plan
+		BacklogStatusIdea:     true, // backward: re-triage from scratch
 	},
 	BacklogStatusReview: {
 		BacklogStatusPRPending:  true,
 		BacklogStatusDone:       true,
 		BacklogStatusInProgress: true,
+		BacklogStatusReady:      true,    // backward: re-spawn without re-triaging
+		BacklogStatusRefining:   true,    // backward: refine ACs/plan
+		BacklogStatusIdea:       true,    // backward: re-triage from scratch
 	},
 	BacklogStatusPRPending: {
 		BacklogStatusDone:       true,
 		BacklogStatusInProgress: true,
 		BacklogStatusReview:     true,
+		BacklogStatusReady:      true,    // backward
+		BacklogStatusRefining:   true,    // backward
+		BacklogStatusIdea:       true,    // backward
 	},
 	BacklogStatusDone: {
-		BacklogStatusReview:   true,
-		BacklogStatusArchived: true,
+		BacklogStatusReview:     true,
+		BacklogStatusArchived:   true,
+		BacklogStatusInProgress: true,    // backward
+		BacklogStatusReady:      true,    // backward
+		BacklogStatusRefining:   true,    // backward
+		BacklogStatusIdea:       true,    // backward
 	},
 	BacklogStatusArchived: {
 		BacklogStatusIdea: true,

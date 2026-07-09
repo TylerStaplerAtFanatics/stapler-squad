@@ -181,6 +181,15 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           case "reopen":
             await transitionStatus(item.id, "review");
             break;
+          case "send_back_idea":
+            await transitionStatus(item.id, "idea");
+            break;
+          case "send_back_refining":
+            await transitionStatus(item.id, "refining");
+            break;
+          case "send_back_ready":
+            await transitionStatus(item.id, "ready");
+            break;
           default:
             break;
         }
@@ -879,6 +888,32 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 >
                   Re-open to Review
                 </button>
+              </>
+            )}
+
+            {/* Backward transitions — visible whenever there's an earlier stage to return to */}
+            {["refining", "ready", "in_progress", "review", "pr_pending", "done"].includes(item.status) && (
+              <>
+                <button
+                  className={`${styles.actionButton} ${styles.actionButtonSecondary}`}
+                  onClick={() => handleAction("send_back_idea")}
+                  disabled={actionLoading}
+                  title="Reset to Idea and clear plan approval so triage can re-run"
+                  data-testid="backlog-action-send-back-idea"
+                >
+                  ↩ Return to Triage
+                </button>
+                {["in_progress", "review", "pr_pending", "done"].includes(item.status) && (
+                  <button
+                    className={`${styles.actionButton} ${styles.actionButtonSecondary}`}
+                    onClick={() => handleAction("send_back_ready")}
+                    disabled={actionLoading}
+                    title="Move back to Ready to re-spawn without full re-triage"
+                    data-testid="backlog-action-send-back-ready"
+                  >
+                    ↩ Back to Ready
+                  </button>
+                )}
               </>
             )}
 
