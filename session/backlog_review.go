@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -69,6 +71,17 @@ func BuildReviewPrompt(item *ent.BacklogItem, acSnapshot []AcCriterion, diff str
 			fmt.Fprintf(&sb, "%d. %s\n", c.Index, sanitizeField(c.Text, 500))
 		}
 	}
+	sb.WriteString("\n")
+
+	// Implementation plan (if available).
+	if item.PlanArtifactsPath != "" {
+		if planContent := readPlanFile(item.PlanArtifactsPath); planContent != "" {
+			sb.WriteString("## Implementation Plan\n")
+			sb.WriteString(sanitizeField(planContent, 8000))
+			sb.WriteString("\n\n")
+		}
+	}
+
 	sb.WriteString("--- END BACKLOG ITEM DATA ---\n\n")
 
 	// --- task protocol ---
@@ -125,6 +138,17 @@ func BuildHeadlessReviewPrompt(item *ent.BacklogItem, acSnapshot []AcCriterion, 
 			fmt.Fprintf(&sb, "%d. %s\n", c.Index, sanitizeField(c.Text, 500))
 		}
 	}
+	sb.WriteString("\n")
+
+	// Implementation plan (if available).
+	if item.PlanArtifactsPath != "" {
+		if planContent := readPlanFile(item.PlanArtifactsPath); planContent != "" {
+			sb.WriteString("## Implementation Plan\n")
+			sb.WriteString(sanitizeField(planContent, 8000))
+			sb.WriteString("\n\n")
+		}
+	}
+
 	sb.WriteString("--- END BACKLOG ITEM DATA ---\n\n")
 
 	sb.WriteString("## Git Diff\n")
@@ -141,7 +165,7 @@ func BuildHeadlessReviewPrompt(item *ent.BacklogItem, acSnapshot []AcCriterion, 
 	sb.WriteString("\n")
 
 	sb.WriteString("## Instructions\n")
-	sb.WriteString("Evaluate every acceptance criterion against the diff above.\n")
+	sb.WriteString("Evaluate every acceptance criterion against the diff above. Also verify the implementation follows the plan (if provided).\n")
 	sb.WriteString("Output ONLY a single JSON object with no surrounding text:\n")
 	sb.WriteString(`{"overall":"PASS","summary":"concise assessment","verdicts":[{"criterion_index":0,"outcome":"PASS","evidence":"direct quote from diff"}]}`)
 	sb.WriteString("\nValid outcome values: PASS, FAIL, PARTIAL, UNVERIFIABLE.\n")
@@ -223,4 +247,15 @@ func GetGitDiff(ctx context.Context, worktreePath string, baseSHA string) (diff 
 		return raw[:headless.MaxDiffSizeReview], true, nil
 	}
 	return raw, false, nil
+}
+
+// readPlanFile reads plan.md from the given artifacts directory.
+// Returns "" on any error (plan is best-effort context, not required).
+func readPlanFile(artifactsDir string) string {
+	planPath := filepath.Join(artifactsDir, "plan.md")
+	b, err := os.ReadFile(planPath)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

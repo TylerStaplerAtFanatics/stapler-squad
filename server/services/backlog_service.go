@@ -1857,6 +1857,18 @@ func (s *BacklogService) TriggerTriage(
 
 		pap := artifactAbsPath
 		update := session.BacklogItemUpdate{PlanArtifactsPath: &pap}
+		if len(result.AcceptanceCriteria) > 0 {
+			// Re-index to ensure 0-based contiguous indices regardless of what the model output.
+			for i := range result.AcceptanceCriteria {
+				result.AcceptanceCriteria[i].Index = i
+				if result.AcceptanceCriteria[i].Status == "" {
+					result.AcceptanceCriteria[i].Status = "pending"
+				}
+			}
+			if acJSON, marshalErr := session.SerializeAcCriteria(result.AcceptanceCriteria); marshalErr == nil {
+				update.AcceptanceCriteria = &acJSON
+			}
+		}
 		if _, updateErr := s.storage.UpdateBacklogItem(cleanupCtx, itemID, update, nil); updateErr != nil {
 			log.ErrorLog.Printf("[TriggerTriage] update plan_artifacts_path item=%s: %v", itemID, updateErr)
 		}

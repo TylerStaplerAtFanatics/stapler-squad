@@ -141,7 +141,7 @@ func (h *backlogHandlers) getBacklogItem(ctx context.Context, req mcpgo.CallTool
 		sb.WriteString("Workflow:\n")
 		sb.WriteString("1. Run parallel research subagents → write research/*.md files\n")
 		sb.WriteString("2. Synthesize into plan.md + validation.md\n")
-		sb.WriteString("3. Call submit_triage_result with: item_id, summary, suggestions (AC gaps/questions), tasks (implementation checklist, max 12), plan_artifact_path\n")
+		sb.WriteString("3. Write acceptance criteria: call submit_triage_result with item_id, summary, acceptance_criteria (full AC list), suggestions (gaps/questions), tasks (max 12), plan_artifact_path\n")
 	case "work":
 		sb.WriteString("## Your Role: Work\n")
 		sb.WriteString("Implement the acceptance criteria. Do NOT call submit_triage_result or submit_review_verdict.\n\n")
@@ -516,17 +516,81 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 	}
 
 	// Persist triage result on ItemSession via an update.
-	// We use UpdateBacklogItem for plan_artifacts_path if provided; ItemSession
-	// triage_result is updated via a direct ent update through the Storage type assertion.
+	// We use UpdateBacklogItem for plan_artifacts_path and acceptance_criteria if provided.
 	planArtifactsPath, _ := args["plan_artifact_path"].(string)
 
+	itemUpdate := session.BacklogItemUpdate{}
 	if planArtifactsPath != "" {
 		pap := planArtifactsPath
-		update := session.BacklogItemUpdate{
-			PlanArtifactsPath: &pap,
+		itemUpdate.PlanArtifactsPath = &pap
+	}
+
+	// Parse and merge acceptance_criteria if provided.
+	// Merges into existing criteria: adds new ones, updates matching indices, never
+	// silently deletes criteria that aren't mentioned — deletions must be intentional.
+	if rawAC, exists := args["acceptance_criteria"]; exists {
+		if arr, ok := rawAC.([]interface{}); ok && len(arr) > 0 {
+			// Load existing criteria so we can merge.
+			existingItem, loadErr := h.storage.GetBacklogItem(ctx, itemID)
+			if loadErr != nil {
+				return errResult(ErrInternalError, fmt.Sprintf("load item for AC merge: %v", loadErr), ""), nil
+			}
+			existing, _ := session.ParseAcCriteria(existingItem.AcceptanceCriteria)
+
+			// Build lookup by index.
+			byIndex := make(map[int]session.AcCriterion, len(existing))
+			for _, ac := range existing {
+				byIndex[ac.Index] = ac
+			}
+
+			// Apply incoming criteria: add or update.
+			for i, raw := range arr {
+				b, marshalErr := json.Marshal(raw)
+				if marshalErr != nil {
+					return errResult(ErrInvalidArgument, fmt.Sprintf("acceptance_criteria[%d]: cannot marshal: %v", i, marshalErr), ""), nil
+				}
+				var ac struct {
+					Index  int    `json:"index"`
+					Text   string `json:"text"`
+					Status string `json:"status"`
+				}
+				if err := json.Unmarshal(b, &ac); err != nil {
+					return errResult(ErrInvalidArgument, fmt.Sprintf("acceptance_criteria[%d]: invalid shape: %v", i, err), ""), nil
+				}
+				idx := ac.Index
+				if idx == 0 && i > 0 {
+					idx = i // fall back to position if index not set
+				}
+				status := ac.Status
+				if status == "" {
+					status = "pending"
+				}
+				byIndex[idx] = session.AcCriterion{Index: idx, Text: ac.Text, Status: status}
+			}
+
+			// Rebuild ordered slice.
+			merged := make([]session.AcCriterion, 0, len(byIndex))
+			for _, ac := range byIndex {
+				merged = append(merged, ac)
+			}
+			// Sort by index for stable ordering.
+			for i := 1; i < len(merged); i++ {
+				for j := i; j > 0 && merged[j].Index < merged[j-1].Index; j-- {
+					merged[j], merged[j-1] = merged[j-1], merged[j]
+				}
+			}
+
+			acJSON, marshalErr := session.SerializeAcCriteria(merged)
+			if marshalErr != nil {
+				return errResult(ErrInternalError, fmt.Sprintf("serialize acceptance_criteria: %v", marshalErr), ""), nil
+			}
+			itemUpdate.AcceptanceCriteria = &acJSON
 		}
-		if _, updateErr := h.storage.UpdateBacklogItem(ctx, itemID, update, nil); updateErr != nil {
-			return errResult(ErrInternalError, fmt.Sprintf("update plan_artifacts_path: %v", updateErr), ""), nil
+	}
+
+	if itemUpdate.PlanArtifactsPath != nil || itemUpdate.AcceptanceCriteria != nil {
+		if _, updateErr := h.storage.UpdateBacklogItem(ctx, itemID, itemUpdate, nil); updateErr != nil {
+			return errResult(ErrInternalError, fmt.Sprintf("update backlog item: %v", updateErr), ""), nil
 		}
 	}
 
@@ -673,6 +737,17 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 						"category": map[string]any{"type": "string", "enum": []string{"backend", "frontend", "test", "infra", "docs"}},
 					},
 					"required": []string{"text", "estimate", "category"},
+				}),
+			),
+			mcpgo.WithArray("acceptance_criteria",
+				mcpgo.Description("Acceptance criteria to set on the item. Each entry has 'text' (the criterion) and optional 'status' (pending|in_progress|done, default pending). Replaces existing ACs. Include ALL criteria — this is the authoritative list the work session will implement and the review session will verify."),
+				mcpgo.Items(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"text":   map[string]any{"type": "string"},
+						"status": map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "done"}},
+					},
+					"required": []string{"text"},
 				}),
 			),
 			mcpgo.WithString("plan_artifact_path",
