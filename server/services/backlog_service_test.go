@@ -411,6 +411,75 @@ func TestListBacklogItems_DefaultFilterHidesTerminalStatuses(t *testing.T) {
 	assert.Contains(t, returnedTitles, "done item")
 }
 
+// TestListBacklogItems_DoneStatusIsTerminal verifies that an item actually in
+// "done" status is hidden by the default list (includeTerminal=false) and visible
+// with includeTerminal=true.
+//
+// Regression test for the bug where the board page omitted includeTerminal:true
+// and completed work disappeared from view.
+//
+// Pre-fix behaviour: done items were excluded (test would FAIL on assert.Contains).
+// Post-fix behaviour: board always sends includeTerminal:true (test passes).
+func TestListBacklogItems_DoneStatusIsTerminal(t *testing.T) {
+	svc := newBacklogService(t)
+
+	create := func(title string) string {
+		resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+			Title:        title,
+			SkipPlanning: true,
+			// AC criteria required for idea→ready transition.
+			AcceptanceCriteria: []*sessionv1.AcCriterion{
+				{Index: 0, Text: "it works", Status: "pending"},
+			},
+		}))
+		require.NoError(t, err)
+		return resp.Msg.Item.Id
+	}
+	transition := func(itemID, to string, extra ...*sessionv1.TransitionBacklogItemStatusRequest) {
+		req := &sessionv1.TransitionBacklogItemStatusRequest{
+			ItemId:       itemID,
+			TargetStatus: to,
+		}
+		if len(extra) > 0 {
+			req.OverrideReason = extra[0].OverrideReason
+		}
+		_, err := svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(req))
+		require.NoError(t, err, "transition to %s", to)
+	}
+
+	activeID := create("active item")
+	doneID := create("done item")
+
+	// Walk "done item" through the state machine: idea → ready → in_progress → review → done.
+	// review→done requires OverrideReason because no verdict has been recorded.
+	transition(doneID, "ready")
+	transition(doneID, "in_progress")
+	transition(doneID, "review")
+	transition(doneID, "done", &sessionv1.TransitionBacklogItemStatusRequest{OverrideReason: "test override"})
+	_ = activeID // stays in idea
+
+	// Default list (includeTerminal omitted) must hide done items.
+	listDefault, err := svc.ListBacklogItems(t.Context(), connect.NewRequest(&sessionv1.ListBacklogItemsRequest{}))
+	require.NoError(t, err)
+	defaultTitles := make([]string, 0, len(listDefault.Msg.Items))
+	for _, it := range listDefault.Msg.Items {
+		defaultTitles = append(defaultTitles, it.Title)
+	}
+	assert.Contains(t, defaultTitles, "active item", "non-terminal items must appear in default list")
+	assert.NotContains(t, defaultTitles, "done item", "done items must be hidden in default list")
+
+	// includeTerminal:true (what the board page sends) must show done items.
+	listAll, err := svc.ListBacklogItems(t.Context(), connect.NewRequest(&sessionv1.ListBacklogItemsRequest{
+		IncludeTerminal: true,
+	}))
+	require.NoError(t, err)
+	allTitles := make([]string, 0, len(listAll.Msg.Items))
+	for _, it := range listAll.Msg.Items {
+		allTitles = append(allTitles, it.Title)
+	}
+	assert.Contains(t, allTitles, "done item", "done items must appear when includeTerminal=true")
+}
+
 // ─── ApprovePlan ──────────────────────────────────────────────────────────────
 
 // UT-032a: ApprovePlan when plan_artifacts_path is empty → CodeFailedPrecondition
@@ -593,6 +662,61 @@ func TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent(t *te
 	finalResp, err := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
 	require.NoError(t, err)
 	assert.Equal(t, "in_progress", finalResp.Msg.Item.Status)
+}
+
+// TestSpawnSessionFromItem_AutonomousBypassesPlanningGate verifies that
+// Autonomous=true allows spawning a ready item without plan approval.
+// Regression for: "run autonomously not working on many sessions" — the planning
+// gate was not bypassed for autonomous mode, so any ready item without an approved
+// plan failed even though the autonomous driver handles its own planning loop.
+func TestSpawnSessionFromItem_AutonomousBypassesPlanningGate(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+	starter := &fakeAutonomousDriverStarter{}
+	svc.SetAutonomousDriverStarter(starter)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	// Create a ready item without plan approval (skip_planning=false, plan_approved=false).
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:      "autonomous gate test",
+		RepoPath:   repoPath,
+		SkipTriage: true,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "it works", Status: "pending"},
+		},
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	// Manually advance to "ready" via TransitionBacklogItemStatus (skipping real triage).
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: "ready",
+	}))
+	require.NoError(t, err)
+
+	// Verify the item has no plan approval yet.
+	getResp, err := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.False(t, getResp.Msg.Item.PlanApproved, "setup: item must not have plan approval")
+	require.False(t, getResp.Msg.Item.SkipPlanning, "setup: skip_planning must be false")
+
+	// Non-autonomous spawn must still be blocked by the planning gate.
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId: itemID,
+	}))
+	require.Error(t, err, "non-autonomous spawn without plan approval must fail")
+
+	// Autonomous spawn must bypass the planning gate.
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId:     itemID,
+		Autonomous: true,
+	}))
+	require.NoError(t, err, "autonomous spawn must succeed without plan approval")
+	require.Len(t, starter.calls, 1, "autonomous driver start hook must fire")
 }
 
 // ─── AttachSessionToItem ──────────────────────────────────────────────────────

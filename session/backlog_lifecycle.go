@@ -278,6 +278,101 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 	}
 }
 
+// TriggerReviewForSession immediately spawns a review gate for the work session
+// identified by workSessionUUID. Used by the autonomous driver to trigger review
+// as soon as the driver signals DONE, rather than waiting for ReconcileStuck.
+// No-op if the listener is disabled or no review mechanism is configured.
+func (l *BacklogLifecycleListener) TriggerReviewForSession(workSessionUUID string) {
+	if !l.enabled.Load() {
+		return
+	}
+	if l.getHeadlessPool() == nil && l.sessionCreator == nil {
+		return
+	}
+	go func() {
+		select {
+		case l.reviewSem <- struct{}{}:
+		case <-l.shutdownCtx.Done():
+			return
+		}
+		defer func() { <-l.reviewSem }()
+
+		ctx := l.shutdownCtx
+		is, err := l.storage.GetItemSessionBySessionUUID(ctx, workSessionUUID)
+		if err != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] TriggerReviewForSession GetItemSessionBySessionUUID(%s): %v", workSessionUUID, err)
+			return
+		}
+		item, err := is.Edges.BacklogItemOrErr()
+		if err != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] TriggerReviewForSession BacklogItemOrErr session=%s: %v", workSessionUUID, err)
+			return
+		}
+		if item.SkipReviewGate {
+			return
+		}
+		log.InfoLog.Printf("[BacklogLifecycle] TriggerReviewForSession: spawning immediate review gate item=%s session=%s", item.ID, workSessionUUID)
+		l.spawnReviewGate(item, is)
+	}()
+}
+
+// applyVerdictsToACs updates the acceptance criteria status fields on a backlog
+// item to reflect the review verdict for each criterion:
+//
+//	PASS  → "done"
+//	PARTIAL → "in_progress"
+//	FAIL / UNVERIFIABLE → unchanged (stay "pending")
+//
+// Best-effort: errors are logged but do not block the caller.
+func applyVerdictsToACs(storage *Storage, ctx context.Context, item *ent.BacklogItem, acSnapshot []AcCriterion, verdicts []CriterionVerdict) {
+	if len(verdicts) == 0 || len(acSnapshot) == 0 {
+		return
+	}
+
+	outcomeByIdx := make(map[int]string, len(verdicts))
+	for _, v := range verdicts {
+		outcomeByIdx[v.CriterionIndex] = v.Outcome
+	}
+
+	updated := make([]AcCriterion, len(acSnapshot))
+	copy(updated, acSnapshot)
+	changed := false
+	for i, ac := range updated {
+		outcome, ok := outcomeByIdx[ac.Index]
+		if !ok {
+			continue
+		}
+		var newStatus string
+		switch outcome {
+		case ReviewVerdictPass:
+			newStatus = "done"
+		case ReviewVerdictPartial:
+			newStatus = "in_progress"
+		default:
+			continue // FAIL / UNVERIFIABLE: leave as-is
+		}
+		if newStatus != ac.Status {
+			updated[i].Status = newStatus
+			changed = true
+		}
+	}
+
+	if !changed {
+		return
+	}
+
+	newJSON, err := SerializeAcCriteria(updated)
+	if err != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] applyVerdictsToACs serialize item=%s: %v", item.ID, err)
+		return
+	}
+	if _, err := storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{AcceptanceCriteria: &newJSON}, nil); err != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] applyVerdictsToACs update item=%s: %v", item.ID, err)
+		return
+	}
+	log.InfoLog.Printf("[BacklogLifecycle] applyVerdictsToACs: updated AC statuses for item=%s (%d criteria)", item.ID, len(updated))
+}
+
 // spawnReviewGate creates a one-shot review session for item, using the diff
 // from the work session's worktree.
 func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *ent.ItemSession) {
@@ -368,6 +463,9 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 
 		overall, perCriterion, summary := ParseHeadlessVerdictResult(reviewResult)
 		perCriterionJSON, _ := json.Marshal(perCriterion)
+
+		// Update AC statuses on the item to reflect what was verified.
+		applyVerdictsToACs(l.storage, ctx, item, acSnapshot, perCriterion)
 
 		// Create a synthetic ItemSession and its ReviewVerdict atomically so there
 		// is never a dangling session with no verdict if the verdict write fails.
@@ -559,6 +657,15 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *en
 		}, nil); updateErr != nil {
 			log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR store PR fields item=%s: %v", item.ID, updateErr)
 		}
+	}
+
+	// Enable GitHub auto-merge so the PR merges automatically once CI passes.
+	// Best-effort: repos without branch protection or auto-merge enabled will fail here,
+	// and ReconcilePRPending will detect the merge via polling instead.
+	if autoErr := g.EnablePRAutoMerge(prNumber); autoErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR auto-merge item=%s pr=%d: %v", item.ID, prNumber, autoErr)
+	} else {
+		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s PR #%d auto-merge enabled", item.ID, prNumber)
 	}
 
 	// Transition to pr_pending.

@@ -846,6 +846,10 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	backlogLifecycleListener.SetAutoReopener(backlogSvc)
 	backlogLifecycleListener.SetPRFixSpawner(backlogSvc)
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
+	sessionService.SetReviewGateTrigger(backlogLifecycleListener)
+	// Wire the tmux-UUID → Claude-conversation-UUID resolver so GetClaudeHistoryMessages
+	// can show history for backlog sessions that passed a tmux UUID as the session ID.
+	sessionService.SetResolveConversationUUID(storage.GetClaudeConversationUUIDBySessionUUID)
 	sessionService.SetFeatureController("backlog", backlogCtrl)
 
 	// Check VNC dependencies once at startup so the server knows whether browser

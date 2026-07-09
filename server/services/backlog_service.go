@@ -1215,15 +1215,18 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// 3. Validate status. Allow ready (first spawn) or in_progress (re-spawn after reopen).
 	isReopen := item.Status == string(session.BacklogStatusInProgress)
 	if item.Status != string(session.BacklogStatusReady) && !isReopen {
+		log.InfoLog.Printf("[SpawnSessionFromItem] status gate blocked spawn item=%s status=%s autonomous=%v", item.ID, item.Status, req.Msg.Autonomous)
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("item must be in %q or %q status to spawn a session, got %q",
-				session.BacklogStatusReady, session.BacklogStatusInProgress, item.Status))
+			fmt.Errorf("item must be in %q or %q status to spawn a session, got %q — use TriggerTriage to advance from %q",
+				session.BacklogStatusReady, session.BacklogStatusInProgress, item.Status, item.Status))
 	}
 
 	// 4. Planning gate (only for fresh spawns; on reopen planning is already approved).
-	if !isReopen && !item.SkipPlanning && !item.PlanApproved {
+	// Autonomous mode bypasses the gate — the driver handles its own planning loop.
+	if !isReopen && !item.SkipPlanning && !item.PlanApproved && !req.Msg.Autonomous {
+		log.InfoLog.Printf("[SpawnSessionFromItem] planning gate blocked spawn item=%s status=%s autonomous=false", item.ID, item.Status)
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("run TriggerTriage and approve the plan before spawning; set skip_planning=true to bypass"))
+			fmt.Errorf("run TriggerTriage and approve the plan before spawning, or use 'Run Autonomously' to skip the planning gate"))
 	}
 
 	// 5. Repo path required.
@@ -1340,8 +1343,13 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn session: %w", err))
 	}
 
-	if req.Msg.Autonomous && s.autonomousStarter != nil {
-		s.autonomousStarter.StartAutonomousDriverForInstance(inst)
+	if req.Msg.Autonomous {
+		if s.autonomousStarter != nil {
+			log.InfoLog.Printf("[SpawnSessionFromItem] starting autonomous driver item=%s session=%s", item.ID, inst.UUID)
+			s.autonomousStarter.StartAutonomousDriverForInstance(inst)
+		} else {
+			log.WarningLog.Printf("[SpawnSessionFromItem] autonomous=true but no driver starter wired item=%s session=%s — session will need manual approval", item.ID, inst.UUID)
+		}
 	}
 
 	// 12. Create ItemSession with the real session UUID (avoids "<pending>" orphan records on failure).
