@@ -391,8 +391,14 @@ type TriageResult struct {
 	Suggestions         []*TriageSuggestion    `protobuf:"bytes,2,rep,name=suggestions,proto3" json:"suggestions,omitempty"`
 	ClarifyingQuestions []string               `protobuf:"bytes,3,rep,name=clarifying_questions,json=clarifyingQuestions,proto3" json:"clarifying_questions,omitempty"`
 	Tasks               []*TriageTask          `protobuf:"bytes,4,rep,name=tasks,proto3" json:"tasks,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// iteration is 1 for the initial triage run, incrementing by one for each
+	// feedback-driven re-triage of the same item.
+	Iteration int32 `protobuf:"varint,5,opt,name=iteration,proto3" json:"iteration,omitempty"`
+	// feedback is the free-text feedback that produced this iteration, empty
+	// for the initial (non-refined) triage run.
+	Feedback      string `protobuf:"bytes,6,opt,name=feedback,proto3" json:"feedback,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TriageResult) Reset() {
@@ -451,6 +457,20 @@ func (x *TriageResult) GetTasks() []*TriageTask {
 		return x.Tasks
 	}
 	return nil
+}
+
+func (x *TriageResult) GetIteration() int32 {
+	if x != nil {
+		return x.Iteration
+	}
+	return 0
+}
+
+func (x *TriageResult) GetFeedback() string {
+	if x != nil {
+		return x.Feedback
+	}
+	return ""
 }
 
 // ItemSession records a session that was spawned or attached to a backlog item.
@@ -2132,8 +2152,12 @@ func (x *AttachSessionToItemResponse) GetItemSession() *ItemSession {
 }
 
 type TriggerTriageRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ItemId        string                 `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	ItemId string                 `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	// feedback, if non-empty, requests a refinement of the item's most recent
+	// completed triage result instead of a fresh triage run. Requires a prior
+	// completed triage result to exist.
+	Feedback      string `protobuf:"bytes,2,opt,name=feedback,proto3" json:"feedback,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2171,6 +2195,13 @@ func (*TriggerTriageRequest) Descriptor() ([]byte, []int) {
 func (x *TriggerTriageRequest) GetItemId() string {
 	if x != nil {
 		return x.ItemId
+	}
+	return ""
+}
+
+func (x *TriggerTriageRequest) GetFeedback() string {
+	if x != nil {
+		return x.Feedback
 	}
 	return ""
 }
@@ -4199,12 +4230,14 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"TriageTask\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1a\n" +
 	"\bestimate\x18\x02 \x01(\tR\bestimate\x12\x1a\n" +
-	"\bcategory\x18\x03 \x01(\tR\bcategory\"\xc9\x01\n" +
+	"\bcategory\x18\x03 \x01(\tR\bcategory\"\x83\x02\n" +
 	"\fTriageResult\x12\x18\n" +
 	"\asummary\x18\x01 \x01(\tR\asummary\x12>\n" +
 	"\vsuggestions\x18\x02 \x03(\v2\x1c.session.v1.TriageSuggestionR\vsuggestions\x121\n" +
 	"\x14clarifying_questions\x18\x03 \x03(\tR\x13clarifyingQuestions\x12,\n" +
-	"\x05tasks\x18\x04 \x03(\v2\x16.session.v1.TriageTaskR\x05tasks\"\xdc\x05\n" +
+	"\x05tasks\x18\x04 \x03(\v2\x16.session.v1.TriageTaskR\x05tasks\x12\x1c\n" +
+	"\titeration\x18\x05 \x01(\x05R\titeration\x12\x1a\n" +
+	"\bfeedback\x18\x06 \x01(\tR\bfeedback\"\xdc\x05\n" +
 	"\vItemSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fsession_uuid\x18\x02 \x01(\tR\vsessionUuid\x12!\n" +
@@ -4351,9 +4384,10 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12!\n" +
 	"\fsession_uuid\x18\x02 \x01(\tR\vsessionUuid\"Y\n" +
 	"\x1bAttachSessionToItemResponse\x12:\n" +
-	"\fitem_session\x18\x01 \x01(\v2\x17.session.v1.ItemSessionR\vitemSession\"/\n" +
+	"\fitem_session\x18\x01 \x01(\v2\x17.session.v1.ItemSessionR\vitemSession\"K\n" +
 	"\x14TriggerTriageRequest\x12\x17\n" +
-	"\aitem_id\x18\x01 \x01(\tR\x06itemId\"S\n" +
+	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x1a\n" +
+	"\bfeedback\x18\x02 \x01(\tR\bfeedback\"S\n" +
 	"\x15TriggerTriageResponse\x12:\n" +
 	"\fitem_session\x18\x01 \x01(\v2\x17.session.v1.ItemSessionR\vitemSession\"-\n" +
 	"\x12ApprovePlanRequest\x12\x17\n" +
