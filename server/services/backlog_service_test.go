@@ -23,22 +23,29 @@ import (
 
 // fakeHeadlessPool is a test stub implementing headless.PoolClient.
 type fakeHeadlessPool struct {
-	mu       sync.Mutex
-	response string
-	err      error
-	delay    time.Duration // simulates a slow LLM call; see TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext
-	calls    []fakePoolCall
+	mu        sync.Mutex
+	response  string
+	responses []string // if set, returned in order (one per call) instead of response
+	err       error
+	delay     time.Duration // simulates a slow LLM call; see TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext
+	calls     []fakePoolCall
 }
 
 type fakePoolCall struct {
-	key     headless.FeatureKey
-	workDir string
+	key        headless.FeatureKey
+	workDir    string
+	userPrompt string
 }
 
-func (f *fakeHeadlessPool) CallBlockingWithOptions(ctx context.Context, key headless.FeatureKey, _, _ string, opts headless.CallOptions) (string, error) {
+func (f *fakeHeadlessPool) CallBlockingWithOptions(ctx context.Context, key headless.FeatureKey, _, userPrompt string, opts headless.CallOptions) (string, error) {
 	f.mu.Lock()
-	f.calls = append(f.calls, fakePoolCall{key: key, workDir: opts.WorkDir})
+	callIndex := len(f.calls)
+	f.calls = append(f.calls, fakePoolCall{key: key, workDir: opts.WorkDir, userPrompt: userPrompt})
 	delay := f.delay
+	resp := f.response
+	if callIndex < len(f.responses) {
+		resp = f.responses[callIndex]
+	}
 	f.mu.Unlock()
 	if delay > 0 {
 		timer := time.NewTimer(delay)
@@ -49,7 +56,7 @@ func (f *fakeHeadlessPool) CallBlockingWithOptions(ctx context.Context, key head
 			return "", ctx.Err()
 		}
 	}
-	return f.response, f.err
+	return resp, f.err
 }
 
 func (f *fakeHeadlessPool) callCount() int {
@@ -65,6 +72,15 @@ func (f *fakeHeadlessPool) firstCall() fakePoolCall {
 		return fakePoolCall{}
 	}
 	return f.calls[0]
+}
+
+func (f *fakeHeadlessPool) callAt(i int) fakePoolCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i >= len(f.calls) {
+		return fakePoolCall{}
+	}
+	return f.calls[i]
 }
 
 // validTriageJSON returns a minimal valid triage result for use in success-path tests.
@@ -1069,6 +1085,86 @@ func TestTriggerTriage_Success(t *testing.T) {
 	require.NoError(t, listErr)
 	require.Len(t, sessions, 1)
 	assert.NotNil(t, sessions[0].EndedAt, "triage item session should be marked ended on success")
+}
+
+// TestTriggerTriage_RefineWithFeedback: a second TriggerTriage call with feedback
+// set produces a distinct revised result (iteration 2), embeds the prior result and
+// the feedback text in the prompt, and both triage ItemSessions are retained.
+func TestTriggerTriage_RefineWithFeedback(t *testing.T) {
+	storage := createTestStorage(t)
+	secondResponse := `{"summary":"revised summary","suggestions":[],"tasks":[{"text":"revised task","estimate":"3h","category":"backend"}]}`
+	pool := &fakeHeadlessPool{responses: []string{validTriageJSON(), secondResponse}}
+	svc := NewBacklogService(storage, nil, nil, nil)
+	svc.SetHeadlessPool(pool)
+
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:    "refine me",
+		Status:   string(session.BacklogStatusIdea),
+		Priority: 3,
+		RepoPath: t.TempDir(),
+	})
+	require.NoError(t, err)
+
+	// Initial triage.
+	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId: item.ID,
+	}))
+	require.NoError(t, trigErr)
+	require.Eventually(t, func() bool {
+		updated, loadErr := storage.GetBacklogItem(t.Context(), item.ID)
+		return loadErr == nil && updated.Status == string(session.BacklogStatusReady)
+	}, 5*time.Second, 50*time.Millisecond, "initial triage should mark item ready")
+
+	// Refine with feedback.
+	_, refineErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId:   item.ID,
+		Feedback: "This missed the mobile case entirely.",
+	}))
+	require.NoError(t, refineErr)
+	require.Eventually(t, func() bool {
+		return pool.callCount() == 2
+	}, 5*time.Second, 50*time.Millisecond, "refine should make a second headless call")
+	require.Eventually(t, func() bool {
+		updated, loadErr := storage.GetBacklogItem(t.Context(), item.ID)
+		return loadErr == nil && updated.Status == string(session.BacklogStatusReady)
+	}, 5*time.Second, 50*time.Millisecond, "refine should mark item ready again")
+
+	// The refine prompt embeds the prior result and the feedback text.
+	assert.Contains(t, pool.callAt(1).userPrompt, "test summary")
+	assert.Contains(t, pool.callAt(1).userPrompt, "This missed the mobile case entirely.")
+
+	// Both triage ItemSessions are retained, most recent carries the revised result + iteration 2.
+	sessions, listErr := storage.ListItemSessions(t.Context(), item.ID)
+	require.NoError(t, listErr)
+	require.Len(t, sessions, 2)
+	assert.Contains(t, sessions[1].TriageResult, "revised summary")
+	assert.Contains(t, sessions[1].TriageResult, `"iteration":2`)
+}
+
+// TestTriggerTriage_RefineWithFeedback_RequiresPriorResult: feedback on an item
+// with no completed triage result is rejected rather than silently running a
+// fresh triage as if the feedback were ignored.
+func TestTriggerTriage_RefineWithFeedback_RequiresPriorResult(t *testing.T) {
+	storage := createTestStorage(t)
+	pool := &fakeHeadlessPool{response: validTriageJSON()}
+	svc := NewBacklogService(storage, nil, nil, nil)
+	svc.SetHeadlessPool(pool)
+
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:    "no prior triage",
+		Status:   string(session.BacklogStatusIdea),
+		Priority: 3,
+		RepoPath: t.TempDir(),
+	})
+	require.NoError(t, err)
+
+	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId:   item.ID,
+		Feedback: "please improve this",
+	}))
+	require.Error(t, trigErr)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(trigErr))
+	assert.Equal(t, 0, pool.callCount(), "no headless call should be made when there's nothing to refine")
 }
 
 // TestTriggerTriage_HeadlessPoolError: pool error → session ended, item stays idea.
