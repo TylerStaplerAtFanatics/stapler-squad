@@ -846,6 +846,11 @@ func (s *BacklogService) ArchiveBacklogItem(
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
 	}
 
+	// Push work branches before archiving so changes are durable.
+	if sessions, lsErr := s.storage.ListItemSessions(ctx, req.Msg.ItemId); lsErr == nil {
+		s.commitAndPushItemWorktrees(ctx, sessions)
+	}
+
 	archived, err := s.storage.ArchiveBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
 		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
@@ -951,6 +956,14 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 		if req.Msg.ExpectedUpdatedAt != nil {
 			t := req.Msg.ExpectedUpdatedAt.AsTime()
 			precondition.ExpectedUpdatedAt = &t
+		}
+	}
+
+	// Push work branches before marking done so changes are durable before the
+	// status changes and the worktree is removed.
+	if to == session.BacklogStatusDone {
+		if sessions, lsErr := s.storage.ListItemSessions(ctx, req.Msg.ItemId); lsErr == nil {
+			s.commitAndPushItemWorktrees(ctx, sessions)
 		}
 	}
 
@@ -1421,6 +1434,86 @@ func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID
 		}
 		return fmt.Errorf("spawn session: %w", spawnErr)
 	}
+	return nil
+}
+
+// AutoReopenForPRFix implements session.PRFixSpawner. It transitions the item
+// from pr_pending back to in_progress and spawns a new autonomous work session
+// pre-loaded with the CI/review failure context so the agent can fix and push.
+func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, fixContext string) error {
+	if s.storage == nil {
+		return fmt.Errorf("storage not available")
+	}
+
+	item, err := s.storage.GetBacklogItem(ctx, itemID)
+	if err != nil {
+		return fmt.Errorf("load item: %w", err)
+	}
+	if session.BacklogStatus(item.Status) != session.BacklogStatusPRPending {
+		return fmt.Errorf("item %s is not pr_pending (got %s)", itemID, item.Status)
+	}
+
+	// Reuse the same iteration cap as the review rework cycle.
+	sessions, sessErr := s.storage.ListItemSessions(ctx, item.ID)
+	if sessErr != nil {
+		return fmt.Errorf("list sessions for cap check: %w", sessErr)
+	}
+	workCount := 0
+	for _, is := range sessions {
+		if is.SessionRole == session.SessionRoleWork {
+			workCount++
+		}
+	}
+	if workCount >= maxAutoReworkIterations {
+		log.InfoLog.Printf("[AutoReopenForPRFix] item %s has %d work sessions (cap %d); leaving in pr_pending for manual action", itemID, workCount, maxAutoReworkIterations)
+		return nil
+	}
+
+	updatedAt := item.UpdatedAt
+	precondition := &session.BacklogItemPrecondition{
+		ExpectedStatus:    string(session.BacklogStatusPRPending),
+		ExpectedUpdatedAt: &updatedAt,
+		Note:              "auto-reopened for PR fix (CI/review)",
+	}
+	if _, err := s.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusInProgress, precondition); err != nil {
+		return fmt.Errorf("transition to in_progress: %w", err)
+	}
+
+	// Prepend the PR failure context to the item's notes so the spawned session
+	// prompt includes it. Restore original notes after spawning.
+	originalNotes := item.Notes
+	prFixNote := fmt.Sprintf("[PR Fix context - PR #%d (%s)]\n%s", item.PrNumber, item.PrURL, fixContext)
+	combinedNotes := prFixNote
+	if originalNotes != "" {
+		combinedNotes = prFixNote + "\n\n---\n\n" + originalNotes
+	}
+	if _, noteErr := s.storage.UpdateBacklogItem(ctx, itemID, session.BacklogItemUpdate{
+		Notes: &combinedNotes,
+	}, nil); noteErr != nil {
+		log.WarningLog.Printf("[AutoReopenForPRFix] set fix notes item=%s: %v", itemID, noteErr)
+	}
+
+	_, spawnErr := s.SpawnSessionFromItem(ctx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId:     itemID,
+		Autonomous: true,
+	}))
+
+	// Restore original notes regardless of spawn outcome.
+	if _, noteErr := s.storage.UpdateBacklogItem(ctx, itemID, session.BacklogItemUpdate{
+		Notes: &originalNotes,
+	}, nil); noteErr != nil {
+		log.WarningLog.Printf("[AutoReopenForPRFix] restore notes item=%s: %v", itemID, noteErr)
+	}
+
+	if spawnErr != nil {
+		// Roll back to pr_pending so the reconciler can retry.
+		if _, rollbackErr := s.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusPRPending, nil); rollbackErr != nil {
+			log.ErrorLog.Printf("[AutoReopenForPRFix] rollback to pr_pending failed for item %s: %v", itemID, rollbackErr)
+		}
+		return fmt.Errorf("spawn session: %w", spawnErr)
+	}
+
+	log.InfoLog.Printf("[AutoReopenForPRFix] item %s → in_progress for PR fix session", itemID)
 	return nil
 }
 
@@ -2361,7 +2454,31 @@ func (s *BacklogService) GetSessionBacklogIndex(
 	}), nil
 }
 
+// commitAndPushItemWorktrees commits any dirty work and pushes branches to the remote
+// for all work-role item sessions. Called BEFORE status transitions to ensure changes
+// are durable before the item is marked done. Errors are logged but not returned.
+func (s *BacklogService) commitAndPushItemWorktrees(ctx context.Context, sessions []*ent.ItemSession) {
+	for _, is := range sessions {
+		if is.SessionUUID == "" || is.SessionRole != string(session.SessionRoleWork) {
+			continue
+		}
+		wt, err := s.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
+		if err != nil || wt.WorktreePath == "" {
+			continue
+		}
+		g := git.NewGitWorktreeFromStorage(wt.RepoPath, wt.WorktreePath, wt.SessionName, wt.BranchName, wt.BaseCommitSHA)
+		commitMsg := fmt.Sprintf("[claudesquad] save work before done (session %s)", is.SessionUUID)
+		if commitErr := g.CommitChanges(commitMsg); commitErr != nil {
+			log.WarningLog.Printf("[commitAndPushItemWorktrees] commit failed path=%s: %v", wt.WorktreePath, commitErr)
+		}
+		if pushErr := g.PushBranch(); pushErr != nil {
+			log.WarningLog.Printf("[commitAndPushItemWorktrees] push failed path=%s: %v", wt.WorktreePath, pushErr)
+		}
+	}
+}
+
 // cleanupItemWorktrees removes git worktrees for work-role item sessions.
+// Call commitAndPushItemWorktrees first to ensure changes are durable.
 // Errors are logged but do not fail the caller — cleanup is best-effort.
 func (s *BacklogService) cleanupItemWorktrees(ctx context.Context, sessions []*ent.ItemSession) {
 	for _, is := range sessions {
@@ -2376,11 +2493,6 @@ func (s *BacklogService) cleanupItemWorktrees(ctx context.Context, sessions []*e
 			continue
 		}
 		g := git.NewGitWorktreeFromStorage(wt.RepoPath, wt.WorktreePath, wt.SessionName, wt.BranchName, wt.BaseCommitSHA)
-		// Commit any uncommitted changes before removing the worktree so work is not lost.
-		commitMsg := fmt.Sprintf("[claudesquad] save work before done (session %s)", is.SessionUUID)
-		if commitErr := g.CommitChanges(commitMsg); commitErr != nil {
-			log.WarningLog.Printf("[cleanupItemWorktrees] failed to commit before cleanup path=%s: %v", wt.WorktreePath, commitErr)
-		}
 		if cleanErr := g.Cleanup(); cleanErr != nil {
 			log.WarningLog.Printf("[cleanupItemWorktrees] failed to cleanup worktree path=%s: %v", wt.WorktreePath, cleanErr)
 		}

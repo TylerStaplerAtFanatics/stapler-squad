@@ -35,6 +35,7 @@ const ALL_STATUSES: BacklogItemStatus[] = [
   "ready",
   "in_progress",
   "review",
+  "pr_pending",
   "done",
   "archived",
 ];
@@ -45,6 +46,7 @@ const STATUS_CSS: Record<string, string> = {
   ready: styles.statusReady,
   in_progress: styles.statusInProgress,
   review: styles.statusReview,
+  pr_pending: styles.statusReview,
   done: styles.statusDone,
   archived: styles.statusArchived,
 };
@@ -213,6 +215,7 @@ function BacklogPageInner() {
         statuses: statusFilter.length > 0 ? statusFilter : undefined,
         priorities: priorityFilter.length > 0 ? priorityFilter : undefined,
         search: search.trim() || undefined,
+        includeTerminal: true, // show done items by default; user can filter them out
       });
       setItems(result);
     } finally {

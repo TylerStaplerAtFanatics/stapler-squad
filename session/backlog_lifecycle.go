@@ -33,6 +33,13 @@ type AutoReopenSpawner interface {
 	AutoReopenAfterFailedReview(ctx context.Context, itemID string) error
 }
 
+// PRFixSpawner can reopen a pr_pending item for rework when CI checks fail or
+// reviewers request changes. The fixContext string contains a summary of the
+// failures/comments to pass as context to the new work session.
+type PRFixSpawner interface {
+	AutoReopenForPRFix(ctx context.Context, itemID string, fixContext string) error
+}
+
 // maxConcurrentReviewGates is the maximum number of review gates that can run
 // concurrently. This caps goroutine fan-out when many sessions exit simultaneously.
 const maxConcurrentReviewGates = 8
@@ -53,6 +60,10 @@ type BacklogLifecycleListener struct {
 	// autoReopenMu guards autoReopener for concurrent Set/get access.
 	autoReopenMu sync.RWMutex
 	autoReopener AutoReopenSpawner
+
+	// prFixMu guards prFixSpawner for concurrent Set/get access.
+	prFixMu      sync.RWMutex
+	prFixSpawner PRFixSpawner
 
 	// reviewSem limits concurrent review gate goroutines.
 	reviewSem chan struct{}
@@ -90,6 +101,21 @@ func (l *BacklogLifecycleListener) getAutoReopener() AutoReopenSpawner {
 	l.autoReopenMu.RLock()
 	defer l.autoReopenMu.RUnlock()
 	return l.autoReopener
+}
+
+// SetPRFixSpawner wires in the spawner used to automatically reopen pr_pending
+// items for rework when CI checks fail or reviewers request changes.
+func (l *BacklogLifecycleListener) SetPRFixSpawner(s PRFixSpawner) {
+	l.prFixMu.Lock()
+	defer l.prFixMu.Unlock()
+	l.prFixSpawner = s
+}
+
+// getPRFixSpawner returns the current PR fix spawner under a read lock.
+func (l *BacklogLifecycleListener) getPRFixSpawner() PRFixSpawner {
+	l.prFixMu.RLock()
+	defer l.prFixMu.RUnlock()
+	return l.prFixSpawner
 }
 
 // getHeadlessPool returns the current headless pool under a read lock.
@@ -506,24 +532,33 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *en
 		return
 	}
 
-	// Create the PR.
-	prTitle := item.Title
-	prBody := fmt.Sprintf("Automated PR for backlog item: %s\n\nItem ID: %s", item.Title, item.ID)
-	prURL, prNumber, prErr := g.CreatePR(prTitle, prBody)
-	if prErr != nil {
-		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR create PR item=%s: %v", item.ID, prErr)
-		fallbackToDone("PR creation failed")
-		return
-	}
-
-	// Cache PR URL + number on the item so the reconciler and UI can use them.
-	prURLCopy := prURL
-	prNumCopy := prNumber
-	if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
-		PrURL:    &prURLCopy,
-		PrNumber: &prNumCopy,
-	}, nil); updateErr != nil {
-		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR store PR fields item=%s: %v", item.ID, updateErr)
+	// Create (or locate existing) PR.
+	var prURL string
+	var prNumber int
+	if item.PrNumber > 0 && item.PrURL != "" {
+		// PR already exists from a previous attempt — just use it.
+		prURL = item.PrURL
+		prNumber = item.PrNumber
+		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s reusing existing PR #%d", item.ID, prNumber)
+	} else {
+		prTitle := item.Title
+		prBody := fmt.Sprintf("Automated PR for backlog item: %s\n\nItem ID: %s", item.Title, item.ID)
+		var prErr error
+		prURL, prNumber, prErr = g.CreatePR(prTitle, prBody)
+		if prErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR create PR item=%s: %v", item.ID, prErr)
+			fallbackToDone("PR creation failed")
+			return
+		}
+		// Cache PR URL + number on the item so the reconciler and UI can use them.
+		prURLCopy := prURL
+		prNumCopy := prNumber
+		if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
+			PrURL:    &prURLCopy,
+			PrNumber: &prNumCopy,
+		}, nil); updateErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR store PR fields item=%s: %v", item.ID, updateErr)
+		}
 	}
 
 	// Transition to pr_pending.
@@ -535,8 +570,9 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *en
 	}
 }
 
-// ReconcilePRPending polls items in pr_pending status and auto-transitions to done
-// when their GitHub PR has been merged.
+// ReconcilePRPending polls items in pr_pending status. It transitions to done
+// when the PR is merged, and spawns a fix session when CI fails or reviewers
+// request changes.
 func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *EntRepository) {
 	items, err := er.FindPRPendingItems(ctx)
 	if err != nil {
@@ -547,25 +583,49 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 		if item.PrNumber == 0 || item.PrURL == "" {
 			continue
 		}
-		// Need a worktree path for gh CLI; use repo_path as working dir.
 		repoPath := item.RepoPath
 		if repoPath == "" {
 			continue
 		}
 		g := git.NewGitWorktreeFromStorage(repoPath, repoPath, "", "", "")
+
+		// 1. Check if the PR has been merged → done.
 		merged, mergedErr := g.IsPRMerged(item.PrNumber)
 		if mergedErr != nil {
 			log.DebugLog.Printf("[BacklogLifecycle] ReconcilePRPending IsPRMerged item=%s pr=%d: %v", item.ID, item.PrNumber, mergedErr)
 			continue
 		}
-		if !merged {
+		if merged {
+			precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusPRPending)}
+			if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusDone, precondition); transErr != nil {
+				log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending done transition item=%s: %v", item.ID, transErr)
+			} else {
+				log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s → done (PR #%d merged)", item.ID, item.PrNumber)
+			}
 			continue
 		}
-		precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusPRPending)}
-		if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusDone, precondition); transErr != nil {
-			log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending done transition item=%s: %v", item.ID, transErr)
-		} else {
-			log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s → done (PR #%d merged)", item.ID, item.PrNumber)
+
+		// 2. PR still open — check CI status and reviews.
+		prStatus, statusErr := g.GetPRStatus(item.PrNumber)
+		if statusErr != nil {
+			log.DebugLog.Printf("[BacklogLifecycle] ReconcilePRPending GetPRStatus item=%s pr=%d: %v", item.ID, item.PrNumber, statusErr)
+			continue
+		}
+		if !prStatus.CIFailing && !prStatus.HasBlockingReviews {
+			continue // PR is open and healthy — wait for merge.
+		}
+
+		// 3. CI failure or review changes requested → spawn fix session.
+		fixSpawner := l.getPRFixSpawner()
+		if fixSpawner == nil {
+			log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s: CI/review issues found but no PRFixSpawner configured", item.ID)
+			continue
+		}
+		fixCtx := fmt.Sprintf("PR #%d (%s) needs fixes:\n\n%s", item.PrNumber, item.PrURL, prStatus.FeedbackText)
+		log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s → in_progress for PR fix (CI=%v, reviews=%v)",
+			item.ID, prStatus.CIFailing, prStatus.HasBlockingReviews)
+		if fixErr := fixSpawner.AutoReopenForPRFix(ctx, item.ID.String(), fixCtx); fixErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending AutoReopenForPRFix item=%s: %v", item.ID, fixErr)
 		}
 	}
 }
