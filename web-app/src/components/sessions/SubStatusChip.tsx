@@ -86,6 +86,7 @@ export function SubStatusChip({ subStatus }: SubStatusChipProps) {
         <span
           className={chipError}
           role="status"
+          // eslint-disable-next-line no-restricted-syntax -- aria-label copy, not a DetectedStatus/AttentionReason literal; overlap is coincidental
           aria-label="Error"
           title="Session encountered an error"
         >
@@ -154,11 +155,6 @@ export function SubStatusChip({ subStatus }: SubStatusChipProps) {
       );
 
     case SubStatus.UNSPECIFIED:
-    case undefined:
-      // `undefined` is handled defensively alongside UNSPECIFIED even though
-      // subStatus is typed as required — some callers (e.g. partially-typed
-      // test fixtures) may omit it, and it should render no chip rather than
-      // throw. See the same guard in deriveWorkingState.ts.
       return null;
     default:
       assertNever(subStatus);

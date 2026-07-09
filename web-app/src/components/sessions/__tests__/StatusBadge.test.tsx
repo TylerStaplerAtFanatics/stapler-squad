@@ -75,6 +75,11 @@ describe("StatusBadge with AttentionReason", () => {
     expect(screen.getByText("Your Input Needed")).toBeInTheDocument();
   });
 
+  it("renders Tests Failing label for TESTS_FAILING", () => {
+    renderBadge({ reason: AttentionReason.TESTS_FAILING });
+    expect(screen.getByText("Tests Failing")).toBeInTheDocument();
+  });
+
   it("sets aria-label matching the reason label", () => {
     renderBadge({ reason: AttentionReason.APPROVAL_PENDING });
     expect(screen.getByRole("status")).toHaveAttribute("aria-label", "Approval Pending");
@@ -169,6 +174,7 @@ describe("getAttentionReasonInfo", () => {
     AttentionReason.UNCOMMITTED_CHANGES,
     AttentionReason.STALE,
     AttentionReason.WAITING_FOR_USER,
+    AttentionReason.TESTS_FAILING,
   ];
 
   knownReasons.forEach((reason) => {

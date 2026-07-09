@@ -354,6 +354,21 @@ func TestSweepExpiredSentRemovesOnlyStaleEntries(t *testing.T) {
 	assert.True(t, freshStillPresent, "entries within the dedup window must be kept")
 }
 
+func TestSweepStaleLastStatusRemovesOnlyExpiredEntries(t *testing.T) {
+	now := time.Now()
+	lastStatus := map[string]statusEntry{
+		"stale-id": {status: session.Stopped, lastSeen: now.Add(-(statusEntryTTL + time.Hour))},
+		"fresh-id": {status: session.Active, lastSeen: now},
+	}
+
+	sweepStaleLastStatus(lastStatus, now, statusEntryTTL)
+
+	_, staleStillPresent := lastStatus["stale-id"]
+	_, freshStillPresent := lastStatus["fresh-id"]
+	assert.False(t, staleStillPresent, "entries older than statusEntryTTL must be swept")
+	assert.True(t, freshStillPresent, "fresh entries must be kept")
+}
+
 // IT-4.2 — EventSessionUpdated with Status=Active does NOT trigger push
 func TestSessionUpdatedActiveSuppressesPush(t *testing.T) {
 	bus := events.NewEventBus(10)

@@ -19,9 +19,25 @@ import (
 const dedupWindow = 2 * time.Second
 
 // statusSweepInterval controls how often the delivery subscriber prunes
-// lastSent entries older than dedupWindow, bounding the map's memory growth
-// over the lifetime of a long-running server process.
+// lastSent entries older than dedupWindow and lastStatus entries older than
+// statusEntryTTL, bounding both maps' memory growth over the lifetime of a
+// long-running server process.
 const statusSweepInterval = 1 * time.Minute
+
+// statusEntryTTL bounds how long a session's last-known status is retained in
+// lastStatus after its last update. EventSessionDeleted only fires on hard
+// delete; sessions that are archived instead (the more common path) never
+// emit it, so without this TTL sweep the map would grow unbounded for the
+// life of the process — mirrors server/analytics/subscriber.go's
+// statusEntryTTL for its analogous lastStatusByID map.
+const statusEntryTTL = 24 * time.Hour
+
+// statusEntry pairs a session's last-known status with the time it was last
+// observed, so stale entries can be evicted by the periodic sweep.
+type statusEntry struct {
+	status   session.Status
+	lastSeen time.Time
+}
 
 // deliveryState holds the delivery subscriber's mutable, shared-across-events
 // state: the dedup window's lastSent timestamps and the last observed status
@@ -34,13 +50,13 @@ const statusSweepInterval = 1 * time.Minute
 type deliveryState struct {
 	mu         sync.Mutex
 	lastSent   map[string]time.Time
-	lastStatus map[string]session.Status
+	lastStatus map[string]statusEntry
 }
 
 func newDeliveryState() *deliveryState {
 	return &deliveryState{
 		lastSent:   make(map[string]time.Time),
-		lastStatus: make(map[string]session.Status),
+		lastStatus: make(map[string]statusEntry),
 	}
 }
 
@@ -65,6 +81,20 @@ func sweepExpiredSent(lastSent map[string]time.Time, now time.Time, window time.
 	for tag, sentAt := range lastSent {
 		if now.Sub(sentAt) >= window {
 			delete(lastSent, tag)
+		}
+	}
+}
+
+// sweepStaleLastStatus deletes lastStatus entries whose lastSeen is older
+// than ttl. This bounds map growth for sessions that are archived (rather
+// than hard-deleted) and therefore never publish EventSessionDeleted.
+// Extracted as a pure function so it can be exercised in tests
+// deterministically, independent of the ticker's real-time interval.
+func sweepStaleLastStatus(lastStatus map[string]statusEntry, now time.Time, ttl time.Duration) {
+	cutoff := now.Add(-ttl)
+	for id, entry := range lastStatus {
+		if entry.lastSeen.Before(cutoff) {
+			delete(lastStatus, id)
 		}
 	}
 }
@@ -126,7 +156,9 @@ func StartDeliverySubscriber(ctx context.Context, bus *events.EventBus, notifier
 
 			case <-sweepTicker.C:
 				state.mu.Lock()
-				sweepExpiredSent(state.lastSent, time.Now(), dedupWindow)
+				now := time.Now()
+				sweepExpiredSent(state.lastSent, now, dedupWindow)
+				sweepStaleLastStatus(state.lastStatus, now, statusEntryTTL)
 				state.mu.Unlock()
 
 			case <-ctx.Done():
@@ -201,8 +233,9 @@ func (s *deliveryState) buildStatusChangeNotification(event *events.Event) (Deli
 	newStatus := sess.Status
 
 	s.mu.Lock()
-	oldStatus, seen := s.lastStatus[id]
-	s.lastStatus[id] = newStatus
+	prev, seen := s.lastStatus[id]
+	oldStatus := prev.status
+	s.lastStatus[id] = statusEntry{status: newStatus, lastSeen: time.Now()}
 	s.mu.Unlock()
 
 	if newStatus != session.Stopped {
