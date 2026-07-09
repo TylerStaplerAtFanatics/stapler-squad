@@ -112,12 +112,12 @@ func detectFromControllerStatus(statusInfo InstanceStatusInfo, title string) con
 	case statusInfo.ClaudeStatus == detection.StatusTestsFailing:
 		reason, priority, defaultCtx := AttentionReasonFromDetected(detection.StatusTestsFailing)
 		ctx := effectiveCtx(statusInfo.StatusContext, defaultCtx)
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Tests failing - %s", title, ctx)
+		log.Debug("tests failing", "session", title, "ctx", ctx)
 		return controllerStatusDetection{reason: reason, priority: priority, shouldAdd: true, ctx: ctx}
 	case statusInfo.ClaudeStatus == detection.StatusSuccess:
 		reason, priority, defaultCtx := AttentionReasonFromDetected(detection.StatusSuccess)
 		ctx := effectiveCtx(statusInfo.StatusContext, defaultCtx)
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Task completion - %s", title, ctx)
+		log.Debug("task complete", "session", title, "ctx", ctx)
 		return controllerStatusDetection{reason: reason, priority: priority, shouldAdd: true, ctx: ctx}
 	default:
 		return controllerStatusDetection{}
@@ -177,27 +177,27 @@ func detectFromContentLines(content string, detector detection.TerminalDetector,
 	case detection.StatusNeedsApproval:
 		reason, priority, defaultCtx := AttentionReasonFromDetected(detectedStatus)
 		result.ctx = effectiveCtx(statusContext, defaultCtx)
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Approval needed (no controller) - %s", title, result.ctx)
+		log.Debug("approval needed (no controller)", "session", title)
 		result.shouldAdd, result.reason, result.priority = true, reason, priority
 	case detection.StatusInputRequired:
 		reason, priority, defaultCtx := AttentionReasonFromDetected(detectedStatus)
 		result.ctx = effectiveCtx(statusContext, defaultCtx)
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Input required (no controller) - %s", title, result.ctx)
+		log.Debug("input required (no controller)", "session", title)
 		result.shouldAdd, result.reason, result.priority = true, reason, priority
 	case detection.StatusError:
 		reason, priority, defaultCtx := AttentionReasonFromDetected(detectedStatus)
 		result.ctx = effectiveCtx(statusContext, defaultCtx)
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Error detected (no controller) - %s", title, result.ctx)
+		log.Debug("error detected (no controller)", "session", title)
 		result.shouldAdd, result.reason, result.priority = true, reason, priority
 	case detection.StatusTestsFailing:
 		reason, priority, defaultCtx := AttentionReasonFromDetected(detectedStatus)
 		result.ctx = effectiveCtx(statusContext, defaultCtx)
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Tests failing (no controller) - %s", title, result.ctx)
+		log.Debug("tests failing (no controller)", "session", title)
 		result.shouldAdd, result.reason, result.priority = true, reason, priority
 	case detection.StatusSuccess:
 		reason, priority, defaultCtx := AttentionReasonFromDetected(detectedStatus)
 		result.ctx = effectiveCtx(statusContext, defaultCtx)
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Task completion (no controller) - %s", title, result.ctx)
+		log.Debug("task complete (no controller)", "session", title)
 		result.shouldAdd, result.reason, result.priority = true, reason, priority
 	case detection.StatusExecuting, detection.StatusProcessing, detection.StatusWaitingForAgent:
 		result.remove = true
@@ -212,7 +212,7 @@ func detectFromContentLines(content string, detector detection.TerminalDetector,
 func (d *DefaultStatusDeterminer) applyWorktreeCheck(inst *Instance, shouldAdd bool, priority Priority) (newShouldAdd bool, newPriority Priority, newReason AttentionReason, newCtx string, cleanWorktree bool) {
 	worktree, err := inst.GetGitWorktree()
 	if err != nil {
-		log.WarningLog.Printf("[ReviewQueue] Session '%s': Failed to get git worktree: %v", inst.Title, err)
+		log.Warn("failed to get git worktree", "session", inst.Title, "err", err)
 		return shouldAdd, priority, "", "", false
 	}
 	if worktree == nil {
@@ -225,7 +225,7 @@ func (d *DefaultStatusDeterminer) applyWorktreeCheck(inst *Instance, shouldAdd b
 	}
 	if isDirty {
 		if !shouldAdd || priority == PriorityLow {
-			log.InfoLog.Printf("[ReviewQueue] Session '%s': Uncommitted changes detected", inst.Title)
+			log.Debug("uncommitted changes detected", "session", inst.Title)
 			return true, PriorityLow, ReasonUncommittedChanges, "Uncommitted changes ready to commit", false
 		}
 		return shouldAdd, priority, "", "", false
