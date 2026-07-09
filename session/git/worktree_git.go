@@ -395,6 +395,24 @@ func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
 	return status, nil
 }
 
+// EnablePRAutoMerge enables GitHub auto-merge on the given PR so it merges
+// automatically once required CI checks pass. Best-effort: fails silently
+// when the repo does not have auto-merge enabled in its branch protection rules.
+func (g *GitWorktree) EnablePRAutoMerge(prNumber int) error {
+	if err := checkGHCLI(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := safeexec.CommandContext(ctx, "gh", "pr", "merge", strconv.Itoa(prNumber), "--auto", "--squash")
+	cmd.Dir = g.worktreePath
+	out, err := g.runCombinedOutput(cmd)
+	if err != nil {
+		return fmt.Errorf("gh pr merge --auto failed: %s (%w)", out, err)
+	}
+	return nil
+}
+
 // IsPRMerged reports whether the given PR number has been merged.
 func (g *GitWorktree) IsPRMerged(prNumber int) (bool, error) {
 	if err := checkGHCLI(); err != nil {
