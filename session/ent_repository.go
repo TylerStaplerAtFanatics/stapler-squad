@@ -682,6 +682,26 @@ func (r *EntRepository) Delete(ctx context.Context, title string) error {
 	return nil
 }
 
+// GetClaudeConversationUUIDBySessionUUID returns the Claude conversation UUID
+// for the session whose title (tmux session name) matches sessionUUID.
+// Returns "" if the session has no associated ClaudeSession.
+func (r *EntRepository) GetClaudeConversationUUIDBySessionUUID(ctx context.Context, sessionUUID string) (string, error) {
+	sess, err := r.client.Session.Query().
+		Where(session.Title(sessionUUID)).
+		WithClaudeSession().
+		Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return "", ErrNotFound
+		}
+		return "", fmt.Errorf("GetClaudeConversationUUIDBySessionUUID: %w", err)
+	}
+	if sess.Edges.ClaudeSession == nil {
+		return "", nil
+	}
+	return sess.Edges.ClaudeSession.ClaudeSessionID, nil
+}
+
 // Get retrieves a single session by title
 func (r *EntRepository) Get(ctx context.Context, title string) (*InstanceData, error) {
 	// Find session with all relationships eagerly loaded

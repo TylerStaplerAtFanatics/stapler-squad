@@ -324,7 +324,7 @@ func (l *BacklogLifecycleListener) TriggerReviewForSession(workSessionUUID strin
 //	FAIL / UNVERIFIABLE → unchanged (stay "pending")
 //
 // Best-effort: errors are logged but do not block the caller.
-func applyVerdictsToACs(storage *Storage, ctx context.Context, item *ent.BacklogItem, acSnapshot []AcCriterion, verdicts []CriterionVerdict) {
+func applyVerdictsToACs(ctx context.Context, storage *Storage, item *ent.BacklogItem, acSnapshot []AcCriterion, verdicts []CriterionVerdict) {
 	if len(verdicts) == 0 || len(acSnapshot) == 0 {
 		return
 	}
@@ -465,7 +465,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		perCriterionJSON, _ := json.Marshal(perCriterion)
 
 		// Update AC statuses on the item to reflect what was verified.
-		applyVerdictsToACs(l.storage, ctx, item, acSnapshot, perCriterion)
+		applyVerdictsToACs(ctx, l.storage, item, acSnapshot, perCriterion)
 
 		// Create a synthetic ItemSession and its ReviewVerdict atomically so there
 		// is never a dangling session with no verdict if the verdict write fails.

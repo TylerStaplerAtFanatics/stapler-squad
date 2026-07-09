@@ -548,7 +548,7 @@ func initGitRepoWithCommit(t *testing.T, dir string) {
 		{"-C", dir, "add", "README.md"},
 		{"-C", dir, "commit", "-m", "initial"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := exec.Command("git", args...) //nolint:norawexec // test helper, blocking CombinedOutput, no zombie risk
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git %v failed: %v (%s) — cannot run worktree test", args, err, out)
 		}
