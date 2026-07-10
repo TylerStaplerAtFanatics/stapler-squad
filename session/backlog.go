@@ -1,8 +1,11 @@
 package session
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 )
 
 // BacklogStatus represents the lifecycle state of a backlog item.
@@ -105,6 +108,42 @@ func SerializeAcCriteria(criteria []AcCriterion) (AcCriteriaJSON, error) {
 		return "", err
 	}
 	return AcCriteriaJSON(b), nil
+}
+
+// MergeAcCriteria merges incoming criteria into existing by index.
+// Criteria not mentioned in incoming are preserved unchanged.
+// Returns an error if incoming contains duplicate indices.
+func MergeAcCriteria(existing []AcCriterion, incoming []AcCriterion) (AcCriteriaJSON, error) {
+	// Validate: no duplicate indices in incoming.
+	seen := make(map[int]struct{}, len(incoming))
+	for _, ac := range incoming {
+		if _, dup := seen[ac.Index]; dup {
+			return "", fmt.Errorf("duplicate index %d in incoming acceptance criteria", ac.Index)
+		}
+		seen[ac.Index] = struct{}{}
+	}
+
+	// Build lookup from existing criteria.
+	byIndex := make(map[int]AcCriterion, len(existing)+len(incoming))
+	for _, ac := range existing {
+		byIndex[ac.Index] = ac
+	}
+
+	// Apply incoming: add new or overwrite existing entries.
+	for _, ac := range incoming {
+		byIndex[ac.Index] = ac
+	}
+
+	// Rebuild ordered slice, sorted by index.
+	merged := make([]AcCriterion, 0, len(byIndex))
+	for _, ac := range byIndex {
+		merged = append(merged, ac)
+	}
+	slices.SortFunc(merged, func(a, b AcCriterion) int {
+		return cmp.Compare(a.Index, b.Index)
+	})
+
+	return SerializeAcCriteria(merged)
 }
 
 // ReviewOutcome is a typed verdict outcome value (PASS, FAIL, PARTIAL, UNVERIFIABLE).
