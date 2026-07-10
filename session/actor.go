@@ -126,9 +126,9 @@ func runActor(li *LiveInstance) {
 			return
 		case cmd := <-li.mailbox:
 			cmd(li.Instance)
-			li.Instance.mu.RLock()
+			li.mu.RLock()
 			snap := buildSnapshot(li.Instance)
-			li.Instance.mu.RUnlock()
+			li.mu.RUnlock()
 			li.snapshot.Store(snap)
 		}
 	}
@@ -143,9 +143,9 @@ func runActor(li *LiveInstance) {
 // Takes i.mu.RLock() around the initial buildSnapshot() for the same reason
 // runActor does — see its comment above.
 func finishLiveInstanceConstruction(li *LiveInstance) {
-	li.Instance.mu.RLock()
+	li.mu.RLock()
 	snap := buildSnapshot(li.Instance)
-	li.Instance.mu.RUnlock()
+	li.mu.RUnlock()
 	li.snapshot.Store(snap)
 	go runActor(li)
 }
