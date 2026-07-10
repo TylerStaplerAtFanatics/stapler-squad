@@ -51,6 +51,9 @@ linters:
             - "!**/server/services/workflow_service_test.go"
             - "!**/server/services/workflow_service.go"
             - "!**/server/services/backlog_service.go"
+            - "!**/server/services/backlog_service_query.go"
+            - "!**/server/services/backlog_service_lifecycle.go"
+            - "!**/server/services/backlog_service_triage.go"
             - "!**/server/services/session_service.go"
           deny:
             - pkg: "github.com/tstapler/stapler-squad/session/ent"
@@ -215,10 +218,12 @@ linters:
         text: "log\\."
       # ──────────────────────────────────────────────────────────────────────────
       # forbidigo: ent.IsNotFound boundary guard
-      # server/services/backlog_service.go still calls ent.IsNotFound directly —
-      # excluded until the storage-interface cleanup refactor.
+      # server/services/backlog_service*.go still calls ent.IsNotFound directly —
+      # excluded until the storage-interface cleanup refactor (P6). The glob covers
+      # the base file AND all split files created in Phase 3 (P1):
+      # backlog_service_query.go, backlog_service_lifecycle.go, backlog_service_triage.go
       # removed-in: refactor/storage-interface-cleanup (P6)
-      - path: "server/services/backlog_service\\.go"
+      - path: "server/services/backlog_service.*\\.go"
         linters: [forbidigo]
         text: "ent\\.IsNotFound"
       # session/ is the legitimate ent-wrapping layer; allowed to reference ent.IsNotFound
