@@ -42,7 +42,6 @@ func (i *Instance) ToInstanceData() InstanceData {
 		return nil
 	})
 
-
 	data := InstanceData{
 		Title:                snap.Title,
 		UUID:                 snap.UUID,

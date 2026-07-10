@@ -1066,7 +1066,6 @@ func (h *ConnectRPCWebSocketHandler) streamViaTmuxCapturePane(stream *connectWeb
 	// Method calls (MarkViewed, ResizePTY, etc.) and write paths are left as-is.
 	snap := instance.Snapshot()
 
-
 	// Determine tmux session name based on session type
 	var tmuxSessionName string
 	if snap.ExternalMetadata != nil && snap.ExternalMetadata.TmuxSessionName != "" {
