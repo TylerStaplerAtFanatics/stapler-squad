@@ -20,10 +20,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// sourceSyncEventToProto converts an ent.SourceSyncEvent to its proto representation.
-func sourceSyncEventToProto(ev *ent.SourceSyncEvent) *sessionv1.SourceSyncEvent {
+// sourceSyncEventToProto converts a SourceSyncEventData to its proto representation.
+func sourceSyncEventToProto(ev session.SourceSyncEventData) *sessionv1.SourceSyncEvent {
 	p := &sessionv1.SourceSyncEvent{
-		Id:           ev.ID.String(),
+		Id:           ev.ID,
 		StartedAt:    timestamppb.New(ev.StartedAt),
 		ItemsCreated: int32(ev.ItemsCreated),
 		ItemsUpdated: int32(ev.ItemsUpdated),
@@ -67,12 +67,13 @@ func (s *BacklogService) GetBacklogItem(
 		// so they don't appear as "running" indefinitely after the triage process has exited.
 		// Sessions younger than maxTriageSessionAge are still running their goroutine — leave them alone.
 		now := time.Now()
-		for _, is := range isSessions {
-			if is.SessionRole == string(session.SessionRoleTriage) &&
+		for i := range isSessions {
+			is := &isSessions[i]
+			if is.Role == string(session.SessionRoleTriage) &&
 				is.EndedAt == nil &&
 				strings.HasPrefix(is.SessionUUID, headlessTriageUUIDPrefix) &&
 				time.Since(is.CreatedAt) > maxTriageSessionAge {
-				_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
+				_ = s.storage.UpdateItemSessionEnded(ctx, is.ID, now)
 				is.EndedAt = &now
 			}
 		}
@@ -310,9 +311,10 @@ func (s *BacklogService) GetBacklogItemDiff(
 
 	// Use the most recent work session's dedicated worktree and its base SHA so
 	// the diff reflects what the current iteration of work actually changed.
-	var mostRecentWorkSession *ent.ItemSession
-	for _, is := range sessions {
-		if is.SessionRole == session.SessionRoleWork {
+	var mostRecentWorkSession *session.ItemSessionSummary
+	for i := range sessions {
+		is := &sessions[i]
+		if is.Role == session.SessionRoleWork {
 			if mostRecentWorkSession == nil || is.CreatedAt.After(mostRecentWorkSession.CreatedAt) {
 				mostRecentWorkSession = is
 			}
@@ -406,7 +408,7 @@ func (s *BacklogService) GetBacklogItemCost(
 		resp.TotalCostUsd += cost
 		resp.Sessions = append(resp.Sessions, &sessionv1.SessionCostEntry{
 			SessionId:        is.SessionUUID,
-			SessionRole:      string(is.SessionRole),
+			SessionRole:      is.Role,
 			EstimatedCostUsd: cost,
 			InputTokens:      int64(result.TotalInput),
 			OutputTokens:     int64(result.TotalOutput),

@@ -570,11 +570,9 @@ func (s *BacklogService) OverrideVerdict(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get item session: %w", err))
 	}
 
-	// Load the linked BacklogItem (edge is loaded via GetItemSession).
-	var itemID string
-	if is.Edges.BacklogItem != nil {
-		itemID = is.Edges.BacklogItem.ID.String()
-	} else {
+	// Get the linked BacklogItem ID from the ItemSessionSummary.
+	itemID := is.BacklogItemID
+	if itemID == "" {
 		return nil, connect.NewError(connect.CodeInternal,
 			fmt.Errorf("item session %q has no linked backlog item", req.Msg.ItemSessionId))
 	}
@@ -587,7 +585,7 @@ func (s *BacklogService) OverrideVerdict(
 
 	// 4. Save/upsert the ReviewVerdict with override fields.
 	now := time.Now()
-	if _, verdictErr := s.storage.SaveReviewVerdict(ctx, is.ID.String(), session.ReviewVerdictData{
+	if verdictErr := s.storage.SaveReviewVerdict(ctx, is.ID, session.ReviewVerdictData{
 		OverallOutcome: outcome,
 		Summary:        fmt.Sprintf("Manual override: %s", req.Msg.OverrideReason),
 		OverrideBy:     "user",

@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
@@ -21,13 +20,13 @@ func TestReviewGateRunner_SkipReviewGate(t *testing.T) {
 	defer cleanup()
 
 	// Construct an item with SkipReviewGate set — pool and onPass must not be called.
-	item := &ent.BacklogItem{
-		ID:             uuid.New(),
+	item := &BacklogItemData{
+		ID:             uuid.New().String(),
 		RepoPath:       "/some/repo",
 		SkipReviewGate: true,
 	}
-	is := &ent.ItemSession{
-		ID:          uuid.New(),
+	is := ItemSessionSummary{
+		ID:          uuid.New().String(),
 		SessionUUID: uuid.New().String(),
 	}
 
@@ -43,7 +42,7 @@ func TestReviewGateRunner_SkipReviewGate(t *testing.T) {
 
 	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, nil)
 
-	runner.Run(context.Background(), item, is, func(ctx context.Context, item *ent.BacklogItem, is *ent.ItemSession) {
+	runner.Run(context.Background(), item, is, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
 		onPassCalled.Store(true)
 	})
 
@@ -72,9 +71,6 @@ func TestReviewGateRunner_HeadlessPassPath(t *testing.T) {
 	createdItemData, err := storage.CreateBacklogItem(ctx, itemData)
 	require.NoError(t, err)
 
-	itemID, err := uuid.Parse(createdItemData.ID)
-	require.NoError(t, err)
-
 	// Persist a work ItemSession so the runner can look it up.
 	workSessionUUID := uuid.New().String()
 	workIS, err := storage.CreateItemSession(ctx, ItemSessionData{
@@ -84,10 +80,8 @@ func TestReviewGateRunner_HeadlessPassPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Construct ent.BacklogItem (fields only — config will be zero-valued, which is
-	// fine since we never call ORM query methods on it in this path).
-	item := &ent.BacklogItem{
-		ID:       itemID,
+	item := &BacklogItemData{
+		ID:       createdItemData.ID,
 		RepoPath: createdItemData.RepoPath,
 	}
 
@@ -111,7 +105,7 @@ func TestReviewGateRunner_HeadlessPassPath(t *testing.T) {
 	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, nil)
 
 	var onPassCalled atomic.Bool
-	runner.Run(ctx, item, workIS, func(ctx context.Context, item *ent.BacklogItem, is *ent.ItemSession) {
+	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
 		onPassCalled.Store(true)
 	})
 
