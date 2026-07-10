@@ -174,7 +174,7 @@ func (r *ReviewGateRunner) Run(
 		// Auto-reopen: if verdict is FAIL or PARTIAL, immediately transition the item
 		// back to in_progress and spawn a new work session so the review→rework cycle
 		// is fully automated without requiring manual intervention.
-		if reopener := r.getAutoReopener(); (overall == ReviewVerdictFail || overall == ReviewVerdictPartial) && reopener != nil {
+		if reopener := r.getAutoReopener(); (overall == ReviewVerdictFail || overall == ReviewVerdictPartial || overall == ReviewVerdictUnverifiable) && reopener != nil {
 			go func() {
 				if err := reopener.AutoReopenAfterFailedReview(ctx, item.ID); err != nil {
 					log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate AutoReopenAfterFailedReview item=%s: %v", item.ID, err)
