@@ -191,8 +191,8 @@ type ConnectRPCWebSocketHandler struct {
 	externalDiscovery   *session.ExternalSessionDiscovery
 	tmuxStreamerManager *session.ExternalTmuxStreamerManager
 
-	// ponytail: xsync.MapOf replaces map+RWMutex — markSnapshotDirty called per terminal frame
-	snapshotCache *xsync.MapOf[string, sessionSnapshot]
+	// ponytail: xsync.Map replaces map+RWMutex — markSnapshotDirty called per terminal frame
+	snapshotCache *xsync.Map[string, sessionSnapshot]
 }
 
 // NewConnectRPCWebSocketHandler creates a new ConnectRPC WebSocket handler
@@ -208,7 +208,7 @@ func NewConnectRPCWebSocketHandler(sessionService *SessionService, scrollbackMan
 		scrollbackManager:   scrollbackManager,
 		tmuxStreamerManager: tmuxStreamerManager,
 		streamingMode:       streamingMode,
-		snapshotCache:       xsync.NewMapOf[string, sessionSnapshot](),
+		snapshotCache:       xsync.NewMap[string, sessionSnapshot](),
 	}
 }
 
@@ -240,7 +240,7 @@ func waitForQuiescence(updates <-chan struct{}, timeout, quietFor time.Duration)
 }
 
 // markSnapshotDirty marks a session's snapshot as dirty so the next connect captures fresh content.
-// Called on every terminal frame; xsync.MapOf.Compute is lock-free on the read path.
+// Called on every terminal frame; xsync.Map.Compute is lock-free on the read path.
 func (h *ConnectRPCWebSocketHandler) markSnapshotDirty(sessionID string) {
 	h.snapshotCache.Compute(sessionID, func(snap sessionSnapshot, loaded bool) (sessionSnapshot, xsync.ComputeOp) {
 		if !loaded {
