@@ -1,13 +1,11 @@
 package mcp
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -539,13 +537,8 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 			}
 			existing, _ := session.ParseAcCriteria(existingItem.AcceptanceCriteria)
 
-			// Build lookup by index.
-			byIndex := make(map[int]session.AcCriterion, len(existing))
-			for _, ac := range existing {
-				byIndex[ac.Index] = ac
-			}
-
-			// Apply incoming criteria: add or update.
+			// Parse incoming criteria from the raw MCP payload.
+			incomingCriteria := make([]session.AcCriterion, 0, len(arr))
 			for i, raw := range arr {
 				b, marshalErr := json.Marshal(raw)
 				if marshalErr != nil {
@@ -567,21 +560,12 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 				if status == "" {
 					status = "pending"
 				}
-				byIndex[idx] = session.AcCriterion{Index: idx, Text: ac.Text, Status: session.AcStatus(status)}
+				incomingCriteria = append(incomingCriteria, session.AcCriterion{Index: idx, Text: ac.Text, Status: session.AcStatus(status)})
 			}
 
-			// Rebuild ordered slice.
-			merged := make([]session.AcCriterion, 0, len(byIndex))
-			for _, ac := range byIndex {
-				merged = append(merged, ac)
-			}
-			slices.SortFunc(merged, func(a, b session.AcCriterion) int {
-				return cmp.Compare(a.Index, b.Index)
-			})
-
-			acJSON, marshalErr := session.SerializeAcCriteria(merged)
-			if marshalErr != nil {
-				return errResult(ErrInternalError, fmt.Sprintf("serialize acceptance_criteria: %v", marshalErr), ""), nil
+			acJSON, mergeErr := session.MergeAcCriteria(existing, incomingCriteria)
+			if mergeErr != nil {
+				return errResult(ErrInvalidArgument, fmt.Sprintf("merge acceptance_criteria: %v", mergeErr), ""), nil
 			}
 			itemUpdate.AcceptanceCriteria = &acJSON
 		}
