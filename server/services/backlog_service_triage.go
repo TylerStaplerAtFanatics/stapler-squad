@@ -38,13 +38,6 @@ const maxAutoReworkIterations = 3
 // for why this needed to become configurable rather than a global.
 const defaultTriageCleanupTimeout = 10 * time.Second
 
-// defaultTriggerSyncTimeout bounds a single manual TriggerSync RPC call. The
-// GitHub PRs plugin issues one extra HTTP call per open PR (for CI status), so
-// this is generous relative to the "seconds, not minutes" expectation for a
-// single page of items — without it, a slow/rate-limited GitHub response would
-// block the RPC handler for however long the client's transport allows.
-const defaultTriggerSyncTimeout = 2 * time.Minute
-
 // maxTriageSessionAge is the maximum age of an open triage ItemSession before it is
 // treated as orphaned in the re-trigger guard. This prevents a hung or leaked session
 // from blocking re-trigger indefinitely.
@@ -108,30 +101,10 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// the work phase where the git worktree and slash commands are set up).
 	if req.Msg.Force && (item.Status == string(session.BacklogStatusInProgress) ||
 		item.Status == string(session.BacklogStatusReview)) {
-
-		// Load sessions early so we can stop them before the status transition.
-		earlyPrior, _ := s.storage.ListItemSessions(ctx, item.ID)
-		for _, ps := range earlyPrior {
-			if ps.EndedAt != nil {
-				continue
-			}
-			if ps.SessionRole != string(session.SessionRoleWork) && ps.SessionRole != string(session.SessionRoleReview) {
-				continue
-			}
-			if s.sessionStopper != nil {
-				_ = s.sessionStopper.StopSessionByUUID(ctx, ps.SessionUUID)
-			}
-			_ = s.storage.UpdateItemSessionEnded(ctx, ps.ID.String(), time.Now())
-		}
-
-		// If the item is in review, transition it back to in_progress so the spawn
-		// path treats this as a reopen (not a first spawn requiring plan approval).
-		if item.Status == string(session.BacklogStatusReview) {
-			updated, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil)
-			if transErr != nil {
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to reset item to in_progress for restart: %w", transErr))
-			}
-			item = updated
+		var forceErr error
+		item, forceErr = s.forceResetItem(ctx, item)
+		if forceErr != nil {
+			return nil, forceErr
 		}
 	}
 
@@ -176,11 +149,9 @@ func (s *BacklogService) SpawnSessionFromItem(
 	}
 
 	// 8b. Guard against spawning a duplicate work session when one is already active.
-	for _, ps := range priorSessions {
-		if ps.SessionRole == session.SessionRoleWork && ps.EndedAt == nil {
-			return nil, connect.NewError(connect.CodeAlreadyExists,
-				fmt.Errorf("a work session is already active for this item; wait for it to finish or kill it first"))
-		}
+	if hasActiveWorkSession(priorSessions) {
+		return nil, connect.NewError(connect.CodeAlreadyExists,
+			fmt.Errorf("a work session is already active for this item; wait for it to finish or kill it first"))
 	}
 
 	// 8. Build agent prompt.
@@ -205,46 +176,21 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// already exist so the session list shows distinct, human-readable names.
 	repoName := slugify(filepath.Base(item.RepoPath))
 	baseTitle := repoName + "-" + triageShortTitle(priorSessions, item.Title)
-	title := baseTitle
-	if isReopen {
-		workCount := 0
-		for _, s := range priorSessions {
-			if s.SessionRole == string(session.SessionRoleWork) {
-				workCount++
-			}
-		}
-		title = fmt.Sprintf("%s-r%d", baseTitle, workCount+1)
-	}
+	title := buildRevisionTitle(baseTitle, isReopen, priorSessions)
 
 	// 10. Create a dedicated git worktree for this work session. Falls back to a plain
 	// directory session if the repo is not git-managed (or worktree creation fails for
 	// any other reason — e.g. a bare clone, a detached HEAD, or disk quota hit).
 	// Files must be written to the session path BEFORE spawning.
 	// worktreeMu guards concurrent spawns from interleaving writes to the same path.
-	worktreePath, wtErr := session.CreateBacklogWorktree(item.RepoPath, slugify(title))
-	useWorktree := wtErr == nil
-	if !useWorktree {
-		log.WarningLog.Printf("[SpawnSessionFromItem] worktree creation failed (%v), falling back to directory mode", wtErr)
-		var pathErr error
-		worktreePath, pathErr = session.ResolveSessionPath(item.RepoPath)
-		if pathErr != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid repo_path: %w", pathErr))
-		}
-		if dirErr := session.EnsureDirectorySessionPath(worktreePath); dirErr != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to prepare session directory: %w", dirErr))
-		}
+	worktreePath, useWorktree, resolveErr := resolveSessionPath(item.RepoPath, slugify(title))
+	if resolveErr != nil {
+		return nil, resolveErr
 	}
 
-	s.worktreeMu.Lock()
-	if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
-		s.worktreeMu.Unlock()
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
+	if wErr := s.writeSessionFiles(entItem, priorSessions, worktreePath); wErr != nil {
+		return nil, wErr
 	}
-	if wErr := session.WriteBacklogContextFile(entItem, priorSessions, worktreePath); wErr != nil {
-		s.worktreeMu.Unlock()
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
-	}
-	s.worktreeMu.Unlock()
 
 	// 11. Spawn session first so we have the real UUID before creating the ItemSession record.
 	spawnTags := []string{session.TagBacklogWork}
@@ -310,6 +256,92 @@ func (s *BacklogService) SpawnSessionFromItem(
 		SessionUuid: inst.UUID,
 		ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 	}), nil
+}
+
+// forceResetItem stops any in-flight work or review sessions for the item, and — if
+// the item is currently in review — transitions it back to in_progress. Used when
+// SpawnSessionFromItem is called with Force=true so the caller can re-spawn cleanly.
+func (s *BacklogService) forceResetItem(ctx context.Context, item *session.BacklogItemData) (*session.BacklogItemData, error) {
+	earlyPrior, _ := s.storage.ListItemSessions(ctx, item.ID)
+	for _, ps := range earlyPrior {
+		if ps.EndedAt != nil {
+			continue
+		}
+		if ps.SessionRole != string(session.SessionRoleWork) && ps.SessionRole != string(session.SessionRoleReview) {
+			continue
+		}
+		if s.sessionStopper != nil {
+			_ = s.sessionStopper.StopSessionByUUID(ctx, ps.SessionUUID)
+		}
+		_ = s.storage.UpdateItemSessionEnded(ctx, ps.ID.String(), time.Now())
+	}
+	if item.Status == string(session.BacklogStatusReview) {
+		updated, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil)
+		if transErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to reset item to in_progress for restart: %w", transErr))
+		}
+		return updated, nil
+	}
+	return item, nil
+}
+
+// hasActiveWorkSession reports whether any of the provided ItemSessions is an
+// open (not yet ended) work-role session.
+func hasActiveWorkSession(priorSessions []*ent.ItemSession) bool {
+	for _, ps := range priorSessions {
+		if ps.SessionRole == session.SessionRoleWork && ps.EndedAt == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// buildRevisionTitle returns the session title for a backlog work session. On reopen
+// (isReopen=true) it appends "-rN" where N is one past the existing work-session count.
+func buildRevisionTitle(baseTitle string, isReopen bool, priorSessions []*ent.ItemSession) string {
+	if !isReopen {
+		return baseTitle
+	}
+	workCount := 0
+	for _, s := range priorSessions {
+		if s.SessionRole == string(session.SessionRoleWork) {
+			workCount++
+		}
+	}
+	return fmt.Sprintf("%s-r%d", baseTitle, workCount+1)
+}
+
+// resolveSessionPath determines the file-system path for a new work session.
+// It first tries to create a git worktree; if that fails it falls back to a plain
+// directory. Returns the resolved path, whether a worktree was used, and any error.
+func resolveSessionPath(repoPath, slug string) (worktreePath string, useWorktree bool, err error) {
+	wt, wtErr := session.CreateBacklogWorktree(repoPath, slug)
+	if wtErr == nil {
+		return wt, true, nil
+	}
+	log.WarningLog.Printf("[SpawnSessionFromItem] worktree creation failed (%v), falling back to directory mode", wtErr)
+	dirPath, pathErr := session.ResolveSessionPath(repoPath)
+	if pathErr != nil {
+		return "", false, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid repo_path: %w", pathErr))
+	}
+	if dirErr := session.EnsureDirectorySessionPath(dirPath); dirErr != nil {
+		return "", false, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to prepare session directory: %w", dirErr))
+	}
+	return dirPath, false, nil
+}
+
+// writeSessionFiles writes the backlog slash-command files and context file to the session
+// directory. The write is serialized under worktreeMu to prevent concurrent write races.
+func (s *BacklogService) writeSessionFiles(entItem *ent.BacklogItem, priorSessions []*ent.ItemSession, worktreePath string) error {
+	s.worktreeMu.Lock()
+	defer s.worktreeMu.Unlock()
+	if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
+	}
+	if wErr := session.WriteBacklogContextFile(entItem, priorSessions, worktreePath); wErr != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
+	}
+	return nil
 }
 
 // AutoReopenAfterFailedReview implements session.AutoReopenSpawner.
@@ -452,118 +484,6 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 	return nil
 }
 
-// AttachSessionToItem links an existing session to a backlog item.
-
-func (s *BacklogService) AttachSessionToItem(
-	ctx context.Context,
-	req *connect.Request[sessionv1.AttachSessionToItemRequest],
-) (*connect.Response[sessionv1.AttachSessionToItemResponse], error) {
-	if s.storage == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
-	}
-
-	// 1. Validate inputs.
-	if req.Msg.ItemId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("item_id is required"))
-	}
-	if req.Msg.SessionUuid == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_uuid is required"))
-	}
-
-	// 2. Load and validate item.
-	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
-	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
-	}
-
-	if item.Status != string(session.BacklogStatusIdea) &&
-		item.Status != string(session.BacklogStatusReady) &&
-		item.Status != string(session.BacklogStatusInProgress) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("item must be in %q, %q, or %q status to attach a session, got %q",
-				session.BacklogStatusIdea, session.BacklogStatusReady, session.BacklogStatusInProgress, item.Status))
-	}
-
-	// 3. Snapshot current AC.
-	acSnapshot := item.AcceptanceCriteria
-
-	// 4. Load prior sessions BEFORE creating this attach's own ItemSession, so the
-	// "prior sessions" list passed to WriteBacklogContextFile never transiently includes
-	// the session being attached (mirrors SpawnSessionFromItem's ordering).
-	attachPriorSessions, priorErr := s.storage.ListItemSessions(ctx, item.ID)
-	if priorErr != nil {
-		log.WarningLog.Printf("[AttachSessionToItem] failed to load prior sessions for item %s: %v", item.ID, priorErr)
-		attachPriorSessions = nil
-	}
-
-	// 5. Create ItemSession.
-	is, err := s.storage.CreateItemSession(ctx, session.ItemSessionData{
-		ItemID:      item.ID,
-		SessionUUID: req.Msg.SessionUuid,
-		SessionRole: session.SessionRoleWork,
-		AcSnapshot:  acSnapshot,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create item session: %w", err))
-	}
-
-	// 6. Write slash commands to session worktree if instance is reachable.
-	attachItemUUID, _ := uuid.Parse(item.ID)
-	entItem := &ent.BacklogItem{
-		ID:                 attachItemUUID,
-		Title:              item.Title,
-		Description:        item.Description,
-		AcceptanceCriteria: string(item.AcceptanceCriteria),
-		Priority:           item.Priority,
-		Status:             item.Status,
-		Notes:              item.Notes,
-		PlanArtifactsPath:  item.PlanArtifactsPath,
-		PlanApproved:       item.PlanApproved,
-		SkipPlanning:       item.SkipPlanning,
-	}
-
-	instances, loadErr := s.storage.LoadInstances()
-	if loadErr == nil {
-		for _, inst := range instances {
-			if inst.UUID == req.Msg.SessionUuid && inst.Path != "" {
-				worktreePath := inst.GetEffectiveRootDir()
-				// Write synchronously under mutex to prevent concurrent write races.
-				s.worktreeMu.Lock()
-				if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
-					s.worktreeMu.Unlock()
-					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
-				}
-				if wErr := session.WriteBacklogContextFile(entItem, attachPriorSessions, worktreePath); wErr != nil {
-					s.worktreeMu.Unlock()
-					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
-				}
-				s.worktreeMu.Unlock()
-				// Capture pre-work HEAD SHA so the review gate can diff base..HEAD
-				// across all commits the agent makes (same as SpawnSessionFromItem step 12b).
-				if baseSHA, shaErr := session.GetGitHeadSHA(worktreePath); shaErr == nil && baseSHA != "" {
-					_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
-					inst.SetDirBaseSHA(baseSHA)
-				}
-				break
-			}
-		}
-	}
-
-	// 7. Transition item to in_progress (only if the state machine permits it).
-	if session.CanTransitionBacklog(session.BacklogStatus(item.Status), session.BacklogStatusInProgress) {
-		if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil); transErr != nil {
-			log.ErrorLog.Printf("[AttachSessionToItem] failed to transition item to in_progress: %v", transErr)
-		}
-	}
-
-	return connect.NewResponse(&sessionv1.AttachSessionToItemResponse{
-		ItemSession: itemSessionToProto(is, s.buildCostLookup()),
-	}), nil
-}
-
 // TriggerTriage kicks off a headless triage planning call for a backlog item.
 // Returns immediately after creating an ItemSession; actual triage runs in a goroutine.
 // +api: backlog:trigger-triage
@@ -604,24 +524,8 @@ func (s *BacklogService) TriggerTriage(
 	if listErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triage sessions: %w", listErr))
 	}
-	for _, is := range existingSessions {
-		if is.SessionRole != string(session.SessionRoleTriage) || is.EndedAt != nil {
-			continue
-		}
-		// Headless triage sessions have no live in-memory instance; treat as orphaned.
-		// Sessions older than maxTriageSessionAge are also treated as orphaned to prevent
-		// a hung or leaked session from blocking re-trigger indefinitely.
-		isHeadless := strings.HasPrefix(is.SessionUUID, headlessTriageUUIDPrefix)
-		isStale := time.Since(is.CreatedAt) > maxTriageSessionAge
-		notLive := isHeadless || isStale || s.sessionStopper == nil || !s.sessionStopper.IsSessionLive(is.SessionUUID)
-		statusAdvanced := item.Status != string(session.BacklogStatusIdea)
-		if notLive || statusAdvanced {
-			now := time.Now()
-			_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
-			continue
-		}
-		return nil, connect.NewError(connect.CodeAlreadyExists,
-			fmt.Errorf("triage session already running for item %s", req.Msg.ItemId))
+	if err := s.tombstoneOrphanTriageSessions(ctx, req.Msg.ItemId, item.Status, existingSessions); err != nil {
+		return nil, err
 	}
 
 	// 3b. If re-triggering on a "ready" item, move it back to "idea".
@@ -636,18 +540,7 @@ func (s *BacklogService) TriggerTriage(
 	// revise. Refining requires one to exist — feedback on an item with no completed
 	// triage falls back to a confusing fresh run, so reject explicitly instead.
 	feedback := strings.TrimSpace(req.Msg.Feedback)
-	var priorResult session.HeadlessTriageResult
-	var havePrior bool
-	for i := len(existingSessions) - 1; i >= 0; i-- {
-		is := existingSessions[i]
-		if is.SessionRole != string(session.SessionRoleTriage) || is.TriageResult == "" {
-			continue
-		}
-		if jsonErr := json.Unmarshal([]byte(is.TriageResult), &priorResult); jsonErr == nil {
-			havePrior = true
-			break
-		}
-	}
+	priorResult, havePrior := findPriorTriageResult(existingSessions)
 	if feedback != "" && !havePrior {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("no completed triage result to refine for item %s — trigger initial triage first", req.Msg.ItemId))
@@ -765,18 +658,7 @@ func (s *BacklogService) TriggerTriage(
 
 		pap := artifactAbsPath
 		update := session.BacklogItemUpdate{PlanArtifactsPath: &pap}
-		if len(result.AcceptanceCriteria) > 0 {
-			// Re-index to ensure 0-based contiguous indices regardless of what the model output.
-			for i := range result.AcceptanceCriteria {
-				result.AcceptanceCriteria[i].Index = i
-				if result.AcceptanceCriteria[i].Status == "" {
-					result.AcceptanceCriteria[i].Status = "pending"
-				}
-			}
-			if acJSON, marshalErr := session.SerializeAcCriteria(result.AcceptanceCriteria); marshalErr == nil {
-				update.AcceptanceCriteria = &acJSON
-			}
-		}
+		applyTriageACToUpdate(&result, &update)
 		if _, updateErr := s.storage.UpdateBacklogItem(cleanupCtx, itemID, update, nil); updateErr != nil {
 			log.ErrorLog.Printf("[TriggerTriage] update plan_artifacts_path item=%s: %v", itemID, updateErr)
 		}
@@ -865,53 +747,17 @@ func (s *BacklogService) TriggerReReview(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list item sessions: %w", err))
 	}
 
-	var mostRecentReviewSession *ent.ItemSession
-	var mostRecentWorkSession *ent.ItemSession
-	for _, is := range sessions {
-		switch is.SessionRole {
-		case session.SessionRoleReview:
-			if mostRecentReviewSession == nil || is.CreatedAt.After(mostRecentReviewSession.CreatedAt) {
-				mostRecentReviewSession = is
-			}
-		case session.SessionRoleWork:
-			if mostRecentWorkSession == nil || is.CreatedAt.After(mostRecentWorkSession.CreatedAt) {
-				mostRecentWorkSession = is
-			}
-		}
-	}
+	mostRecentReviewSession, mostRecentWorkSession := findMostRecentSessions(sessions)
 
 	// 5. Note: We don't need to delete the old verdict; a new one will overwrite it when the re-review
 	// session submits its findings via the MCP tool.
 
 	// 6. Get git diff from the most recent work session's worktree using its base SHA.
 	// Fall back to item.RepoPath / HEAD~1 only for directory-mode sessions.
-	var workSessionDiff string
-	if mostRecentWorkSession != nil {
-		diffDir := item.RepoPath
-		diffBaseSHA := "HEAD~1"
-		wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, mostRecentWorkSession.SessionUUID)
-		if wtErr == nil && wt.WorktreePath != "" {
-			diffDir = wt.WorktreePath
-			diffBaseSHA = wt.BaseCommitSHA
-		} else if mostRecentWorkSession.LastCommitSha != "" {
-			diffBaseSHA = mostRecentWorkSession.LastCommitSha
-		}
-		diff, _, diffErr := session.GetGitDiff(ctx, diffDir, diffBaseSHA)
-		if diffErr != nil {
-			log.WarningLog.Printf("[TriggerReReview] GetGitDiff failed: %v", diffErr)
-		} else {
-			workSessionDiff = diff
-		}
-	}
+	workSessionDiff := s.getWorkSessionDiff(ctx, item.RepoPath, mostRecentWorkSession)
 
 	// 7. Deserialize AC snapshot (from most recent work session or item AC).
-	var acSnapshot []session.AcCriterion
-	if mostRecentWorkSession != nil && mostRecentWorkSession.AcSnapshot != "" {
-		acSnapshot, _ = session.ParseAcCriteria(session.AcCriteriaJSON(mostRecentWorkSession.AcSnapshot))
-	}
-	if len(acSnapshot) == 0 {
-		acSnapshot, _ = session.ParseAcCriteria(item.AcceptanceCriteria)
-	}
+	acSnapshot := resolveACSnapshot(mostRecentWorkSession, item.AcceptanceCriteria)
 
 	// 8. Build re-review prompt.
 	acSnapshotJSON, _ := json.Marshal(acSnapshot)
@@ -1014,51 +860,115 @@ Do not modify the code. Only write the review verdict.
 	}), nil
 }
 
-// TriggerSync initiates a synchronous, on-demand sync run for an external item
-// source, regardless of its Enabled flag. Runs inline (not backgrounded like
-// TriggerTriage) because a single external-API fetch is expected to complete
-// in seconds, not the 7-15 minutes a headless LLM triage call takes.
-// +api: backlog:trigger-sync
-func (s *BacklogService) TriggerSync(
-	ctx context.Context,
-	req *connect.Request[sessionv1.TriggerSyncRequest],
-) (*connect.Response[sessionv1.TriggerSyncResponse], error) {
-	if s.storage == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
-	}
-	if s.pluginRegistry == nil {
-		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("sync not configured — no plugin registry wired"))
-	}
-	if s.syncFeatureEnabled != nil && !s.syncFeatureEnabled() {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("backlog sync is disabled"))
-	}
-	if req.Msg.SourceId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source_id is required"))
-	}
-	if _, parseErr := uuid.Parse(req.Msg.SourceId); parseErr != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid source_id %q: %w", req.Msg.SourceId, parseErr))
-	}
-
-	var sl *session.SyncLoop
-	if s.syncKeyFunc != nil {
-		sl = session.NewSyncLoopWithKeyProvider(s.storage, s.pluginRegistry, s.syncKeyFunc)
-	} else {
-		sl = session.NewSyncLoop(s.storage, s.pluginRegistry)
-	}
-
-	syncCtx, cancel := context.WithTimeout(ctx, defaultTriggerSyncTimeout)
-	defer cancel()
-
-	if err := sl.SyncByID(syncCtx, req.Msg.SourceId); err != nil {
-		if errors.Is(err, session.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("item source %q not found", req.Msg.SourceId))
+// tombstoneOrphanTriageSessions marks any open triage ItemSessions that are no longer
+// live as ended. Returns CodeAlreadyExists if a live triage session is genuinely running.
+func (s *BacklogService) tombstoneOrphanTriageSessions(ctx context.Context, itemID, itemStatus string, sessions []*ent.ItemSession) error {
+	for _, is := range sessions {
+		if is.SessionRole != string(session.SessionRoleTriage) || is.EndedAt != nil {
+			continue
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("sync failed: %w", err))
+		// Headless triage sessions have no live in-memory instance; treat as orphaned.
+		// Sessions older than maxTriageSessionAge are also treated as orphaned to prevent
+		// a hung or leaked session from blocking re-trigger indefinitely.
+		isHeadless := strings.HasPrefix(is.SessionUUID, headlessTriageUUIDPrefix)
+		isStale := time.Since(is.CreatedAt) > maxTriageSessionAge
+		notLive := isHeadless || isStale || s.sessionStopper == nil || !s.sessionStopper.IsSessionLive(is.SessionUUID)
+		statusAdvanced := itemStatus != string(session.BacklogStatusIdea)
+		if notLive || statusAdvanced {
+			_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), time.Now())
+			continue
+		}
+		return connect.NewError(connect.CodeAlreadyExists,
+			fmt.Errorf("triage session already running for item %s", itemID))
 	}
-
-	return connect.NewResponse(&sessionv1.TriggerSyncResponse{}), nil
+	return nil
 }
 
-func (s *BacklogService) ImportGitHubIssue(ctx context.Context, req *connect.Request[sessionv1.ImportGitHubIssueRequest]) (*connect.Response[sessionv1.ImportGitHubIssueResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("ImportGitHubIssue not yet implemented"))
+// findPriorTriageResult returns the most recent successfully-parsed triage result from
+// the provided sessions, along with a boolean indicating whether one was found.
+func findPriorTriageResult(sessions []*ent.ItemSession) (session.HeadlessTriageResult, bool) {
+	for i := len(sessions) - 1; i >= 0; i-- {
+		is := sessions[i]
+		if is.SessionRole != string(session.SessionRoleTriage) || is.TriageResult == "" {
+			continue
+		}
+		var result session.HeadlessTriageResult
+		if jsonErr := json.Unmarshal([]byte(is.TriageResult), &result); jsonErr == nil {
+			return result, true
+		}
+	}
+	return session.HeadlessTriageResult{}, false
 }
+
+// applyTriageACToUpdate re-indexes and status-normalises the AC criteria from a triage
+// result, then writes the serialized JSON into the provided update struct.
+func applyTriageACToUpdate(result *session.HeadlessTriageResult, update *session.BacklogItemUpdate) {
+	if len(result.AcceptanceCriteria) == 0 {
+		return
+	}
+	// Re-index to ensure 0-based contiguous indices regardless of what the model output.
+	for i := range result.AcceptanceCriteria {
+		result.AcceptanceCriteria[i].Index = i
+		if result.AcceptanceCriteria[i].Status == "" {
+			result.AcceptanceCriteria[i].Status = "pending"
+		}
+	}
+	if acJSON, marshalErr := session.SerializeAcCriteria(result.AcceptanceCriteria); marshalErr == nil {
+		update.AcceptanceCriteria = &acJSON
+	}
+}
+
+// findMostRecentSessions returns the most recently created review and work ItemSessions
+// from the provided list. Either return value may be nil if no session of that role exists.
+func findMostRecentSessions(sessions []*ent.ItemSession) (reviewSession, workSession *ent.ItemSession) {
+	for _, is := range sessions {
+		switch is.SessionRole {
+		case session.SessionRoleReview:
+			if reviewSession == nil || is.CreatedAt.After(reviewSession.CreatedAt) {
+				reviewSession = is
+			}
+		case session.SessionRoleWork:
+			if workSession == nil || is.CreatedAt.After(workSession.CreatedAt) {
+				workSession = is
+			}
+		}
+	}
+	return
+}
+
+// getWorkSessionDiff returns the git diff for the given work session. It prefers the
+// session's dedicated worktree path and base SHA; falls back to HEAD~1 in the item's
+// repo. Returns an empty string if workSession is nil or the diff cannot be obtained.
+func (s *BacklogService) getWorkSessionDiff(ctx context.Context, repoPath string, workSession *ent.ItemSession) string {
+	if workSession == nil {
+		return ""
+	}
+	diffDir := repoPath
+	diffBaseSHA := "HEAD~1"
+	wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, workSession.SessionUUID)
+	if wtErr == nil && wt.WorktreePath != "" {
+		diffDir = wt.WorktreePath
+		diffBaseSHA = wt.BaseCommitSHA
+	} else if workSession.LastCommitSha != "" {
+		diffBaseSHA = workSession.LastCommitSha
+	}
+	diff, _, diffErr := session.GetGitDiff(ctx, diffDir, diffBaseSHA)
+	if diffErr != nil {
+		log.WarningLog.Printf("[TriggerReReview] GetGitDiff failed: %v", diffErr)
+		return ""
+	}
+	return diff
+}
+
+// resolveACSnapshot returns the acceptance criteria to use for a re-review. It prefers
+// the snapshot captured at work-session start; falls back to the item's current AC.
+func resolveACSnapshot(workSession *ent.ItemSession, itemAC session.AcCriteriaJSON) []session.AcCriterion {
+	if workSession != nil && workSession.AcSnapshot != "" {
+		if ac, _ := session.ParseAcCriteria(session.AcCriteriaJSON(workSession.AcSnapshot)); len(ac) > 0 {
+			return ac
+		}
+	}
+	ac, _ := session.ParseAcCriteria(itemAC)
+	return ac
+}
+
