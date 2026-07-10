@@ -450,8 +450,9 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
 	fallbackToDone := func(reason string) {
 		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s falling back to done: %s", item.ID, reason)
-		precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview)}
-		if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusDone, precondition); transErr != nil {
+		// No status precondition: item may be at review or ready depending on when
+		// the PASS verdict was delivered relative to other transitions.
+		if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusDone, nil); transErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] pushAndCreatePR fallback done item=%s: %v", item.ID, transErr)
 		}
 	}
