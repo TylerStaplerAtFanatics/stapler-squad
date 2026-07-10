@@ -57,6 +57,7 @@ tests/e2e/allure-results/
 tests/e2e/allure-report/
 tests/e2e/playwright-report/
 tests/e2e/test-results/
+tests/e2e/node_modules/
 
 # Scratch benchmark output files (not the committed baselines in benchmarks/go/)
 bench-current.txt
@@ -67,6 +68,12 @@ benchmark_results.txt
 
 # Build artifacts
 build/
+
+# Pinned tmux submodule source — cloned by scripts/build-tmux.sh at build time.
+# Only BUILD.bazel is tracked; the rest is fetched on demand.
+third_party/tmux/*
+!third_party/tmux/BUILD.bazel
+.tmux-build.stamp
 
 # Scanner build artifacts
 tools/scanner/cmd

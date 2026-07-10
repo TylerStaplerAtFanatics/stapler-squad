@@ -4,6 +4,7 @@ import "github.com/linkdata/deadlock"
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -27,13 +28,14 @@ type paneEntry struct {
 // Returns a map keyed by session name; only the first pane per session is kept.
 // socket is the tmux server socket name (empty = default server).
 func batchPTYInfo(socket string) map[string]paneEntry {
+	socket = tmux.ResolveSocket(socket)
 	args := []string{"list-panes", "-a", "-F", "#{session_name} #{pane_tty} #{pane_pid}"}
 	if socket != "" {
 		args = append([]string{"-L", socket}, args...)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := safeexec.CommandContext(ctx, "tmux", args...)
+	cmd := safeexec.CommandContext(ctx, tmux.Binary(), args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -121,28 +123,39 @@ func parseProcessState(state string) PTYStatus {
 // a session has produced new output since the last capture, without spawning capture-pane.
 // Returns nil when tmux is unavailable.
 func batchPaneActivity(socket string) map[string]time.Time {
+	socket = tmux.ResolveSocket(socket)
 	args := []string{"list-panes", "-a", "-F", "#{session_name} #{pane_last_activity}"}
 	if socket != "" {
 		args = append([]string{"-L", socket}, args...)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := safeexec.CommandContext(ctx, "tmux", args...)
+	cmd := safeexec.CommandContext(ctx, tmux.Binary(), args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
+	// Parse bytes directly: no string(output) copy, no strings.Split allocation.
 	result := make(map[string]time.Time)
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		parts := strings.Fields(line)
-		if len(parts) != 2 {
+	rem := output
+	for len(rem) > 0 {
+		var line []byte
+		if idx := bytes.IndexByte(rem, '\n'); idx >= 0 {
+			line = bytes.TrimSpace(rem[:idx])
+			rem = rem[idx+1:]
+		} else {
+			line = bytes.TrimSpace(rem)
+			rem = rem[:0]
+		}
+		spaceIdx := bytes.IndexByte(line, ' ')
+		if spaceIdx <= 0 || spaceIdx >= len(line)-1 {
 			continue
 		}
-		sessionName := parts[0]
+		sessionName := string(line[:spaceIdx])
 		if _, exists := result[sessionName]; exists {
 			continue // keep first pane per session
 		}
-		ts, err := strconv.ParseInt(parts[1], 10, 64)
+		ts, err := strconv.ParseInt(string(line[spaceIdx+1:]), 10, 64)
 		if err != nil {
 			continue
 		}
@@ -521,7 +534,7 @@ func (pd *PTYDiscovery) discoverSquadPTYsWithCache(paneInfoMap map[string]paneEn
 func (pd *PTYDiscovery) getPTYInfoFromTmux(sessionName string) (string, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := safeexec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", sessionName,
+	cmd := safeexec.CommandContext(ctx, tmux.Binary(), "display-message", "-p", "-t", sessionName,
 		"#{pane_tty}:#{pane_pid}")
 	output, err := cmd.Output()
 	if err != nil {
@@ -559,7 +572,11 @@ func (pd *PTYDiscovery) discoverOrphanedPTYsWithCache(paneInfoMap map[string]pan
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		cmd := safeexec.CommandContext(ctx, "tmux", "list-sessions", "-F", "#{session_name}")
+		args := []string{"list-sessions", "-F", "#{session_name}"}
+		if s := tmux.ResolveSocket(""); s != "" {
+			args = append([]string{"-L", s}, args...)
+		}
+		cmd := safeexec.CommandContext(ctx, tmux.Binary(), args...)
 		output, err := cmd.Output()
 		if err != nil {
 			return connections
@@ -644,6 +661,7 @@ func (pd *PTYDiscovery) discoverOrphanedPTYsWithCache(paneInfoMap map[string]pan
 // paneInfoMap is a pre-fetched batch result for socket (nil = fetch individually as fallback).
 // managedPIDs is the set of PIDs already tracked; used to skip duplicates.
 func (pd *PTYDiscovery) discoverExternalClaude(socket string, paneInfoMap map[string]paneEntry, managedPIDs map[int]bool) []*PTYConnection {
+	socket = tmux.ResolveSocket(socket)
 	connections := make([]*PTYConnection, 0)
 
 	// Collect session names via the registry (no exec) when possible.
@@ -658,9 +676,9 @@ func (pd *PTYDiscovery) discoverExternalClaude(socket string, paneInfoMap map[st
 		defer cancel()
 		var cmd *exec.Cmd
 		if socket != "" {
-			cmd = safeexec.CommandContext(ctx, "tmux", "-L", socket, "list-sessions", "-F", "#{session_name}")
+			cmd = safeexec.CommandContext(ctx, tmux.Binary(), "-L", socket, "list-sessions", "-F", "#{session_name}")
 		} else {
-			cmd = safeexec.CommandContext(ctx, "tmux", "list-sessions", "-F", "#{session_name}")
+			cmd = safeexec.CommandContext(ctx, tmux.Binary(), "list-sessions", "-F", "#{session_name}")
 		}
 		output, err := cmd.Output()
 		if err != nil {
@@ -747,10 +765,10 @@ func (pd *PTYDiscovery) getPTYInfoFromTmuxWithSocket(sessionName string, socket 
 	defer cancel()
 	var cmd *exec.Cmd
 	if socket != "" {
-		cmd = safeexec.CommandContext(ctx, "tmux", "-L", socket, "display-message", "-p", "-t", sessionName,
+		cmd = safeexec.CommandContext(ctx, tmux.Binary(), "-L", socket, "display-message", "-p", "-t", sessionName,
 			"#{pane_tty}:#{pane_pid}")
 	} else {
-		cmd = safeexec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", sessionName,
+		cmd = safeexec.CommandContext(ctx, tmux.Binary(), "display-message", "-p", "-t", sessionName,
 			"#{pane_tty}:#{pane_pid}")
 	}
 
