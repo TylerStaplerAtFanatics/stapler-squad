@@ -4,30 +4,27 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
-	"github.com/tstapler/stapler-squad/session/ent"
 )
 
-// makeTestBacklogItem creates a minimal *ent.BacklogItem for unit tests.
-func makeTestBacklogItem(title, description, acJSON, status string, priority int, notes string) *ent.BacklogItem {
-	return &ent.BacklogItem{
-		ID:                 uuid.New(),
+// makeTestBacklogItem creates a minimal *BacklogItemData for unit tests.
+func makeTestBacklogItem(title, description, acJSON, status string, priority int, notes string) *BacklogItemData {
+	return &BacklogItemData{
+		ID:                 "test-item-ctx-1",
 		Title:              title,
 		Description:        description,
-		AcceptanceCriteria: acJSON,
+		AcceptanceCriteria: AcCriteriaJSON(acJSON),
 		Status:             status,
 		Priority:           priority,
 		Notes:              notes,
 	}
 }
 
-// makeEndedItemSession creates a minimal *ent.ItemSession with EndedAt set.
-func makeEndedItemSession(role string, commitCount int, lastMsg string) *ent.ItemSession {
+// makeEndedItemSession creates a minimal ItemSessionSummary with EndedAt set.
+func makeEndedItemSession(role string, commitCount int, lastMsg string) ItemSessionSummary {
 	now := time.Now()
-	return &ent.ItemSession{
-		ID:                    uuid.New(),
-		SessionRole:           role,
+	return ItemSessionSummary{
+		ID:                    "test-session-1",
+		Role:                  role,
 		CommitCountSinceSpawn: commitCount,
 		LastCommitMessage:     lastMsg,
 		EndedAt:               &now,
@@ -62,7 +59,7 @@ func TestBuildSessionInitialPrompt_WithPriorAttempts_ContainsHandoffSection(t *t
 	s := makeEndedItemSession("work", 3, "fix: implement handler")
 
 	// With a prior session that has ended.
-	outWith := BuildSessionInitialPrompt(item, []*ent.ItemSession{s})
+	outWith := BuildSessionInitialPrompt(item, []ItemSessionSummary{s})
 	if !strings.Contains(outWith, "Prior Attempts") {
 		t.Errorf("expected 'Prior Attempts' section when prior sessions present\nOutput:\n%s", outWith)
 	}
@@ -74,11 +71,11 @@ func TestBuildSessionInitialPrompt_WithPriorAttempts_ContainsHandoffSection(t *t
 	}
 
 	// With a session that has NOT ended (EndedAt == nil) → should not appear.
-	notEnded := &ent.ItemSession{
-		ID:          uuid.New(),
-		SessionRole: "work",
+	notEnded := ItemSessionSummary{
+		ID:   "test-session-2",
+		Role: "work",
 	}
-	outNotEnded := BuildSessionInitialPrompt(item, []*ent.ItemSession{notEnded})
+	outNotEnded := BuildSessionInitialPrompt(item, []ItemSessionSummary{notEnded})
 	if strings.Contains(outNotEnded, "Prior Attempts") {
 		t.Errorf("did not expect 'Prior Attempts' when no sessions have ended\nOutput:\n%s", outNotEnded)
 	}

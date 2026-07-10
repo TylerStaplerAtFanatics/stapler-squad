@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/log"
-	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
@@ -50,9 +49,9 @@ func NewReviewGateRunner(
 // BacklogLifecycleListener.pushAndCreatePR.
 func (r *ReviewGateRunner) Run(
 	ctx context.Context,
-	item *ent.BacklogItem,
-	is *ent.ItemSession,
-	onPass func(ctx context.Context, item *ent.BacklogItem, is *ent.ItemSession),
+	item *BacklogItemData,
+	is ItemSessionSummary,
+	onPass func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary),
 ) {
 	// Short-circuit: items with SkipReviewGate bypass the review mechanism entirely.
 	if item.SkipReviewGate {
@@ -85,9 +84,9 @@ func (r *ReviewGateRunner) Run(
 		// Record a failed review ItemSession with a FAIL verdict so the gate verdict
 		// is visible in the UI and operators can act (override or re-review).
 		summary := fmt.Sprintf("Review blocked by security check: %v. Override required to proceed.", secErr)
-		secIS, _, secCreateErr := r.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
-			ItemID:      item.ID.String(),
-			SessionUUID: "review-blocked-" + item.ID.String(),
+		secIS, secCreateErr := r.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+			ItemID:      item.ID,
+			SessionUUID: "review-blocked-" + item.ID,
 			SessionRole: SessionRoleReview,
 		}, ReviewVerdictData{
 			OverallOutcome: ReviewVerdictFail,
@@ -97,7 +96,7 @@ func (r *ReviewGateRunner) Run(
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (security block) item=%s: %v", item.ID, secCreateErr)
 			return
 		}
-		if updateErr := r.storage.UpdateItemSessionEnded(ctx, secIS.ID.String(), time.Now()); updateErr != nil {
+		if updateErr := r.storage.UpdateItemSessionEnded(ctx, secIS.ID, time.Now()); updateErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (security block) item=%s: %v", item.ID, updateErr)
 		}
 		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate security check blocked for item %s — FAIL verdict recorded", item.ID)
@@ -105,12 +104,12 @@ func (r *ReviewGateRunner) Run(
 	}
 
 	// Deserialize AC snapshot.
-	acSnapshot, _ := ParseAcCriteria(AcCriteriaJSON(is.AcSnapshot))
+	acSnapshot, _ := ParseAcCriteria(is.AcSnapshot)
 	if len(acSnapshot) == 0 {
-		acSnapshot, _ = ParseAcCriteria(AcCriteriaJSON(item.AcceptanceCriteria))
+		acSnapshot, _ = ParseAcCriteria(item.AcceptanceCriteria)
 	}
 
-	prompt := BuildReviewPrompt(item, acSnapshot, diff, truncated, is.ID.String())
+	prompt := BuildReviewPrompt(item, acSnapshot, diff, truncated, is.ID)
 
 	pool := r.getPool()
 	if pool != nil {
@@ -125,18 +124,18 @@ func (r *ReviewGateRunner) Run(
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate headless.CallBlocking item=%s: %v", item.ID, callErr)
 			// Record a FAIL verdict so the item is not stuck in review with no actionable result.
 			failUUID := "headless-review-" + uuid.New().String()
-			failIS, _, createErr := r.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
-				ItemID:      item.ID.String(),
+			failIS, createErr := r.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+				ItemID:      item.ID,
 				SessionUUID: failUUID,
 				SessionRole: SessionRoleReview,
-				AcSnapshot:  AcCriteriaJSON(is.AcSnapshot),
+				AcSnapshot:  is.AcSnapshot,
 			}, ReviewVerdictData{
 				OverallOutcome: ReviewVerdictFail,
 				Summary:        fmt.Sprintf("Review failed: %v", callErr),
 			})
 			if createErr != nil {
 				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (headless fail) item=%s: %v", item.ID, createErr)
-			} else if updateErr := r.storage.UpdateItemSessionEnded(ctx, failIS.ID.String(), time.Now()); updateErr != nil {
+			} else if updateErr := r.storage.UpdateItemSessionEnded(ctx, failIS.ID, time.Now()); updateErr != nil {
 				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (headless fail) item=%s: %v", item.ID, updateErr)
 			}
 			return
@@ -151,11 +150,11 @@ func (r *ReviewGateRunner) Run(
 		// Create a synthetic ItemSession and its ReviewVerdict atomically so there
 		// is never a dangling session with no verdict if the verdict write fails.
 		reviewSessionUUID := "headless-review-" + uuid.New().String()
-		reviewIS, _, createErr := r.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
-			ItemID:           item.ID.String(),
+		reviewIS, createErr := r.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+			ItemID:           item.ID,
 			SessionUUID:      reviewSessionUUID,
 			SessionRole:      SessionRoleReview,
-			AcSnapshot:       AcCriteriaJSON(is.AcSnapshot),
+			AcSnapshot:       is.AcSnapshot,
 			EstimatedCostUsd: callCostUSD,
 		}, ReviewVerdictData{
 			OverallOutcome: overall,
@@ -166,7 +165,7 @@ func (r *ReviewGateRunner) Run(
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (headless) item=%s: %v", item.ID, createErr)
 			return
 		}
-		if updateErr := r.storage.UpdateItemSessionEnded(ctx, reviewIS.ID.String(), time.Now()); updateErr != nil {
+		if updateErr := r.storage.UpdateItemSessionEnded(ctx, reviewIS.ID, time.Now()); updateErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (headless) item=%s: %v", item.ID, updateErr)
 		}
 
@@ -177,7 +176,7 @@ func (r *ReviewGateRunner) Run(
 		// is fully automated without requiring manual intervention.
 		if reopener := r.getAutoReopener(); (overall == ReviewVerdictFail || overall == ReviewVerdictPartial) && reopener != nil {
 			go func() {
-				if err := reopener.AutoReopenAfterFailedReview(ctx, item.ID.String()); err != nil {
+				if err := reopener.AutoReopenAfterFailedReview(ctx, item.ID); err != nil {
 					log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate AutoReopenAfterFailedReview item=%s: %v", item.ID, err)
 				} else {
 					log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate auto-reopened item %s for rework (verdict %s)", item.ID, overall)
@@ -200,7 +199,7 @@ func (r *ReviewGateRunner) Run(
 		return
 	}
 
-	reviewInst, spawnErr := r.sessionCreator.SpawnReviewSession(ctx, item, is.ID.String(), prompt)
+	reviewInst, spawnErr := r.sessionCreator.SpawnReviewSession(ctx, item, is.ID, prompt)
 	if spawnErr != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate SpawnReviewSession item=%s: %v", item.ID, spawnErr)
 		return
@@ -208,10 +207,10 @@ func (r *ReviewGateRunner) Run(
 
 	// Create ItemSession linking the new review session to the backlog item.
 	if _, createErr := r.storage.CreateItemSession(ctx, ItemSessionData{
-		ItemID:      item.ID.String(),
+		ItemID:      item.ID,
 		SessionUUID: reviewInst.UUID,
 		SessionRole: SessionRoleReview,
-		AcSnapshot:  AcCriteriaJSON(is.AcSnapshot),
+		AcSnapshot:  is.AcSnapshot,
 	}); createErr != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSession item=%s review=%s: %v", item.ID, reviewInst.UUID, createErr)
 		return

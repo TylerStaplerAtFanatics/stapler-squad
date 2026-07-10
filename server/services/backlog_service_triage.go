@@ -59,10 +59,10 @@ func slugify(s string) string {
 
 // triageShortTitle extracts the triage-suggested short title from the most recent
 // completed triage ItemSession, falling back to a truncated slug of itemTitle.
-func triageShortTitle(sessions []*ent.ItemSession, itemTitle string) string {
+func triageShortTitle(sessions []session.ItemSessionSummary, itemTitle string) string {
 	for i := len(sessions) - 1; i >= 0; i-- {
 		s := sessions[i]
-		if s.SessionRole != string(session.SessionRoleTriage) || s.TriageResult == "" {
+		if s.Role != string(session.SessionRoleTriage) || s.TriageResult == "" {
 			continue
 		}
 		var r session.HeadlessTriageResult
@@ -155,21 +155,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 	}
 
 	// 8. Build agent prompt.
-	// Parse item.ID as UUID for the ent struct (needed by BuildTokenBudgetedPrompt for logging).
-	itemUUID, _ := uuid.Parse(item.ID)
-	entItem := &ent.BacklogItem{
-		ID:                 itemUUID,
-		Title:              item.Title,
-		Description:        item.Description,
-		AcceptanceCriteria: string(item.AcceptanceCriteria),
-		Priority:           item.Priority,
-		Status:             item.Status,
-		Notes:              item.Notes,
-		PlanArtifactsPath:  item.PlanArtifactsPath,
-		PlanApproved:       item.PlanApproved,
-		SkipPlanning:       item.SkipPlanning,
-	}
-	prompt := session.BuildTokenBudgetedPrompt(entItem, priorSessions)
+	prompt := session.BuildTokenBudgetedPrompt(item, priorSessions)
 
 	// 9. Generate session title.
 	// On reopen, append a revision number (r2, r3…) based on how many work sessions
@@ -188,7 +174,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, resolveErr
 	}
 
-	if wErr := s.writeSessionFiles(entItem, priorSessions, worktreePath); wErr != nil {
+	if wErr := s.writeSessionFiles(item, priorSessions, worktreePath); wErr != nil {
 		return nil, wErr
 	}
 
@@ -235,7 +221,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// 12b. Capture the pre-work HEAD SHA so the review gate can diff base..HEAD across
 	// all commits the agent makes (not just HEAD~1..HEAD at review time).
 	if baseSHA, shaErr := session.GetGitHeadSHA(worktreePath); shaErr == nil && baseSHA != "" {
-		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
+		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID, baseSHA, "", time.Now(), 0)
 		inst.SetDirBaseSHA(baseSHA)
 	}
 
@@ -267,13 +253,13 @@ func (s *BacklogService) forceResetItem(ctx context.Context, item *session.Backl
 		if ps.EndedAt != nil {
 			continue
 		}
-		if ps.SessionRole != string(session.SessionRoleWork) && ps.SessionRole != string(session.SessionRoleReview) {
+		if ps.Role != string(session.SessionRoleWork) && ps.Role != string(session.SessionRoleReview) {
 			continue
 		}
 		if s.sessionStopper != nil {
 			_ = s.sessionStopper.StopSessionByUUID(ctx, ps.SessionUUID)
 		}
-		_ = s.storage.UpdateItemSessionEnded(ctx, ps.ID.String(), time.Now())
+		_ = s.storage.UpdateItemSessionEnded(ctx, ps.ID, time.Now())
 	}
 	if item.Status == string(session.BacklogStatusReview) {
 		updated, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil)
@@ -287,9 +273,9 @@ func (s *BacklogService) forceResetItem(ctx context.Context, item *session.Backl
 
 // hasActiveWorkSession reports whether any of the provided ItemSessions is an
 // open (not yet ended) work-role session.
-func hasActiveWorkSession(priorSessions []*ent.ItemSession) bool {
+func hasActiveWorkSession(priorSessions []session.ItemSessionSummary) bool {
 	for _, ps := range priorSessions {
-		if ps.SessionRole == session.SessionRoleWork && ps.EndedAt == nil {
+		if ps.Role == session.SessionRoleWork && ps.EndedAt == nil {
 			return true
 		}
 	}
@@ -298,13 +284,13 @@ func hasActiveWorkSession(priorSessions []*ent.ItemSession) bool {
 
 // buildRevisionTitle returns the session title for a backlog work session. On reopen
 // (isReopen=true) it appends "-rN" where N is one past the existing work-session count.
-func buildRevisionTitle(baseTitle string, isReopen bool, priorSessions []*ent.ItemSession) string {
+func buildRevisionTitle(baseTitle string, isReopen bool, priorSessions []session.ItemSessionSummary) string {
 	if !isReopen {
 		return baseTitle
 	}
 	workCount := 0
 	for _, s := range priorSessions {
-		if s.SessionRole == string(session.SessionRoleWork) {
+		if s.Role == string(session.SessionRoleWork) {
 			workCount++
 		}
 	}
@@ -332,13 +318,13 @@ func resolveSessionPath(repoPath, slug string) (worktreePath string, useWorktree
 
 // writeSessionFiles writes the backlog slash-command files and context file to the session
 // directory. The write is serialized under worktreeMu to prevent concurrent write races.
-func (s *BacklogService) writeSessionFiles(entItem *ent.BacklogItem, priorSessions []*ent.ItemSession, worktreePath string) error {
+func (s *BacklogService) writeSessionFiles(item *session.BacklogItemData, priorSessions []session.ItemSessionSummary, worktreePath string) error {
 	s.worktreeMu.Lock()
 	defer s.worktreeMu.Unlock()
-	if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
+	if wErr := session.WriteSlashCommands(item, worktreePath); wErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
 	}
-	if wErr := session.WriteBacklogContextFile(entItem, priorSessions, worktreePath); wErr != nil {
+	if wErr := session.WriteBacklogContextFile(item, priorSessions, worktreePath); wErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
 	}
 	return nil
@@ -367,7 +353,7 @@ func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID
 	}
 	workCount := 0
 	for _, is := range sessions {
-		if is.SessionRole == session.SessionRoleWork {
+		if is.Role == session.SessionRoleWork {
 			workCount++
 		}
 	}
@@ -427,7 +413,7 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 	}
 	workCount := 0
 	for _, is := range sessions {
-		if is.SessionRole == session.SessionRoleWork {
+		if is.Role == session.SessionRoleWork {
 			workCount++
 		}
 	}
@@ -594,7 +580,7 @@ func (s *BacklogService) TriggerTriage(
 	// 9. Drive triage asynchronously so the RPC returns immediately.
 	itemID := item.ID
 	itemRepoPath := item.RepoPath
-	isID := is.ID.String()
+	isID := is.ID
 	iteration := nextIteration
 	go func() {
 		// Acquire concurrency semaphore (max 8 concurrent triage calls).
@@ -697,13 +683,13 @@ func (s *BacklogService) CancelTriage(
 	cancelled := false
 	now := time.Now()
 	for _, is := range existingSessions {
-		if is.SessionRole != string(session.SessionRoleTriage) || is.EndedAt != nil {
+		if is.Role != string(session.SessionRoleTriage) || is.EndedAt != nil {
 			continue
 		}
 		if s.sessionStopper != nil {
 			_ = s.sessionStopper.StopSessionByUUID(ctx, is.SessionUUID)
 		}
-		_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
+		_ = s.storage.UpdateItemSessionEnded(ctx, is.ID, now)
 		cancelled = true
 	}
 
@@ -763,8 +749,8 @@ func (s *BacklogService) TriggerReReview(
 	acSnapshotJSON, _ := json.Marshal(acSnapshot)
 
 	priorVerdictSection := ""
-	if mostRecentReviewSession != nil && mostRecentReviewSession.Edges.ReviewVerdict != nil {
-		rv := mostRecentReviewSession.Edges.ReviewVerdict
+	if mostRecentReviewSession != nil && mostRecentReviewSession.ReviewVerdict != nil {
+		rv := mostRecentReviewSession.ReviewVerdict
 		priorVerdictSection = fmt.Sprintf("\n## Prior Review Verdict\nOutcome: %s\nSummary: %s\n", rv.OverallOutcome, rv.Summary)
 	}
 
@@ -850,7 +836,7 @@ Do not modify the code. Only write the review verdict.
 
 	// Capture the pre-review HEAD SHA so diffs against base..HEAD work correctly.
 	if baseSHA, shaErr := session.GetGitHeadSHA(item.RepoPath); shaErr == nil && baseSHA != "" {
-		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
+		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID, baseSHA, "", time.Now(), 0)
 	}
 
 	log.InfoLog.Printf("[TriggerReReview] spawned re-review session %s for item %s", inst.UUID, item.ID)
@@ -862,9 +848,9 @@ Do not modify the code. Only write the review verdict.
 
 // tombstoneOrphanTriageSessions marks any open triage ItemSessions that are no longer
 // live as ended. Returns CodeAlreadyExists if a live triage session is genuinely running.
-func (s *BacklogService) tombstoneOrphanTriageSessions(ctx context.Context, itemID, itemStatus string, sessions []*ent.ItemSession) error {
+func (s *BacklogService) tombstoneOrphanTriageSessions(ctx context.Context, itemID, itemStatus string, sessions []session.ItemSessionSummary) error {
 	for _, is := range sessions {
-		if is.SessionRole != string(session.SessionRoleTriage) || is.EndedAt != nil {
+		if is.Role != string(session.SessionRoleTriage) || is.EndedAt != nil {
 			continue
 		}
 		// Headless triage sessions have no live in-memory instance; treat as orphaned.
@@ -875,7 +861,7 @@ func (s *BacklogService) tombstoneOrphanTriageSessions(ctx context.Context, item
 		notLive := isHeadless || isStale || s.sessionStopper == nil || !s.sessionStopper.IsSessionLive(is.SessionUUID)
 		statusAdvanced := itemStatus != string(session.BacklogStatusIdea)
 		if notLive || statusAdvanced {
-			_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), time.Now())
+			_ = s.storage.UpdateItemSessionEnded(ctx, is.ID, time.Now())
 			continue
 		}
 		return connect.NewError(connect.CodeAlreadyExists,
@@ -886,10 +872,10 @@ func (s *BacklogService) tombstoneOrphanTriageSessions(ctx context.Context, item
 
 // findPriorTriageResult returns the most recent successfully-parsed triage result from
 // the provided sessions, along with a boolean indicating whether one was found.
-func findPriorTriageResult(sessions []*ent.ItemSession) (session.HeadlessTriageResult, bool) {
+func findPriorTriageResult(sessions []session.ItemSessionSummary) (session.HeadlessTriageResult, bool) {
 	for i := len(sessions) - 1; i >= 0; i-- {
 		is := sessions[i]
-		if is.SessionRole != string(session.SessionRoleTriage) || is.TriageResult == "" {
+		if is.Role != string(session.SessionRoleTriage) || is.TriageResult == "" {
 			continue
 		}
 		var result session.HeadlessTriageResult
@@ -920,9 +906,10 @@ func applyTriageACToUpdate(result *session.HeadlessTriageResult, update *session
 
 // findMostRecentSessions returns the most recently created review and work ItemSessions
 // from the provided list. Either return value may be nil if no session of that role exists.
-func findMostRecentSessions(sessions []*ent.ItemSession) (reviewSession, workSession *ent.ItemSession) {
-	for _, is := range sessions {
-		switch is.SessionRole {
+func findMostRecentSessions(sessions []session.ItemSessionSummary) (reviewSession, workSession *session.ItemSessionSummary) {
+	for i := range sessions {
+		is := &sessions[i]
+		switch is.Role {
 		case session.SessionRoleReview:
 			if reviewSession == nil || is.CreatedAt.After(reviewSession.CreatedAt) {
 				reviewSession = is
@@ -939,7 +926,7 @@ func findMostRecentSessions(sessions []*ent.ItemSession) (reviewSession, workSes
 // getWorkSessionDiff returns the git diff for the given work session. It prefers the
 // session's dedicated worktree path and base SHA; falls back to HEAD~1 in the item's
 // repo. Returns an empty string if workSession is nil or the diff cannot be obtained.
-func (s *BacklogService) getWorkSessionDiff(ctx context.Context, repoPath string, workSession *ent.ItemSession) string {
+func (s *BacklogService) getWorkSessionDiff(ctx context.Context, repoPath string, workSession *session.ItemSessionSummary) string {
 	if workSession == nil {
 		return ""
 	}
@@ -962,9 +949,9 @@ func (s *BacklogService) getWorkSessionDiff(ctx context.Context, repoPath string
 
 // resolveACSnapshot returns the acceptance criteria to use for a re-review. It prefers
 // the snapshot captured at work-session start; falls back to the item's current AC.
-func resolveACSnapshot(workSession *ent.ItemSession, itemAC session.AcCriteriaJSON) []session.AcCriterion {
+func resolveACSnapshot(workSession *session.ItemSessionSummary, itemAC session.AcCriteriaJSON) []session.AcCriterion {
 	if workSession != nil && workSession.AcSnapshot != "" {
-		if ac, _ := session.ParseAcCriteria(session.AcCriteriaJSON(workSession.AcSnapshot)); len(ac) > 0 {
+		if ac, _ := session.ParseAcCriteria(workSession.AcSnapshot); len(ac) > 0 {
 			return ac
 		}
 	}

@@ -82,19 +82,6 @@ func (s *BacklogService) AttachSessionToItem(
 	}
 
 	// 6. Write slash commands to session worktree if instance is reachable.
-	attachItemUUID, _ := uuid.Parse(item.ID)
-	entItem := &ent.BacklogItem{
-		ID:                 attachItemUUID,
-		Title:              item.Title,
-		Description:        item.Description,
-		AcceptanceCriteria: string(item.AcceptanceCriteria),
-		Priority:           item.Priority,
-		Status:             item.Status,
-		Notes:              item.Notes,
-		PlanArtifactsPath:  item.PlanArtifactsPath,
-		PlanApproved:       item.PlanApproved,
-		SkipPlanning:       item.SkipPlanning,
-	}
 
 	instances, loadErr := s.storage.LoadInstances()
 	if loadErr == nil {
@@ -103,11 +90,11 @@ func (s *BacklogService) AttachSessionToItem(
 				worktreePath := inst.GetEffectiveRootDir()
 				// Write synchronously under mutex to prevent concurrent write races.
 				s.worktreeMu.Lock()
-				if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
+				if wErr := session.WriteSlashCommands(item, worktreePath); wErr != nil {
 					s.worktreeMu.Unlock()
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
 				}
-				if wErr := session.WriteBacklogContextFile(entItem, attachPriorSessions, worktreePath); wErr != nil {
+				if wErr := session.WriteBacklogContextFile(item, attachPriorSessions, worktreePath); wErr != nil {
 					s.worktreeMu.Unlock()
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
 				}
@@ -115,7 +102,7 @@ func (s *BacklogService) AttachSessionToItem(
 				// Capture pre-work HEAD SHA so the review gate can diff base..HEAD
 				// across all commits the agent makes (same as SpawnSessionFromItem step 12b).
 				if baseSHA, shaErr := session.GetGitHeadSHA(worktreePath); shaErr == nil && baseSHA != "" {
-					_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
+					_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID, baseSHA, "", time.Now(), 0)
 					inst.SetDirBaseSHA(baseSHA)
 				}
 				break

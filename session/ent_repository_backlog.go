@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -18,6 +19,101 @@ import (
 )
 
 // --- converters ---
+
+// reviewVerdictToSummary maps an *ent.ReviewVerdict to a ReviewVerdictSummary DTO.
+// Returns nil when rv is nil so callers can check the pointer directly.
+func reviewVerdictToSummary(rv *ent.ReviewVerdict) *ReviewVerdictSummary {
+	if rv == nil {
+		return nil
+	}
+	return &ReviewVerdictSummary{
+		ID:             rv.ID.String(),
+		OverallOutcome: rv.OverallOutcome,
+		PerCriterion:   rv.PerCriterion,
+		Summary:        rv.Summary,
+		DiffTokenCount: rv.DiffTokenCount,
+		DiffTruncated:  rv.DiffTruncated,
+		OverrideBy:     rv.OverrideBy,
+		OverrideReason: rv.OverrideReason,
+		OverrideAt:     rv.OverrideAt,
+		CreatedAt:      rv.CreatedAt,
+	}
+}
+
+// itemSessionToSummary maps an *ent.ItemSession to an ItemSessionSummary DTO.
+// The BacklogItem edge must be eagerly loaded (WithBacklogItem) for BacklogItemID to be populated.
+// The ReviewVerdict edge must be eagerly loaded (WithReviewVerdict) for ReviewVerdict to be non-nil.
+func itemSessionToSummary(is *ent.ItemSession) ItemSessionSummary {
+	var backlogItemID string
+	if is.Edges.BacklogItem != nil {
+		backlogItemID = is.Edges.BacklogItem.ID.String()
+	}
+
+	// Parse TriageResultSummary from the triage_result JSON column.
+	var triageResultSummary string
+	if is.TriageResult != "" {
+		var tr struct {
+			Summary string `json:"summary"`
+		}
+		_ = json.Unmarshal([]byte(is.TriageResult), &tr)
+		triageResultSummary = tr.Summary
+	}
+
+	// OverallOutcome from the linked ReviewVerdict (empty when no verdict exists yet).
+	var overallOutcome string
+	if is.Edges.ReviewVerdict != nil {
+		overallOutcome = is.Edges.ReviewVerdict.OverallOutcome
+	}
+
+	return ItemSessionSummary{
+		ID:                    is.ID.String(),
+		BacklogItemID:         backlogItemID,
+		SessionUUID:           is.SessionUUID,
+		Role:                  is.SessionRole,
+		AcSnapshot:            AcCriteriaJSON(is.AcSnapshot),
+		LastCommitSha:         is.LastCommitSha,
+		LastCommitMessage:     is.LastCommitMessage,
+		CommitCountSinceSpawn: is.CommitCountSinceSpawn,
+		StartedAt:             is.StartedAt,
+		EndedAt:               is.EndedAt,
+		LastCommitAt:          is.LastCommitAt,
+		LastFileTouchAt:       is.LastFileTouchAt,
+		LastProgressAt:        is.LastProgressAt,
+		CreatedAt:             is.CreatedAt,
+		EstimatedCostUsd:      is.EstimatedCostUsd,
+		TriageResult:          is.TriageResult,
+		TriageResultSummary:   triageResultSummary,
+		OverallOutcome:        overallOutcome,
+		ReviewVerdict:         reviewVerdictToSummary(is.Edges.ReviewVerdict),
+	}
+}
+
+// backlogStatusEventToData maps an *ent.BacklogStatusEvent to a BacklogStatusEventData DTO.
+func backlogStatusEventToData(e *ent.BacklogStatusEvent) BacklogStatusEventData {
+	return BacklogStatusEventData{
+		ID:          e.ID.String(),
+		FromStatus:  e.FromStatus,
+		ToStatus:    e.ToStatus,
+		TriggeredBy: e.TriggeredBy,
+		Note:        e.Note,
+		CreatedAt:   e.CreatedAt,
+	}
+}
+
+// sourceSyncEventToData maps an *ent.SourceSyncEvent to a SourceSyncEventData DTO.
+func sourceSyncEventToData(e *ent.SourceSyncEvent) SourceSyncEventData {
+	return SourceSyncEventData{
+		ID:           e.ID.String(),
+		ItemsCreated: e.ItemsCreated,
+		ItemsUpdated: e.ItemsUpdated,
+		ItemsSkipped: e.ItemsSkipped,
+		ItemsErrored: e.ItemsErrored,
+		ErrorMessage: e.ErrorMessage,
+		CursorAfter:  e.CursorAfter,
+		StartedAt:    e.StartedAt,
+		FinishedAt:   e.FinishedAt,
+	}
+}
 
 func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 	data := BacklogItemData{
@@ -47,7 +143,10 @@ func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 	}
 	// Propagate eagerly-loaded status events when present.
 	if item.Edges.StatusEvents != nil {
-		data.StatusEvents = item.Edges.StatusEvents
+		data.StatusEvents = make([]BacklogStatusEventData, len(item.Edges.StatusEvents))
+		for i, ev := range item.Edges.StatusEvents {
+			data.StatusEvents[i] = backlogStatusEventToData(ev)
+		}
 	}
 	return data
 }
@@ -183,6 +282,95 @@ func (r *EntRepository) ListBacklogItems(ctx context.Context, filter BacklogItem
 		result[i] = backlogItemToData(item)
 	}
 	return result, nil
+}
+
+// ListBacklogItemSummaries returns lightweight BacklogItemSummary values for list views.
+// Three-phase: (1) scalar fields via .All(), (2) item sessions + review verdicts via edge loading.
+func (r *EntRepository) ListBacklogItemSummaries(ctx context.Context, filter BacklogItemFilter) ([]BacklogItemSummary, error) {
+	q := r.client.BacklogItem.Query()
+
+	if len(filter.Statuses) > 0 {
+		q = q.Where(backlogitem.StatusIn(filter.Statuses...))
+	} else if filter.ExcludeTerminal {
+		q = q.Where(backlogitem.StatusNotIn(
+			string(BacklogStatusDone),
+			string(BacklogStatusArchived),
+		))
+	}
+	if len(filter.Priorities) > 0 {
+		q = q.Where(backlogitem.PriorityIn(filter.Priorities...))
+	}
+	switch filter.SortBy {
+	case "priority":
+		q = q.Order(ent.Asc(backlogitem.FieldPriority), ent.Desc(backlogitem.FieldUpdatedAt))
+	case "updated_at":
+		q = q.Order(ent.Desc(backlogitem.FieldUpdatedAt))
+	default:
+		q = q.Order(ent.Asc(backlogitem.FieldPriority), ent.Desc(backlogitem.FieldUpdatedAt))
+	}
+
+	const defaultSafetyLimit = 1000
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = defaultSafetyLimit
+	}
+	q = q.Limit(limit)
+	if filter.Offset > 0 {
+		q = q.Offset(filter.Offset)
+	}
+
+	// Phase 1: load scalar fields; avoid Select/Scan to sidestep nullable-time pitfalls.
+	items, err := q.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list backlog item summaries: %w", err)
+	}
+	summaries := make([]BacklogItemSummary, len(items))
+	idIndex := make(map[string]int, len(items))
+	parsedUUIDs := make([]uuid.UUID, 0, len(items))
+	for i, item := range items {
+		summaries[i] = BacklogItemSummary{
+			ID:                 item.ID.String(),
+			ExternalID:         item.ExternalID,
+			Title:              item.Title,
+			Status:             BacklogStatus(item.Status),
+			Priority:           item.Priority,
+			RepoPath:           item.RepoPath,
+			AcceptanceCriteria: AcCriteriaJSON(item.AcceptanceCriteria),
+			Notes:              item.Notes,
+			PrURL:              item.PrURL,
+			PrNumber:           item.PrNumber,
+			CreatedAt:          item.CreatedAt,
+			UpdatedAt:          item.UpdatedAt,
+			ArchivedAt:         item.ArchivedAt,
+		}
+		idIndex[item.ID.String()] = i
+		parsedUUIDs = append(parsedUUIDs, item.ID)
+	}
+	if len(parsedUUIDs) == 0 {
+		return summaries, nil
+	}
+
+	// Phase 2+3: load item sessions with review verdicts via edge loading.
+	sessions, err := r.client.ItemSession.Query().
+		Where(itemsession.HasBacklogItemWith(backlogitem.IDIn(parsedUUIDs...))).
+		WithBacklogItem().
+		WithReviewVerdict().
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list item sessions for summaries: %w", err)
+	}
+	for _, s := range sessions {
+		if s.Edges.BacklogItem == nil {
+			continue
+		}
+		itemID := s.Edges.BacklogItem.ID.String()
+		idx, ok := idIndex[itemID]
+		if !ok {
+			continue
+		}
+		summaries[idx].ItemSessions = append(summaries[idx].ItemSessions, itemSessionToSummary(s))
+	}
+	return summaries, nil
 }
 
 // UpdateBacklogItem modifies an existing backlog item with optional precondition check.
@@ -501,13 +689,13 @@ const maxSourceSyncEventsHistory = 200
 // first, capped at maxSourceSyncEventsHistory rows. truncated is true when older
 // events exist beyond the cap — callers should surface this to avoid silently
 // hiding history for sources with long or frequent sync runs.
-func (r *EntRepository) ListSourceSyncEvents(ctx context.Context, sourceID string) (events []*ent.SourceSyncEvent, truncated bool, err error) {
+func (r *EntRepository) ListSourceSyncEvents(ctx context.Context, sourceID string) ([]SourceSyncEventData, bool, error) {
 	parsedID, err := uuid.Parse(sourceID)
 	if err != nil {
 		return nil, false, fmt.Errorf("invalid source id %q: %w", sourceID, err)
 	}
 	// Fetch one extra row to distinguish "exactly at the cap" from "more exist beyond it".
-	events, err = r.client.SourceSyncEvent.Query().
+	rawEvents, err := r.client.SourceSyncEvent.Query().
 		Where(sourcesyncevent.HasSourceWith(itemsource.ID(parsedID))).
 		Order(ent.Desc(sourcesyncevent.FieldStartedAt)).
 		Limit(maxSourceSyncEventsHistory + 1).
@@ -515,10 +703,15 @@ func (r *EntRepository) ListSourceSyncEvents(ctx context.Context, sourceID strin
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to list sync events for source %s: %w", sourceID, err)
 	}
-	if len(events) > maxSourceSyncEventsHistory {
-		return events[:maxSourceSyncEventsHistory], true, nil
+	truncated := len(rawEvents) > maxSourceSyncEventsHistory
+	if truncated {
+		rawEvents = rawEvents[:maxSourceSyncEventsHistory]
 	}
-	return events, false, nil
+	events := make([]SourceSyncEventData, len(rawEvents))
+	for i, ev := range rawEvents {
+		events[i] = sourceSyncEventToData(ev)
+	}
+	return events, truncated, nil
 }
 
 // CreateSourceSyncEvent records a completed (or failed) sync run for an

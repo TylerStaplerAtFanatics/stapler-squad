@@ -691,6 +691,11 @@ func (s *Storage) ListBacklogItems(ctx context.Context, filter BacklogItemFilter
 	return s.repo.ListBacklogItems(ctx, filter)
 }
 
+// ListBacklogItemSummaries returns lightweight summaries for list views.
+func (s *Storage) ListBacklogItemSummaries(ctx context.Context, filter BacklogItemFilter) ([]BacklogItemSummary, error) {
+	return s.repo.ListBacklogItemSummaries(ctx, filter)
+}
+
 // UpdateBacklogItem modifies an existing backlog item.
 func (s *Storage) UpdateBacklogItem(ctx context.Context, id string, update BacklogItemUpdate, precondition *BacklogItemPrecondition) (*BacklogItemData, error) {
 	return s.repo.UpdateBacklogItem(ctx, id, update, precondition)
@@ -735,7 +740,7 @@ func (s *Storage) DeleteItemSource(ctx context.Context, id string) error {
 
 // ListSourceSyncEvents returns sync history events for an item source, most
 // recent first. Direct EntRepository delegation, like GetItemSession below.
-func (s *Storage) ListSourceSyncEvents(ctx context.Context, sourceID string) (events []*ent.SourceSyncEvent, truncated bool, err error) {
+func (s *Storage) ListSourceSyncEvents(ctx context.Context, sourceID string) ([]SourceSyncEventData, bool, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
 		return nil, false, ErrNotFound
@@ -756,10 +761,10 @@ func (s *Storage) CreateSourceSyncEvent(ctx context.Context, sourceID, cursorAft
 // --- ItemSession (direct EntRepository delegation) ---
 
 // GetItemSession looks up an ItemSession by entity UUID (loads BacklogItem edge).
-func (s *Storage) GetItemSession(ctx context.Context, id string) (*ent.ItemSession, error) {
+func (s *Storage) GetItemSession(ctx context.Context, id string) (ItemSessionSummary, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
-		return nil, ErrNotFound
+		return ItemSessionSummary{}, ErrNotFound
 	}
 	return er.GetItemSession(ctx, id)
 }
@@ -774,10 +779,10 @@ func (s *Storage) GetBaseCommitSHAsForSessions(ctx context.Context, uuids []stri
 }
 
 // GetItemSessionBySessionUUID looks up the ItemSession for a given session UUID (loads BacklogItem edge).
-func (s *Storage) GetItemSessionBySessionUUID(ctx context.Context, sessionUUID string) (*ent.ItemSession, error) {
+func (s *Storage) GetItemSessionBySessionUUID(ctx context.Context, sessionUUID string) (ItemSessionSummary, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
-		return nil, ErrNotFound
+		return ItemSessionSummary{}, ErrNotFound
 	}
 	return er.GetItemSessionBySessionUUID(ctx, sessionUUID)
 }
@@ -831,10 +836,10 @@ func (s *Storage) UpdateItemSessionEnded(ctx context.Context, id string, endedAt
 
 // GetItemSessionBySessionAndItem looks up an ItemSession by both sessionUUID and backlog item ID.
 // Returns ErrNotFound if no matching record exists.
-func (s *Storage) GetItemSessionBySessionAndItem(ctx context.Context, sessionUUID string, itemID string) (*ent.ItemSession, error) {
+func (s *Storage) GetItemSessionBySessionAndItem(ctx context.Context, sessionUUID string, itemID string) (ItemSessionSummary, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
-		return nil, ErrNotFound
+		return ItemSessionSummary{}, ErrNotFound
 	}
 	return er.GetItemSessionBySessionAndItem(ctx, sessionUUID, itemID)
 }
@@ -861,10 +866,10 @@ func (s *Storage) GetMostRecentReviewVerdictForItem(ctx context.Context, itemID 
 }
 
 // SaveReviewVerdict upserts a ReviewVerdict for a given ItemSession UUID.
-func (s *Storage) SaveReviewVerdict(ctx context.Context, itemSessionID string, verdict ReviewVerdictData) (*ent.ReviewVerdict, error) {
+func (s *Storage) SaveReviewVerdict(ctx context.Context, itemSessionID string, verdict ReviewVerdictData) error {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
-		return nil, fmt.Errorf("review verdicts not supported by this storage backend")
+		return fmt.Errorf("review verdicts not supported by this storage backend")
 	}
 	return er.SaveReviewVerdict(ctx, itemSessionID, verdict)
 }
@@ -879,10 +884,10 @@ func (s *Storage) UpdateAcCriterionStatus(ctx context.Context, itemID string, cr
 }
 
 // CreateItemSession creates a new ItemSession linked to a BacklogItem.
-func (s *Storage) CreateItemSession(ctx context.Context, data ItemSessionData) (*ent.ItemSession, error) {
+func (s *Storage) CreateItemSession(ctx context.Context, data ItemSessionData) (ItemSessionSummary, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
-		return nil, fmt.Errorf("item sessions not supported by this storage backend")
+		return ItemSessionSummary{}, fmt.Errorf("item sessions not supported by this storage backend")
 	}
 	return er.CreateItemSession(ctx, data)
 }
@@ -890,16 +895,16 @@ func (s *Storage) CreateItemSession(ctx context.Context, data ItemSessionData) (
 // CreateItemSessionWithVerdict atomically creates an ItemSession and its initial
 // ReviewVerdict in a single transaction. Falls back gracefully if the backend is
 // not ent-based.
-func (s *Storage) CreateItemSessionWithVerdict(ctx context.Context, isData ItemSessionData, verdict ReviewVerdictData) (*ent.ItemSession, *ent.ReviewVerdict, error) {
+func (s *Storage) CreateItemSessionWithVerdict(ctx context.Context, isData ItemSessionData, verdict ReviewVerdictData) (ItemSessionSummary, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
-		return nil, nil, fmt.Errorf("item sessions not supported by this storage backend")
+		return ItemSessionSummary{}, fmt.Errorf("item sessions not supported by this storage backend")
 	}
 	return er.CreateItemSessionWithVerdict(ctx, isData, verdict)
 }
 
 // ListItemSessions returns all ItemSessions for a given BacklogItem UUID string.
-func (s *Storage) ListItemSessions(ctx context.Context, itemID string) ([]*ent.ItemSession, error) {
+func (s *Storage) ListItemSessions(ctx context.Context, itemID string) ([]ItemSessionSummary, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
 		return nil, ErrNotFound

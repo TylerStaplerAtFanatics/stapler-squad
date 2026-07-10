@@ -131,7 +131,7 @@ func (h *backlogHandlers) getBacklogItem(ctx context.Context, req mcpgo.CallTool
 	role := ""
 	if callerUUID, ok := sessionUUIDFromContext(ctx); ok {
 		if is, linkErr := h.storage.GetItemSessionBySessionAndItem(ctx, callerUUID, itemID); linkErr == nil {
-			role = is.SessionRole
+			role = is.Role
 		}
 	}
 	switch role {
@@ -346,8 +346,8 @@ func (h *backlogHandlers) submitReviewVerdict(ctx context.Context, req mcpgo.Cal
 		}
 		return errResult(ErrInternalError, fmt.Sprintf("link check failed: %v", linkErr), ""), nil
 	}
-	if itemSession.SessionRole != "review" {
-		return errResult(ErrPermissionDenied, fmt.Sprintf("session role is %q — only 'review' role may submit verdicts", itemSession.SessionRole), ""), nil
+	if itemSession.Role != "review" {
+		return errResult(ErrPermissionDenied, fmt.Sprintf("session role is %q — only 'review' role may submit verdicts", itemSession.Role), ""), nil
 	}
 
 	// Build CriterionVerdicts, auto-downgrading to PARTIAL if evidence is empty.
@@ -375,13 +375,13 @@ func (h *backlogHandlers) submitReviewVerdict(ctx context.Context, req mcpgo.Cal
 	}
 
 	verdictData := session.ReviewVerdictData{
-		ItemSessionID:  itemSession.ID.String(),
+		ItemSessionID:  itemSession.ID,
 		OverallOutcome: overallOutcome,
 		PerCriterion:   string(perCriterionJSON),
 		Summary:        summary,
 	}
 
-	if _, saveErr := h.storage.SaveReviewVerdict(ctx, itemSession.ID.String(), verdictData); saveErr != nil {
+	if saveErr := h.storage.SaveReviewVerdict(ctx, itemSession.ID, verdictData); saveErr != nil {
 		return errResult(ErrInternalError, fmt.Sprintf("save review verdict: %v", saveErr), ""), nil
 	}
 
@@ -455,8 +455,8 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 		}
 		return errResult(ErrInternalError, fmt.Sprintf("link check failed: %v", linkErr), ""), nil
 	}
-	if itemSession.SessionRole != "triage" {
-		return errResult(ErrPermissionDenied, fmt.Sprintf("session role is %q — only 'triage' role may submit triage results", itemSession.SessionRole), ""), nil
+	if itemSession.Role != "triage" {
+		return errResult(ErrPermissionDenied, fmt.Sprintf("session role is %q — only 'triage' role may submit triage results", itemSession.Role), ""), nil
 	}
 
 	// Parse suggestions.
@@ -578,7 +578,7 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 	}
 
 	// Persist triage result JSON on the ItemSession.
-	if updateErr := h.storage.UpdateItemSessionTriageResult(ctx, itemSession.ID.String(), string(payloadJSON)); updateErr != nil {
+	if updateErr := h.storage.UpdateItemSessionTriageResult(ctx, itemSession.ID, string(payloadJSON)); updateErr != nil {
 		log.ErrorLog.Printf("[mcp:submit_triage_result] failed to save triage result: %v", updateErr)
 		return errResult(ErrInternalError, fmt.Sprintf("save triage result: %v", updateErr), ""), nil
 	}

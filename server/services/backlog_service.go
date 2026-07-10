@@ -17,7 +17,6 @@ import (
 	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
-	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/tokens"
@@ -247,13 +246,13 @@ func (s *BacklogService) resolveRepoPathInput(input string) (string, error) {
 
 
 
-// itemSessionToProto converts an ent.ItemSession to its proto representation.
+// itemSessionToProto converts an ItemSessionSummary to its proto representation.
 // costFor, if non-nil, is called with the tmux session UUID to populate EstimatedCostUsd.
-func itemSessionToProto(is *ent.ItemSession, costFor func(tmuxUUID string) float64) *sessionv1.ItemSession {
+func itemSessionToProto(is session.ItemSessionSummary, costFor func(tmuxUUID string) float64) *sessionv1.ItemSession {
 	p := &sessionv1.ItemSession{
-		Id:                    is.ID.String(),
+		Id:                    is.ID,
 		SessionUuid:           is.SessionUUID,
-		SessionRole:           is.SessionRole,
+		SessionRole:           is.Role,
 		CommitCountSinceSpawn: int32(is.CommitCountSinceSpawn),
 		LastCommitMessage:     is.LastCommitMessage,
 		CreatedAt:             timestamppb.New(is.CreatedAt),
@@ -271,9 +270,9 @@ func itemSessionToProto(is *ent.ItemSession, costFor func(tmuxUUID string) float
 		p.LastFileTouchAt = timestamppb.New(*is.LastFileTouchAt)
 	}
 	// Populate the review verdict when it was eagerly loaded.
-	if rv := is.Edges.ReviewVerdict; rv != nil {
+	if rv := is.ReviewVerdict; rv != nil {
 		p.ReviewVerdict = &sessionv1.ReviewVerdict{
-			Id:             rv.ID.String(),
+			Id:             rv.ID,
 			OverallOutcome: rv.OverallOutcome,
 			Summary:        rv.Summary,
 			DiffTokenCount: int32(rv.DiffTokenCount),
@@ -355,6 +354,53 @@ type triageResultJSON struct {
 	Feedback            string                     `json:"feedback,omitempty"`
 }
 
+// backlogItemSummaryToProto maps a BacklogItemSummary to the proto BacklogItem message.
+// Used by ListBacklogItems to avoid over-hydrating description/plan fields.
+func backlogItemSummaryToProto(item *session.BacklogItemSummary, costFor func(tmuxUUID string) float64) *sessionv1.BacklogItem {
+	p := &sessionv1.BacklogItem{
+		Id:         item.ID,
+		Title:      item.Title,
+		Priority:   int32(item.Priority),
+		Status:     string(item.Status),
+		RepoPath:   item.RepoPath,
+		Notes:      item.Notes,
+		ExternalId: item.ExternalID,
+		PrUrl:      item.PrURL,
+		PrNumber:   int32(item.PrNumber),
+		CreatedAt:  timestamppb.New(item.CreatedAt),
+		UpdatedAt:  timestamppb.New(item.UpdatedAt),
+	}
+	if item.ArchivedAt != nil {
+		p.ArchivedAt = timestamppb.New(*item.ArchivedAt)
+	}
+	if item.AcceptanceCriteria != "" {
+		criteria, err := session.ParseAcCriteria(item.AcceptanceCriteria)
+		if err == nil {
+			protoAC := make([]*sessionv1.AcCriterion, len(criteria))
+			for i, c := range criteria {
+				protoAC[i] = &sessionv1.AcCriterion{
+					Index:  int32(c.Index),
+					Text:   c.Text,
+					Status: string(c.Status),
+				}
+			}
+			p.AcceptanceCriteria = protoAC
+		}
+	}
+	if len(item.ItemSessions) > 0 {
+		protoSessions := make([]*sessionv1.ItemSession, len(item.ItemSessions))
+		var totalCost float64
+		for i, is := range item.ItemSessions {
+			ps := itemSessionToProto(is, costFor)
+			protoSessions[i] = ps
+			totalCost += ps.EstimatedCostUsd
+		}
+		p.ItemSessions = protoSessions
+		p.TotalEstimatedCostUsd = totalCost
+	}
+	return p
+}
+
 // backlogItemToProto maps a BacklogItemData to the proto BacklogItem message.
 func backlogItemToProto(item *session.BacklogItemData, costFor func(tmuxUUID string) float64) *sessionv1.BacklogItem {
 	p := &sessionv1.BacklogItem{
@@ -417,7 +463,7 @@ func backlogItemToProto(item *session.BacklogItemData, costFor func(tmuxUUID str
 		protoEvents := make([]*sessionv1.BacklogStatusEvent, len(item.StatusEvents))
 		for i, ev := range item.StatusEvents {
 			protoEvents[i] = &sessionv1.BacklogStatusEvent{
-				Id:          ev.ID.String(),
+				Id:          ev.ID,
 				FromStatus:  ev.FromStatus,
 				ToStatus:    ev.ToStatus,
 				TriggeredBy: ev.TriggeredBy,
@@ -450,9 +496,9 @@ func itemSourceToProto(src *session.ItemSourceData) *sessionv1.ItemSource {
 // commitAndPushItemWorktrees commits any dirty work and pushes branches to the remote
 // for all work-role item sessions. Called BEFORE status transitions to ensure changes
 // are durable before the item is marked done. Errors are logged but not returned.
-func (s *BacklogService) commitAndPushItemWorktrees(ctx context.Context, sessions []*ent.ItemSession) {
+func (s *BacklogService) commitAndPushItemWorktrees(ctx context.Context, sessions []session.ItemSessionSummary) {
 	for _, is := range sessions {
-		if is.SessionUUID == "" || is.SessionRole != string(session.SessionRoleWork) {
+		if is.SessionUUID == "" || is.Role != string(session.SessionRoleWork) {
 			continue
 		}
 		wt, err := s.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
@@ -473,12 +519,12 @@ func (s *BacklogService) commitAndPushItemWorktrees(ctx context.Context, session
 // cleanupItemWorktrees removes git worktrees for work-role item sessions.
 // Call commitAndPushItemWorktrees first to ensure changes are durable.
 // Errors are logged but do not fail the caller — cleanup is best-effort.
-func (s *BacklogService) cleanupItemWorktrees(ctx context.Context, sessions []*ent.ItemSession) {
+func (s *BacklogService) cleanupItemWorktrees(ctx context.Context, sessions []session.ItemSessionSummary) {
 	for _, is := range sessions {
 		if is.SessionUUID == "" {
 			continue
 		}
-		if is.SessionRole != string(session.SessionRoleWork) {
+		if is.Role != string(session.SessionRoleWork) {
 			continue
 		}
 		wt, err := s.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
