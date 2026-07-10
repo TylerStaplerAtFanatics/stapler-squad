@@ -2078,6 +2078,27 @@ func (s *SessionService) StreamTerminal(
 	// real PTY-backed StreamTerminal test.
 	var wg sync.WaitGroup
 
+	// sendMu serializes every stream.Send() call across the two goroutines
+	// below. connect-go's BidiStream.Send() is documented as unsafe for
+	// concurrent use from multiple goroutines: goroutine 1 continuously sends
+	// PTY output while goroutine 2 can, on error, send an error message back
+	// to the client (WRITE_ERROR / RESIZE_ERROR) — those two goroutines are
+	// otherwise independent (one pumps PTY->client, the other pumps
+	// client->PTY), so without a shared lock a PTY-output Send() and an
+	// input-goroutine error-reply Send() can execute at the same instant on
+	// the same stream. Caught by -race under a real PTY-backed StreamTerminal
+	// test. Single-writer-via-channel was considered but would require
+	// funneling ALL sends (including the hot PTY-output path) through an
+	// extra hop; a mutex is the minimal change here since sends are already
+	// synchronous, best-effort calls with no ordering requirements beyond
+	// mutual exclusion.
+	var sendMu sync.Mutex
+	sendLocked := func(msg *sessionv1.TerminalData) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(msg)
+	}
+
 	// Flow control state for backpressure management
 	// Reference: https://xtermjs.org/docs/guides/flowcontrol/
 	pauseCh := make(chan bool, 1) // Buffered channel for pause/resume signals
@@ -2146,7 +2167,7 @@ func (s *SessionService) StreamTerminal(
 							},
 						},
 					}
-					if sendErr := stream.Send(outputMsg); sendErr != nil {
+					if sendErr := sendLocked(outputMsg); sendErr != nil {
 						errCh <- fmt.Errorf("failed to send output: %w", sendErr)
 						return
 					}
@@ -2225,7 +2246,7 @@ func (s *SessionService) StreamTerminal(
 								},
 							},
 						}
-						_ = stream.Send(errorMsg) // Best effort
+						_ = sendLocked(errorMsg) // Best effort
 						errCh <- writeErr
 						return
 					}
@@ -2253,7 +2274,7 @@ func (s *SessionService) StreamTerminal(
 								},
 							},
 						}
-						_ = stream.Send(errorMsg) // Best effort
+						_ = sendLocked(errorMsg) // Best effort
 						// Don't return on resize errors, they're not fatal
 					} else {
 						log.Info("resized terminal", "cols", cols, "rows", rows, "session", msg.SessionId)
@@ -2298,31 +2319,34 @@ func (s *SessionService) StreamTerminal(
 		}
 	}()
 
-	// Wait for either context cancellation or error, then wait (bounded) for
-	// both goroutines to actually stop before returning. Returning early lets
-	// Connect close the underlying HTTP/2 stream; if either goroutine is
-	// still mid-Send/Receive when that happens, the concurrent writes to the
-	// same connection race. Goroutine 1 is now reliably bounded (its dup'd
+	// Wait for either context cancellation or error, then wait for both
+	// goroutines to actually stop before returning. Returning early lets
+	// Connect close the underlying HTTP/2 stream (write trailers/end-stream);
+	// if either goroutine is still mid-Send/Receive when that happens, the
+	// concurrent writes to the same connection race — caught by -race even
+	// with sendLocked in place, because sendLocked only serializes OUR two
+	// goroutines against each other, not against Connect's own teardown write
+	// once this function returns. Goroutine 1 is reliably bounded (its dup'd
 	// fd's 250ms read deadline means it notices streamCtx.Done() promptly
-	// regardless of PTY activity), so in practice this resolves almost
-	// immediately. The timeout remains as a safety net for goroutine 2's
-	// stream.Receive(), which could still block if it's mid-read on a client
-	// connection that outlives streamCtx without actually disconnecting
-	// (e.g. the error came from goroutine 1, not a real client hangup).
-	const shutdownWaitTimeout = 2 * time.Second
+	// regardless of PTY activity). Goroutine 2's stream.Receive() has no
+	// equivalent deadline (connect-go's BidiStream doesn't expose one), so it
+	// can genuinely still be blocked here — an earlier version of this code
+	// gave up waiting after a short timeout and returned anyway, which is
+	// exactly what let the race happen. logSlowShutdown never gives up: it
+	// blocks until wg is actually done (so the race is structurally
+	// impossible), merely logging if that's taking unusually long so a client
+	// that never disconnects is still visible in logs rather than silently
+	// leaking the goroutine.
+	const shutdownWarnAfter = 2 * time.Second
 	select {
 	case <-streamCtx.Done():
 		log.Info("StreamTerminal: context done", "session", initialMsg.SessionId)
-		if !waitWithTimeout(&wg, shutdownWaitTimeout) {
-			log.Warn("StreamTerminal: goroutines did not exit within timeout after context done", "session", initialMsg.SessionId)
-		}
+		logSlowShutdown(&wg, shutdownWarnAfter, initialMsg.SessionId, "context done")
 		return nil // Clean shutdown
 	case err := <-errCh:
 		log.Error("StreamTerminal error", "session", initialMsg.SessionId, "err", err)
 		cancel() // streamCtx.Done() wasn't otherwise closed on this path; signal both goroutines to stop.
-		if !waitWithTimeout(&wg, shutdownWaitTimeout) {
-			log.Warn("StreamTerminal: goroutines did not exit within timeout after error", "session", initialMsg.SessionId)
-		}
+		logSlowShutdown(&wg, shutdownWarnAfter, initialMsg.SessionId, "error")
 		return connect.NewError(connect.CodeInternal, err)
 	}
 }
@@ -2334,6 +2358,11 @@ func (s *SessionService) StreamTerminal(
 // tracked goroutines may still be running and may still touch shared state
 // (e.g. a stream) after this function returns false. Callers on the false
 // path must treat that as a real, logged condition, not a no-op.
+//
+// StreamTerminal itself does NOT use this — see logSlowShutdown below for why
+// "give up and return anyway" is unsafe there. Kept for its own direct test
+// coverage (TestWaitWithTimeout) and as a building block other bounded-wait
+// callers can use where returning on timeout doesn't race a shared resource.
 func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
@@ -2345,6 +2374,35 @@ func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 		return true
 	case <-time.After(timeout):
 		return false
+	}
+}
+
+// logSlowShutdown blocks until wg completes — unconditionally, with no
+// give-up. StreamTerminal's two goroutines both call stream.Send()/Receive();
+// once this function's caller returns, Connect writes the stream's
+// end-of-stream trailers on the same connection, which races with either
+// goroutine if it's still mid-Send/Receive. The only way to make that
+// structurally impossible is to never return while wg is incomplete — unlike
+// waitWithTimeout, this cannot give up and let the caller proceed anyway.
+//
+// warnAfter only controls a one-time log line so a client that never
+// disconnects (holding goroutine 2's stream.Receive() open indefinitely,
+// since connect-go's BidiStream has no per-call read deadline to bound it)
+// is visible in logs as a real leak, rather than either silently hanging
+// forever unnoticed or racing the stream teardown.
+func logSlowShutdown(wg *sync.WaitGroup, warnAfter time.Duration, sessionID, reason string) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(warnAfter):
+		log.Warn("StreamTerminal: goroutines still running past warn threshold, waiting for them before returning (not giving up, to avoid racing Connect's stream teardown)",
+			"session", sessionID, "reason", reason)
+		<-done
 	}
 }
 
