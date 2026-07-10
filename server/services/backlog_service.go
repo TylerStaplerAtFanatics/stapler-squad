@@ -18,7 +18,6 @@ import (
 	gh "github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
-	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
 	"github.com/tstapler/stapler-squad/session/tokens"
@@ -335,10 +334,10 @@ func slugify(s string) string {
 
 // triageShortTitle extracts the triage-suggested short title from the most recent
 // completed triage ItemSession, falling back to a truncated slug of itemTitle.
-func triageShortTitle(sessions []*ent.ItemSession, itemTitle string) string {
+func triageShortTitle(sessions []session.ItemSessionSummary, itemTitle string) string {
 	for i := len(sessions) - 1; i >= 0; i-- {
 		s := sessions[i]
-		if s.SessionRole != string(session.SessionRoleTriage) || s.TriageResult == "" {
+		if s.Role != string(session.SessionRoleTriage) || s.TriageResult == "" {
 			continue
 		}
 		var r session.HeadlessTriageResult
@@ -354,13 +353,13 @@ func triageShortTitle(sessions []*ent.ItemSession, itemTitle string) string {
 	return strings.Join(parts, "-")
 }
 
-// itemSessionToProto converts an ent.ItemSession to its proto representation.
+// itemSessionToProto converts an ItemSessionSummary to its proto representation.
 // costFor, if non-nil, is called with the tmux session UUID to populate EstimatedCostUsd.
-func itemSessionToProto(is *ent.ItemSession, costFor func(tmuxUUID string) float64) *sessionv1.ItemSession {
+func itemSessionToProto(is session.ItemSessionSummary, costFor func(tmuxUUID string) float64) *sessionv1.ItemSession {
 	p := &sessionv1.ItemSession{
-		Id:                    is.ID.String(),
+		Id:                    is.ID,
 		SessionUuid:           is.SessionUUID,
-		SessionRole:           is.SessionRole,
+		SessionRole:           is.Role,
 		CommitCountSinceSpawn: int32(is.CommitCountSinceSpawn),
 		LastCommitMessage:     is.LastCommitMessage,
 		CreatedAt:             timestamppb.New(is.CreatedAt),
@@ -378,9 +377,9 @@ func itemSessionToProto(is *ent.ItemSession, costFor func(tmuxUUID string) float
 		p.LastFileTouchAt = timestamppb.New(*is.LastFileTouchAt)
 	}
 	// Populate the review verdict when it was eagerly loaded.
-	if rv := is.Edges.ReviewVerdict; rv != nil {
+	if rv := is.ReviewVerdict; rv != nil {
 		p.ReviewVerdict = &sessionv1.ReviewVerdict{
-			Id:             rv.ID.String(),
+			Id:             rv.ID,
 			OverallOutcome: rv.OverallOutcome,
 			Summary:        rv.Summary,
 			DiffTokenCount: int32(rv.DiffTokenCount),
@@ -524,7 +523,7 @@ func backlogItemToProto(item *session.BacklogItemData, costFor func(tmuxUUID str
 		protoEvents := make([]*sessionv1.BacklogStatusEvent, len(item.StatusEvents))
 		for i, ev := range item.StatusEvents {
 			protoEvents[i] = &sessionv1.BacklogStatusEvent{
-				Id:          ev.ID.String(),
+				Id:          ev.ID,
 				FromStatus:  ev.FromStatus,
 				ToStatus:    ev.ToStatus,
 				TriggeredBy: ev.TriggeredBy,
@@ -554,10 +553,10 @@ func itemSourceToProto(src *session.ItemSourceData) *sessionv1.ItemSource {
 	return p
 }
 
-// sourceSyncEventToProto converts an ent.SourceSyncEvent to its proto representation.
-func sourceSyncEventToProto(ev *ent.SourceSyncEvent) *sessionv1.SourceSyncEvent {
+// sourceSyncEventToProto converts a SourceSyncEventData to its proto representation.
+func sourceSyncEventToProto(ev session.SourceSyncEventData) *sessionv1.SourceSyncEvent {
 	p := &sessionv1.SourceSyncEvent{
-		Id:           ev.ID.String(),
+		Id:           ev.ID,
 		StartedAt:    timestamppb.New(ev.StartedAt),
 		ItemsCreated: int32(ev.ItemsCreated),
 		ItemsUpdated: int32(ev.ItemsUpdated),
@@ -674,7 +673,7 @@ func (s *BacklogService) GetBacklogItem(
 
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -691,11 +690,11 @@ func (s *BacklogService) GetBacklogItem(
 		// Sessions younger than maxTriageSessionAge are still running their goroutine — leave them alone.
 		now := time.Now()
 		for _, is := range isSessions {
-			if is.SessionRole == string(session.SessionRoleTriage) &&
+			if is.Role == string(session.SessionRoleTriage) &&
 				is.EndedAt == nil &&
 				strings.HasPrefix(is.SessionUUID, headlessTriageUUIDPrefix) &&
 				time.Since(is.CreatedAt) > maxTriageSessionAge {
-				_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
+				_ = s.storage.UpdateItemSessionEnded(ctx, is.ID, now)
 				is.EndedAt = &now
 			}
 		}
@@ -827,7 +826,7 @@ func (s *BacklogService) UpdateBacklogItem(
 		if errors.Is(err, session.ErrPreconditionFailed) {
 			return nil, connect.NewError(connect.CodeAborted, err)
 		}
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update backlog item: %w", err))
@@ -857,7 +856,7 @@ func (s *BacklogService) ArchiveBacklogItem(
 
 	archived, err := s.storage.ArchiveBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to archive backlog item: %w", err))
@@ -886,7 +885,7 @@ func (s *BacklogService) DeleteBacklogItem(
 	}
 
 	if err := s.storage.DeleteBacklogItem(ctx, req.Msg.ItemId); err != nil {
-		if ent.IsNotFound(err) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete backlog item: %w", err))
@@ -910,7 +909,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 	// Load current item to check CanTransitionBacklog.
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -1020,7 +1019,7 @@ func (s *BacklogService) ApprovePlan(
 
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -1142,7 +1141,7 @@ func (s *BacklogService) UpdateItemSource(
 
 	updated, err := s.sourceBackend.UpdateItemSource(ctx, req.Msg.SourceId, update)
 	if err != nil {
-		if ent.IsNotFound(err) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("item source %q not found", req.Msg.SourceId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to update item source: %w", err))
@@ -1164,7 +1163,7 @@ func (s *BacklogService) DeleteItemSource(
 	}
 
 	if err := s.storage.DeleteItemSource(ctx, req.Msg.SourceId); err != nil {
-		if ent.IsNotFound(err) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("item source %q not found", req.Msg.SourceId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to delete item source: %w", err))
@@ -1188,7 +1187,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// 1. Load item.
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -1207,13 +1206,13 @@ func (s *BacklogService) SpawnSessionFromItem(
 			if ps.EndedAt != nil {
 				continue
 			}
-			if ps.SessionRole != string(session.SessionRoleWork) && ps.SessionRole != string(session.SessionRoleReview) {
+			if ps.Role != string(session.SessionRoleWork) && ps.Role != string(session.SessionRoleReview) {
 				continue
 			}
 			if s.sessionStopper != nil {
 				_ = s.sessionStopper.StopSessionByUUID(ctx, ps.SessionUUID)
 			}
-			_ = s.storage.UpdateItemSessionEnded(ctx, ps.ID.String(), time.Now())
+			_ = s.storage.UpdateItemSessionEnded(ctx, ps.ID, time.Now())
 		}
 
 		// If the item is in review, transition it back to in_progress so the spawn
@@ -1269,28 +1268,14 @@ func (s *BacklogService) SpawnSessionFromItem(
 
 	// 8b. Guard against spawning a duplicate work session when one is already active.
 	for _, ps := range priorSessions {
-		if ps.SessionRole == session.SessionRoleWork && ps.EndedAt == nil {
+		if ps.Role == session.SessionRoleWork && ps.EndedAt == nil {
 			return nil, connect.NewError(connect.CodeAlreadyExists,
 				fmt.Errorf("a work session is already active for this item; wait for it to finish or kill it first"))
 		}
 	}
 
 	// 8. Build agent prompt.
-	// Parse item.ID as UUID for the ent struct (needed by BuildTokenBudgetedPrompt for logging).
-	itemUUID, _ := uuid.Parse(item.ID)
-	entItem := &ent.BacklogItem{
-		ID:                 itemUUID,
-		Title:              item.Title,
-		Description:        item.Description,
-		AcceptanceCriteria: string(item.AcceptanceCriteria),
-		Priority:           item.Priority,
-		Status:             item.Status,
-		Notes:              item.Notes,
-		PlanArtifactsPath:  item.PlanArtifactsPath,
-		PlanApproved:       item.PlanApproved,
-		SkipPlanning:       item.SkipPlanning,
-	}
-	prompt := session.BuildTokenBudgetedPrompt(entItem, priorSessions)
+	prompt := session.BuildTokenBudgetedPrompt(item, priorSessions)
 
 	// 9. Generate session title.
 	// On reopen, append a revision number (r2, r3…) based on how many work sessions
@@ -1301,7 +1286,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 	if isReopen {
 		workCount := 0
 		for _, s := range priorSessions {
-			if s.SessionRole == string(session.SessionRoleWork) {
+			if s.Role == string(session.SessionRoleWork) {
 				workCount++
 			}
 		}
@@ -1328,11 +1313,11 @@ func (s *BacklogService) SpawnSessionFromItem(
 	}
 
 	s.worktreeMu.Lock()
-	if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
+	if wErr := session.WriteSlashCommands(item, worktreePath); wErr != nil {
 		s.worktreeMu.Unlock()
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
 	}
-	if wErr := session.WriteBacklogContextFile(entItem, priorSessions, worktreePath); wErr != nil {
+	if wErr := session.WriteBacklogContextFile(item, priorSessions, worktreePath); wErr != nil {
 		s.worktreeMu.Unlock()
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
 	}
@@ -1381,7 +1366,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 	// 12b. Capture the pre-work HEAD SHA so the review gate can diff base..HEAD across
 	// all commits the agent makes (not just HEAD~1..HEAD at review time).
 	if baseSHA, shaErr := session.GetGitHeadSHA(worktreePath); shaErr == nil && baseSHA != "" {
-		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
+		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID, baseSHA, "", time.Now(), 0)
 		inst.SetDirBaseSHA(baseSHA)
 	}
 
@@ -1427,7 +1412,7 @@ func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID
 	}
 	workCount := 0
 	for _, is := range sessions {
-		if is.SessionRole == session.SessionRoleWork {
+		if is.Role == session.SessionRoleWork {
 			workCount++
 		}
 	}
@@ -1487,7 +1472,7 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 	}
 	workCount := 0
 	for _, is := range sessions {
-		if is.SessionRole == session.SessionRoleWork {
+		if is.Role == session.SessionRoleWork {
 			workCount++
 		}
 	}
@@ -1565,7 +1550,7 @@ func (s *BacklogService) AttachSessionToItem(
 	// 2. Load and validate item.
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -1603,20 +1588,6 @@ func (s *BacklogService) AttachSessionToItem(
 	}
 
 	// 6. Write slash commands to session worktree if instance is reachable.
-	attachItemUUID, _ := uuid.Parse(item.ID)
-	entItem := &ent.BacklogItem{
-		ID:                 attachItemUUID,
-		Title:              item.Title,
-		Description:        item.Description,
-		AcceptanceCriteria: string(item.AcceptanceCriteria),
-		Priority:           item.Priority,
-		Status:             item.Status,
-		Notes:              item.Notes,
-		PlanArtifactsPath:  item.PlanArtifactsPath,
-		PlanApproved:       item.PlanApproved,
-		SkipPlanning:       item.SkipPlanning,
-	}
-
 	instances, loadErr := s.storage.LoadInstances()
 	if loadErr == nil {
 		for _, inst := range instances {
@@ -1624,11 +1595,11 @@ func (s *BacklogService) AttachSessionToItem(
 				worktreePath := inst.GetEffectiveRootDir()
 				// Write synchronously under mutex to prevent concurrent write races.
 				s.worktreeMu.Lock()
-				if wErr := session.WriteSlashCommands(entItem, worktreePath); wErr != nil {
+				if wErr := session.WriteSlashCommands(item, worktreePath); wErr != nil {
 					s.worktreeMu.Unlock()
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
 				}
-				if wErr := session.WriteBacklogContextFile(entItem, attachPriorSessions, worktreePath); wErr != nil {
+				if wErr := session.WriteBacklogContextFile(item, attachPriorSessions, worktreePath); wErr != nil {
 					s.worktreeMu.Unlock()
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("WriteBacklogContextFile: %w", wErr))
 				}
@@ -1636,7 +1607,7 @@ func (s *BacklogService) AttachSessionToItem(
 				// Capture pre-work HEAD SHA so the review gate can diff base..HEAD
 				// across all commits the agent makes (same as SpawnSessionFromItem step 12b).
 				if baseSHA, shaErr := session.GetGitHeadSHA(worktreePath); shaErr == nil && baseSHA != "" {
-					_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
+					_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID, baseSHA, "", time.Now(), 0)
 					inst.SetDirBaseSHA(baseSHA)
 				}
 				break
@@ -1670,7 +1641,7 @@ func (s *BacklogService) TriggerTriage(
 	// 1. Load item.
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -1697,7 +1668,7 @@ func (s *BacklogService) TriggerTriage(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list triage sessions: %w", listErr))
 	}
 	for _, is := range existingSessions {
-		if is.SessionRole != string(session.SessionRoleTriage) || is.EndedAt != nil {
+		if is.Role != string(session.SessionRoleTriage) || is.EndedAt != nil {
 			continue
 		}
 		// Headless triage sessions have no live in-memory instance; treat as orphaned.
@@ -1709,7 +1680,7 @@ func (s *BacklogService) TriggerTriage(
 		statusAdvanced := item.Status != string(session.BacklogStatusIdea)
 		if notLive || statusAdvanced {
 			now := time.Now()
-			_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
+			_ = s.storage.UpdateItemSessionEnded(ctx, is.ID, now)
 			continue
 		}
 		return nil, connect.NewError(connect.CodeAlreadyExists,
@@ -1732,7 +1703,7 @@ func (s *BacklogService) TriggerTriage(
 	var havePrior bool
 	for i := len(existingSessions) - 1; i >= 0; i-- {
 		is := existingSessions[i]
-		if is.SessionRole != string(session.SessionRoleTriage) || is.TriageResult == "" {
+		if is.Role != string(session.SessionRoleTriage) || is.TriageResult == "" {
 			continue
 		}
 		if jsonErr := json.Unmarshal([]byte(is.TriageResult), &priorResult); jsonErr == nil {
@@ -1793,7 +1764,7 @@ func (s *BacklogService) TriggerTriage(
 	// 9. Drive triage asynchronously so the RPC returns immediately.
 	itemID := item.ID
 	itemRepoPath := item.RepoPath
-	isID := is.ID.String()
+	isID := is.ID
 	iteration := nextIteration
 	go func() {
 		// Acquire concurrency semaphore (max 8 concurrent triage calls).
@@ -1907,13 +1878,13 @@ func (s *BacklogService) CancelTriage(
 	cancelled := false
 	now := time.Now()
 	for _, is := range existingSessions {
-		if is.SessionRole != string(session.SessionRoleTriage) || is.EndedAt != nil {
+		if is.Role != string(session.SessionRoleTriage) || is.EndedAt != nil {
 			continue
 		}
 		if s.sessionStopper != nil {
 			_ = s.sessionStopper.StopSessionByUUID(ctx, is.SessionUUID)
 		}
-		_ = s.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now)
+		_ = s.storage.UpdateItemSessionEnded(ctx, is.ID, now)
 		cancelled = true
 	}
 
@@ -1975,11 +1946,9 @@ func (s *BacklogService) OverrideVerdict(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get item session: %w", err))
 	}
 
-	// Load the linked BacklogItem (edge is loaded via GetItemSession).
-	var itemID string
-	if is.Edges.BacklogItem != nil {
-		itemID = is.Edges.BacklogItem.ID.String()
-	} else {
+	// Load the linked BacklogItem ID from the ItemSessionSummary.
+	itemID := is.BacklogItemID
+	if itemID == "" {
 		return nil, connect.NewError(connect.CodeInternal,
 			fmt.Errorf("item session %q has no linked backlog item", req.Msg.ItemSessionId))
 	}
@@ -1992,7 +1961,7 @@ func (s *BacklogService) OverrideVerdict(
 
 	// 4. Save/upsert the ReviewVerdict with override fields.
 	now := time.Now()
-	if _, verdictErr := s.storage.SaveReviewVerdict(ctx, is.ID.String(), session.ReviewVerdictData{
+	if verdictErr := s.storage.SaveReviewVerdict(ctx, is.ID, session.ReviewVerdictData{
 		OverallOutcome: outcome,
 		Summary:        fmt.Sprintf("Manual override: %s", req.Msg.OverrideReason),
 		OverrideBy:     "user",
@@ -2049,7 +2018,7 @@ func (s *BacklogService) TriggerReReview(
 	// 1. Load item.
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -2073,17 +2042,18 @@ func (s *BacklogService) TriggerReReview(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list item sessions: %w", err))
 	}
 
-	var mostRecentReviewSession *ent.ItemSession
-	var mostRecentWorkSession *ent.ItemSession
+	var mostRecentReviewSession *session.ItemSessionSummary
+	var mostRecentWorkSession *session.ItemSessionSummary
 	for _, is := range sessions {
-		switch is.SessionRole {
+		isCopy := is
+		switch is.Role {
 		case session.SessionRoleReview:
 			if mostRecentReviewSession == nil || is.CreatedAt.After(mostRecentReviewSession.CreatedAt) {
-				mostRecentReviewSession = is
+				mostRecentReviewSession = &isCopy
 			}
 		case session.SessionRoleWork:
 			if mostRecentWorkSession == nil || is.CreatedAt.After(mostRecentWorkSession.CreatedAt) {
-				mostRecentWorkSession = is
+				mostRecentWorkSession = &isCopy
 			}
 		}
 	}
@@ -2115,7 +2085,7 @@ func (s *BacklogService) TriggerReReview(
 	// 7. Deserialize AC snapshot (from most recent work session or item AC).
 	var acSnapshot []session.AcCriterion
 	if mostRecentWorkSession != nil && mostRecentWorkSession.AcSnapshot != "" {
-		acSnapshot, _ = session.ParseAcCriteria(session.AcCriteriaJSON(mostRecentWorkSession.AcSnapshot))
+		acSnapshot, _ = session.ParseAcCriteria(mostRecentWorkSession.AcSnapshot)
 	}
 	if len(acSnapshot) == 0 {
 		acSnapshot, _ = session.ParseAcCriteria(item.AcceptanceCriteria)
@@ -2125,8 +2095,8 @@ func (s *BacklogService) TriggerReReview(
 	acSnapshotJSON, _ := json.Marshal(acSnapshot)
 
 	priorVerdictSection := ""
-	if mostRecentReviewSession != nil && mostRecentReviewSession.Edges.ReviewVerdict != nil {
-		rv := mostRecentReviewSession.Edges.ReviewVerdict
+	if mostRecentReviewSession != nil && mostRecentReviewSession.ReviewVerdict != nil {
+		rv := mostRecentReviewSession.ReviewVerdict
 		priorVerdictSection = fmt.Sprintf("\n## Prior Review Verdict\nOutcome: %s\nSummary: %s\n", rv.OverallOutcome, rv.Summary)
 	}
 
@@ -2212,7 +2182,7 @@ Do not modify the code. Only write the review verdict.
 
 	// Capture the pre-review HEAD SHA so diffs against base..HEAD work correctly.
 	if baseSHA, shaErr := session.GetGitHeadSHA(item.RepoPath); shaErr == nil && baseSHA != "" {
-		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID.String(), baseSHA, "", time.Now(), 0)
+		_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID, baseSHA, "", time.Now(), 0)
 	}
 
 	log.InfoLog.Printf("[TriggerReReview] spawned re-review session %s for item %s", inst.UUID, item.ID)
@@ -2371,7 +2341,7 @@ func (s *BacklogService) GetBacklogItemDiff(
 
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -2387,11 +2357,12 @@ func (s *BacklogService) GetBacklogItemDiff(
 
 	// Use the most recent work session's dedicated worktree and its base SHA so
 	// the diff reflects what the current iteration of work actually changed.
-	var mostRecentWorkSession *ent.ItemSession
+	var mostRecentWorkSession *session.ItemSessionSummary
 	for _, is := range sessions {
-		if is.SessionRole == session.SessionRoleWork {
+		if is.Role == session.SessionRoleWork {
+			isCopy := is
 			if mostRecentWorkSession == nil || is.CreatedAt.After(mostRecentWorkSession.CreatedAt) {
-				mostRecentWorkSession = is
+				mostRecentWorkSession = &isCopy
 			}
 		}
 	}
@@ -2442,7 +2413,7 @@ func (s *BacklogService) GetBacklogItemCost(
 
 	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
 	if err != nil {
-		if ent.IsNotFound(err) || errors.Is(err, session.ErrNotFound) {
+		if errors.Is(err, session.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
@@ -2483,7 +2454,7 @@ func (s *BacklogService) GetBacklogItemCost(
 		resp.TotalCostUsd += cost
 		resp.Sessions = append(resp.Sessions, &sessionv1.SessionCostEntry{
 			SessionId:        is.SessionUUID,
-			SessionRole:      string(is.SessionRole),
+			SessionRole:      is.Role,
 			EstimatedCostUsd: cost,
 			InputTokens:      int64(result.TotalInput),
 			OutputTokens:     int64(result.TotalOutput),
@@ -2527,9 +2498,9 @@ func (s *BacklogService) GetSessionBacklogIndex(
 // commitAndPushItemWorktrees commits any dirty work and pushes branches to the remote
 // for all work-role item sessions. Called BEFORE status transitions to ensure changes
 // are durable before the item is marked done. Errors are logged but not returned.
-func (s *BacklogService) commitAndPushItemWorktrees(ctx context.Context, sessions []*ent.ItemSession) {
+func (s *BacklogService) commitAndPushItemWorktrees(ctx context.Context, sessions []session.ItemSessionSummary) {
 	for _, is := range sessions {
-		if is.SessionUUID == "" || is.SessionRole != string(session.SessionRoleWork) {
+		if is.SessionUUID == "" || is.Role != string(session.SessionRoleWork) {
 			continue
 		}
 		wt, err := s.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
@@ -2550,12 +2521,12 @@ func (s *BacklogService) commitAndPushItemWorktrees(ctx context.Context, session
 // cleanupItemWorktrees removes git worktrees for work-role item sessions.
 // Call commitAndPushItemWorktrees first to ensure changes are durable.
 // Errors are logged but do not fail the caller — cleanup is best-effort.
-func (s *BacklogService) cleanupItemWorktrees(ctx context.Context, sessions []*ent.ItemSession) {
+func (s *BacklogService) cleanupItemWorktrees(ctx context.Context, sessions []session.ItemSessionSummary) {
 	for _, is := range sessions {
 		if is.SessionUUID == "" {
 			continue
 		}
-		if is.SessionRole != string(session.SessionRoleWork) {
+		if is.Role != string(session.SessionRoleWork) {
 			continue
 		}
 		wt, err := s.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)

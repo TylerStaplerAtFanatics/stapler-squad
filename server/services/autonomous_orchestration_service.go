@@ -231,18 +231,18 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 		concreteStorage := a.storageGetter()
 		if concreteStorage != nil {
 			is, err := concreteStorage.GetItemSessionBySessionUUID(ctx, sessionUUID)
-			if err == nil && is != nil {
-				item, itemErr := is.Edges.BacklogItemOrErr()
+			if err == nil {
+				item, itemErr := concreteStorage.GetBacklogItem(ctx, is.BacklogItemID)
 				if itemErr == nil && item != nil {
 					var toStatus session.BacklogStatus
 					var expectedStatus string
-					switch is.SessionRole {
+					switch is.Role {
 					case session.SessionRoleTriage:
 						if !outcome.Done {
 							// Triage was interrupted/stuck — notify operator but do not advance the item.
 							// The item stays at 'idea' so the operator can re-trigger triage.
 							a.bus.Publish(events.NewNotificationEvent(
-								item.ID.String(),
+								item.ID,
 								"Triage stuck",
 								fmt.Sprintf("stuck-triage-%s", item.ID),
 								int32(9), // NotificationType_FAILURE (warning)
@@ -262,11 +262,11 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 					default:
 						// SessionRoleReview and unknown roles: no transition from AutonomousDriver.
 						// Review outcomes are managed by submit_review_verdict.
-						log.Info("[AutonomousDriver] skipping status transition for role", "role", is.SessionRole, "item", item.ID)
+						log.Info("[AutonomousDriver] skipping status transition for role", "role", is.Role, "item", item.ID)
 						return
 					}
 					precondition := &session.BacklogItemPrecondition{ExpectedStatus: expectedStatus}
-					if _, transErr := concreteStorage.TransitionBacklogItemStatus(ctx, item.ID.String(), toStatus, precondition); transErr != nil {
+					if _, transErr := concreteStorage.TransitionBacklogItemStatus(ctx, item.ID, toStatus, precondition); transErr != nil {
 						log.Warn("[AutonomousDriver] failed to transition backlog item", "item", item.ID, "to", toStatus, "err", transErr)
 					} else {
 						log.Info("[AutonomousDriver] backlog item transitioned", "item", item.ID, "to", toStatus, "done", outcome.Done)

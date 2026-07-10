@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tstapler/stapler-squad/session/ent"
 )
 
 // TestParseHeadlessVerdictResult_ValidJSON verifies that well-formed JSON is parsed correctly.
@@ -82,8 +81,8 @@ func TestParseHeadlessVerdictResult_PartialAndUnverifiable(t *testing.T) {
 
 // TestBuildHeadlessReviewPrompt_ContainsExpectedSections verifies the prompt structure.
 func TestBuildHeadlessReviewPrompt_ContainsExpectedSections(t *testing.T) {
-	item := &ent.BacklogItem{
-		ID:          uuid.New(),
+	item := &BacklogItemData{
+		ID:          uuid.New().String(),
 		Title:       "Add OAuth2 login",
 		Description: "Users should be able to log in via Google.",
 	}
@@ -110,14 +109,14 @@ func TestBuildHeadlessReviewPrompt_ContainsExpectedSections(t *testing.T) {
 
 // TestBuildHeadlessReviewPrompt_DiffTruncation_IncludesNote verifies truncation marker.
 func TestBuildHeadlessReviewPrompt_DiffTruncation_IncludesNote(t *testing.T) {
-	item := &ent.BacklogItem{ID: uuid.New(), Title: "T"}
+	item := &BacklogItemData{ID: uuid.New().String(), Title: "T"}
 	prompt := BuildHeadlessReviewPrompt(item, nil, "diff content", true)
 	assert.Contains(t, prompt, "truncated")
 }
 
 // TestBuildHeadlessReviewPrompt_NoDiff_ContainsPlaceholder verifies empty-diff handling.
 func TestBuildHeadlessReviewPrompt_NoDiff_ContainsPlaceholder(t *testing.T) {
-	item := &ent.BacklogItem{ID: uuid.New(), Title: "T"}
+	item := &BacklogItemData{ID: uuid.New().String(), Title: "T"}
 	prompt := BuildHeadlessReviewPrompt(item, nil, "", false)
 	assert.Contains(t, prompt, "no diff available")
 }

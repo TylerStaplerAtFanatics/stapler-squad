@@ -711,8 +711,8 @@ func (s *SessionService) SetReviewGateTrigger(t ReviewGateTrigger) {
 // SpawnReviewSession satisfies the session.ReviewGateSpawner interface so that
 // BacklogLifecycleListener can spawn one-shot review sessions automatically when
 // a work session exits. The session is tagged "backlog:review" and runs one-shot.
-func (s *SessionService) SpawnReviewSession(ctx context.Context, item *ent.BacklogItem, itemSessionID string, prompt string) (*session.Instance, error) {
-	return s.CreateDirectorySession(ctx, "review:"+item.ID.String()[:8], item.RepoPath, prompt, []string{"backlog:review"}, true, true)
+func (s *SessionService) SpawnReviewSession(ctx context.Context, item *session.BacklogItemData, itemSessionID string, prompt string) (*session.Instance, error) {
+	return s.CreateDirectorySession(ctx, "review:"+item.ID[:8], item.RepoPath, prompt, []string{"backlog:review"}, true, true)
 }
 
 // CreateDirectorySession satisfies the services.SessionCreator interface so that

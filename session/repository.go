@@ -256,6 +256,71 @@ type ProjectData struct {
 	UpdatedAt   time.Time
 }
 
+// ReviewVerdictSummary is a domain DTO for a review verdict embedded in ItemSessionSummary.
+type ReviewVerdictSummary struct {
+	ID             string
+	OverallOutcome string
+	PerCriterion   string // JSON []CriterionVerdict
+	Summary        string
+	DiffTokenCount int
+	DiffTruncated  bool
+	OverrideBy     string
+	OverrideReason string
+	OverrideAt     *time.Time
+	CreatedAt      time.Time
+}
+
+// ItemSessionSummary is the domain DTO replacing *ent.ItemSession in Storage returns.
+// Note: item_sessions table has NO status, triage_result_summary, or overall_outcome columns.
+//   - EndedAt == nil means the session is still running
+//   - TriageResultSummary: parsed from the triage_result JSON column
+//   - OverallOutcome: from the review_verdicts table (populated via ReviewVerdict edge)
+//   - ReviewVerdict: eagerly loaded when the query uses WithReviewVerdict()
+type ItemSessionSummary struct {
+	ID                    string
+	BacklogItemID         string
+	SessionUUID           string
+	Role                  string
+	AcSnapshot            AcCriteriaJSON
+	LastCommitSha         string
+	LastCommitMessage     string
+	CommitCountSinceSpawn int
+	StartedAt             *time.Time
+	EndedAt               *time.Time
+	LastCommitAt          *time.Time
+	LastFileTouchAt       *time.Time
+	LastProgressAt        *time.Time
+	CreatedAt             time.Time
+	EstimatedCostUsd      float64
+	TriageResult          string // raw JSON stored in triage_result column
+	TriageResultSummary   string // summary field parsed from TriageResult
+	OverallOutcome        string // from linked review_verdict (empty if none)
+	ReviewVerdict         *ReviewVerdictSummary
+}
+
+// BacklogStatusEventData is the domain DTO replacing *ent.BacklogStatusEvent in Storage returns.
+type BacklogStatusEventData struct {
+	ID          string
+	FromStatus  string
+	ToStatus    string
+	TriggeredBy string
+	Note        *string
+	CreatedAt   time.Time
+}
+
+// SourceSyncEventData is the domain DTO replacing *ent.SourceSyncEvent in Storage returns.
+type SourceSyncEventData struct {
+	ID           string
+	ItemsCreated int
+	ItemsUpdated int
+	ItemsSkipped int
+	ItemsErrored int
+	ErrorMessage string
+	CursorAfter  string
+	StartedAt    time.Time
+	FinishedAt   *time.Time
+}
+
 // BacklogItemData is the domain model for a backlog item.
 type BacklogItemData struct {
 	ID                 string
@@ -280,10 +345,10 @@ type BacklogItemData struct {
 	UpdatedAt          time.Time
 	// ItemSessions holds the eagerly-loaded item sessions for this backlog item.
 	// Only populated when explicitly loaded by the caller (e.g. GetBacklogItem).
-	ItemSessions []*ent.ItemSession
+	ItemSessions []ItemSessionSummary
 	// StatusEvents holds the eagerly-loaded status transition history.
 	// Only populated when explicitly loaded by the caller (e.g. GetBacklogItem).
-	StatusEvents []*ent.BacklogStatusEvent
+	StatusEvents []BacklogStatusEventData
 }
 
 // ItemSessionBacklogEntry is a lightweight join record linking a tmux session UUID

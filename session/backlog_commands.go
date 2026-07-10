@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/tstapler/stapler-squad/log"
-	"github.com/tstapler/stapler-squad/session/ent"
 )
 
 // backlogCommandsDir is the relative path from worktree root for slash command files.
@@ -16,7 +15,7 @@ const backlogCommandsDir = ".claude/commands/backlog"
 
 // WriteSlashCommands creates the .claude/commands/backlog/ directory and writes
 // per-item slash command markdown files. Retries directory creation up to 3 times.
-func WriteSlashCommands(item *ent.BacklogItem, worktreePath string) error {
+func WriteSlashCommands(item *BacklogItemData, worktreePath string) error {
 	cmdDir := filepath.Join(worktreePath, backlogCommandsDir)
 
 	var mkErr error
@@ -31,7 +30,7 @@ func WriteSlashCommands(item *ent.BacklogItem, worktreePath string) error {
 		return fmt.Errorf("WriteSlashCommands: failed to create commands dir %s: %w", cmdDir, mkErr)
 	}
 
-	itemID := item.ID.String()
+	itemID := item.ID
 
 	// status.md
 	if err := writeFile(filepath.Join(cmdDir, "status.md"),
@@ -41,7 +40,7 @@ func WriteSlashCommands(item *ent.BacklogItem, worktreePath string) error {
 	}
 
 	// Per-criterion done-N.md and fail-N.md
-	criteria, err := ParseAcCriteria(AcCriteriaJSON(item.AcceptanceCriteria))
+	criteria, err := ParseAcCriteria(item.AcceptanceCriteria)
 	if err != nil {
 		return fmt.Errorf("WriteSlashCommands: failed to parse AC criteria: %w", err)
 	}
@@ -113,7 +112,7 @@ func CleanupSlashCommands(worktreePath string) error {
 // to .backlog-context.md in the worktree root. Appends a fallback instructions block.
 // priorSessions must match what was passed to the live CLI prompt (BuildTokenBudgetedPrompt)
 // so the on-disk fallback the agent re-reads after context compaction doesn't lose history.
-func WriteBacklogContextFile(item *ent.BacklogItem, priorSessions []*ent.ItemSession, worktreePath string) error {
+func WriteBacklogContextFile(item *BacklogItemData, priorSessions []ItemSessionSummary, worktreePath string) error {
 	prompt := BuildSessionInitialPrompt(item, priorSessions)
 
 	var sb strings.Builder
