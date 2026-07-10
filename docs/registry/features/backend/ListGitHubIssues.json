@@ -4,7 +4,8 @@
   "service": "BacklogService",
   "method": "ListGitHubIssues",
   "protoFile": "proto/session/v1/backlog.proto",
-  "markerFound": false,
+  "markerFound": true,
+  "handlerFile": "server/services/backlog_service.go",
   "tested": true,
   "testIds": [
     "TestListGitHubIssues_NilStorage",

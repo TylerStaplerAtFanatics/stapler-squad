@@ -1851,7 +1851,7 @@ func (s *BacklogService) ImportGitHubIssue(ctx context.Context, req *connect.Req
 }
 
 // SearchGitHubRepos returns GitHub repositories matching the given query.
-// +api: backlog:search-github-repos
+// +api: SearchGitHubRepos
 func (s *BacklogService) SearchGitHubRepos(
 	ctx context.Context,
 	req *connect.Request[sessionv1.SearchGitHubReposRequest],
@@ -1891,7 +1891,7 @@ func (s *BacklogService) SearchGitHubRepos(
 }
 
 // ListGitHubIssues returns issues for a specific GitHub repo.
-// +api: backlog:list-github-issues
+// +api: ListGitHubIssues
 func (s *BacklogService) ListGitHubIssues(
 	ctx context.Context,
 	req *connect.Request[sessionv1.ListGitHubIssuesRequest],
