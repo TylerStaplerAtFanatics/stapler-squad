@@ -298,12 +298,14 @@ func TestServer_should_WriteRealPortIntoSessionHooksAndMCPURL_When_StartedWithPo
 		t.Fatalf("CreateSession: %v", err)
 	}
 	sessionID := resp.Msg.Session.Id
+	var inst *session.Instance
 	t.Cleanup(func() {
 		_, _ = deps.SessionService.DeleteSession(context.Background(), connect.NewRequest(&sessionv1.DeleteSessionRequest{Id: sessionID}))
+		waitForTmuxTeardown(t, inst, 5*time.Second)
 	})
 
 	// CreateSession starts the instance and injects hook config asynchronously; wait for both.
-	inst := waitForLiveInstance(t, deps, sessionID, 15*time.Second)
+	inst = waitForLiveInstance(t, deps, sessionID, 15*time.Second)
 	settingsPath := filepath.Join(inst.GetEffectiveRootDir(), ".claude", "settings.local.json")
 	hookCmd := waitForPermissionRequestHookCommand(t, settingsPath, 15*time.Second)
 
@@ -366,11 +368,13 @@ func TestServer_should_WriteUnchangedHookURL_When_StartedOnExplicitPort(t *testi
 		t.Fatalf("CreateSession: %v", err)
 	}
 	sessionID := resp.Msg.Session.Id
+	var inst *session.Instance
 	t.Cleanup(func() {
 		_, _ = deps.SessionService.DeleteSession(context.Background(), connect.NewRequest(&sessionv1.DeleteSessionRequest{Id: sessionID}))
+		waitForTmuxTeardown(t, inst, 5*time.Second)
 	})
 
-	inst := waitForLiveInstance(t, deps, sessionID, 15*time.Second)
+	inst = waitForLiveInstance(t, deps, sessionID, 15*time.Second)
 	settingsPath := filepath.Join(inst.GetEffectiveRootDir(), ".claude", "settings.local.json")
 	hookCmd := waitForPermissionRequestHookCommand(t, settingsPath, 15*time.Second)
 
@@ -458,4 +462,43 @@ func waitForPermissionRequestHookCommand(t *testing.T, settingsPath string, time
 	}
 	t.Fatalf("expected %s to contain a PermissionRequest command hook within %s", settingsPath, timeout)
 	return ""
+}
+
+// waitForTmuxTeardown polls inst.TmuxSessionExists() until the underlying tmux
+// session is confirmed gone, or timeout elapses.
+//
+// Root cause this addresses: DeleteSession (server/services/session_service.go)
+// intentionally destroys tmux/git resources in an unawaited goroutine so the RPC
+// returns immediately -- correct for production UX, but it means a test's
+// t.Cleanup(DeleteSession) can return before the real teardown finishes. Every
+// integration test in this package shares one process-scoped, PID-keyed tmux
+// server socket (session/tmux.testSocketOnce, gated by config.IsTestMode()) --
+// by design, so isolated test tmux calls within one `go test` binary land on the
+// same server. Without waiting here, a still-tearing-down session from an earlier
+// test can pile up on that shared socket, and CI observed exactly this: repeated,
+// intermittent "timed out waiting for tmux session" failures that got WORSE
+// (monotonically increasing latency) the more CreateSession/DeleteSession cycles
+// ran in the same process (reproduced locally with `go test -race -count=10`,
+// and confirmed via bisection this predates PR #144's actual changes -- it's a
+// pre-existing gap between DeleteSession's fire-and-forget teardown contract and
+// these tests' assumption that cleanup is synchronous).
+//
+// Deliberately does not fail the test on timeout (t.Logf, not t.Fatalf/t.Errorf):
+// this runs inside t.Cleanup, where the test's own PASS/FAIL verdict is already
+// decided -- a slow-but-eventually-successful teardown shouldn't retroactively
+// fail a test that otherwise passed. It still meaningfully reduces cross-test
+// accumulation by not returning from Cleanup while teardown is still in flight.
+func waitForTmuxTeardown(t *testing.T, inst *session.Instance, timeout time.Duration) {
+	t.Helper()
+	if inst == nil {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !inst.TmuxSessionExists() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Logf("tmux session for %q still reported alive %s after DeleteSession; teardown may still be in flight", inst.Title, timeout)
 }
