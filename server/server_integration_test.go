@@ -279,8 +279,18 @@ func TestServer_should_WriteRealPortIntoSessionHooksAndMCPURL_When_StartedWithPo
 	// Wait for the real bound address to be resolved (mirrors the PORT=0 tests above).
 	addr := waitForResolvedAddr(t, srv, 10*time.Second)
 
+	// The session title must be unique per invocation, not just per test: config
+	// test-mode state (config.GetConfigDir()) is keyed by os.Getpid(), and
+	// DeleteSession's cleanup tears the tmux session down via an unawaited
+	// goroutine, so every test in this binary (across `-count` repeats, or
+	// simply within one CI run of the full suite) shares process-scoped state.
+	// A hardcoded title lets a later run collide with a still-tearing-down
+	// session from an earlier one (CodeAlreadyExists, or a stall behind stale
+	// state that can exceed this test's 15s wait) -- observed as intermittent
+	// "timed out waiting for tmux session" CI failures.
+	title := fmt.Sprintf("hook-url-port-zero-test-%d", time.Now().UnixNano())
 	resp, err := deps.SessionService.CreateSession(ctx, connect.NewRequest(&sessionv1.CreateSessionRequest{
-		Title:   "hook-url-port-zero-test",
+		Title:   title,
 		Path:    t.TempDir(),
 		Program: "claude",
 	}))
@@ -343,8 +353,12 @@ func TestServer_should_WriteUnchangedHookURL_When_StartedOnExplicitPort(t *testi
 		t.Fatalf("expected GetAddr() to report the configured explicit address before Start(), got %q, want %q", got, addr)
 	}
 
+	// Unique per invocation -- see the comment on the equivalent line in
+	// TestServer_should_WriteRealPortIntoSessionHooksAndMCPURL_When_StartedWithPortZeroThenSessionCreated
+	// above for why a hardcoded title causes intermittent CI flakiness.
+	title := fmt.Sprintf("hook-url-explicit-port-test-%d", time.Now().UnixNano())
 	resp, err := deps.SessionService.CreateSession(context.Background(), connect.NewRequest(&sessionv1.CreateSessionRequest{
-		Title:   "hook-url-explicit-port-test",
+		Title:   title,
 		Path:    t.TempDir(),
 		Program: "claude",
 	}))
