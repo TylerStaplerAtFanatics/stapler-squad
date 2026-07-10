@@ -163,6 +163,7 @@ func writeFile(path, content string) error {
 var backlogExcludePatterns = []string{
 	".backlog-context.md",
 	".claude/commands/backlog/",
+	"web-app/.next/",
 }
 
 // addWorktreeExcludes writes backlog-generated file patterns to
