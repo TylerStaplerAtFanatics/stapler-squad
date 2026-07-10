@@ -213,6 +213,7 @@ func (i *Instance) KillExternalSession() error {
 	// Kill the tmux session
 	killCtx, killCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer killCancel()
+	//nolint:tmuxsocketscope targets a user-created external session; no isolated variant exists to target
 	cmd := safeexec.CommandContext(killCtx, tmux.Binary(), "kill-session", "-t", i.ExternalMetadata.TmuxSessionName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to kill tmux session '%s': %w", i.ExternalMetadata.TmuxSessionName, err)
@@ -224,7 +225,7 @@ func (i *Instance) KillExternalSession() error {
 // HasUpdated reports whether terminal content has changed since the last check.
 // Returns (updated, hasPrompt) and side-effects terminal timestamps on change.
 func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
-	if !i.started || i.Status == Paused {
+	if !i.started.Load() || i.Status == Paused {
 		return false, false
 	}
 
@@ -247,7 +248,7 @@ func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 
 // TapEnter sends an enter key press to the tmux session if AutoYes is enabled.
 func (i *Instance) TapEnter() {
-	if !i.started || !i.AutoYes {
+	if !i.started.Load() || !i.AutoYes {
 		return
 	}
 	if err := i.pm().TapEnter(); err != nil {
@@ -257,7 +258,7 @@ func (i *Instance) TapEnter() {
 
 // Attach attaches to the tmux session and returns a done channel.
 func (i *Instance) Attach() (chan struct{}, error) {
-	if !i.started {
+	if !i.started.Load() {
 		return nil, fmt.Errorf("cannot attach instance that has not been started")
 	}
 	return i.pm().Attach()
@@ -265,7 +266,7 @@ func (i *Instance) Attach() (chan struct{}, error) {
 
 // SetPreviewSize sets the detached terminal dimensions for preview rendering.
 func (i *Instance) SetPreviewSize(width, height int) error {
-	if !i.started || i.Status == Paused {
+	if !i.started.Load() || i.Status == Paused {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
 			"is paused")
 	}
@@ -307,7 +308,7 @@ func (i *Instance) TmuxSessionExists() bool {
 
 // TmuxAlive returns true if the tmux session is alive. This is a sanity check before attaching.
 func (i *Instance) TmuxAlive() bool {
-	if i.Status == Paused || i.Status == Stopped || !i.started || !i.pm().HasSession() {
+	if i.Status == Paused || i.Status == Stopped || !i.started.Load() || !i.pm().HasSession() {
 		return false
 	}
 	return i.pm().IsAlive()
@@ -315,7 +316,7 @@ func (i *Instance) TmuxAlive() bool {
 
 // GetPTYReader returns the PTY file handle for the tmux session.
 func (i *Instance) GetPTYReader() (*os.File, error) {
-	if !i.started {
+	if !i.started.Load() {
 		return nil, fmt.Errorf("session not started")
 	}
 	return i.pm().GetPTY()
@@ -324,7 +325,7 @@ func (i *Instance) GetPTYReader() (*os.File, error) {
 // WriteToPTY writes data to the PTY, sending input to the terminal session.
 // This is used for forwarding client input to the tmux session.
 func (i *Instance) WriteToPTY(data []byte) (int, error) {
-	if !i.started {
+	if !i.started.Load() {
 		return 0, fmt.Errorf("session not started")
 	}
 	return i.pm().SendKeys(string(data))
@@ -333,7 +334,7 @@ func (i *Instance) WriteToPTY(data []byte) (int, error) {
 // ResizePTY resizes the terminal dimensions.
 // This is used when clients resize their terminal windows.
 func (i *Instance) ResizePTY(cols, rows int) error {
-	if !i.started {
+	if !i.started.Load() {
 		return fmt.Errorf("session not started")
 	}
 	if err := i.pm().SetWindowSize(cols, rows); err != nil {
@@ -346,7 +347,7 @@ func (i *Instance) ResizePTY(cols, rows int) error {
 // This is a simple wrapper around TmuxSession.CapturePaneContent() for compatibility
 // with the terminal WebSocket handlers.
 func (i *Instance) CapturePaneContent() (string, error) {
-	if !i.started || i.Status == Paused {
+	if !i.started.Load() || i.Status == Paused {
 		return "", fmt.Errorf("session not started or paused")
 	}
 	return i.pm().CapturePaneContent()
@@ -355,7 +356,7 @@ func (i *Instance) CapturePaneContent() (string, error) {
 // CapturePaneContentRaw captures pane content with ANSI codes preserved (no line joining).
 // Essential for hybrid streaming where cursor positioning codes must be preserved.
 func (i *Instance) CapturePaneContentRaw() (string, error) {
-	if !i.started || i.Status == Paused {
+	if !i.started.Load() || i.Status == Paused {
 		return "", fmt.Errorf("session not started or paused")
 	}
 
@@ -394,7 +395,7 @@ func (i *Instance) GetScrollbackHistory(startLine, endLine string) (string, erro
 
 // SendPrompt sends a prompt to the tmux session. Delegates to processManager.SendPromptWithEnter.
 func (i *Instance) SendPrompt(prompt string) error {
-	if !i.started {
+	if !i.started.Load() {
 		return fmt.Errorf("instance not started")
 	}
 	return i.pm().SendPromptWithEnter(prompt)
@@ -440,7 +441,7 @@ func (i *Instance) SetTmuxSession(session *tmux.TmuxSession) {
 	if tb, ok := i.processManager.(*TmuxBackend); ok {
 		tb.TmuxManager().SetSession(session)
 	}
-	i.started = session != nil
+	i.started.Store(session != nil)
 }
 
 // SetWindowSize propagates window size changes to the tmux session.
@@ -461,7 +462,7 @@ func (i *Instance) RefreshTmuxClient() error {
 
 // SendKeys sends keys to the tmux session.
 func (i *Instance) SendKeys(keys string) error {
-	if !i.started || i.Status == Paused {
+	if !i.started.Load() || i.Status == Paused {
 		return fmt.Errorf("cannot send keys to instance that has not been started or is paused")
 	}
 	_, err := i.pm().SendKeys(keys)
@@ -471,7 +472,7 @@ func (i *Instance) SendKeys(keys string) error {
 // SendInputViaControlMode sends raw bytes through the existing control mode connection,
 // avoiding the subprocess spawn overhead and timeout risk of exec.CommandContext.
 func (i *Instance) SendInputViaControlMode(ctx context.Context, data []byte) error {
-	if !i.started || i.Status == Paused {
+	if !i.started.Load() || i.Status == Paused {
 		return fmt.Errorf("cannot send input to instance that has not been started or is paused")
 	}
 	return i.pm().SendInputViaControlMode(ctx, data)
