@@ -41,7 +41,7 @@ func WriteSlashCommands(item *ent.BacklogItem, worktreePath string) error {
 	}
 
 	// Per-criterion done-N.md and fail-N.md
-	criteria, err := ParseAcCriteria(item.AcceptanceCriteria)
+	criteria, err := ParseAcCriteria(AcCriteriaJSON(item.AcceptanceCriteria))
 	if err != nil {
 		return fmt.Errorf("WriteSlashCommands: failed to parse AC criteria: %w", err)
 	}

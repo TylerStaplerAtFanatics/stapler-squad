@@ -195,8 +195,8 @@ func TestBacklogIntegration_IT004_AcCriterionUpdateRoundtrip(t *testing.T) {
 	parsedCriteria, err := ParseAcCriteria(fetchedItem.AcceptanceCriteria)
 	require.NoError(t, err)
 	require.Len(t, parsedCriteria, 2)
-	require.Equal(t, "done", parsedCriteria[0].Status)
-	require.Equal(t, "pending", parsedCriteria[1].Status)
+	require.Equal(t, AcStatusDone, parsedCriteria[0].Status)
+	require.Equal(t, AcStatusPending, parsedCriteria[1].Status)
 }
 
 // IT-005: ReconcileStuckItems finds and transitions stuck item
@@ -404,7 +404,7 @@ func TestBacklogIntegration_IT008_AcSnapshotCapture(t *testing.T) {
 	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
 	require.NoError(t, err)
 
-	snapshotCriteria, err := ParseAcCriteria(fetchedIS.AcSnapshot)
+	snapshotCriteria, err := ParseAcCriteria(AcCriteriaJSON(fetchedIS.AcSnapshot))
 	require.NoError(t, err)
 	require.Len(t, snapshotCriteria, 1, "AcSnapshot should preserve original AC at session creation time")
 	require.Equal(t, "initial requirement", snapshotCriteria[0].Text)

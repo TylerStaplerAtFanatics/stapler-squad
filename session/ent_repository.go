@@ -1000,6 +1000,16 @@ func nilIfEmpty(s string) *string {
 	return &s
 }
 
+// nilIfEmptyJSON returns nil if j is empty, otherwise a *string containing the JSON.
+// Used at the ent boundary where AcceptanceCriteria is stored as a plain string.
+func nilIfEmptyJSON(j AcCriteriaJSON) *string {
+	if j == "" {
+		return nil
+	}
+	s := string(j)
+	return &s
+}
+
 // sessionToInstanceData converts an Ent Session entity to InstanceData
 func (r *EntRepository) sessionToInstanceData(sess *ent.Session) *InstanceData {
 	data := &InstanceData{

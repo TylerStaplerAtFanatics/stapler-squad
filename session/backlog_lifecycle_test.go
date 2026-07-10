@@ -558,7 +558,7 @@ func TestCreateItemSessionWithVerdict_Atomic(t *testing.T) {
 	require.NotNil(t, is, "ItemSession must be non-nil")
 	require.NotNil(t, rv, "ReviewVerdict must be non-nil")
 	assert.Equal(t, sessionUUID, is.SessionUUID)
-	assert.Equal(t, ReviewVerdictFail, rv.OverallOutcome)
+	assert.Equal(t, string(ReviewVerdictFail), rv.OverallOutcome)
 	assert.Equal(t, "Blocked by security check.", rv.Summary)
 
 	// Both records must be queryable from the same DB — verifies the commit succeeded.
@@ -568,5 +568,5 @@ func TestCreateItemSessionWithVerdict_Atomic(t *testing.T) {
 	assert.Equal(t, sessionUUID, sessions[0].SessionUUID)
 	linkedVerdict, verdictErr := sessions[0].Edges.ReviewVerdictOrErr()
 	require.NoError(t, verdictErr, "ReviewVerdict must be linked to the ItemSession")
-	assert.Equal(t, ReviewVerdictFail, linkedVerdict.OverallOutcome)
+	assert.Equal(t, string(ReviewVerdictFail), linkedVerdict.OverallOutcome)
 }

@@ -400,7 +400,7 @@ func itemSessionToProto(is *ent.ItemSession, costFor func(tmuxUUID string) float
 				for i, cv := range cvs {
 					p.ReviewVerdict.PerCriterion[i] = &sessionv1.CriterionVerdict{
 						CriterionIndex: int32(cv.CriterionIndex),
-						Outcome:        cv.Outcome,
+						Outcome:        string(cv.Outcome),
 						Evidence:       cv.Evidence,
 					}
 				}
@@ -499,7 +499,7 @@ func backlogItemToProto(item *session.BacklogItemData, costFor func(tmuxUUID str
 				protoAC[i] = &sessionv1.AcCriterion{
 					Index:  int32(c.Index),
 					Text:   c.Text,
-					Status: c.Status,
+					Status: string(c.Status),
 				}
 			}
 			p.AcceptanceCriteria = protoAC
@@ -572,7 +572,7 @@ func sourceSyncEventToProto(ev *ent.SourceSyncEvent) *sessionv1.SourceSyncEvent 
 }
 
 // acCriteriaToJSON serializes proto AcCriterion slice to JSON string for storage.
-func acCriteriaToJSON(protoAC []*sessionv1.AcCriterion) (string, error) {
+func acCriteriaToJSON(protoAC []*sessionv1.AcCriterion) (session.AcCriteriaJSON, error) {
 	if len(protoAC) == 0 {
 		return "", nil
 	}
@@ -581,14 +581,14 @@ func acCriteriaToJSON(protoAC []*sessionv1.AcCriterion) (string, error) {
 		criteria[i] = session.AcCriterion{
 			Index:  int(c.Index),
 			Text:   c.Text,
-			Status: c.Status,
+			Status: session.AcStatus(c.Status),
 		}
 	}
 	b, err := json.Marshal(criteria)
 	if err != nil {
 		return "", err
 	}
-	return string(b), nil
+	return session.AcCriteriaJSON(b), nil
 }
 
 // --- CreateBacklogItem ---
@@ -935,7 +935,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 	// Run transition guard for business rules.
 	guardInput := session.BacklogItemTransitionInput{
 		Status:            from,
-		AcCriteriaJSON:    item.AcceptanceCriteria,
+		AcCriteria:        item.AcceptanceCriteria,
 		PlanApproved:      item.PlanApproved,
 		SkipPlanning:      item.SkipPlanning,
 		PlanArtifactsPath: item.PlanArtifactsPath,
@@ -1282,7 +1282,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 		ID:                 itemUUID,
 		Title:              item.Title,
 		Description:        item.Description,
-		AcceptanceCriteria: item.AcceptanceCriteria,
+		AcceptanceCriteria: string(item.AcceptanceCriteria),
 		Priority:           item.Priority,
 		Status:             item.Status,
 		Notes:              item.Notes,
@@ -1608,7 +1608,7 @@ func (s *BacklogService) AttachSessionToItem(
 		ID:                 attachItemUUID,
 		Title:              item.Title,
 		Description:        item.Description,
-		AcceptanceCriteria: item.AcceptanceCriteria,
+		AcceptanceCriteria: string(item.AcceptanceCriteria),
 		Priority:           item.Priority,
 		Status:             item.Status,
 		Notes:              item.Notes,
@@ -2115,7 +2115,7 @@ func (s *BacklogService) TriggerReReview(
 	// 7. Deserialize AC snapshot (from most recent work session or item AC).
 	var acSnapshot []session.AcCriterion
 	if mostRecentWorkSession != nil && mostRecentWorkSession.AcSnapshot != "" {
-		acSnapshot, _ = session.ParseAcCriteria(mostRecentWorkSession.AcSnapshot)
+		acSnapshot, _ = session.ParseAcCriteria(session.AcCriteriaJSON(mostRecentWorkSession.AcSnapshot))
 	}
 	if len(acSnapshot) == 0 {
 		acSnapshot, _ = session.ParseAcCriteria(item.AcceptanceCriteria)
@@ -2204,7 +2204,7 @@ Do not modify the code. Only write the review verdict.
 		ItemID:      item.ID,
 		SessionUUID: inst.UUID,
 		SessionRole: session.SessionRoleReview,
-		AcSnapshot:  string(acSnapshotJSON),
+		AcSnapshot:  session.AcCriteriaJSON(acSnapshotJSON),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create re-review item session: %w", err))

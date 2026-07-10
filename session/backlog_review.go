@@ -182,23 +182,23 @@ type headlessVerdictJSON struct {
 
 // ParseHeadlessVerdictResult extracts verdict data from a headless LLM JSON response.
 // It searches for the outermost JSON object in text, tolerating prose around it.
-// Returns ReviewVerdictFail overall if parsing fails or no verdicts are present.
-func ParseHeadlessVerdictResult(text string) (overall string, verdicts []CriterionVerdict, summary string) {
+// Returns ReviewOutcomeFail overall if parsing fails or no verdicts are present.
+func ParseHeadlessVerdictResult(text string) (overall ReviewOutcome, verdicts []CriterionVerdict, summary string) {
 	start := strings.Index(text, "{")
 	end := strings.LastIndex(text, "}")
 	if start == -1 || end <= start {
-		return ReviewVerdictFail, nil, "headless review response contained no parseable JSON"
+		return ReviewOutcomeFail, nil, "headless review response contained no parseable JSON"
 	}
 
 	var v headlessVerdictJSON
 	if err := json.Unmarshal([]byte(text[start:end+1]), &v); err != nil {
-		return ReviewVerdictFail, nil, fmt.Sprintf("headless review JSON parse failed: %v", err)
+		return ReviewOutcomeFail, nil, fmt.Sprintf("headless review JSON parse failed: %v", err)
 	}
 
-	switch strings.ToUpper(v.Overall) {
-	case ReviewVerdictPass, ReviewVerdictFail, ReviewVerdictPartial, ReviewVerdictUnverifiable:
-		overall = strings.ToUpper(v.Overall)
-	default:
+	candidate := ReviewOutcome(strings.ToUpper(v.Overall))
+	if candidate.IsValid() {
+		overall = candidate
+	} else {
 		// Model returned an unrecognised value — derive from per-criterion verdicts.
 		overall = AggregateOutcome(v.Verdicts)
 	}

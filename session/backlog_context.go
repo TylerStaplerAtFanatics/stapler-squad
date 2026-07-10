@@ -84,7 +84,7 @@ func BuildSessionInitialPrompt(item *ent.BacklogItem, priorSessions []*ent.ItemS
 	sb.WriteString("\n\n")
 
 	sb.WriteString("## Acceptance Criteria\n")
-	criteria, _ := ParseAcCriteria(item.AcceptanceCriteria)
+	criteria, _ := ParseAcCriteria(AcCriteriaJSON(item.AcceptanceCriteria))
 	sb.WriteString(buildAcChecklist(criteria))
 	sb.WriteString("\n")
 

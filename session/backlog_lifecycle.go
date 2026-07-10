@@ -329,7 +329,7 @@ func applyVerdictsToACs(ctx context.Context, storage *Storage, item *ent.Backlog
 		return
 	}
 
-	outcomeByIdx := make(map[int]string, len(verdicts))
+	outcomeByIdx := make(map[int]ReviewOutcome, len(verdicts))
 	for _, v := range verdicts {
 		outcomeByIdx[v.CriterionIndex] = v.Outcome
 	}
@@ -342,12 +342,12 @@ func applyVerdictsToACs(ctx context.Context, storage *Storage, item *ent.Backlog
 		if !ok {
 			continue
 		}
-		var newStatus string
+		var newStatus AcStatus
 		switch outcome {
-		case ReviewVerdictPass:
-			newStatus = "done"
-		case ReviewVerdictPartial:
-			newStatus = "in_progress"
+		case ReviewOutcomePass:
+			newStatus = AcStatusDone
+		case ReviewOutcomePartial:
+			newStatus = AcStatusInProgress
 		default:
 			continue // FAIL / UNVERIFIABLE: leave as-is
 		}
@@ -366,7 +366,8 @@ func applyVerdictsToACs(ctx context.Context, storage *Storage, item *ent.Backlog
 		log.ErrorLog.Printf("[BacklogLifecycle] applyVerdictsToACs serialize item=%s: %v", item.ID, err)
 		return
 	}
-	if _, err := storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{AcceptanceCriteria: &newJSON}, nil); err != nil {
+	acj := newJSON
+	if _, err := storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{AcceptanceCriteria: &acj}, nil); err != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] applyVerdictsToACs update item=%s: %v", item.ID, err)
 		return
 	}
@@ -424,9 +425,9 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 	}
 
 	// Deserialize AC snapshot.
-	acSnapshot, _ := ParseAcCriteria(is.AcSnapshot)
+	acSnapshot, _ := ParseAcCriteria(AcCriteriaJSON(is.AcSnapshot))
 	if len(acSnapshot) == 0 {
-		acSnapshot, _ = ParseAcCriteria(item.AcceptanceCriteria)
+		acSnapshot, _ = ParseAcCriteria(AcCriteriaJSON(item.AcceptanceCriteria))
 	}
 
 	prompt := BuildReviewPrompt(item, acSnapshot, diff, truncated, is.ID.String())
@@ -448,7 +449,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 				ItemID:      item.ID.String(),
 				SessionUUID: failUUID,
 				SessionRole: SessionRoleReview,
-				AcSnapshot:  is.AcSnapshot,
+				AcSnapshot:  AcCriteriaJSON(is.AcSnapshot),
 			}, ReviewVerdictData{
 				OverallOutcome: ReviewVerdictFail,
 				Summary:        fmt.Sprintf("Review failed: %v", callErr),
@@ -474,7 +475,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 			ItemID:           item.ID.String(),
 			SessionUUID:      reviewSessionUUID,
 			SessionRole:      SessionRoleReview,
-			AcSnapshot:       is.AcSnapshot,
+			AcSnapshot:       AcCriteriaJSON(is.AcSnapshot),
 			EstimatedCostUsd: callCostUSD,
 		}, ReviewVerdictData{
 			OverallOutcome: overall,
@@ -530,7 +531,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		ItemID:      item.ID.String(),
 		SessionUUID: reviewInst.UUID,
 		SessionRole: SessionRoleReview,
-		AcSnapshot:  is.AcSnapshot,
+		AcSnapshot:  AcCriteriaJSON(is.AcSnapshot),
 	}); createErr != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSession item=%s review=%s: %v", item.ID, reviewInst.UUID, createErr)
 		return

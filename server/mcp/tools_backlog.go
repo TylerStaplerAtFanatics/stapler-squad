@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -353,7 +355,7 @@ func (h *backlogHandlers) submitReviewVerdict(ctx context.Context, req mcpgo.Cal
 	// Build CriterionVerdicts, auto-downgrading to PARTIAL if evidence is empty.
 	cvs := make([]session.CriterionVerdict, len(inputs))
 	for i, vi := range inputs {
-		outcome := strings.ToUpper(vi.Outcome)
+		outcome := session.ReviewOutcome(strings.ToUpper(vi.Outcome))
 		evidence := vi.Evidence
 		if evidence == "" {
 			outcome = session.ReviewVerdictPartial
@@ -565,7 +567,7 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 				if status == "" {
 					status = "pending"
 				}
-				byIndex[idx] = session.AcCriterion{Index: idx, Text: ac.Text, Status: status}
+				byIndex[idx] = session.AcCriterion{Index: idx, Text: ac.Text, Status: session.AcStatus(status)}
 			}
 
 			// Rebuild ordered slice.
@@ -573,12 +575,9 @@ func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.Call
 			for _, ac := range byIndex {
 				merged = append(merged, ac)
 			}
-			// Sort by index for stable ordering.
-			for i := 1; i < len(merged); i++ {
-				for j := i; j > 0 && merged[j].Index < merged[j-1].Index; j-- {
-					merged[j], merged[j-1] = merged[j-1], merged[j]
-				}
-			}
+			slices.SortFunc(merged, func(a, b session.AcCriterion) int {
+				return cmp.Compare(a.Index, b.Index)
+			})
 
 			acJSON, marshalErr := session.SerializeAcCriteria(merged)
 			if marshalErr != nil {
