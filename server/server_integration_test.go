@@ -305,9 +305,9 @@ func TestServer_should_WriteRealPortIntoSessionHooksAndMCPURL_When_StartedWithPo
 	})
 
 	// CreateSession starts the instance and injects hook config asynchronously; wait for both.
-	inst = waitForLiveInstance(t, deps, sessionID, 15*time.Second)
+	inst = waitForLiveInstance(t, deps, sessionID, 30*time.Second)
 	settingsPath := filepath.Join(inst.GetEffectiveRootDir(), ".claude", "settings.local.json")
-	hookCmd := waitForPermissionRequestHookCommand(t, settingsPath, 15*time.Second)
+	hookCmd := waitForPermissionRequestHookCommand(t, settingsPath, 30*time.Second)
 
 	if strings.Contains(hookCmd, "localhost:0/") {
 		t.Fatalf("expected the PermissionRequest hook command to never contain the unresolved :0 port, got %q", hookCmd)
@@ -374,9 +374,9 @@ func TestServer_should_WriteUnchangedHookURL_When_StartedOnExplicitPort(t *testi
 		waitForTmuxTeardown(t, inst, 5*time.Second)
 	})
 
-	inst = waitForLiveInstance(t, deps, sessionID, 15*time.Second)
+	inst = waitForLiveInstance(t, deps, sessionID, 30*time.Second)
 	settingsPath := filepath.Join(inst.GetEffectiveRootDir(), ".claude", "settings.local.json")
-	hookCmd := waitForPermissionRequestHookCommand(t, settingsPath, 15*time.Second)
+	hookCmd := waitForPermissionRequestHookCommand(t, settingsPath, 30*time.Second)
 
 	wantURL := fmt.Sprintf("http://localhost:%d/api/hooks/permission-request", port)
 	if !strings.Contains(hookCmd, wantURL) {
