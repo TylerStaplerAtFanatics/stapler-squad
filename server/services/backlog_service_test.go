@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/headless"
@@ -154,11 +154,32 @@ type mockCreateCall struct {
 	// "written before spawn" from "written after spawn but before the RPC returned."
 	contextFileExistedAtSpawn   bool
 	slashCommandsExistedAtSpawn bool
+	// inst is the *session.Instance returned to the caller, captured here so
+	// tests can inspect post-return mutations (e.g. SetCategory) that the
+	// production code performs on the instance after CreateDirectorySession/
+	// CreateWorktreeSession returns it.
+	inst *session.Instance
 }
 
 func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, path, prompt string, tags []string, oneShot bool, _ bool) (*session.Instance, error) {
 	_, contextErr := os.Stat(filepath.Join(path, ".backlog-context.md"))
 	_, slashErr := os.Stat(filepath.Join(path, ".claude", "commands", "backlog", "status.md"))
+	if m.err != nil {
+		m.calls = append(m.calls, mockCreateCall{
+			title:                       title,
+			path:                        path,
+			prompt:                      prompt,
+			tags:                        tags,
+			oneShot:                     oneShot,
+			contextFileExistedAtSpawn:   contextErr == nil,
+			slashCommandsExistedAtSpawn: slashErr == nil,
+		})
+		return nil, m.err
+	}
+	// Path must round-trip: SpawnSessionFromItem writes slash commands and a
+	// context file to inst.Path. An empty Path here makes those writes land in
+	// the test process's working directory instead of a sandbox.
+	inst := &session.Instance{Title: title, Path: path}
 	m.calls = append(m.calls, mockCreateCall{
 		title:                       title,
 		path:                        path,
@@ -167,14 +188,9 @@ func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, pa
 		oneShot:                     oneShot,
 		contextFileExistedAtSpawn:   contextErr == nil,
 		slashCommandsExistedAtSpawn: slashErr == nil,
+		inst:                        inst,
 	})
-	if m.err != nil {
-		return nil, m.err
-	}
-	// Path must round-trip: SpawnSessionFromItem writes slash commands and a
-	// context file to inst.Path. An empty Path here makes those writes land in
-	// the test process's working directory instead of a sandbox.
-	return &session.Instance{Title: title, Path: path}, nil
+	return inst, nil
 }
 
 // CreateWorktreeSession records the call to the same calls slice as CreateDirectorySession,
@@ -182,6 +198,19 @@ func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, pa
 func (m *mockSessionCreator) CreateWorktreeSession(_ context.Context, title, _, worktreePath, prompt string, tags []string, oneShot bool, _ bool) (*session.Instance, error) {
 	_, contextErr := os.Stat(filepath.Join(worktreePath, ".backlog-context.md"))
 	_, slashErr := os.Stat(filepath.Join(worktreePath, ".claude", "commands", "backlog", "status.md"))
+	if m.err != nil {
+		m.calls = append(m.calls, mockCreateCall{
+			title:                       title,
+			path:                        worktreePath,
+			prompt:                      prompt,
+			tags:                        tags,
+			oneShot:                     oneShot,
+			contextFileExistedAtSpawn:   contextErr == nil,
+			slashCommandsExistedAtSpawn: slashErr == nil,
+		})
+		return nil, m.err
+	}
+	inst := &session.Instance{Title: title, Path: worktreePath}
 	m.calls = append(m.calls, mockCreateCall{
 		title:                       title,
 		path:                        worktreePath,
@@ -190,11 +219,9 @@ func (m *mockSessionCreator) CreateWorktreeSession(_ context.Context, title, _, 
 		oneShot:                     oneShot,
 		contextFileExistedAtSpawn:   contextErr == nil,
 		slashCommandsExistedAtSpawn: slashErr == nil,
+		inst:                        inst,
 	})
-	if m.err != nil {
-		return nil, m.err
-	}
-	return &session.Instance{Title: title, Path: worktreePath}, nil
+	return inst, nil
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -541,6 +568,8 @@ func initGitRepoWithCommit(t *testing.T, dir string) {
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test Repo\n"), 0o644); err != nil {
 		t.Skipf("write README: %v", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	for _, args := range [][]string{
 		{"init", dir},
 		{"-C", dir, "config", "user.email", "test@example.com"},
@@ -548,7 +577,7 @@ func initGitRepoWithCommit(t *testing.T, dir string) {
 		{"-C", dir, "add", "README.md"},
 		{"-C", dir, "commit", "-m", "initial"},
 	} {
-		cmd := exec.Command("git", args...) //nolint:norawexec // test helper, blocking CombinedOutput, no zombie risk
+		cmd := safeexec.CommandContext(ctx, "git", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Skipf("git %v failed: %v (%s) — cannot run worktree test", args, err, out)
 		}
@@ -658,10 +687,64 @@ func TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent(t *te
 	assert.True(t, creator.calls[0].slashCommandsExistedAtSpawn,
 		"slash command files must exist before the session is spawned, not written after")
 
+	// 5b. Backlog work sessions must be categorized "Backlog" so they group
+	// correctly in the session list UI instead of falling into "Uncategorized".
+	assert.Equal(t, session.CategoryBacklog, creator.calls[0].inst.Category,
+		"backlog work session should have Category == Backlog")
+
 	// 6. Item should have advanced to in_progress after spawn.
 	finalResp, err := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
 	require.NoError(t, err)
 	assert.Equal(t, "in_progress", finalResp.Msg.Item.Status)
+}
+
+// TestSpawnSessionFromItem_Reopen_SetsBacklogCategory verifies that a
+// revision-reopen spawn (item already in_progress, isReopen=true in
+// SpawnSessionFromItem) also gets Category == "Backlog", not just the
+// initial work-session spawn covered by TestBacklogFullLifecycle above.
+func TestSpawnSessionFromItem_Reopen_SetsBacklogCategory(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    "reopen item",
+		RepoPath: repoPath,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	// Drive status straight to in_progress (no real first spawn) — the same
+	// shortcut TestTriggerReReview_MissingRepoPath_ReturnsFailedPrecondition
+	// uses — so SpawnSessionFromItem below takes the isReopen=true branch.
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusReady),
+	}))
+	require.NoError(t, err)
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusInProgress),
+	}))
+	require.NoError(t, err)
+
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId: itemID,
+	}))
+	require.NoError(t, err)
+
+	require.Len(t, creator.calls, 1)
+	assert.Contains(t, creator.calls[0].tags, session.TagBacklogRevision,
+		"reopen spawn should carry the revision tag")
+	assert.Equal(t, session.CategoryBacklog, creator.calls[0].inst.Category,
+		"backlog revision-reopen session should have Category == Backlog")
 }
 
 // TestSpawnSessionFromItem_AutonomousBypassesPlanningGate verifies that
@@ -972,6 +1055,51 @@ func TestTriggerReReview_HappyPath_NoSessionCreator_ReturnsPlaceholder(t *testin
 	assert.NotNil(t, resp.Msg.ItemSession)
 	assert.Equal(t, itemID, resp.Msg.ItemSession.Id)
 	assert.Equal(t, "re-review-triggered", resp.Msg.ItemSession.SessionRole)
+}
+
+// UT-040d: TriggerReReview with a SessionCreator wired spawns the re-review
+// session with Category == "Backlog" so it groups correctly in the session list.
+func TestTriggerReReview_SetsBacklogCategory(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    "test item",
+		RepoPath: "/tmp/test-repo",
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	// Transition through states to reach review.
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusReady),
+	}))
+	require.NoError(t, err)
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusInProgress),
+	}))
+	require.NoError(t, err)
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusReview),
+	}))
+	require.NoError(t, err)
+
+	_, err = svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{
+		ItemId: itemID,
+	}))
+	require.NoError(t, err)
+
+	require.Len(t, creator.calls, 1)
+	assert.Equal(t, session.CategoryBacklog, creator.calls[0].inst.Category,
+		"re-review session should have Category == Backlog")
 }
 
 // ─── T-11: Auto-triage, double-trigger guard, itemSessionToProto ─────────────

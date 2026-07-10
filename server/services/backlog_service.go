@@ -1357,6 +1357,7 @@ func (s *BacklogService) SpawnSessionFromItem(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn session: %w", err))
 	}
+	inst.SetCategory(session.CategoryBacklog)
 
 	if req.Msg.Autonomous {
 		if s.autonomousStarter != nil {
@@ -2195,6 +2196,7 @@ Do not modify the code. Only write the review verdict.
 	if spawnErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn re-review session: %w", spawnErr))
 	}
+	inst.SetCategory(session.CategoryBacklog)
 	if useAutonomous {
 		s.autonomousStarter.StartAutonomousDriverWithTimeout(inst, 5*time.Minute)
 	}

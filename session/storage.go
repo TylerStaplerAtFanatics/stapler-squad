@@ -768,7 +768,7 @@ func (s *Storage) GetItemSession(ctx context.Context, id string) (*ent.ItemSessi
 func (s *Storage) GetBaseCommitSHAsForSessions(ctx context.Context, uuids []string) (map[string]string, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 	return er.GetBaseCommitSHAsForSessions(ctx, uuids)
 }
