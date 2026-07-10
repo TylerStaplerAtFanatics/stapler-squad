@@ -835,6 +835,16 @@ Do not modify the code. Only write the review verdict.
 	}
 
 	// 10. Spawn re-review session — AutonomousDriver mode if available, oneShot fallback.
+	if s.sessionCreator == nil {
+		log.InfoLog.Printf("[TriggerReReview] triggered for item %s but no SessionCreator available", item.ID)
+		return connect.NewResponse(&sessionv1.TriggerReReviewResponse{
+			ItemSession: &sessionv1.ItemSession{
+				Id:          item.ID,
+				SessionRole: "re-review-triggered",
+			},
+		}), nil
+	}
+
 	slug := slugify(item.Title)
 	title := "re-review:" + slug
 	useAutonomous := s.autonomousStarter != nil
@@ -956,24 +966,33 @@ func findMostRecentSessions(sessions []session.ItemSessionSummary) (reviewSessio
 }
 
 // getWorkSessionDiff returns the git diff for the given work session. It prefers the
-// session's dedicated worktree path and base SHA; falls back to HEAD~1 in the item's
-// repo. Returns an empty string if workSession is nil or the diff cannot be obtained.
+// session's dedicated worktree path and base SHA; falls back to the item's repo when
+// the worktree directory is gone (commits remain accessible via the shared object store).
 func (s *BacklogService) getWorkSessionDiff(ctx context.Context, repoPath string, workSession *session.ItemSessionSummary) string {
 	if workSession == nil {
 		return ""
 	}
 	diffDir := repoPath
-	diffBaseSHA := "HEAD~1"
+	diffBaseSHA := ""
 	wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, workSession.SessionUUID)
 	if wtErr == nil && wt.WorktreePath != "" {
-		diffDir = wt.WorktreePath
+		// Try the dedicated worktree first.
+		diff, _, diffErr := session.GetGitDiff(ctx, wt.WorktreePath, wt.BaseCommitSHA)
+		if diffErr == nil {
+			return diff
+		}
+		// Worktree path is gone — fall through to repo fallback using the same base SHA.
+		log.WarningLog.Printf("[TriggerReReview] GetGitDiff in worktree failed (path gone?): %v; falling back to repo", diffErr)
 		diffBaseSHA = wt.BaseCommitSHA
-	} else if workSession.LastCommitSha != "" {
+	}
+	// Fallback: diff in the main repo between base and last commit. Git worktrees
+	// share the object store, so commits from any worktree are reachable here.
+	if diffBaseSHA == "" && workSession.LastCommitSha != "" {
 		diffBaseSHA = workSession.LastCommitSha
 	}
 	diff, _, diffErr := session.GetGitDiff(ctx, diffDir, diffBaseSHA)
 	if diffErr != nil {
-		log.WarningLog.Printf("[TriggerReReview] GetGitDiff failed: %v", diffErr)
+		log.WarningLog.Printf("[TriggerReReview] GetGitDiff fallback in %s failed: %v", diffDir, diffErr)
 		return ""
 	}
 	return diff

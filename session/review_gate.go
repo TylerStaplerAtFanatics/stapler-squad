@@ -64,18 +64,27 @@ func (r *ReviewGateRunner) Run(
 		return
 	}
 
-	// Get the git diff from the session's dedicated worktree (if one exists).
-	// Fall back to the item's repo path for directory-mode sessions.
-	diffDir := item.RepoPath
-	diffBaseSHA := is.LastCommitSha
-	if wt, wtErr := r.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID); wtErr == nil && wt.WorktreePath != "" {
-		diffDir = wt.WorktreePath
-		diffBaseSHA = wt.BaseCommitSHA
-	}
-	diff, truncated, diffErr := GetGitDiff(ctx, diffDir, diffBaseSHA)
-	if diffErr != nil {
-		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff item=%s: %v", item.ID, diffErr)
-		diff = ""
+	// Get the committed diff from the session's dedicated worktree (preferred)
+	// or fall back to the item's repo path (directory-mode / worktree gone).
+	var diff string
+	var truncated bool
+	wt, wtErr := r.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
+	if wtErr == nil && wt.WorktreePath != "" {
+		var diffErr error
+		diff, truncated, diffErr = GetGitDiff(ctx, wt.WorktreePath, wt.BaseCommitSHA)
+		if diffErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff (worktree) item=%s: %v; falling back to repo", item.ID, diffErr)
+			diff, truncated, diffErr = GetGitDiff(ctx, item.RepoPath, wt.BaseCommitSHA)
+			if diffErr != nil {
+				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff (repo fallback) item=%s: %v", item.ID, diffErr)
+			}
+		}
+	} else {
+		var diffErr error
+		diff, truncated, diffErr = GetGitDiff(ctx, item.RepoPath, is.LastCommitSha)
+		if diffErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff item=%s: %v", item.ID, diffErr)
+		}
 	}
 
 	// Security check — block if secrets detected.
