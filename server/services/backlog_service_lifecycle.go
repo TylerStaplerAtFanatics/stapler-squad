@@ -324,6 +324,23 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 		// Non-fatal: proceed with empty outcome; TransitionGuard will block review→done if needed.
 	}
 
+	// Check for unshipped worktree code when transitioning to done.
+	// If a work session made commits (LastCommitSha != "") but no PR was created
+	// (PrURL == ""), the code must be shipped before marking done.
+	var hasUnshippedCode bool
+	if to == session.BacklogStatusDone && item.PrURL == "" {
+		if itemSessions, sessErr := s.storage.ListItemSessions(ctx, req.Msg.ItemId); sessErr != nil {
+			log.WarningLog.Printf("[TransitionBacklogItemStatus] failed to load item sessions for item %s: %v", req.Msg.ItemId, sessErr)
+		} else {
+			for _, is := range itemSessions {
+				if is.Role == session.SessionRoleWork && is.LastCommitSha != "" {
+					hasUnshippedCode = true
+					break
+				}
+			}
+		}
+	}
+
 	// Run transition guard for business rules.
 	guardInput := session.BacklogItemTransitionInput{
 		Status:            from,
@@ -333,12 +350,14 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 		PlanArtifactsPath: item.PlanArtifactsPath,
 		OverallOutcome:    overallOutcome,
 		OverrideReason:    req.Msg.OverrideReason,
+		HasUnshippedCode:  hasUnshippedCode,
 	}
 	if guardErr := s.engine.ValidateGates(guardInput, to); guardErr != nil {
 		if errors.Is(guardErr, session.ErrACRequired) ||
 			errors.Is(guardErr, session.ErrPlanRequired) ||
 			errors.Is(guardErr, session.ErrPlanArtifactsRequired) ||
-			errors.Is(guardErr, session.ErrVerdictRequired) {
+			errors.Is(guardErr, session.ErrVerdictRequired) ||
+			errors.Is(guardErr, session.ErrPRRequired) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, guardErr)
 		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, guardErr)
