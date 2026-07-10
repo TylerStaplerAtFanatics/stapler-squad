@@ -25,7 +25,11 @@ import (
 // headlessTriageUUIDPrefix is prepended to all synthetic ItemSession UUIDs created by the
 // headless triage path. The orphan guard uses this prefix to identify sessions that have no
 // live tmux process and can be safely tombstoned on re-trigger.
-const headlessTriageUUIDPrefix = "headless-triage-"
+// headlessReReviewUUIDPrefix is the equivalent prefix for headless re-review sessions.
+const (
+	headlessTriageUUIDPrefix   = "headless-triage-"
+	headlessReReviewUUIDPrefix = "headless-re-review-"
+)
 
 // maxAutoReworkIterations caps how many automated work sessions can be spawned for a single
 // backlog item by the auto-reopen loop. When this ceiling is hit, the item stays in review
@@ -788,17 +792,45 @@ Call submit_review_verdict with:
 Do not modify the code. Only write the review verdict.
 `, session.SanitizeDiff(workSessionDiff), item.ID)
 
-	// 9. Require SessionCreator to spawn review session.
-	// degraded: sessionCreator unavailable — return a placeholder response so the
-	// caller knows re-review was acknowledged, even without a live session spawner.
-	if s.sessionCreator == nil {
-		// No spawner configured; just return a placeholder indicating re-review was triggered.
-		log.InfoLog.Printf("[TriggerReReview] triggered for item %s but no SessionCreator available", item.ID)
+	// 9. Headless path — preferred when a headless pool is configured.
+	// This avoids needing tmux and runs the review inline via LLM call.
+	if s.headlessPool != nil {
+		headlessPrompt := session.BuildHeadlessReviewPrompt(item, acSnapshot, workSessionDiff, false)
+		reviewCtx, reviewCancel := context.WithTimeout(ctx, headless.DefaultCallTimeout)
+		defer reviewCancel()
+
+		reviewResult, callErr := s.headlessPool.CallBlockingWithOptions(
+			reviewCtx, headless.FeatureKeyReview, headless.HeadlessReviewSystemPrompt(), headlessPrompt, headless.CallOptions{},
+		)
+		if callErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("headless re-review call failed: %w", callErr))
+		}
+
+		overall, perCriterion, reviewSummary := session.ParseHeadlessVerdictResult(reviewResult)
+		perCriterionJSON, _ := json.Marshal(perCriterion)
+
+		reviewSessionUUID := headlessReReviewUUIDPrefix + uuid.New().String()
+		is, createErr := s.storage.CreateItemSessionWithVerdict(ctx, session.ItemSessionData{
+			ItemID:      item.ID,
+			SessionUUID: reviewSessionUUID,
+			SessionRole: session.SessionRoleReview,
+			AcSnapshot:  session.AcCriteriaJSON(acSnapshotJSON),
+		}, session.ReviewVerdictData{
+			OverallOutcome: overall,
+			PerCriterion:   string(perCriterionJSON),
+			Summary:        reviewSummary,
+		})
+		if createErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save headless re-review verdict: %w", createErr))
+		}
+		if endErr := s.storage.UpdateItemSessionEnded(ctx, is.ID, time.Now()); endErr != nil {
+			log.WarningLog.Printf("[TriggerReReview] UpdateItemSessionEnded: %v", endErr)
+		}
+
+		log.InfoLog.Printf("[TriggerReReview] headless re-review complete for item %s (outcome %s)", item.ID, overall)
+
 		return connect.NewResponse(&sessionv1.TriggerReReviewResponse{
-			ItemSession: &sessionv1.ItemSession{
-				Id:          item.ID,
-				SessionRole: "re-review-triggered",
-			},
+			ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 		}), nil
 	}
 
@@ -958,4 +990,3 @@ func resolveACSnapshot(workSession *session.ItemSessionSummary, itemAC session.A
 	ac, _ := session.ParseAcCriteria(itemAC)
 	return ac
 }
-
