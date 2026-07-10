@@ -11,10 +11,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/log"
-	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
+
 
 // ReviewGateSpawner can create a short-lived review session for a backlog item.
 // Deprecated: use headless.Pool via NewBacklogLifecycleListenerWithSpawner instead.
@@ -22,7 +22,7 @@ import (
 type ReviewGateSpawner interface {
 	// SpawnReviewSession creates a one-shot review session for item using prompt.
 	// itemSessionID is the UUID of the work ItemSession being reviewed.
-	SpawnReviewSession(ctx context.Context, item *ent.BacklogItem, itemSessionID string, prompt string) (*Instance, error)
+	SpawnReviewSession(ctx context.Context, item *BacklogItemData, itemSessionID string, prompt string) (*Instance, error)
 }
 
 // AutoReopenSpawner can automatically reopen a backlog item for rework after a
@@ -204,7 +204,7 @@ func (l *BacklogLifecycleListener) onSessionStarted(sessionUUID string) {
 		log.ErrorLog.Printf("[BacklogLifecycle] GetItemSessionBySessionUUID(%s) error: %v", sessionUUID, err)
 		return
 	}
-	if err := l.storage.UpdateItemSessionStarted(ctx, is.ID.String(), time.Now()); err != nil {
+	if err := l.storage.UpdateItemSessionStarted(ctx, is.ID, time.Now()); err != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] UpdateItemSessionStarted(%s) error: %v", is.ID, err)
 	}
 }
@@ -224,19 +224,19 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 
 	// Record end time for all session roles (triage, review, work).
 	now := time.Now()
-	if err := l.storage.UpdateItemSessionEnded(ctx, is.ID.String(), now); err != nil {
+	if err := l.storage.UpdateItemSessionEnded(ctx, is.ID, now); err != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] UpdateItemSessionEnded(%s) error: %v", is.ID, err)
 	}
 
 	// Only drive in_progress→review/done transitions for work sessions.
-	if is.SessionRole != SessionRoleWork {
+	if is.Role != SessionRoleWork {
 		return
 	}
 
-	// BacklogItem edge is eager-loaded by GetItemSessionBySessionUUID.
-	item, err := is.Edges.BacklogItemOrErr()
+	// Look up the BacklogItem via storage (no longer an eager-loaded edge).
+	item, err := l.storage.GetBacklogItem(ctx, is.BacklogItemID)
 	if err != nil {
-		log.ErrorLog.Printf("[BacklogLifecycle] BacklogItemOrErr for session %s: %v", sessionUUID, err)
+		log.ErrorLog.Printf("[BacklogLifecycle] GetBacklogItem for session %s (item %s): %v", sessionUUID, is.BacklogItemID, err)
 		return
 	}
 
@@ -255,7 +255,7 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 		ExpectedStatus:    string(BacklogStatusInProgress),
 		ExpectedUpdatedAt: &updatedAt,
 	}
-	if _, err := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), toStatus, precondition); err != nil {
+	if _, err := l.storage.TransitionBacklogItemStatus(ctx, item.ID, toStatus, precondition); err != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] TransitionBacklogItemStatus item=%s to=%s: %v", item.ID, toStatus, err)
 		return
 	}
@@ -303,9 +303,9 @@ func (l *BacklogLifecycleListener) TriggerReviewForSession(workSessionUUID strin
 			log.ErrorLog.Printf("[BacklogLifecycle] TriggerReviewForSession GetItemSessionBySessionUUID(%s): %v", workSessionUUID, err)
 			return
 		}
-		item, err := is.Edges.BacklogItemOrErr()
+		item, err := l.storage.GetBacklogItem(ctx, is.BacklogItemID)
 		if err != nil {
-			log.ErrorLog.Printf("[BacklogLifecycle] TriggerReviewForSession BacklogItemOrErr session=%s: %v", workSessionUUID, err)
+			log.ErrorLog.Printf("[BacklogLifecycle] TriggerReviewForSession GetBacklogItem session=%s item=%s: %v", workSessionUUID, is.BacklogItemID, err)
 			return
 		}
 		if item.SkipReviewGate {
@@ -324,7 +324,7 @@ func (l *BacklogLifecycleListener) TriggerReviewForSession(workSessionUUID strin
 //	FAIL / UNVERIFIABLE → unchanged (stay "pending")
 //
 // Best-effort: errors are logged but do not block the caller.
-func applyVerdictsToACs(ctx context.Context, storage *Storage, item *ent.BacklogItem, acSnapshot []AcCriterion, verdicts []CriterionVerdict) {
+func applyVerdictsToACs(ctx context.Context, storage *Storage, item *BacklogItemData, acSnapshot []AcCriterion, verdicts []CriterionVerdict) {
 	if len(verdicts) == 0 || len(acSnapshot) == 0 {
 		return
 	}
@@ -367,7 +367,7 @@ func applyVerdictsToACs(ctx context.Context, storage *Storage, item *ent.Backlog
 		return
 	}
 	acj := newJSON
-	if _, err := storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{AcceptanceCriteria: &acj}, nil); err != nil {
+	if _, err := storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{AcceptanceCriteria: &acj}, nil); err != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] applyVerdictsToACs update item=%s: %v", item.ID, err)
 		return
 	}
@@ -376,7 +376,7 @@ func applyVerdictsToACs(ctx context.Context, storage *Storage, item *ent.Backlog
 
 // spawnReviewGate creates a one-shot review session for item, using the diff
 // from the work session's worktree.
-func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *ent.ItemSession) {
+func (l *BacklogLifecycleListener) spawnReviewGate(item *BacklogItemData, is ItemSessionSummary) {
 	ctx := l.shutdownCtx
 
 	// Precondition: repo_path must be set or we have nothing to review.
@@ -405,9 +405,9 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		// Record a failed review ItemSession with a FAIL verdict so the gate verdict
 		// is visible in the UI and operators can act (override or re-review).
 		summary := fmt.Sprintf("Review blocked by security check: %v. Override required to proceed.", secErr)
-		secIS, _, secCreateErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
-			ItemID:      item.ID.String(),
-			SessionUUID: "review-blocked-" + item.ID.String(),
+		secIS, secCreateErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+			ItemID:      item.ID,
+			SessionUUID: "review-blocked-" + item.ID,
 			SessionRole: SessionRoleReview,
 		}, ReviewVerdictData{
 			OverallOutcome: ReviewVerdictFail,
@@ -417,7 +417,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (security block) item=%s: %v", item.ID, secCreateErr)
 			return
 		}
-		if updateErr := l.storage.UpdateItemSessionEnded(ctx, secIS.ID.String(), time.Now()); updateErr != nil {
+		if updateErr := l.storage.UpdateItemSessionEnded(ctx, secIS.ID, time.Now()); updateErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (security block) item=%s: %v", item.ID, updateErr)
 		}
 		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate security check blocked for item %s — FAIL verdict recorded", item.ID)
@@ -425,12 +425,12 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 	}
 
 	// Deserialize AC snapshot.
-	acSnapshot, _ := ParseAcCriteria(AcCriteriaJSON(is.AcSnapshot))
+	acSnapshot, _ := ParseAcCriteria(is.AcSnapshot)
 	if len(acSnapshot) == 0 {
-		acSnapshot, _ = ParseAcCriteria(AcCriteriaJSON(item.AcceptanceCriteria))
+		acSnapshot, _ = ParseAcCriteria(item.AcceptanceCriteria)
 	}
 
-	prompt := BuildReviewPrompt(item, acSnapshot, diff, truncated, is.ID.String())
+	prompt := BuildReviewPrompt(item, acSnapshot, diff, truncated, is.ID)
 
 	pool := l.getHeadlessPool()
 	if pool != nil {
@@ -445,18 +445,18 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate headless.CallBlocking item=%s: %v", item.ID, callErr)
 			// Record a FAIL verdict so the item is not stuck in review with no actionable result.
 			failUUID := "headless-review-" + uuid.New().String()
-			failIS, _, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
-				ItemID:      item.ID.String(),
+			failIS, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+				ItemID:      item.ID,
 				SessionUUID: failUUID,
 				SessionRole: SessionRoleReview,
-				AcSnapshot:  AcCriteriaJSON(is.AcSnapshot),
+				AcSnapshot:  is.AcSnapshot,
 			}, ReviewVerdictData{
 				OverallOutcome: ReviewVerdictFail,
 				Summary:        fmt.Sprintf("Review failed: %v", callErr),
 			})
 			if createErr != nil {
 				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (headless fail) item=%s: %v", item.ID, createErr)
-			} else if updateErr := l.storage.UpdateItemSessionEnded(ctx, failIS.ID.String(), time.Now()); updateErr != nil {
+			} else if updateErr := l.storage.UpdateItemSessionEnded(ctx, failIS.ID, time.Now()); updateErr != nil {
 				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (headless fail) item=%s: %v", item.ID, updateErr)
 			}
 			return
@@ -471,11 +471,11 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		// Create a synthetic ItemSession and its ReviewVerdict atomically so there
 		// is never a dangling session with no verdict if the verdict write fails.
 		reviewSessionUUID := "headless-review-" + uuid.New().String()
-		reviewIS, _, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
-			ItemID:           item.ID.String(),
+		reviewIS, createErr := l.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+			ItemID:           item.ID,
 			SessionUUID:      reviewSessionUUID,
 			SessionRole:      SessionRoleReview,
-			AcSnapshot:       AcCriteriaJSON(is.AcSnapshot),
+			AcSnapshot:       is.AcSnapshot,
 			EstimatedCostUsd: callCostUSD,
 		}, ReviewVerdictData{
 			OverallOutcome: overall,
@@ -486,7 +486,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (headless) item=%s: %v", item.ID, createErr)
 			return
 		}
-		if updateErr := l.storage.UpdateItemSessionEnded(ctx, reviewIS.ID.String(), time.Now()); updateErr != nil {
+		if updateErr := l.storage.UpdateItemSessionEnded(ctx, reviewIS.ID, time.Now()); updateErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (headless) item=%s: %v", item.ID, updateErr)
 		}
 
@@ -497,7 +497,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		// is fully automated without requiring manual intervention.
 		if reopener := l.getAutoReopener(); (overall == ReviewVerdictFail || overall == ReviewVerdictPartial) && reopener != nil {
 			go func() {
-				if err := reopener.AutoReopenAfterFailedReview(l.shutdownCtx, item.ID.String()); err != nil {
+				if err := reopener.AutoReopenAfterFailedReview(l.shutdownCtx, item.ID); err != nil {
 					log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate AutoReopenAfterFailedReview item=%s: %v", item.ID, err)
 				} else {
 					log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate auto-reopened item %s for rework (verdict %s)", item.ID, overall)
@@ -520,7 +520,7 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 		return
 	}
 
-	reviewInst, spawnErr := l.sessionCreator.SpawnReviewSession(ctx, item, is.ID.String(), prompt)
+	reviewInst, spawnErr := l.sessionCreator.SpawnReviewSession(ctx, item, is.ID, prompt)
 	if spawnErr != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate SpawnReviewSession item=%s: %v", item.ID, spawnErr)
 		return
@@ -528,10 +528,10 @@ func (l *BacklogLifecycleListener) spawnReviewGate(item *ent.BacklogItem, is *en
 
 	// Create ItemSession linking the new review session to the backlog item.
 	if _, createErr := l.storage.CreateItemSession(ctx, ItemSessionData{
-		ItemID:      item.ID.String(),
+		ItemID:      item.ID,
 		SessionUUID: reviewInst.UUID,
 		SessionRole: SessionRoleReview,
-		AcSnapshot:  AcCriteriaJSON(is.AcSnapshot),
+		AcSnapshot:  is.AcSnapshot,
 	}); createErr != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSession item=%s review=%s: %v", item.ID, reviewInst.UUID, createErr)
 		return
@@ -573,17 +573,19 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 		return
 	}
 	for _, item := range items {
-		var workSession *ent.ItemSession
+		var workSession *ItemSessionSummary
 		if len(item.Edges.ItemSessions) > 0 {
-			workSession = item.Edges.ItemSessions[0]
+			s := itemSessionToSummary(item.Edges.ItemSessions[0])
+			workSession = &s
 		}
 		if workSession == nil {
 			log.DebugLog.Printf("[BacklogLifecycle] ReconcileStuckReviewGates: item %s has no work session, skipping", item.ID)
 			continue
 		}
 		log.InfoLog.Printf("[BacklogLifecycle] ReconcileStuckReviewGates: re-spawning review gate for item %s", item.ID)
-		is := workSession
-		go func(itemCopy *ent.BacklogItem, isCopy *ent.ItemSession) {
+		itemData := backlogItemToData(item)
+		isCopy := *workSession
+		go func(itemCopy *BacklogItemData, isCopy ItemSessionSummary) {
 			select {
 			case l.reviewSem <- struct{}{}:
 			case <-l.shutdownCtx.Done():
@@ -591,7 +593,7 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 			}
 			defer func() { <-l.reviewSem }()
 			l.spawnReviewGate(itemCopy, isCopy)
-		}(item, is)
+		}(&itemData, isCopy)
 	}
 
 	// Poll pr_pending items: auto-transition to done when the PR is merged.
@@ -601,11 +603,11 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 // pushAndCreatePR commits any dirty state, pushes the branch, creates a GitHub PR,
 // stores the PR URL and number on the item, then transitions to pr_pending.
 // Falls back to direct done transition when no worktree exists or gh CLI is unavailable.
-func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *ent.BacklogItem, is *ent.ItemSession) {
+func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
 	fallbackToDone := func(reason string) {
 		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s falling back to done: %s", item.ID, reason)
 		precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview)}
-		if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusDone, precondition); transErr != nil {
+		if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusDone, precondition); transErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] pushAndCreatePR fallback done item=%s: %v", item.ID, transErr)
 		}
 	}
@@ -652,7 +654,7 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *en
 		// Cache PR URL + number on the item so the reconciler and UI can use them.
 		prURLCopy := prURL
 		prNumCopy := prNumber
-		if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
+		if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{
 			PrURL:    &prURLCopy,
 			PrNumber: &prNumCopy,
 		}, nil); updateErr != nil {
@@ -671,7 +673,7 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *en
 
 	// Transition to pr_pending.
 	precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview)}
-	if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusPRPending, precondition); transErr != nil {
+	if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusPRPending, precondition); transErr != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] pushAndCreatePR pr_pending transition item=%s: %v", item.ID, transErr)
 	} else {
 		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s → pr_pending (PR #%d %s)", item.ID, prNumber, prURL)

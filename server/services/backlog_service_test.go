@@ -758,7 +758,7 @@ func TestAttachSessionToItem_WritesContextFileWithPlanArtifactsAndPriorSessions(
 		SessionRole: session.SessionRoleWork,
 	})
 	require.NoError(t, err)
-	require.NoError(t, storage.UpdateItemSessionEnded(t.Context(), priorIS.ID.String(), time.Now().Add(-time.Hour)))
+	require.NoError(t, storage.UpdateItemSessionEnded(t.Context(), priorIS.ID, time.Now().Add(-time.Hour)))
 
 	// A live Instance at repoPath, discoverable by AttachSessionToItem's
 	// storage.LoadInstances() lookup.
@@ -1032,7 +1032,7 @@ func TestTriggerTriage_DoubleTriggerGuard(t *testing.T) {
 	})
 	require.NoError(t, isErr)
 	// Mark it as started so the orphan guard treats it as genuinely live.
-	require.NoError(t, storage.UpdateItemSessionStarted(t.Context(), is.ID.String(), time.Now()))
+	require.NoError(t, storage.UpdateItemSessionStarted(t.Context(), is.ID, time.Now()))
 
 	// TriggerTriage should refuse because a triage session is already running.
 	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
@@ -1068,7 +1068,7 @@ func TestItemSessionToProto_MapsTriageResult(t *testing.T) {
 
 	// Store triage result JSON.
 	triageJSON := `{"summary":"looks good","suggestions":[{"text":"Add error handling","rationale":"robustness"}],"clarifying_questions":["Is this P1?"]}`
-	require.NoError(t, storage.UpdateItemSessionTriageResult(t.Context(), is.ID.String(), triageJSON))
+	require.NoError(t, storage.UpdateItemSessionTriageResult(t.Context(), is.ID, triageJSON))
 
 	// Re-load and convert.
 	sessions, loadErr := storage.ListItemSessions(t.Context(), item.ID)
@@ -1107,7 +1107,7 @@ func TestItemSessionToProto_HandlesInvalidTriageResultJSON(t *testing.T) {
 	require.NoError(t, isErr)
 
 	// Store malformed JSON.
-	require.NoError(t, storage.UpdateItemSessionTriageResult(t.Context(), is.ID.String(), "{not valid json"))
+	require.NoError(t, storage.UpdateItemSessionTriageResult(t.Context(), is.ID, "{not valid json"))
 
 	// Must not panic.
 	require.NotPanics(t, func() {

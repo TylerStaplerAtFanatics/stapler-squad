@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tstapler/stapler-squad/session/ent"
 )
 
 // waitWithTimeout waits for the done channel to be closed or fails the test after 2 seconds.
@@ -73,7 +72,7 @@ func TestBacklogLifecycleListener_OnSessionStarted(t *testing.T) {
 
 	// Verify that UpdateItemSessionStarted was called by checking StartedAt is set.
 	repo := storage.repo.(*EntRepository)
-	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
+	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID)
 	require.NoError(t, err)
 	require.NotNil(t, fetchedIS.StartedAt)
 }
@@ -148,7 +147,7 @@ func TestBacklogLifecycleListener_OnSessionExited_WorkSession_TransitionsToRevie
 
 	// Verify that the ItemSession has EndedAt set.
 	repo := storage.repo.(*EntRepository)
-	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
+	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID)
 	require.NoError(t, err)
 	require.NotNil(t, fetchedIS.EndedAt)
 }
@@ -201,7 +200,7 @@ func TestBacklogLifecycleListener_OnSessionExited_WorkSession_TransitionsToDone_
 
 	// Verify that the ItemSession has EndedAt set.
 	repo := storage.repo.(*EntRepository)
-	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
+	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID)
 	require.NoError(t, err)
 	require.NotNil(t, fetchedIS.EndedAt)
 }
@@ -254,7 +253,7 @@ func TestBacklogLifecycleListener_OnSessionExited_ReviewSession_NoTransition(t *
 
 	// Verify that the ItemSession EndedAt IS set (exit is recorded for all roles).
 	repo := storage.repo.(*EntRepository)
-	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
+	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID)
 	require.NoError(t, err)
 	require.NotNil(t, fetchedIS.EndedAt, "review session should have EndedAt recorded when it exits")
 }
@@ -327,7 +326,7 @@ func TestBacklogLifecycleListener_OnSessionExited_ItemNotInProgress_NoTransition
 
 	// Verify that the ItemSession has EndedAt set (the exit was recorded).
 	repo := storage.repo.(*EntRepository)
-	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID.String())
+	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID)
 	require.NoError(t, err)
 	require.NotNil(t, fetchedIS.EndedAt)
 }
@@ -389,7 +388,7 @@ func TestBacklogLifecycleListener_WireToInstance(t *testing.T) {
 	// Since the shim spawns its own goroutine, we poll briefly.
 	require.Eventually(t, func() bool {
 		repo := storage.repo.(*EntRepository)
-		fetchedIS, ferr := repo.GetItemSession(ctx, createdIS.ID.String())
+		fetchedIS, ferr := repo.GetItemSession(ctx, createdIS.ID)
 		return ferr == nil && fetchedIS.StartedAt != nil
 	}, 2*time.Second, 20*time.Millisecond, "EventStarted should trigger UpdateItemSessionStarted")
 }
@@ -424,10 +423,10 @@ func TestBacklogLifecycleListener_NewBacklogLifecycleListenerWithSpawner(t *test
 // mockReviewGateSpawner is a mock implementation of ReviewGateSpawner for testing.
 type mockReviewGateSpawner struct {
 	spawnCalled bool
-	lastItem    *ent.BacklogItem
+	lastItem    *BacklogItemData
 }
 
-func (m *mockReviewGateSpawner) SpawnReviewSession(ctx context.Context, item *ent.BacklogItem, itemSessionID string, prompt string) (*Instance, error) {
+func (m *mockReviewGateSpawner) SpawnReviewSession(ctx context.Context, item *BacklogItemData, itemSessionID string, prompt string) (*Instance, error) {
 	m.spawnCalled = true
 	m.lastItem = item
 	return &Instance{}, nil
@@ -546,7 +545,7 @@ func TestCreateItemSessionWithVerdict_Atomic(t *testing.T) {
 	require.NoError(t, err)
 
 	sessionUUID := "headless-review-" + uuid.New().String()
-	is, rv, err := storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+	is, err := storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
 		ItemID:      item.ID,
 		SessionUUID: sessionUUID,
 		SessionRole: SessionRoleReview,
@@ -555,18 +554,16 @@ func TestCreateItemSessionWithVerdict_Atomic(t *testing.T) {
 		Summary:        "Blocked by security check.",
 	})
 	require.NoError(t, err)
-	require.NotNil(t, is, "ItemSession must be non-nil")
-	require.NotNil(t, rv, "ReviewVerdict must be non-nil")
 	assert.Equal(t, sessionUUID, is.SessionUUID)
-	assert.Equal(t, string(ReviewVerdictFail), rv.OverallOutcome)
-	assert.Equal(t, "Blocked by security check.", rv.Summary)
+	require.NotNil(t, is.ReviewVerdict, "ReviewVerdict must be linked to the ItemSession")
+	assert.Equal(t, string(ReviewVerdictFail), is.ReviewVerdict.OverallOutcome)
+	assert.Equal(t, "Blocked by security check.", is.ReviewVerdict.Summary)
 
 	// Both records must be queryable from the same DB — verifies the commit succeeded.
 	sessions, listErr := storage.ListItemSessions(ctx, item.ID)
 	require.NoError(t, listErr)
 	require.Len(t, sessions, 1)
 	assert.Equal(t, sessionUUID, sessions[0].SessionUUID)
-	linkedVerdict, verdictErr := sessions[0].Edges.ReviewVerdictOrErr()
-	require.NoError(t, verdictErr, "ReviewVerdict must be linked to the ItemSession")
-	assert.Equal(t, string(ReviewVerdictFail), linkedVerdict.OverallOutcome)
+	require.NotNil(t, sessions[0].ReviewVerdict, "ReviewVerdict must be linked to the ItemSession")
+	assert.Equal(t, string(ReviewVerdictFail), sessions[0].ReviewVerdict.OverallOutcome)
 }
