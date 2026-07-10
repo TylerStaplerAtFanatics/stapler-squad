@@ -173,6 +173,10 @@ type Repository interface {
 	// GetAllItemSessionsWithBacklogInfo returns all item sessions joined with their parent backlog item metadata.
 	// Used by the Insights dashboard to annotate sessions with backlog context.
 	GetAllItemSessionsWithBacklogInfo(ctx context.Context) ([]ItemSessionBacklogEntry, error)
+	// ListBacklogItemSummaries returns lightweight summaries for the list view.
+	// Unlike ListBacklogItems it omits Description/plan fields and eagerly loads
+	// ItemSessions (with ReviewVerdict) without over-fetching status events.
+	ListBacklogItemSummaries(ctx context.Context, filter BacklogItemFilter) ([]BacklogItemSummary, error)
 
 	// --- ItemSource ---
 
@@ -349,6 +353,26 @@ type BacklogItemData struct {
 	// StatusEvents holds the eagerly-loaded status transition history.
 	// Only populated when explicitly loaded by the caller (e.g. GetBacklogItem).
 	StatusEvents []BacklogStatusEventData
+}
+
+// BacklogItemSummary is a lightweight projection of BacklogItemData for list views.
+// It omits large text fields (Description, plan artifacts) and status-event history,
+// but eagerly includes ItemSessions (with ReviewVerdict) for cost/status display.
+type BacklogItemSummary struct {
+	ID                 string         `json:"id"`
+	ExternalID         string         `json:"external_id"`
+	Title              string         `json:"title"`
+	Status             BacklogStatus  `json:"status"`
+	Priority           int            `json:"priority"`
+	RepoPath           string         `json:"repo_path"`
+	AcceptanceCriteria AcCriteriaJSON `json:"acceptance_criteria"`
+	Notes              string         `json:"notes"`
+	PrURL              string         `json:"pr_url"`
+	PrNumber           int            `json:"pr_number"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+	ArchivedAt         *time.Time     `json:"archived_at"`
+	ItemSessions       []ItemSessionSummary `json:"-"`
 }
 
 // ItemSessionBacklogEntry is a lightweight join record linking a tmux session UUID

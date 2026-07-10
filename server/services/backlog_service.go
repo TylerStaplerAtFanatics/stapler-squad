@@ -461,6 +461,53 @@ type triageResultJSON struct {
 	Feedback            string                     `json:"feedback,omitempty"`
 }
 
+// backlogItemSummaryToProto maps a BacklogItemSummary to the proto BacklogItem message.
+// Used by ListBacklogItems to avoid over-hydrating description/plan fields.
+func backlogItemSummaryToProto(item *session.BacklogItemSummary, costFor func(tmuxUUID string) float64) *sessionv1.BacklogItem {
+	p := &sessionv1.BacklogItem{
+		Id:         item.ID,
+		Title:      item.Title,
+		Priority:   int32(item.Priority),
+		Status:     string(item.Status),
+		RepoPath:   item.RepoPath,
+		Notes:      item.Notes,
+		ExternalId: item.ExternalID,
+		PrUrl:      item.PrURL,
+		PrNumber:   int32(item.PrNumber),
+		CreatedAt:  timestamppb.New(item.CreatedAt),
+		UpdatedAt:  timestamppb.New(item.UpdatedAt),
+	}
+	if item.ArchivedAt != nil {
+		p.ArchivedAt = timestamppb.New(*item.ArchivedAt)
+	}
+	if item.AcceptanceCriteria != "" {
+		criteria, err := session.ParseAcCriteria(item.AcceptanceCriteria)
+		if err == nil {
+			protoAC := make([]*sessionv1.AcCriterion, len(criteria))
+			for i, c := range criteria {
+				protoAC[i] = &sessionv1.AcCriterion{
+					Index:  int32(c.Index),
+					Text:   c.Text,
+					Status: string(c.Status),
+				}
+			}
+			p.AcceptanceCriteria = protoAC
+		}
+	}
+	if len(item.ItemSessions) > 0 {
+		protoSessions := make([]*sessionv1.ItemSession, len(item.ItemSessions))
+		var totalCost float64
+		for i, is := range item.ItemSessions {
+			ps := itemSessionToProto(is, costFor)
+			protoSessions[i] = ps
+			totalCost += ps.EstimatedCostUsd
+		}
+		p.ItemSessions = protoSessions
+		p.TotalEstimatedCostUsd = totalCost
+	}
+	return p
+}
+
 // backlogItemToProto maps a BacklogItemData to the proto BacklogItem message.
 func backlogItemToProto(item *session.BacklogItemData, costFor func(tmuxUUID string) float64) *sessionv1.BacklogItem {
 	p := &sessionv1.BacklogItem{
@@ -746,14 +793,15 @@ func (s *BacklogService) ListBacklogItems(
 		filter.Priorities = priorities
 	}
 
-	items, err := s.storage.ListBacklogItems(ctx, filter)
+	summaries, err := s.storage.ListBacklogItemSummaries(ctx, filter)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list backlog items: %w", err))
 	}
 
-	protoItems := make([]*sessionv1.BacklogItem, len(items))
-	for i := range items {
-		protoItems[i] = backlogItemToProto(&items[i], s.buildCostLookup())
+	costFor := s.buildCostLookup()
+	protoItems := make([]*sessionv1.BacklogItem, len(summaries))
+	for i := range summaries {
+		protoItems[i] = backlogItemSummaryToProto(&summaries[i], costFor)
 	}
 
 	return connect.NewResponse(&sessionv1.ListBacklogItemsResponse{
