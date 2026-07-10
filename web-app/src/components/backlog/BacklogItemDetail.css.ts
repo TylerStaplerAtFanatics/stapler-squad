@@ -646,3 +646,67 @@ export const errorState = style({
   color: vars.color.error,
   fontSize: vars.fontSize.sm,
 });
+
+export const manualReviewForm = style({
+  marginTop: vars.space["3"],
+  padding: vars.space["4"],
+  borderRadius: vars.radii.md,
+  border: `1px solid ${vars.color.borderColor}`,
+  background: vars.color.cardBackground,
+  display: "flex",
+  flexDirection: "column",
+  gap: vars.space["3"],
+});
+
+export const manualReviewTitle = style({
+  fontSize: vars.fontSize.sm,
+  fontWeight: 600,
+  color: vars.color.textPrimary,
+  margin: 0,
+});
+
+export const manualReviewRow = style({
+  display: "flex",
+  flexDirection: "column",
+  gap: vars.space["1"],
+});
+
+export const manualReviewLabel = style({
+  fontSize: vars.fontSize.xs,
+  fontWeight: 500,
+  color: vars.color.textSecondary,
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+});
+
+export const manualReviewSelect = style({
+  padding: `${vars.space["2"]} ${vars.space["3"]}`,
+  borderRadius: vars.radii.sm,
+  border: `1px solid ${vars.color.inputBorder}`,
+  background: vars.color.inputBackground,
+  color: vars.color.inputText,
+  fontSize: vars.fontSize.sm,
+  cursor: "pointer",
+});
+
+export const manualReviewTextarea = style({
+  padding: `${vars.space["2"]} ${vars.space["3"]}`,
+  borderRadius: vars.radii.sm,
+  border: `1px solid ${vars.color.inputBorder}`,
+  background: vars.color.inputBackground,
+  color: vars.color.inputText,
+  fontSize: vars.fontSize.sm,
+  resize: "vertical",
+  fontFamily: "inherit",
+  selectors: {
+    "&:focus": {
+      outline: "none",
+      borderColor: vars.color.inputFocusBorder,
+    },
+  },
+});
+
+export const manualReviewActions = style({
+  display: "flex",
+  gap: vars.space["2"],
+});

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/config"
+	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/ent"
@@ -645,5 +645,105 @@ func (s *BacklogService) OverrideVerdict(
 
 	return connect.NewResponse(&sessionv1.OverrideVerdictResponse{
 		Item: backlogItemToProto(updatedItem, s.buildCostLookup()),
+	}), nil
+}
+
+// SubmitManualReview allows a user to submit a review verdict directly,
+// without running an AI review session.
+// +api: backlog:submit-manual-review
+func (s *BacklogService) SubmitManualReview(
+	ctx context.Context,
+	req *connect.Request[sessionv1.SubmitManualReviewRequest],
+) (*connect.Response[sessionv1.SubmitManualReviewResponse], error) {
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("storage not available"))
+	}
+	if req.Msg.ItemId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("item_id is required"))
+	}
+	if req.Msg.Summary == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("summary is required"))
+	}
+
+	overall := session.ReviewOutcome(req.Msg.OverallOutcome)
+	if !overall.IsValid() {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("overall_outcome must be PASS, FAIL, PARTIAL, or UNVERIFIABLE; got %q", req.Msg.OverallOutcome))
+	}
+
+	// Load item to get AC criteria.
+	item, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("backlog item %q not found", req.Msg.ItemId))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get backlog item: %w", err))
+	}
+
+	// Build per-criterion verdicts: use provided ones or synthesize from overall.
+	var cvs []session.CriterionVerdict
+	if len(req.Msg.PerCriterionVerdicts) > 0 {
+		for _, pv := range req.Msg.PerCriterionVerdicts {
+			cvs = append(cvs, session.CriterionVerdict{
+				CriterionIndex: int(pv.CriterionIndex),
+				Outcome:        session.ReviewOutcome(pv.Outcome),
+				Evidence:       pv.Evidence,
+			})
+		}
+	} else {
+		// Synthesize one verdict per AC using the overall outcome.
+		criteria, _ := session.ParseAcCriteria(item.AcceptanceCriteria)
+		for _, ac := range criteria {
+			cvs = append(cvs, session.CriterionVerdict{
+				CriterionIndex: ac.Index,
+				Outcome:        overall,
+				Evidence:       fmt.Sprintf("Manual review: %s", req.Msg.Summary),
+			})
+		}
+	}
+
+	perCriterionJSON, _ := json.Marshal(cvs)
+	now := time.Now()
+
+	// Create a synthetic review ItemSession + verdict atomically.
+	syntheticUUID := "manual-review-" + req.Msg.ItemId[:8] + "-" + fmt.Sprintf("%d", now.UnixNano())
+	is, createErr := s.storage.CreateItemSessionWithVerdict(ctx, session.ItemSessionData{
+		ItemID:      req.Msg.ItemId,
+		SessionUUID: syntheticUUID,
+		SessionRole: session.SessionRoleReview,
+		AcSnapshot:  item.AcceptanceCriteria,
+	}, session.ReviewVerdictData{
+		OverallOutcome: overall,
+		PerCriterion:   string(perCriterionJSON),
+		Summary:        req.Msg.Summary,
+		OverrideBy:     "user",
+		OverrideReason: "manual review",
+		OverrideAt:     &now,
+	})
+	if createErr != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save manual review verdict: %w", createErr))
+	}
+	if endErr := s.storage.UpdateItemSessionEnded(ctx, is.ID, now); endErr != nil {
+		log.WarningLog.Printf("[SubmitManualReview] UpdateItemSessionEnded: %v", endErr)
+	}
+
+	// If PASS, transition item to done (only from review status).
+	if overall == session.ReviewVerdictPass {
+		if item.Status == string(session.BacklogStatusReview) {
+			precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
+			if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, req.Msg.ItemId, session.BacklogStatusDone, precondition); transErr != nil {
+				log.WarningLog.Printf("[SubmitManualReview] PASS but transition to done failed: %v", transErr)
+			}
+		}
+	}
+
+	// Reload item to return updated state.
+	updated, err := s.storage.GetBacklogItem(ctx, req.Msg.ItemId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to reload backlog item: %w", err))
+	}
+
+	return connect.NewResponse(&sessionv1.SubmitManualReviewResponse{
+		Item: backlogItemToProto(updated, s.buildCostLookup()),
 	}), nil
 }

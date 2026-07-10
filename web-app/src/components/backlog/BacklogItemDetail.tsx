@@ -56,6 +56,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     approvePlan,
     overrideVerdict,
     triggerReReview,
+    submitManualReview,
     archiveBacklogItem,
     deleteBacklogItem,
     updateBacklogItem,
@@ -71,6 +72,11 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
 
   // Review changes modal
   const [showChangesModal, setShowChangesModal] = useState(false);
+
+  // Manual review form
+  const [showManualReview, setShowManualReview] = useState(false);
+  const [manualReviewOutcome, setManualReviewOutcome] = useState("PASS");
+  const [manualReviewSummary, setManualReviewSummary] = useState("");
 
   // Notes inline editing
   const [editingNotes, setEditingNotes] = useState(false);
@@ -170,6 +176,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           case "re_review":
             await triggerReReview(item.id);
             break;
+          case "manual_review":
+            setShowManualReview(true);
+            return;
           case "archive":
             await archiveBacklogItem(item.id);
             break;
@@ -200,7 +209,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         setActionLoading(false);
       }
     },
-    [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, archiveBacklogItem, deleteBacklogItem, onClose, load]
+    [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, submitManualReview, archiveBacklogItem, deleteBacklogItem, onClose, load]
   );
 
   const handleSaveNotes = useCallback(async () => {
@@ -860,6 +869,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 </button>
                 <button
                   className={styles.actionButton}
+                  onClick={() => handleAction("manual_review")}
+                  disabled={actionLoading}
+                  data-testid="backlog-action-manual-review"
+                >
+                  Submit Review
+                </button>
+                <button
+                  className={styles.actionButton}
                   onClick={() => handleAction("restart_session")}
                   disabled={actionLoading}
                   title="Stop the review session and restart work from scratch in a fresh git worktree"
@@ -868,6 +885,67 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   Restart
                 </button>
               </>
+            )}
+
+            {showManualReview && item.status === "review" && (
+              <div className={styles.manualReviewForm} data-testid="manual-review-form">
+                <h4 className={styles.manualReviewTitle}>Submit Review</h4>
+                <div className={styles.manualReviewRow}>
+                  <label className={styles.manualReviewLabel}>Verdict</label>
+                  <select
+                    className={styles.manualReviewSelect}
+                    value={manualReviewOutcome}
+                    onChange={(e) => setManualReviewOutcome(e.target.value)}
+                    data-testid="manual-review-outcome"
+                  >
+                    <option value="PASS">PASS — meets all criteria</option>
+                    <option value="FAIL">FAIL — does not meet criteria</option>
+                    <option value="PARTIAL">PARTIAL — partially meets criteria</option>
+                    <option value="UNVERIFIABLE">UNVERIFIABLE — cannot verify</option>
+                  </select>
+                </div>
+                <div className={styles.manualReviewRow}>
+                  <label className={styles.manualReviewLabel}>Summary</label>
+                  <textarea
+                    className={styles.manualReviewTextarea}
+                    placeholder="Describe your findings…"
+                    value={manualReviewSummary}
+                    onChange={(e) => setManualReviewSummary(e.target.value)}
+                    rows={4}
+                    data-testid="manual-review-summary"
+                  />
+                </div>
+                <div className={styles.manualReviewActions}>
+                  <button
+                    className={styles.actionButton}
+                    disabled={!manualReviewSummary.trim() || actionLoading}
+                    onClick={async () => {
+                      setActionLoading(true);
+                      try {
+                        await submitManualReview(item.id, manualReviewOutcome, manualReviewSummary.trim());
+                        setShowManualReview(false);
+                        setManualReviewSummary("");
+                        setManualReviewOutcome("PASS");
+                        await load();
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : "Submit failed.");
+                      } finally {
+                        setActionLoading(false);
+                      }
+                    }}
+                    data-testid="manual-review-submit"
+                  >
+                    Submit
+                  </button>
+                  <button
+                    className={styles.actionButtonSecondary}
+                    onClick={() => { setShowManualReview(false); setManualReviewSummary(""); }}
+                    data-testid="manual-review-cancel"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
 
             {item.status === "done" && (

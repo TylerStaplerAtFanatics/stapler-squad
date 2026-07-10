@@ -4193,6 +4193,121 @@ func (x *GetSessionBacklogIndexResponse) GetEntries() []*BacklogSessionEntry {
 	return nil
 }
 
+type SubmitManualReviewRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	ItemId string                 `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	// overall_outcome must be PASS, FAIL, PARTIAL, or UNVERIFIABLE.
+	OverallOutcome string `protobuf:"bytes,2,opt,name=overall_outcome,json=overallOutcome,proto3" json:"overall_outcome,omitempty"`
+	Summary        string `protobuf:"bytes,3,opt,name=summary,proto3" json:"summary,omitempty"`
+	// per_criterion_verdicts is optional. When empty, a single synthetic verdict
+	// is created using overall_outcome for all AC criteria.
+	PerCriterionVerdicts []*CriterionVerdict `protobuf:"bytes,4,rep,name=per_criterion_verdicts,json=perCriterionVerdicts,proto3" json:"per_criterion_verdicts,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *SubmitManualReviewRequest) Reset() {
+	*x = SubmitManualReviewRequest{}
+	mi := &file_session_v1_backlog_proto_msgTypes[69]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitManualReviewRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitManualReviewRequest) ProtoMessage() {}
+
+func (x *SubmitManualReviewRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_session_v1_backlog_proto_msgTypes[69]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitManualReviewRequest.ProtoReflect.Descriptor instead.
+func (*SubmitManualReviewRequest) Descriptor() ([]byte, []int) {
+	return file_session_v1_backlog_proto_rawDescGZIP(), []int{69}
+}
+
+func (x *SubmitManualReviewRequest) GetItemId() string {
+	if x != nil {
+		return x.ItemId
+	}
+	return ""
+}
+
+func (x *SubmitManualReviewRequest) GetOverallOutcome() string {
+	if x != nil {
+		return x.OverallOutcome
+	}
+	return ""
+}
+
+func (x *SubmitManualReviewRequest) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+func (x *SubmitManualReviewRequest) GetPerCriterionVerdicts() []*CriterionVerdict {
+	if x != nil {
+		return x.PerCriterionVerdicts
+	}
+	return nil
+}
+
+type SubmitManualReviewResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Item          *BacklogItem           `protobuf:"bytes,1,opt,name=item,proto3" json:"item,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubmitManualReviewResponse) Reset() {
+	*x = SubmitManualReviewResponse{}
+	mi := &file_session_v1_backlog_proto_msgTypes[70]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubmitManualReviewResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubmitManualReviewResponse) ProtoMessage() {}
+
+func (x *SubmitManualReviewResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_session_v1_backlog_proto_msgTypes[70]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubmitManualReviewResponse.ProtoReflect.Descriptor instead.
+func (*SubmitManualReviewResponse) Descriptor() ([]byte, []int) {
+	return file_session_v1_backlog_proto_rawDescGZIP(), []int{70}
+}
+
+func (x *SubmitManualReviewResponse) GetItem() *BacklogItem {
+	if x != nil {
+		return x.Item
+	}
+	return nil
+}
+
 var File_session_v1_backlog_proto protoreflect.FileDescriptor
 
 const file_session_v1_backlog_proto_rawDesc = "" +
@@ -4503,7 +4618,14 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\fsession_role\x18\x05 \x01(\tR\vsessionRole\"\x1f\n" +
 	"\x1dGetSessionBacklogIndexRequest\"[\n" +
 	"\x1eGetSessionBacklogIndexResponse\x129\n" +
-	"\aentries\x18\x01 \x03(\v2\x1f.session.v1.BacklogSessionEntryR\aentries2\xea\x14\n" +
+	"\aentries\x18\x01 \x03(\v2\x1f.session.v1.BacklogSessionEntryR\aentries\"\xcb\x01\n" +
+	"\x19SubmitManualReviewRequest\x12\x17\n" +
+	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12'\n" +
+	"\x0foverall_outcome\x18\x02 \x01(\tR\x0eoverallOutcome\x12\x18\n" +
+	"\asummary\x18\x03 \x01(\tR\asummary\x12R\n" +
+	"\x16per_criterion_verdicts\x18\x04 \x03(\v2\x1c.session.v1.CriterionVerdictR\x14perCriterionVerdicts\"I\n" +
+	"\x1aSubmitManualReviewResponse\x12+\n" +
+	"\x04item\x18\x01 \x01(\v2\x17.session.v1.BacklogItemR\x04item2\xd1\x15\n" +
 	"\x0eBacklogService\x12b\n" +
 	"\x11CreateBacklogItem\x12$.session.v1.CreateBacklogItemRequest\x1a%.session.v1.CreateBacklogItemResponse\"\x00\x12Y\n" +
 	"\x0eGetBacklogItem\x12!.session.v1.GetBacklogItemRequest\x1a\".session.v1.GetBacklogItemResponse\"\x00\x12_\n" +
@@ -4531,7 +4653,8 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x10ListGitHubIssues\x12#.session.v1.ListGitHubIssuesRequest\x1a$.session.v1.ListGitHubIssuesResponse\"\x00\x12e\n" +
 	"\x12GetBacklogItemDiff\x12%.session.v1.GetBacklogItemDiffRequest\x1a&.session.v1.GetBacklogItemDiffResponse\"\x00\x12e\n" +
 	"\x12GetBacklogItemCost\x12%.session.v1.GetBacklogItemCostRequest\x1a&.session.v1.GetBacklogItemCostResponse\"\x00\x12q\n" +
-	"\x16GetSessionBacklogIndex\x12).session.v1.GetSessionBacklogIndexRequest\x1a*.session.v1.GetSessionBacklogIndexResponse\"\x00B\xac\x01\n" +
+	"\x16GetSessionBacklogIndex\x12).session.v1.GetSessionBacklogIndexRequest\x1a*.session.v1.GetSessionBacklogIndexResponse\"\x00\x12e\n" +
+	"\x12SubmitManualReview\x12%.session.v1.SubmitManualReviewRequest\x1a&.session.v1.SubmitManualReviewResponse\"\x00B\xac\x01\n" +
 	"\x0ecom.session.v1B\fBacklogProtoP\x01ZCgithub.com/tstapler/stapler-squad/gen/proto/go/session/v1;sessionv1\xa2\x02\x03SXX\xaa\x02\n" +
 	"Session.V1\xca\x02\n" +
 	"Session\\V1\xe2\x02\x16Session\\V1\\GPBMetadata\xea\x02\vSession::V1b\x06proto3"
@@ -4548,7 +4671,7 @@ func file_session_v1_backlog_proto_rawDescGZIP() []byte {
 	return file_session_v1_backlog_proto_rawDescData
 }
 
-var file_session_v1_backlog_proto_msgTypes = make([]protoimpl.MessageInfo, 69)
+var file_session_v1_backlog_proto_msgTypes = make([]protoimpl.MessageInfo, 71)
 var file_session_v1_backlog_proto_goTypes = []any{
 	(*AcCriterion)(nil),                         // 0: session.v1.AcCriterion
 	(*CriterionVerdict)(nil),                    // 1: session.v1.CriterionVerdict
@@ -4619,43 +4742,45 @@ var file_session_v1_backlog_proto_goTypes = []any{
 	(*BacklogSessionEntry)(nil),                 // 66: session.v1.BacklogSessionEntry
 	(*GetSessionBacklogIndexRequest)(nil),       // 67: session.v1.GetSessionBacklogIndexRequest
 	(*GetSessionBacklogIndexResponse)(nil),      // 68: session.v1.GetSessionBacklogIndexResponse
-	(*timestamppb.Timestamp)(nil),               // 69: google.protobuf.Timestamp
+	(*SubmitManualReviewRequest)(nil),           // 69: session.v1.SubmitManualReviewRequest
+	(*SubmitManualReviewResponse)(nil),          // 70: session.v1.SubmitManualReviewResponse
+	(*timestamppb.Timestamp)(nil),               // 71: google.protobuf.Timestamp
 }
 var file_session_v1_backlog_proto_depIdxs = []int32{
 	1,  // 0: session.v1.ReviewVerdict.per_criterion:type_name -> session.v1.CriterionVerdict
-	69, // 1: session.v1.ReviewVerdict.override_at:type_name -> google.protobuf.Timestamp
-	69, // 2: session.v1.ReviewVerdict.created_at:type_name -> google.protobuf.Timestamp
+	71, // 1: session.v1.ReviewVerdict.override_at:type_name -> google.protobuf.Timestamp
+	71, // 2: session.v1.ReviewVerdict.created_at:type_name -> google.protobuf.Timestamp
 	3,  // 3: session.v1.TriageResult.suggestions:type_name -> session.v1.TriageSuggestion
 	4,  // 4: session.v1.TriageResult.tasks:type_name -> session.v1.TriageTask
-	69, // 5: session.v1.ItemSession.started_at:type_name -> google.protobuf.Timestamp
-	69, // 6: session.v1.ItemSession.ended_at:type_name -> google.protobuf.Timestamp
-	69, // 7: session.v1.ItemSession.last_commit_at:type_name -> google.protobuf.Timestamp
-	69, // 8: session.v1.ItemSession.last_file_touch_at:type_name -> google.protobuf.Timestamp
-	69, // 9: session.v1.ItemSession.created_at:type_name -> google.protobuf.Timestamp
+	71, // 5: session.v1.ItemSession.started_at:type_name -> google.protobuf.Timestamp
+	71, // 6: session.v1.ItemSession.ended_at:type_name -> google.protobuf.Timestamp
+	71, // 7: session.v1.ItemSession.last_commit_at:type_name -> google.protobuf.Timestamp
+	71, // 8: session.v1.ItemSession.last_file_touch_at:type_name -> google.protobuf.Timestamp
+	71, // 9: session.v1.ItemSession.created_at:type_name -> google.protobuf.Timestamp
 	2,  // 10: session.v1.ItemSession.review_verdict:type_name -> session.v1.ReviewVerdict
 	5,  // 11: session.v1.ItemSession.triage_result:type_name -> session.v1.TriageResult
-	69, // 12: session.v1.BacklogStatusEvent.created_at:type_name -> google.protobuf.Timestamp
+	71, // 12: session.v1.BacklogStatusEvent.created_at:type_name -> google.protobuf.Timestamp
 	0,  // 13: session.v1.BacklogItem.acceptance_criteria:type_name -> session.v1.AcCriterion
-	69, // 14: session.v1.BacklogItem.plan_approved_at:type_name -> google.protobuf.Timestamp
-	69, // 15: session.v1.BacklogItem.archived_at:type_name -> google.protobuf.Timestamp
-	69, // 16: session.v1.BacklogItem.created_at:type_name -> google.protobuf.Timestamp
-	69, // 17: session.v1.BacklogItem.updated_at:type_name -> google.protobuf.Timestamp
+	71, // 14: session.v1.BacklogItem.plan_approved_at:type_name -> google.protobuf.Timestamp
+	71, // 15: session.v1.BacklogItem.archived_at:type_name -> google.protobuf.Timestamp
+	71, // 16: session.v1.BacklogItem.created_at:type_name -> google.protobuf.Timestamp
+	71, // 17: session.v1.BacklogItem.updated_at:type_name -> google.protobuf.Timestamp
 	6,  // 18: session.v1.BacklogItem.item_sessions:type_name -> session.v1.ItemSession
 	7,  // 19: session.v1.BacklogItem.status_events:type_name -> session.v1.BacklogStatusEvent
-	69, // 20: session.v1.ItemSource.last_synced_at:type_name -> google.protobuf.Timestamp
-	69, // 21: session.v1.ItemSource.created_at:type_name -> google.protobuf.Timestamp
-	69, // 22: session.v1.ItemSource.updated_at:type_name -> google.protobuf.Timestamp
-	69, // 23: session.v1.SourceSyncEvent.started_at:type_name -> google.protobuf.Timestamp
-	69, // 24: session.v1.SourceSyncEvent.finished_at:type_name -> google.protobuf.Timestamp
+	71, // 20: session.v1.ItemSource.last_synced_at:type_name -> google.protobuf.Timestamp
+	71, // 21: session.v1.ItemSource.created_at:type_name -> google.protobuf.Timestamp
+	71, // 22: session.v1.ItemSource.updated_at:type_name -> google.protobuf.Timestamp
+	71, // 23: session.v1.SourceSyncEvent.started_at:type_name -> google.protobuf.Timestamp
+	71, // 24: session.v1.SourceSyncEvent.finished_at:type_name -> google.protobuf.Timestamp
 	0,  // 25: session.v1.CreateBacklogItemRequest.acceptance_criteria:type_name -> session.v1.AcCriterion
 	8,  // 26: session.v1.CreateBacklogItemResponse.item:type_name -> session.v1.BacklogItem
 	8,  // 27: session.v1.GetBacklogItemResponse.item:type_name -> session.v1.BacklogItem
 	8,  // 28: session.v1.ListBacklogItemsResponse.items:type_name -> session.v1.BacklogItem
 	0,  // 29: session.v1.UpdateBacklogItemRequest.acceptance_criteria:type_name -> session.v1.AcCriterion
-	69, // 30: session.v1.UpdateBacklogItemRequest.expected_updated_at:type_name -> google.protobuf.Timestamp
+	71, // 30: session.v1.UpdateBacklogItemRequest.expected_updated_at:type_name -> google.protobuf.Timestamp
 	8,  // 31: session.v1.UpdateBacklogItemResponse.item:type_name -> session.v1.BacklogItem
 	8,  // 32: session.v1.ArchiveBacklogItemResponse.item:type_name -> session.v1.BacklogItem
-	69, // 33: session.v1.TransitionBacklogItemStatusRequest.expected_updated_at:type_name -> google.protobuf.Timestamp
+	71, // 33: session.v1.TransitionBacklogItemStatusRequest.expected_updated_at:type_name -> google.protobuf.Timestamp
 	8,  // 34: session.v1.TransitionBacklogItemStatusResponse.item:type_name -> session.v1.BacklogItem
 	6,  // 35: session.v1.SpawnSessionFromItemResponse.item_session:type_name -> session.v1.ItemSession
 	6,  // 36: session.v1.AttachSessionToItemResponse.item_session:type_name -> session.v1.ItemSession
@@ -4674,65 +4799,69 @@ var file_session_v1_backlog_proto_depIdxs = []int32{
 	56, // 49: session.v1.ListGitHubIssuesResponse.issues:type_name -> session.v1.GitHubIssueEntry
 	63, // 50: session.v1.GetBacklogItemCostResponse.sessions:type_name -> session.v1.SessionCostEntry
 	66, // 51: session.v1.GetSessionBacklogIndexResponse.entries:type_name -> session.v1.BacklogSessionEntry
-	11, // 52: session.v1.BacklogService.CreateBacklogItem:input_type -> session.v1.CreateBacklogItemRequest
-	13, // 53: session.v1.BacklogService.GetBacklogItem:input_type -> session.v1.GetBacklogItemRequest
-	15, // 54: session.v1.BacklogService.ListBacklogItems:input_type -> session.v1.ListBacklogItemsRequest
-	17, // 55: session.v1.BacklogService.UpdateBacklogItem:input_type -> session.v1.UpdateBacklogItemRequest
-	19, // 56: session.v1.BacklogService.ArchiveBacklogItem:input_type -> session.v1.ArchiveBacklogItemRequest
-	21, // 57: session.v1.BacklogService.DeleteBacklogItem:input_type -> session.v1.DeleteBacklogItemRequest
-	23, // 58: session.v1.BacklogService.TransitionBacklogItemStatus:input_type -> session.v1.TransitionBacklogItemStatusRequest
-	25, // 59: session.v1.BacklogService.SpawnSessionFromItem:input_type -> session.v1.SpawnSessionFromItemRequest
-	27, // 60: session.v1.BacklogService.AttachSessionToItem:input_type -> session.v1.AttachSessionToItemRequest
-	29, // 61: session.v1.BacklogService.TriggerTriage:input_type -> session.v1.TriggerTriageRequest
-	53, // 62: session.v1.BacklogService.CancelTriage:input_type -> session.v1.CancelTriageRequest
-	31, // 63: session.v1.BacklogService.ApprovePlan:input_type -> session.v1.ApprovePlanRequest
-	33, // 64: session.v1.BacklogService.SuggestNextItem:input_type -> session.v1.SuggestNextItemRequest
-	35, // 65: session.v1.BacklogService.OverrideVerdict:input_type -> session.v1.OverrideVerdictRequest
-	37, // 66: session.v1.BacklogService.TriggerReReview:input_type -> session.v1.TriggerReReviewRequest
-	39, // 67: session.v1.BacklogService.TriggerSync:input_type -> session.v1.TriggerSyncRequest
-	41, // 68: session.v1.BacklogService.CreateItemSource:input_type -> session.v1.CreateItemSourceRequest
-	43, // 69: session.v1.BacklogService.ListItemSources:input_type -> session.v1.ListItemSourcesRequest
-	45, // 70: session.v1.BacklogService.UpdateItemSource:input_type -> session.v1.UpdateItemSourceRequest
-	47, // 71: session.v1.BacklogService.DeleteItemSource:input_type -> session.v1.DeleteItemSourceRequest
-	49, // 72: session.v1.BacklogService.GetSyncHistory:input_type -> session.v1.GetSyncHistoryRequest
-	51, // 73: session.v1.BacklogService.ImportGitHubIssue:input_type -> session.v1.ImportGitHubIssueRequest
-	57, // 74: session.v1.BacklogService.SearchGitHubRepos:input_type -> session.v1.SearchGitHubReposRequest
-	59, // 75: session.v1.BacklogService.ListGitHubIssues:input_type -> session.v1.ListGitHubIssuesRequest
-	61, // 76: session.v1.BacklogService.GetBacklogItemDiff:input_type -> session.v1.GetBacklogItemDiffRequest
-	64, // 77: session.v1.BacklogService.GetBacklogItemCost:input_type -> session.v1.GetBacklogItemCostRequest
-	67, // 78: session.v1.BacklogService.GetSessionBacklogIndex:input_type -> session.v1.GetSessionBacklogIndexRequest
-	12, // 79: session.v1.BacklogService.CreateBacklogItem:output_type -> session.v1.CreateBacklogItemResponse
-	14, // 80: session.v1.BacklogService.GetBacklogItem:output_type -> session.v1.GetBacklogItemResponse
-	16, // 81: session.v1.BacklogService.ListBacklogItems:output_type -> session.v1.ListBacklogItemsResponse
-	18, // 82: session.v1.BacklogService.UpdateBacklogItem:output_type -> session.v1.UpdateBacklogItemResponse
-	20, // 83: session.v1.BacklogService.ArchiveBacklogItem:output_type -> session.v1.ArchiveBacklogItemResponse
-	22, // 84: session.v1.BacklogService.DeleteBacklogItem:output_type -> session.v1.DeleteBacklogItemResponse
-	24, // 85: session.v1.BacklogService.TransitionBacklogItemStatus:output_type -> session.v1.TransitionBacklogItemStatusResponse
-	26, // 86: session.v1.BacklogService.SpawnSessionFromItem:output_type -> session.v1.SpawnSessionFromItemResponse
-	28, // 87: session.v1.BacklogService.AttachSessionToItem:output_type -> session.v1.AttachSessionToItemResponse
-	30, // 88: session.v1.BacklogService.TriggerTriage:output_type -> session.v1.TriggerTriageResponse
-	54, // 89: session.v1.BacklogService.CancelTriage:output_type -> session.v1.CancelTriageResponse
-	32, // 90: session.v1.BacklogService.ApprovePlan:output_type -> session.v1.ApprovePlanResponse
-	34, // 91: session.v1.BacklogService.SuggestNextItem:output_type -> session.v1.SuggestNextItemResponse
-	36, // 92: session.v1.BacklogService.OverrideVerdict:output_type -> session.v1.OverrideVerdictResponse
-	38, // 93: session.v1.BacklogService.TriggerReReview:output_type -> session.v1.TriggerReReviewResponse
-	40, // 94: session.v1.BacklogService.TriggerSync:output_type -> session.v1.TriggerSyncResponse
-	42, // 95: session.v1.BacklogService.CreateItemSource:output_type -> session.v1.CreateItemSourceResponse
-	44, // 96: session.v1.BacklogService.ListItemSources:output_type -> session.v1.ListItemSourcesResponse
-	46, // 97: session.v1.BacklogService.UpdateItemSource:output_type -> session.v1.UpdateItemSourceResponse
-	48, // 98: session.v1.BacklogService.DeleteItemSource:output_type -> session.v1.DeleteItemSourceResponse
-	50, // 99: session.v1.BacklogService.GetSyncHistory:output_type -> session.v1.GetSyncHistoryResponse
-	52, // 100: session.v1.BacklogService.ImportGitHubIssue:output_type -> session.v1.ImportGitHubIssueResponse
-	58, // 101: session.v1.BacklogService.SearchGitHubRepos:output_type -> session.v1.SearchGitHubReposResponse
-	60, // 102: session.v1.BacklogService.ListGitHubIssues:output_type -> session.v1.ListGitHubIssuesResponse
-	62, // 103: session.v1.BacklogService.GetBacklogItemDiff:output_type -> session.v1.GetBacklogItemDiffResponse
-	65, // 104: session.v1.BacklogService.GetBacklogItemCost:output_type -> session.v1.GetBacklogItemCostResponse
-	68, // 105: session.v1.BacklogService.GetSessionBacklogIndex:output_type -> session.v1.GetSessionBacklogIndexResponse
-	79, // [79:106] is the sub-list for method output_type
-	52, // [52:79] is the sub-list for method input_type
-	52, // [52:52] is the sub-list for extension type_name
-	52, // [52:52] is the sub-list for extension extendee
-	0,  // [0:52] is the sub-list for field type_name
+	1,  // 52: session.v1.SubmitManualReviewRequest.per_criterion_verdicts:type_name -> session.v1.CriterionVerdict
+	8,  // 53: session.v1.SubmitManualReviewResponse.item:type_name -> session.v1.BacklogItem
+	11, // 54: session.v1.BacklogService.CreateBacklogItem:input_type -> session.v1.CreateBacklogItemRequest
+	13, // 55: session.v1.BacklogService.GetBacklogItem:input_type -> session.v1.GetBacklogItemRequest
+	15, // 56: session.v1.BacklogService.ListBacklogItems:input_type -> session.v1.ListBacklogItemsRequest
+	17, // 57: session.v1.BacklogService.UpdateBacklogItem:input_type -> session.v1.UpdateBacklogItemRequest
+	19, // 58: session.v1.BacklogService.ArchiveBacklogItem:input_type -> session.v1.ArchiveBacklogItemRequest
+	21, // 59: session.v1.BacklogService.DeleteBacklogItem:input_type -> session.v1.DeleteBacklogItemRequest
+	23, // 60: session.v1.BacklogService.TransitionBacklogItemStatus:input_type -> session.v1.TransitionBacklogItemStatusRequest
+	25, // 61: session.v1.BacklogService.SpawnSessionFromItem:input_type -> session.v1.SpawnSessionFromItemRequest
+	27, // 62: session.v1.BacklogService.AttachSessionToItem:input_type -> session.v1.AttachSessionToItemRequest
+	29, // 63: session.v1.BacklogService.TriggerTriage:input_type -> session.v1.TriggerTriageRequest
+	53, // 64: session.v1.BacklogService.CancelTriage:input_type -> session.v1.CancelTriageRequest
+	31, // 65: session.v1.BacklogService.ApprovePlan:input_type -> session.v1.ApprovePlanRequest
+	33, // 66: session.v1.BacklogService.SuggestNextItem:input_type -> session.v1.SuggestNextItemRequest
+	35, // 67: session.v1.BacklogService.OverrideVerdict:input_type -> session.v1.OverrideVerdictRequest
+	37, // 68: session.v1.BacklogService.TriggerReReview:input_type -> session.v1.TriggerReReviewRequest
+	39, // 69: session.v1.BacklogService.TriggerSync:input_type -> session.v1.TriggerSyncRequest
+	41, // 70: session.v1.BacklogService.CreateItemSource:input_type -> session.v1.CreateItemSourceRequest
+	43, // 71: session.v1.BacklogService.ListItemSources:input_type -> session.v1.ListItemSourcesRequest
+	45, // 72: session.v1.BacklogService.UpdateItemSource:input_type -> session.v1.UpdateItemSourceRequest
+	47, // 73: session.v1.BacklogService.DeleteItemSource:input_type -> session.v1.DeleteItemSourceRequest
+	49, // 74: session.v1.BacklogService.GetSyncHistory:input_type -> session.v1.GetSyncHistoryRequest
+	51, // 75: session.v1.BacklogService.ImportGitHubIssue:input_type -> session.v1.ImportGitHubIssueRequest
+	57, // 76: session.v1.BacklogService.SearchGitHubRepos:input_type -> session.v1.SearchGitHubReposRequest
+	59, // 77: session.v1.BacklogService.ListGitHubIssues:input_type -> session.v1.ListGitHubIssuesRequest
+	61, // 78: session.v1.BacklogService.GetBacklogItemDiff:input_type -> session.v1.GetBacklogItemDiffRequest
+	64, // 79: session.v1.BacklogService.GetBacklogItemCost:input_type -> session.v1.GetBacklogItemCostRequest
+	67, // 80: session.v1.BacklogService.GetSessionBacklogIndex:input_type -> session.v1.GetSessionBacklogIndexRequest
+	69, // 81: session.v1.BacklogService.SubmitManualReview:input_type -> session.v1.SubmitManualReviewRequest
+	12, // 82: session.v1.BacklogService.CreateBacklogItem:output_type -> session.v1.CreateBacklogItemResponse
+	14, // 83: session.v1.BacklogService.GetBacklogItem:output_type -> session.v1.GetBacklogItemResponse
+	16, // 84: session.v1.BacklogService.ListBacklogItems:output_type -> session.v1.ListBacklogItemsResponse
+	18, // 85: session.v1.BacklogService.UpdateBacklogItem:output_type -> session.v1.UpdateBacklogItemResponse
+	20, // 86: session.v1.BacklogService.ArchiveBacklogItem:output_type -> session.v1.ArchiveBacklogItemResponse
+	22, // 87: session.v1.BacklogService.DeleteBacklogItem:output_type -> session.v1.DeleteBacklogItemResponse
+	24, // 88: session.v1.BacklogService.TransitionBacklogItemStatus:output_type -> session.v1.TransitionBacklogItemStatusResponse
+	26, // 89: session.v1.BacklogService.SpawnSessionFromItem:output_type -> session.v1.SpawnSessionFromItemResponse
+	28, // 90: session.v1.BacklogService.AttachSessionToItem:output_type -> session.v1.AttachSessionToItemResponse
+	30, // 91: session.v1.BacklogService.TriggerTriage:output_type -> session.v1.TriggerTriageResponse
+	54, // 92: session.v1.BacklogService.CancelTriage:output_type -> session.v1.CancelTriageResponse
+	32, // 93: session.v1.BacklogService.ApprovePlan:output_type -> session.v1.ApprovePlanResponse
+	34, // 94: session.v1.BacklogService.SuggestNextItem:output_type -> session.v1.SuggestNextItemResponse
+	36, // 95: session.v1.BacklogService.OverrideVerdict:output_type -> session.v1.OverrideVerdictResponse
+	38, // 96: session.v1.BacklogService.TriggerReReview:output_type -> session.v1.TriggerReReviewResponse
+	40, // 97: session.v1.BacklogService.TriggerSync:output_type -> session.v1.TriggerSyncResponse
+	42, // 98: session.v1.BacklogService.CreateItemSource:output_type -> session.v1.CreateItemSourceResponse
+	44, // 99: session.v1.BacklogService.ListItemSources:output_type -> session.v1.ListItemSourcesResponse
+	46, // 100: session.v1.BacklogService.UpdateItemSource:output_type -> session.v1.UpdateItemSourceResponse
+	48, // 101: session.v1.BacklogService.DeleteItemSource:output_type -> session.v1.DeleteItemSourceResponse
+	50, // 102: session.v1.BacklogService.GetSyncHistory:output_type -> session.v1.GetSyncHistoryResponse
+	52, // 103: session.v1.BacklogService.ImportGitHubIssue:output_type -> session.v1.ImportGitHubIssueResponse
+	58, // 104: session.v1.BacklogService.SearchGitHubRepos:output_type -> session.v1.SearchGitHubReposResponse
+	60, // 105: session.v1.BacklogService.ListGitHubIssues:output_type -> session.v1.ListGitHubIssuesResponse
+	62, // 106: session.v1.BacklogService.GetBacklogItemDiff:output_type -> session.v1.GetBacklogItemDiffResponse
+	65, // 107: session.v1.BacklogService.GetBacklogItemCost:output_type -> session.v1.GetBacklogItemCostResponse
+	68, // 108: session.v1.BacklogService.GetSessionBacklogIndex:output_type -> session.v1.GetSessionBacklogIndexResponse
+	70, // 109: session.v1.BacklogService.SubmitManualReview:output_type -> session.v1.SubmitManualReviewResponse
+	82, // [82:110] is the sub-list for method output_type
+	54, // [54:82] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_session_v1_backlog_proto_init() }
@@ -4746,7 +4875,7 @@ func file_session_v1_backlog_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_v1_backlog_proto_rawDesc), len(file_session_v1_backlog_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   69,
+			NumMessages:   71,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

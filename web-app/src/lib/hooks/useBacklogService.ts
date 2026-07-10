@@ -345,6 +345,7 @@ interface UseBacklogServiceReturn {
   approvePlan: (id: string) => Promise<BacklogItem | null>;
   overrideVerdict: (id: string, overrideReason: string, toStatus?: string) => Promise<boolean>;
   triggerReReview: (id: string) => Promise<boolean>;
+  submitManualReview: (id: string, overallOutcome: string, summary: string) => Promise<BacklogItem | null>;
   /** Last error from createBacklogItem, updateBacklogItem, transitionStatus, or spawnSessionFromItem. */
   lastError: Error | null;
   /** Clears the lastError state. */
@@ -597,6 +598,22 @@ export function useBacklogService(): UseBacklogServiceReturn {
     }
   }, []);
 
+  const submitManualReview = useCallback(
+    async (id: string, overallOutcome: string, summary: string): Promise<BacklogItem | null> => {
+      if (!clientRef.current) return null;
+      try {
+        setLastError(null);
+        const resp = await clientRef.current.submitManualReview({ itemId: id, overallOutcome, summary });
+        return resp.item ? mapBacklogItem(resp.item) : null;
+      } catch (err) {
+        console.error("[useBacklogService] submitManualReview:", err);
+        setLastError(err instanceof Error ? err : new Error(String(err)));
+        throw err;
+      }
+    },
+    []
+  );
+
   const importGitHubIssue = useCallback(
     async (
       issueUrl: string,
@@ -697,6 +714,7 @@ export function useBacklogService(): UseBacklogServiceReturn {
       approvePlan,
       overrideVerdict,
       triggerReReview,
+      submitManualReview,
       lastError,
       clearError,
     }),

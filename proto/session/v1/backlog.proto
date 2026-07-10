@@ -430,6 +430,10 @@ service BacklogService {
   // GetSessionBacklogIndex returns all item sessions mapped to their backlog item metadata.
   // Used by the Insights dashboard to annotate sessions with backlog context.
   rpc GetSessionBacklogIndex(GetSessionBacklogIndexRequest) returns (GetSessionBacklogIndexResponse) {}
+
+  // SubmitManualReview allows a user to submit a review verdict directly,
+  // without running an AI review session.
+  rpc SubmitManualReview(SubmitManualReviewRequest) returns (SubmitManualReviewResponse) {}
 }
 
 message ImportGitHubIssueRequest {
@@ -532,4 +536,18 @@ message GetSessionBacklogIndexRequest {}
 
 message GetSessionBacklogIndexResponse {
   repeated BacklogSessionEntry entries = 1;
+}
+
+message SubmitManualReviewRequest {
+  string item_id = 1;
+  // overall_outcome must be PASS, FAIL, PARTIAL, or UNVERIFIABLE.
+  string overall_outcome = 2;
+  string summary = 3;
+  // per_criterion_verdicts is optional. When empty, a single synthetic verdict
+  // is created using overall_outcome for all AC criteria.
+  repeated CriterionVerdict per_criterion_verdicts = 4;
+}
+
+message SubmitManualReviewResponse {
+  BacklogItem item = 1;
 }
