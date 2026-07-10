@@ -125,14 +125,15 @@ func (s *BacklogService) ListBacklogItems(
 		filter.Priorities = priorities
 	}
 
-	items, err := s.storage.ListBacklogItems(ctx, filter)
+	summaries, err := s.storage.ListBacklogItemSummaries(ctx, filter)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list backlog items: %w", err))
 	}
 
-	protoItems := make([]*sessionv1.BacklogItem, len(items))
-	for i := range items {
-		protoItems[i] = backlogItemToProto(&items[i], s.buildCostLookup())
+	protoItems := make([]*sessionv1.BacklogItem, len(summaries))
+	costFor := s.buildCostLookup()
+	for i := range summaries {
+		protoItems[i] = backlogItemSummaryToProto(&summaries[i], costFor)
 	}
 
 	return connect.NewResponse(&sessionv1.ListBacklogItemsResponse{
