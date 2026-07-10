@@ -764,9 +764,9 @@ func TestAttachSessionToItem_WritesContextFileWithPlanArtifactsAndPriorSessions(
 	// storage.LoadInstances() lookup.
 	const attachUUID = "attach-session-uuid"
 	require.NoError(t, storage.AddInstance(&session.Instance{
-		Title:     "attach-target",
-		UUID:      attachUUID,
-		Path:      repoPath,
+		Title: "attach-target",
+		UUID:  attachUUID,
+		Path:  repoPath,
 		// Paused (not Active) so LoadInstances doesn't attempt a real cold-restore
 		// tmux/claude process start — AttachSessionToItem only needs UUID+Path to
 		// match, not a live process, and a real restore attempt is slow/unreliable
