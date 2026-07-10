@@ -248,6 +248,7 @@ var (
 	ErrPlanRequired          = errors.New("plan must be approved or skip_planning must be true before spawning work session")
 	ErrPlanArtifactsRequired = errors.New("plan artifacts path is required when planning is not skipped")
 	ErrVerdictRequired       = errors.New("PASS verdict or manual override required before marking done")
+	ErrPRRequired            = errors.New("code changes must be shipped via PR before marking done; create a PR or provide override_reason")
 )
 
 // BacklogItemTransitionInput carries the fields needed by TransitionGuard.
@@ -259,6 +260,10 @@ type BacklogItemTransitionInput struct {
 	PlanArtifactsPath string        // path to plan artifacts written by triage session
 	OverallOutcome    ReviewOutcome // from linked ReviewVerdict
 	OverrideReason    string
+	// HasUnshippedCode is true when a work session made commits in a worktree
+	// (LastCommitSha != "") but no PR was ever created (PrURL == "").
+	// The review→done guard uses this to block premature done transitions.
+	HasUnshippedCode bool
 }
 
 // TransitionGuard validates business rules before a status transition.
@@ -298,6 +303,9 @@ func TransitionGuard(item BacklogItemTransitionInput, to BacklogStatus) error {
 		}
 		if item.OverallOutcome != ReviewOutcomePass {
 			return ErrVerdictRequired
+		}
+		if item.HasUnshippedCode {
+			return ErrPRRequired
 		}
 		return nil
 
