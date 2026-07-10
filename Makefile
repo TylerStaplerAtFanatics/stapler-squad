@@ -56,7 +56,7 @@ endif
 		touch $(ASDF_STAMP); \
 	fi
 
-.PHONY: help build test benchmark install-tools lint lint-custom actor-lint analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service rollback backup-binary uninstall-service setup-codesign _codesign-binary verify-codesign tcc-reset preview coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules test-with-pinned-tmux vet-architecture vet-rpc-markers coverage-integration actor-field-guard
+.PHONY: help build test benchmark install-tools lint lint-custom actor-lint analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service rollback backup-binary uninstall-service setup-codesign _codesign-binary verify-codesign tcc-reset preview dev-stack coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules ensure-tmux-configure test-with-pinned-tmux test-trace test-profile vet-architecture vet-rpc-markers coverage-integration actor-field-guard checklocks
 
 # Default target
 help: ## Show this help message
@@ -131,7 +131,7 @@ build: stapler-squad ## Build the Go application
 stapler-squad: ensure-tools proto-gen server/web/dist $(GO_FILES) ## Build the Go binary
 	@echo "Building Go application..."
 ifeq ($(UNAME_S),Darwin)
-	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/Info.plist" \
+	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/macos/Info.plist" \
 		go build -ldflags "$(LDFLAGS)" -o stapler-squad .
 	@# Verify Info.plist was actually embedded (catches silent CGO_ENABLED=0 failures)
 	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
@@ -252,6 +252,7 @@ build-tmux: ## Build pinned tmux 3.4 binary from third_party/tmux submodule
 	@echo "Building pinned tmux binary..."
 	@if command -v bazel >/dev/null 2>&1 && [ -f third_party/tmux/configure.ac ]; then \
 		echo "Using Bazel (artifacts cached)..."; \
+		$(MAKE) ensure-tmux-configure; \
 		bazel build //third_party/tmux:tmux && \
 		mkdir -p bin && \
 		cp "$$(bazel info bazel-bin)/third_party/tmux/tmux" $(BIN_TMUX) && \
@@ -261,6 +262,18 @@ build-tmux: ## Build pinned tmux 3.4 binary from third_party/tmux submodule
 		./scripts/build-tmux.sh; \
 	fi
 
+ensure-tmux-configure: ## Ensure third_party/tmux/configure exists (downloads from release tarball if missing)
+	@if [ ! -f third_party/tmux/configure ]; then \
+		echo "Downloading tmux configure from release tarball..."; \
+		TMPTAR=$$(mktemp /tmp/tmux-XXXXXX.tar.gz); \
+		curl -fsSL -o "$$TMPTAR" "https://github.com/tmux/tmux/releases/download/3.4/tmux-3.4.tar.gz" && \
+		tar xzf "$$TMPTAR" -C /tmp tmux-3.4/configure && \
+		cp /tmp/tmux-3.4/configure third_party/tmux/configure && \
+		chmod +x third_party/tmux/configure && \
+		rm -f "$$TMPTAR" && \
+		echo "✅ configure downloaded"; \
+	fi
+
 build-tmux-embed: build-tmux ## Copy built tmux into the embed dir for go build -tags embed_tmux
 	@mkdir -p session/tmux/embed
 	@cp $(BIN_TMUX) session/tmux/embed/tmux
@@ -268,7 +281,7 @@ build-tmux-embed: build-tmux ## Copy built tmux into the embed dir for go build 
 
 build-embedded: build-tmux-embed ## Build stapler-squad with tmux bundled inside the binary
 ifeq ($(UNAME_S),Darwin)
-	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/Info.plist" \
+	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/macos/Info.plist" \
 		go build -tags embed_tmux -ldflags "$(LDFLAGS)" -o stapler-squad .
 	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
 		(echo "ERROR: Info.plist was not embedded in embedded build." && exit 1)
@@ -378,6 +391,25 @@ preview: build ## Build and run an isolated preview instance (auto-picks port, b
 	STAPLER_SQUAD_USE_CONTROL_MODE=false \
 	  ./stapler-squad --listen localhost:$(PREVIEW_PORT) --tmux-keep-server
 
+# Isolated backend + next-dev DevStack for manual testing (Epic 3.2,
+# scripts/dev-stack/launch.ts). Distinct from `make preview` (which runs the
+# built Go binary alone against the static-exported web UI) — this spins up
+# BOTH a backend and a real `next dev` on separately allocated ports, wired
+# together via STAPLER_SQUAD_EXTRA_ORIGINS/NEXT_PUBLIC_API_URL, and tears
+# both down (plus any orphaned grandchildren) on Ctrl-C.
+#
+# Usage:
+#   make dev-stack NAME=my-feature-test
+DEV_STACK_TS_NODE := web-app/node_modules/.bin/ts-node
+DEV_STACK_TSC_OPTS := {"module":"commonjs","moduleResolution":"node","esModuleInterop":true}
+
+dev-stack: build ## Start an isolated backend+next-dev DevStack: make dev-stack NAME=my-feature-test
+	@if [ -z "$(NAME)" ]; then \
+		echo "Usage: make dev-stack NAME=<instance-name>"; \
+		exit 1; \
+	fi
+	$(DEV_STACK_TS_NODE) --compiler-options '$(DEV_STACK_TSC_OPTS)' scripts/dev-stack/launch.ts $(NAME)
+
 # Protocol Buffer code generation
 proto-gen: ensure-tools web-app/node_modules/.modules.yaml ## Generate Go and TypeScript code from proto files
 	@echo "Checking if proto files need regeneration..."
@@ -407,14 +439,14 @@ proto-clean: ## Clean generated protocol buffer code
 	rm -rf web/src/gen
 
 # Testing targets
-test: ensure-tools proto-gen ## Run all tests (skips slow integration tests; use test-integration for full suite)
-	go test -short ./...
+test: ensure-tools proto-gen $(BIN_TMUX) ## Run all tests (skips slow integration tests; use test-integration for full suite)
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -short ./...
 
 test-verbose: ensure-tools proto-gen ## Run tests with verbose output
 	go test -short -v ./...
 
-test-coverage: ensure-tools proto-gen ## Run tests with coverage report (HTML)
-	go test -short -cover ./... -coverprofile=coverage.out
+test-coverage: ensure-tools proto-gen $(BIN_TMUX) ## Run tests with coverage report (HTML)
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -short -cover ./... -coverprofile=coverage.out
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 	@which open >/dev/null 2>&1 && open coverage.html || true
@@ -465,8 +497,8 @@ coverage-refactor: ensure-tools proto-gen ## Show coverage for the 4 files targe
 	@echo ""
 	@go tool cover -func=coverage.out | grep "^total"
 
-test-race: ensure-tools proto-gen ## Run tests with race detector enabled (skips slow integration tests)
-	go test -race -short ./...
+test-race: ensure-tools proto-gen $(BIN_TMUX) ## Run tests with race detector enabled (skips slow integration tests)
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -race -short ./...
 
 test-integration: ensure-tools proto-gen ## Run integration tests (requires real tmux)
 	go test -race -tags integration ./...
@@ -514,6 +546,20 @@ test-ux-polish: ## Run tests registered in docs/registry/features/ (no server/tm
 test-with-pinned-tmux: ensure-tools proto-gen $(BIN_TMUX) ## Run tests using the pinned tmux binary (reproducible)
 	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -race ./...
 
+test-trace: ensure-tools proto-gen $(BIN_TMUX) ## Run session tests with execution trace (open trace with: go tool trace /tmp/ss-test-trace.out)
+	@echo "Running session tests with execution trace..."
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -v -trace /tmp/ss-test-trace.out -timeout 120s \
+		github.com/tstapler/stapler-squad/session/... 2>&1 | tee /tmp/ss-test-trace.log
+	@echo "Trace saved to /tmp/ss-test-trace.out — view with: go tool trace /tmp/ss-test-trace.out"
+
+test-profile: ensure-tools proto-gen $(BIN_TMUX) ## Run session tests with CPU+block profiling
+	@echo "Running session tests with profiling..."
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -v -cpuprofile /tmp/ss-test-cpu.prof \
+		-blockprofile /tmp/ss-test-block.prof -timeout 120s \
+		github.com/tstapler/stapler-squad/session/... 2>&1 | tee /tmp/ss-test-profile.log
+	@echo "CPU profile: go tool pprof /tmp/ss-test-cpu.prof"
+	@echo "Block profile: go tool pprof /tmp/ss-test-block.prof"
+
 # Performance benchmarks
 benchmark: ensure-tools proto-gen ## Run all benchmarks
 	@echo "Running comprehensive benchmarks..."
@@ -530,6 +576,7 @@ install-tools: ensure-tools ## Install all development and analysis tools
 	go install github.com/jtbonhomme/go-nilcheck/cmd/nilcheck@latest
 	go install golang.org/x/tools/cmd/deadcode@latest
 	go install golang.org/x/perf/cmd/benchstat@latest
+	go install gvisor.dev/gvisor/tools/checklocks/cmd/checklocks@latest
 	@echo "All tools installed successfully!"
 
 # Code quality and analysis
@@ -568,7 +615,7 @@ lint: ensure-tools proto-gen lint-custom ## Run golangci-lint with comprehensive
 
 LINTER_BIN := $(CURDIR)/bin/linter
 
-lint-custom: $(LINTER_BIN) ## Run project-specific custom linters (hotpolllog, nocommandpattern, norawexec) in a single pass
+lint-custom: $(LINTER_BIN) ## Run project-specific custom linters (hotpolllog, nocommandpattern, norawexec, tmuxsocketscope) in a single pass
 	@echo "Running custom lint..."
 	@$(LINTER_BIN) $(shell go list ./... | grep -v "^github.com/tstapler/stapler-squad$$")
 	@echo "custom lint: ok"
@@ -662,8 +709,22 @@ deadcode: ensure-tools ## Find unreachable/dead code
 	@echo "💀 Finding dead code..."
 	deadcode -test ./...
 
+# Mutex discipline enforcement via gVisor checklocks
+# Uses go vet -vettool to enforce explicit +checklocks: field annotations.
+# -inferred=false: only report violations of explicit annotations, not suggestions.
+# -atomic=false: skip atomic-inside-lock checks (handled by race detector in tests).
+# Skips packages where deadlock.Mutex wrapping causes false-positive "return with
+# unexpected locks held" reports (./session top-level, ./server/...).
+# Install: go install gvisor.dev/gvisor/tools/checklocks/cmd/checklocks@latest
+checklocks: ## Enforce +checklocks: mutex-discipline annotations (explicit violations only)
+	@if ! which checklocks >/dev/null 2>&1; then \
+		echo "Installing checklocks..."; \
+		go install gvisor.dev/gvisor/tools/checklocks/cmd/checklocks@latest; \
+	fi
+	checklocks -inferred=false -atomic=false ./session/git/... ./session/detection/... ./session/artifacts/... ./session/cdp/... ./session/scrollback/... ./session/mux/... ./executor/... ./log/... ./config/... ./pkg/...
+
 # Comprehensive analysis
-analyze: install-tools vet lint staticcheck nil-safety security deadcode ## Run all static analysis tools
+analyze: install-tools vet lint staticcheck nil-safety security deadcode checklocks ## Run all static analysis tools
 
 # Dependency management
 check-deps: ensure-tools ## Check for outdated dependencies
@@ -692,10 +753,10 @@ dev-setup: install-tools ## Set up development environment
 	@echo "Development environment setup complete!"
 	@echo "Run 'make help' to see available commands"
 
-ci: build test test-race vet lint lint-css-tokens test-integration fmt-check registry-generate actor-field-guard ## Full CI pipeline: proto→web→build→tests→lint→fmt→registry
+ci: build $(BIN_TMUX) test test-race vet lint lint-css-tokens test-integration fmt-check registry-generate actor-field-guard ## Full CI pipeline: proto→web→build→tests→lint→fmt→registry
 
 # Quick development workflows
-quick-check: build test-coverage test-race lint lint-css-tokens registry-diff ## Quick development validation
+quick-check: build $(BIN_TMUX) test-coverage test-race lint lint-css-tokens registry-diff ## Quick development validation
 	@echo "✅ Quick validation complete"
 
 pre-commit: format vet test test-race lint vet-architecture ## Pre-commit validation
