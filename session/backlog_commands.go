@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -93,6 +94,7 @@ func WriteSlashCommands(item *BacklogItemData, worktreePath string) error {
 		return err
 	}
 
+	addWorktreeExcludes(worktreePath)
 	return nil
 }
 
@@ -132,6 +134,7 @@ func WriteBacklogContextFile(item *BacklogItemData, priorSessions []ItemSessionS
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		return fmt.Errorf("WriteBacklogContextFile: failed to rename tmp to dest: %w", err)
 	}
+	addWorktreeExcludes(worktreePath)
 	return nil
 }
 
@@ -153,4 +156,50 @@ func writeFile(path, content string) error {
 		return fmt.Errorf("writeFile: failed to write %s: %w", path, err)
 	}
 	return nil
+}
+
+// backlogExcludePatterns are the git exclude patterns for all files stapler-squad
+// writes into worktrees. These must never be committed to the target repo.
+var backlogExcludePatterns = []string{
+	".backlog-context.md",
+	".claude/commands/backlog/",
+}
+
+// addWorktreeExcludes writes backlog-generated file patterns to
+// $GIT_DIR/info/exclude so they are invisible to git without touching
+// .gitignore (which would pollute the target repo).
+func addWorktreeExcludes(worktreePath string) {
+	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		log.WarningLog.Printf("[addWorktreeExcludes] git rev-parse --git-dir in %s: %v", worktreePath, err)
+		return
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+
+	excludeFile := filepath.Join(gitDir, "info", "exclude")
+	if mkErr := os.MkdirAll(filepath.Dir(excludeFile), 0o755); mkErr != nil {
+		log.WarningLog.Printf("[addWorktreeExcludes] mkdir %s: %v", filepath.Dir(excludeFile), mkErr)
+		return
+	}
+
+	existingBytes, _ := os.ReadFile(excludeFile)
+	existing := string(existingBytes)
+
+	f, openErr := os.OpenFile(excludeFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if openErr != nil {
+		log.WarningLog.Printf("[addWorktreeExcludes] open %s: %v", excludeFile, openErr)
+		return
+	}
+	defer f.Close()
+
+	for _, p := range backlogExcludePatterns {
+		if !strings.Contains(existing, p) {
+			fmt.Fprintln(f, p)
+		}
+	}
 }
