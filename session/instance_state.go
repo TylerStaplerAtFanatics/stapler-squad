@@ -301,9 +301,21 @@ func (i *Instance) RecoverFromStopped() {
 // Only call from error recovery paths where the normal transition would itself fail
 // (e.g. the async-creation goroutine cannot cleanly call Stop() because the session
 // was never fully started). Callers must hold no locks.
+//
+// Routes through the actor mailbox (sendCtx) rather than taking i.mu directly:
+// ForceStatus is invoked from ad hoc goroutines outside the actor (e.g. the async
+// CreateSession goroutine in SessionService), not from inside an actor command.
+// runActor's own post-command buildSnapshot rebuild (actor.go) does not take i.mu
+// at all - it relies on single-goroutine confinement - so a direct i.mu.Lock() here
+// raced with that unguarded read under `-race`. Funneling through sendCtx serializes
+// this write with the actor's command loop when the instance is actor-owned
+// (LiveInstance), and falls back to running synchronously in-place when it isn't
+// (e.g. tests constructing a bare *Instance).
 func (i *Instance) ForceStatus(s Status) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.loadStatus(s)
-	i.snapshot.Store(buildSnapshot(i))
+	_ = i.sendCtx(context.Background(), func(_ *instanceState) {
+		i.mu.Lock()
+		i.loadStatus(s)
+		i.mu.Unlock()
+		i.snapshot.Store(buildSnapshot(i))
+	})
 }
