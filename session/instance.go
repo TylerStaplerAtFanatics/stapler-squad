@@ -411,10 +411,10 @@ const (
 
 // PermissionMode constants for the --permission-mode Claude Code flag.
 const (
-	PermissionModeAuto             = "auto"
+	PermissionModeAuto              = "auto"
 	PermissionModeBypassPermissions = "bypassPermissions"
-	PermissionModeAcceptEdits      = "acceptEdits"
-	PermissionModeManual           = "manual"
+	PermissionModeAcceptEdits       = "acceptEdits"
+	PermissionModeManual            = "manual"
 )
 
 // SessionType is an alias for config.SessionType so callers can use either package.
