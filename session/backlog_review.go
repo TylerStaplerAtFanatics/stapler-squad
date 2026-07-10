@@ -227,11 +227,14 @@ func GetGitHeadSHA(repoPath string) (string, error) {
 // (or HEAD~1 if baseSHA is empty). If the diff exceeds MaxDiffSizeReview bytes
 // it is truncated and truncated=true is returned.
 func GetGitDiff(ctx context.Context, worktreePath string, baseSHA string) (diff string, truncated bool, err error) {
+	// Compare baseSHA (or HEAD) to the working tree, not just committed history.
+	// Using "baseSHA..HEAD" would miss staged and unstaged changes when no commits
+	// have landed since the session started.
 	var rangeArg string
 	if baseSHA == "" {
-		rangeArg = "HEAD~1..HEAD"
+		rangeArg = "HEAD"
 	} else {
-		rangeArg = baseSHA + "..HEAD"
+		rangeArg = baseSHA
 	}
 
 	cmd := safeexec.CommandContext(ctx, "git", "diff", rangeArg)
