@@ -691,6 +691,11 @@ func (s *Storage) ListBacklogItems(ctx context.Context, filter BacklogItemFilter
 	return s.repo.ListBacklogItems(ctx, filter)
 }
 
+// ListBacklogItemSummaries returns lightweight summaries for list views.
+func (s *Storage) ListBacklogItemSummaries(ctx context.Context, filter BacklogItemFilter) ([]BacklogItemSummary, error) {
+	return s.repo.ListBacklogItemSummaries(ctx, filter)
+}
+
 // UpdateBacklogItem modifies an existing backlog item.
 func (s *Storage) UpdateBacklogItem(ctx context.Context, id string, update BacklogItemUpdate, precondition *BacklogItemPrecondition) (*BacklogItemData, error) {
 	return s.repo.UpdateBacklogItem(ctx, id, update, precondition)

@@ -284,6 +284,95 @@ func (r *EntRepository) ListBacklogItems(ctx context.Context, filter BacklogItem
 	return result, nil
 }
 
+// ListBacklogItemSummaries returns lightweight BacklogItemSummary values for list views.
+// Three-phase: (1) scalar fields via .All(), (2) item sessions + review verdicts via edge loading.
+func (r *EntRepository) ListBacklogItemSummaries(ctx context.Context, filter BacklogItemFilter) ([]BacklogItemSummary, error) {
+	q := r.client.BacklogItem.Query()
+
+	if len(filter.Statuses) > 0 {
+		q = q.Where(backlogitem.StatusIn(filter.Statuses...))
+	} else if filter.ExcludeTerminal {
+		q = q.Where(backlogitem.StatusNotIn(
+			string(BacklogStatusDone),
+			string(BacklogStatusArchived),
+		))
+	}
+	if len(filter.Priorities) > 0 {
+		q = q.Where(backlogitem.PriorityIn(filter.Priorities...))
+	}
+	switch filter.SortBy {
+	case "priority":
+		q = q.Order(ent.Asc(backlogitem.FieldPriority), ent.Desc(backlogitem.FieldUpdatedAt))
+	case "updated_at":
+		q = q.Order(ent.Desc(backlogitem.FieldUpdatedAt))
+	default:
+		q = q.Order(ent.Asc(backlogitem.FieldPriority), ent.Desc(backlogitem.FieldUpdatedAt))
+	}
+
+	const defaultSafetyLimit = 1000
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = defaultSafetyLimit
+	}
+	q = q.Limit(limit)
+	if filter.Offset > 0 {
+		q = q.Offset(filter.Offset)
+	}
+
+	// Phase 1: load scalar fields; avoid Select/Scan to sidestep nullable-time pitfalls.
+	items, err := q.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list backlog item summaries: %w", err)
+	}
+	summaries := make([]BacklogItemSummary, len(items))
+	idIndex := make(map[string]int, len(items))
+	parsedUUIDs := make([]uuid.UUID, 0, len(items))
+	for i, item := range items {
+		summaries[i] = BacklogItemSummary{
+			ID:                 item.ID.String(),
+			ExternalID:         item.ExternalID,
+			Title:              item.Title,
+			Status:             BacklogStatus(item.Status),
+			Priority:           item.Priority,
+			RepoPath:           item.RepoPath,
+			AcceptanceCriteria: AcCriteriaJSON(item.AcceptanceCriteria),
+			Notes:              item.Notes,
+			PrURL:              item.PrURL,
+			PrNumber:           item.PrNumber,
+			CreatedAt:          item.CreatedAt,
+			UpdatedAt:          item.UpdatedAt,
+			ArchivedAt:         item.ArchivedAt,
+		}
+		idIndex[item.ID.String()] = i
+		parsedUUIDs = append(parsedUUIDs, item.ID)
+	}
+	if len(parsedUUIDs) == 0 {
+		return summaries, nil
+	}
+
+	// Phase 2+3: load item sessions with review verdicts via edge loading.
+	sessions, err := r.client.ItemSession.Query().
+		Where(itemsession.HasBacklogItemWith(backlogitem.IDIn(parsedUUIDs...))).
+		WithBacklogItem().
+		WithReviewVerdict().
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list item sessions for summaries: %w", err)
+	}
+	for _, s := range sessions {
+		if s.Edges.BacklogItem == nil {
+			continue
+		}
+		itemID := s.Edges.BacklogItem.ID.String()
+		idx, ok := idIndex[itemID]
+		if !ok {
+			continue
+		}
+		summaries[idx].ItemSessions = append(summaries[idx].ItemSessions, itemSessionToSummary(s))
+	}
+	return summaries, nil
+}
+
 // UpdateBacklogItem modifies an existing backlog item with optional precondition check.
 func (r *EntRepository) UpdateBacklogItem(ctx context.Context, id string, update BacklogItemUpdate, precondition *BacklogItemPrecondition) (*BacklogItemData, error) {
 	parsedID, err := uuid.Parse(id)
