@@ -289,6 +289,10 @@ func (i *Instance) UpdatePRStatus(state, priority, checkConclusion string, appro
 	var result prUpdateResult
 	_ = i.sendSyncErr(func(s *instanceState) error {
 		inst := s.inst
+		// i.mu guards the writes + buildSnapshot together: legacy setters
+		// (MarkViewed & co.) mutate other fields directly under i.mu.Lock() from
+		// outside the actor — see runActor's doc comment in actor.go.
+		inst.mu.Lock()
 		result.PriorityChanged = priority != inst.GitHubPRPriority
 		inst.GitHubPRState = state
 		inst.GitHubPRPriority = priority
@@ -298,7 +302,9 @@ func (i *Instance) UpdatePRStatus(state, priority, checkConclusion string, appro
 		inst.GitHubCheckConclusion = checkConclusion
 		inst.GitHubPRStatusTerminal = terminal
 		inst.LastPRStatusCheck = time.Now()
-		inst.snapshot.Store(buildSnapshot(inst))
+		snap := buildSnapshot(inst)
+		inst.mu.Unlock()
+		inst.snapshot.Store(snap)
 		return nil
 	})
 	return result

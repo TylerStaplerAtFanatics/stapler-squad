@@ -944,7 +944,15 @@ func startLocked(actorState *instanceState, firstTimeSetup bool) error {
 		}
 	}
 	i.started.Store(true)
-	i.snapshot.Store(buildSnapshot(i))
+	// buildSnapshot reads every mutable field; take i.mu here (even though this
+	// runs inside an actor command with no OTHER actor writers to worry about)
+	// because legacy setters (MarkViewed & co.) mutate fields directly under
+	// i.mu.Lock() from outside the actor — see runActor's doc comment in
+	// actor.go for the full explanation.
+	i.mu.Lock()
+	snap := buildSnapshot(i)
+	i.mu.Unlock()
+	i.snapshot.Store(snap)
 	i.fireLifecycleEvent(EventStarted, "")
 
 	i.startVNCServer(context.Background())

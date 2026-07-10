@@ -38,7 +38,12 @@ import (
 func (i *Instance) ToInstanceData() InstanceData {
 	var snap *InstanceSnapshot
 	_ = i.sendSyncErr(func(s *instanceState) error {
+		// i.mu guards buildSnapshot here too: legacy setters (MarkViewed & co.)
+		// mutate fields directly under i.mu.Lock() from outside the actor — see
+		// runActor's doc comment in actor.go.
+		s.inst.mu.Lock()
 		snap = buildSnapshot(s.inst)
+		s.inst.mu.Unlock()
 		return nil
 	})
 
