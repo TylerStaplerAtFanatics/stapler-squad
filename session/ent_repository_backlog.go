@@ -24,7 +24,7 @@ func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 		ID:                 item.ID.String(),
 		Title:              item.Title,
 		Description:        item.Description,
-		AcceptanceCriteria: item.AcceptanceCriteria,
+		AcceptanceCriteria: AcCriteriaJSON(item.AcceptanceCriteria),
 		Priority:           item.Priority,
 		Status:             item.Status,
 		RepoPath:           item.RepoPath,
@@ -84,7 +84,7 @@ func (r *EntRepository) CreateBacklogItem(ctx context.Context, data BacklogItemD
 	c := r.client.BacklogItem.Create().
 		SetTitle(data.Title).
 		SetNillableDescription(&data.Description).
-		SetNillableAcceptanceCriteria(&data.AcceptanceCriteria).
+		SetNillableAcceptanceCriteria(nilIfEmptyJSON(data.AcceptanceCriteria)).
 		SetPriority(priority).
 		SetStatus(status).
 		SetNillableRepoPath(&data.RepoPath).
@@ -218,7 +218,7 @@ func (r *EntRepository) UpdateBacklogItem(ctx context.Context, id string, update
 		u.SetDescription(*update.Description)
 	}
 	if update.AcceptanceCriteria != nil {
-		u.SetAcceptanceCriteria(*update.AcceptanceCriteria)
+		u.SetAcceptanceCriteria(string(*update.AcceptanceCriteria))
 	}
 	if update.Priority != nil {
 		u.SetPriority(*update.Priority)

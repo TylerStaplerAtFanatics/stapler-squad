@@ -852,7 +852,7 @@ func (s *Storage) GetClaudeConversationUUIDBySessionUUID(ctx context.Context, se
 
 // GetMostRecentReviewVerdictForItem returns the OverallOutcome of the most recent
 // ReviewVerdict linked to any ItemSession for itemID. Returns "" when none exists.
-func (s *Storage) GetMostRecentReviewVerdictForItem(ctx context.Context, itemID string) (string, error) {
+func (s *Storage) GetMostRecentReviewVerdictForItem(ctx context.Context, itemID string) (ReviewOutcome, error) {
 	er, ok := s.repo.(*EntRepository)
 	if !ok {
 		return "", nil

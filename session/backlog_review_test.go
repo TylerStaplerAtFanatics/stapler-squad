@@ -19,7 +19,7 @@ func TestParseHeadlessVerdictResult_ValidJSON(t *testing.T) {
 	assert.Equal(t, "all good", summary)
 	require.Len(t, verdicts, 1)
 	assert.Equal(t, 0, verdicts[0].CriterionIndex)
-	assert.Equal(t, "PASS", verdicts[0].Outcome)
+	assert.Equal(t, ReviewOutcomePass, verdicts[0].Outcome)
 }
 
 // TestParseHeadlessVerdictResult_JSONBuriedInProse verifies extraction when JSON
@@ -33,7 +33,7 @@ func TestParseHeadlessVerdictResult_JSONBuriedInProse(t *testing.T) {
 	assert.Equal(t, ReviewVerdictFail, overall)
 	assert.Equal(t, "missing test", summary)
 	require.Len(t, verdicts, 1)
-	assert.Equal(t, "FAIL", verdicts[0].Outcome)
+	assert.Equal(t, ReviewOutcomeFail, verdicts[0].Outcome)
 }
 
 // TestParseHeadlessVerdictResult_InvalidJSON returns FAIL with a diagnostic summary.
@@ -76,7 +76,7 @@ func TestParseHeadlessVerdictResult_PartialAndUnverifiable(t *testing.T) {
 	for _, outcome := range []string{"PARTIAL", "UNVERIFIABLE"} {
 		text := `{"overall":"` + outcome + `","summary":"","verdicts":[]}`
 		overall, _, _ := ParseHeadlessVerdictResult(text)
-		assert.Equal(t, outcome, overall)
+		assert.Equal(t, ReviewOutcome(outcome), overall)
 	}
 }
 

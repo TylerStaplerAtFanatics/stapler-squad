@@ -261,7 +261,7 @@ type BacklogItemData struct {
 	ID                 string
 	Title              string
 	Description        string
-	AcceptanceCriteria string // raw JSON []AcCriterion
+	AcceptanceCriteria AcCriteriaJSON
 	Priority           int
 	Status             string
 	RepoPath           string
@@ -316,7 +316,7 @@ type BacklogItemFilter struct {
 type BacklogItemUpdate struct {
 	Title              *string
 	Description        *string
-	AcceptanceCriteria *string // raw JSON
+	AcceptanceCriteria *AcCriteriaJSON
 	Priority           *int
 	RepoPath           *string
 	SkipReviewGate     *bool

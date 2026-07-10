@@ -69,15 +69,15 @@ func TestCanTransition_ArchivedToIdeaIsExplicit(t *testing.T) {
 func TestTransitionGuard_IdeaToReady_RequiresAC(t *testing.T) {
 	// Empty AC JSON → error
 	item := BacklogItemTransitionInput{
-		Status:         BacklogStatusIdea,
-		AcCriteriaJSON: "",
+		Status:     BacklogStatusIdea,
+		AcCriteria: "",
 	}
 	if err := TransitionGuard(item, BacklogStatusReady); err != ErrACRequired {
 		t.Errorf("TransitionGuard with empty AC = %v; want ErrACRequired", err)
 	}
 
 	// Empty JSON array → error
-	item.AcCriteriaJSON = "[]"
+	item.AcCriteria = "[]"
 	if err := TransitionGuard(item, BacklogStatusReady); err != ErrACRequired {
 		t.Errorf("TransitionGuard with [] AC = %v; want ErrACRequired", err)
 	}
@@ -85,7 +85,7 @@ func TestTransitionGuard_IdeaToReady_RequiresAC(t *testing.T) {
 	// Valid AC with one criterion → nil
 	criteria := []AcCriterion{{Index: 0, Text: "must work", Status: "pending"}}
 	raw, _ := json.Marshal(criteria)
-	item.AcCriteriaJSON = string(raw)
+	item.AcCriteria = AcCriteriaJSON(raw)
 	if err := TransitionGuard(item, BacklogStatusReady); err != nil {
 		t.Errorf("TransitionGuard with 1 AC = %v; want nil", err)
 	}

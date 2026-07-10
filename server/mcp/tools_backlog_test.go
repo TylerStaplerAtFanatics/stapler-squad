@@ -182,8 +182,8 @@ func TestReportProgress_SuccessfullyUpdatesAcStatus(t *testing.T) {
 	criteria, err := session.ParseAcCriteria(fetchedItem.AcceptanceCriteria)
 	require.NoError(t, err)
 	require.Len(t, criteria, 2)
-	require.Equal(t, "done", criteria[0].Status, "criterion 0 should be marked done")
-	require.Equal(t, "pending", criteria[1].Status, "criterion 1 should remain pending")
+	require.Equal(t, session.AcStatusDone, criteria[0].Status, "criterion 0 should be marked done")
+	require.Equal(t, session.AcStatusPending, criteria[1].Status, "criterion 1 should remain pending")
 }
 
 // TestGetBacklogItem_ReturnsItemWithEnvelope verifies that getBacklogItem
@@ -339,7 +339,7 @@ func TestReportProgress_MapsStatusValues(t *testing.T) {
 
 	criteria, err := session.ParseAcCriteria(fetchedItem.AcceptanceCriteria)
 	require.NoError(t, err)
-	require.Equal(t, "done", criteria[0].Status, "pass should be mapped to done")
+	require.Equal(t, session.AcStatusDone, criteria[0].Status, "pass should be mapped to done")
 }
 
 // ─── T-11 tests 7 & 8: submitTriageResult notification publishing ─────────────

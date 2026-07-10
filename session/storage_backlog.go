@@ -17,7 +17,7 @@ type ItemSessionData struct {
 	ItemID           string // BacklogItem UUID
 	SessionUUID      string
 	SessionRole      string
-	AcSnapshot       string // JSON
+	AcSnapshot       AcCriteriaJSON
 	TriageResult     string
 	EstimatedCostUsd float64 // Only set for headless sessions where cost is known at creation time
 }
@@ -25,7 +25,7 @@ type ItemSessionData struct {
 // ReviewVerdictData is the input data for saving a ReviewVerdict.
 type ReviewVerdictData struct {
 	ItemSessionID  string
-	OverallOutcome string
+	OverallOutcome ReviewOutcome
 	PerCriterion   string // JSON
 	Summary        string
 	DiffHash       string
@@ -50,7 +50,7 @@ func (r *EntRepository) CreateItemSession(ctx context.Context, data ItemSessionD
 		SetSessionUUID(data.SessionUUID).
 		SetSessionRole(data.SessionRole).
 		SetBacklogItemID(parsedItemID).
-		SetNillableAcSnapshot(nilIfEmpty(data.AcSnapshot)).
+		SetNillableAcSnapshot(nilIfEmpty(string(data.AcSnapshot))).
 		SetNillableTriageResult(nilIfEmpty(data.TriageResult))
 	if data.EstimatedCostUsd > 0 {
 		q = q.SetEstimatedCostUsd(data.EstimatedCostUsd)
@@ -294,7 +294,7 @@ func (r *EntRepository) SaveReviewVerdict(ctx context.Context, itemSessionID str
 	if ent.IsNotFound(queryErr) || existing == nil {
 		// Create new verdict.
 		rv, err = tx.ReviewVerdict.Create().
-			SetOverallOutcome(verdict.OverallOutcome).
+			SetOverallOutcome(string(verdict.OverallOutcome)).
 			SetNillablePerCriterion(nilIfEmpty(verdict.PerCriterion)).
 			SetNillableSummary(nilIfEmpty(verdict.Summary)).
 			SetNillableDiffHash(nilIfEmpty(verdict.DiffHash)).
@@ -312,7 +312,7 @@ func (r *EntRepository) SaveReviewVerdict(ctx context.Context, itemSessionID str
 	} else {
 		// Update existing verdict.
 		rv, err = tx.ReviewVerdict.UpdateOne(existing).
-			SetOverallOutcome(verdict.OverallOutcome).
+			SetOverallOutcome(string(verdict.OverallOutcome)).
 			SetNillablePerCriterion(nilIfEmpty(verdict.PerCriterion)).
 			SetNillableSummary(nilIfEmpty(verdict.Summary)).
 			SetNillableDiffHash(nilIfEmpty(verdict.DiffHash)).
@@ -353,7 +353,7 @@ func (r *EntRepository) CreateItemSessionWithVerdict(ctx context.Context, isData
 		SetSessionUUID(isData.SessionUUID).
 		SetSessionRole(isData.SessionRole).
 		SetBacklogItemID(parsedItemID).
-		SetNillableAcSnapshot(nilIfEmpty(isData.AcSnapshot)).
+		SetNillableAcSnapshot(nilIfEmptyJSON(isData.AcSnapshot)).
 		SetNillableTriageResult(nilIfEmpty(isData.TriageResult))
 	if isData.EstimatedCostUsd > 0 {
 		isq = isq.SetEstimatedCostUsd(isData.EstimatedCostUsd)
@@ -364,7 +364,7 @@ func (r *EntRepository) CreateItemSessionWithVerdict(ctx context.Context, isData
 	}
 
 	rv, err := tx.ReviewVerdict.Create().
-		SetOverallOutcome(verdict.OverallOutcome).
+		SetOverallOutcome(string(verdict.OverallOutcome)).
 		SetNillablePerCriterion(nilIfEmpty(verdict.PerCriterion)).
 		SetNillableSummary(nilIfEmpty(verdict.Summary)).
 		SetNillableDiffHash(nilIfEmpty(verdict.DiffHash)).
@@ -481,11 +481,10 @@ func (r *EntRepository) FindPRPendingItems(ctx context.Context) ([]*ent.BacklogI
 
 // --- ReviewVerdict lookup ---
 
-// GetMostRecentReviewVerdictForItem returns the OverallOutcome string from the
+// GetMostRecentReviewVerdictForItem returns the OverallOutcome from the
 // most recently created ReviewVerdict associated with any ItemSession for the
-// given BacklogItem UUID. Returns an empty string (not an error) when no verdict
-// exists yet.
-func (r *EntRepository) GetMostRecentReviewVerdictForItem(ctx context.Context, itemID string) (string, error) {
+// given BacklogItem UUID. Returns "" (not an error) when no verdict exists yet.
+func (r *EntRepository) GetMostRecentReviewVerdictForItem(ctx context.Context, itemID string) (ReviewOutcome, error) {
 	parsedItemID, err := uuid.Parse(itemID)
 	if err != nil {
 		return "", fmt.Errorf("invalid item id %q: %w", itemID, err)
@@ -510,7 +509,7 @@ func (r *EntRepository) GetMostRecentReviewVerdictForItem(ctx context.Context, i
 	if is.Edges.ReviewVerdict == nil {
 		return "", nil
 	}
-	return is.Edges.ReviewVerdict.OverallOutcome, nil
+	return ReviewOutcome(is.Edges.ReviewVerdict.OverallOutcome), nil
 }
 
 // --- AC criterion update ---
@@ -530,7 +529,7 @@ func (r *EntRepository) UpdateAcCriterionStatus(ctx context.Context, itemID stri
 		return fmt.Errorf("failed to get backlog item %s: %w", itemID, err)
 	}
 
-	criteria, parseErr := ParseAcCriteria(item.AcceptanceCriteria)
+	criteria, parseErr := ParseAcCriteria(AcCriteriaJSON(item.AcceptanceCriteria))
 	if parseErr != nil {
 		return fmt.Errorf("failed to parse AC criteria: %w", parseErr)
 	}
@@ -539,7 +538,7 @@ func (r *EntRepository) UpdateAcCriterionStatus(ctx context.Context, itemID stri
 		return fmt.Errorf("criterion index %d out of bounds (len=%d)", criterionIndex, len(criteria))
 	}
 
-	criteria[criterionIndex].Status = status
+	criteria[criterionIndex].Status = AcStatus(status)
 	if note != "" {
 		criteria[criterionIndex].Note = note
 	}
@@ -550,7 +549,7 @@ func (r *EntRepository) UpdateAcCriterionStatus(ctx context.Context, itemID stri
 	}
 
 	_, err = r.client.BacklogItem.UpdateOneID(parsedID).
-		SetAcceptanceCriteria(serialized).
+		SetAcceptanceCriteria(string(serialized)).
 		Save(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to save AC criteria update for item %s: %w", itemID, err)

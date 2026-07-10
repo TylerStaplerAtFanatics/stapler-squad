@@ -43,16 +43,51 @@ const (
 // when no priority is specified. Lower values indicate higher priority.
 const DefaultBacklogPriority = 3
 
+// AcStatus represents the status of a single acceptance criterion.
+type AcStatus string
+
+const (
+	AcStatusPending    AcStatus = "pending"
+	AcStatusInProgress AcStatus = "in_progress"
+	AcStatusDone       AcStatus = "done"
+	AcStatusFail       AcStatus = "fail"
+)
+
+// IsValid reports whether s is a known AC status value.
+func (s AcStatus) IsValid() bool {
+	switch s {
+	case AcStatusPending, AcStatusInProgress, AcStatusDone, AcStatusFail:
+		return true
+	}
+	return false
+}
+
+// AcCriteriaJSON is the JSON-serialized form of []AcCriterion stored in the DB.
+// Using a named type prevents silently passing Description or other string fields
+// where serialized AC criteria are expected.
+type AcCriteriaJSON string
+
+// AcCriteriaJSONEmpty is the zero value — an empty criteria list.
+const AcCriteriaJSONEmpty AcCriteriaJSON = ""
+
+// Parse deserializes the criteria from JSON.
+func (j AcCriteriaJSON) Parse() ([]AcCriterion, error) {
+	return ParseAcCriteria(j)
+}
+
+// IsEmpty reports whether j contains no criteria JSON.
+func (j AcCriteriaJSON) IsEmpty() bool { return j == "" }
+
 // AcCriterion is a single acceptance criterion for a backlog item.
 type AcCriterion struct {
-	Index  int    `json:"index"`
-	Text   string `json:"text"`
-	Status string `json:"status"` // "pending", "in_progress", "done"
-	Note   string `json:"note,omitempty"`
+	Index  int      `json:"index"`
+	Text   string   `json:"text"`
+	Status AcStatus `json:"status"` // pending, in_progress, done, fail
+	Note   string   `json:"note,omitempty"`
 }
 
 // ParseAcCriteria deserializes acceptance criteria from a JSON string.
-func ParseAcCriteria(raw string) ([]AcCriterion, error) {
+func ParseAcCriteria(raw AcCriteriaJSON) ([]AcCriterion, error) {
 	if raw == "" {
 		return nil, nil
 	}
@@ -63,38 +98,58 @@ func ParseAcCriteria(raw string) ([]AcCriterion, error) {
 	return criteria, nil
 }
 
-// SerializeAcCriteria serializes acceptance criteria to a JSON string.
-func SerializeAcCriteria(criteria []AcCriterion) (string, error) {
+// SerializeAcCriteria serializes acceptance criteria to an AcCriteriaJSON value.
+func SerializeAcCriteria(criteria []AcCriterion) (AcCriteriaJSON, error) {
 	b, err := json.Marshal(criteria)
 	if err != nil {
 		return "", err
 	}
-	return string(b), nil
+	return AcCriteriaJSON(b), nil
 }
 
-// Review verdict outcome constants.
+// ReviewOutcome is a typed verdict outcome value (PASS, FAIL, PARTIAL, UNVERIFIABLE).
+type ReviewOutcome string
+
 const (
-	ReviewVerdictPass         = "PASS"
-	ReviewVerdictFail         = "FAIL"
-	ReviewVerdictPartial      = "PARTIAL"
-	ReviewVerdictUnverifiable = "UNVERIFIABLE"
+	ReviewOutcomePass         ReviewOutcome = "PASS"
+	ReviewOutcomeFail         ReviewOutcome = "FAIL"
+	ReviewOutcomePartial      ReviewOutcome = "PARTIAL"
+	ReviewOutcomeUnverifiable ReviewOutcome = "UNVERIFIABLE"
+)
+
+// IsValid reports whether o is a recognised review outcome.
+func (o ReviewOutcome) IsValid() bool {
+	switch o {
+	case ReviewOutcomePass, ReviewOutcomeFail, ReviewOutcomePartial, ReviewOutcomeUnverifiable:
+		return true
+	}
+	return false
+}
+
+// Backward-compatible aliases so callers can be migrated incrementally.
+// Prefer ReviewOutcome* constants in new code.
+const (
+	ReviewVerdictPass         = ReviewOutcomePass
+	ReviewVerdictFail         = ReviewOutcomeFail
+	ReviewVerdictPartial      = ReviewOutcomePartial
+	ReviewVerdictUnverifiable = ReviewOutcomeUnverifiable
 )
 
 // CriterionVerdict holds the review outcome for a single acceptance criterion.
 type CriterionVerdict struct {
-	CriterionIndex int    `json:"criterion_index"`
-	Outcome        string `json:"outcome"`
-	Evidence       string `json:"evidence"`
+	CriterionIndex int           `json:"criterion_index"`
+	Outcome        ReviewOutcome `json:"outcome"`
+	Evidence       string        `json:"evidence"`
 }
 
 // AggregateOutcome computes the overall outcome from a slice of CriterionVerdicts.
 // Priority (highest to lowest): FAIL > PARTIAL > UNVERIFIABLE > PASS.
-// Returns PASS only if every verdict is PASS.
-func AggregateOutcome(verdicts []CriterionVerdict) string {
+// Returns FAIL when the slice is empty to prevent auto-approval of empty reviews.
+func AggregateOutcome(verdicts []CriterionVerdict) ReviewOutcome {
 	if len(verdicts) == 0 {
 		// No criteria evaluated — treat as FAIL, not PASS, to prevent auto-approval
 		// of reviews that somehow bypassed the non-empty validation in submit_review_verdict.
-		return ReviewVerdictFail
+		return ReviewOutcomeFail
 	}
 
 	hasFail := false
@@ -103,24 +158,24 @@ func AggregateOutcome(verdicts []CriterionVerdict) string {
 
 	for _, v := range verdicts {
 		switch v.Outcome {
-		case ReviewVerdictFail:
+		case ReviewOutcomeFail:
 			hasFail = true
-		case ReviewVerdictPartial:
+		case ReviewOutcomePartial:
 			hasPartial = true
-		case ReviewVerdictUnverifiable:
+		case ReviewOutcomeUnverifiable:
 			hasUnverifiable = true
 		}
 	}
 
 	switch {
 	case hasFail:
-		return ReviewVerdictFail
+		return ReviewOutcomeFail
 	case hasPartial:
-		return ReviewVerdictPartial
+		return ReviewOutcomePartial
 	case hasUnverifiable:
-		return ReviewVerdictUnverifiable
+		return ReviewOutcomeUnverifiable
 	default:
-		return ReviewVerdictPass
+		return ReviewOutcomePass
 	}
 }
 
@@ -134,8 +189,8 @@ var validTransitions = map[BacklogStatus]map[BacklogStatus]bool{
 		BacklogStatusArchived: true,
 	},
 	BacklogStatusRefining: {
-		BacklogStatusIdea:    true, // backward: re-triage
-		BacklogStatusReady:   true,
+		BacklogStatusIdea:     true, // backward: re-triage
+		BacklogStatusReady:    true,
 		BacklogStatusArchived: true,
 	},
 	BacklogStatusReady: {
@@ -154,25 +209,25 @@ var validTransitions = map[BacklogStatus]map[BacklogStatus]bool{
 		BacklogStatusPRPending:  true,
 		BacklogStatusDone:       true,
 		BacklogStatusInProgress: true,
-		BacklogStatusReady:      true,    // backward: re-spawn without re-triaging
-		BacklogStatusRefining:   true,    // backward: refine ACs/plan
-		BacklogStatusIdea:       true,    // backward: re-triage from scratch
+		BacklogStatusReady:      true, // backward: re-spawn without re-triaging
+		BacklogStatusRefining:   true, // backward: refine ACs/plan
+		BacklogStatusIdea:       true, // backward: re-triage from scratch
 	},
 	BacklogStatusPRPending: {
 		BacklogStatusDone:       true,
 		BacklogStatusInProgress: true,
 		BacklogStatusReview:     true,
-		BacklogStatusReady:      true,    // backward
-		BacklogStatusRefining:   true,    // backward
-		BacklogStatusIdea:       true,    // backward
+		BacklogStatusReady:      true, // backward
+		BacklogStatusRefining:   true, // backward
+		BacklogStatusIdea:       true, // backward
 	},
 	BacklogStatusDone: {
 		BacklogStatusReview:     true,
 		BacklogStatusArchived:   true,
-		BacklogStatusInProgress: true,    // backward
-		BacklogStatusReady:      true,    // backward
-		BacklogStatusRefining:   true,    // backward
-		BacklogStatusIdea:       true,    // backward
+		BacklogStatusInProgress: true, // backward
+		BacklogStatusReady:      true, // backward
+		BacklogStatusRefining:   true, // backward
+		BacklogStatusIdea:       true, // backward
 	},
 	BacklogStatusArchived: {
 		BacklogStatusIdea: true,
@@ -199,11 +254,11 @@ var (
 // BacklogItemTransitionInput carries the fields needed by TransitionGuard.
 type BacklogItemTransitionInput struct {
 	Status            BacklogStatus
-	AcCriteriaJSON    string
+	AcCriteria        AcCriteriaJSON // serialized acceptance criteria
 	PlanApproved      bool
 	SkipPlanning      bool
-	PlanArtifactsPath string // path to plan artifacts written by triage session
-	OverallOutcome    string // from linked ReviewVerdict
+	PlanArtifactsPath string        // path to plan artifacts written by triage session
+	OverallOutcome    ReviewOutcome // from linked ReviewVerdict
 	OverrideReason    string
 }
 
@@ -216,7 +271,7 @@ func TransitionGuard(item BacklogItemTransitionInput, to BacklogStatus) error {
 
 	switch {
 	case from == BacklogStatusIdea && to == BacklogStatusReady:
-		criteria, err := ParseAcCriteria(item.AcCriteriaJSON)
+		criteria, err := ParseAcCriteria(item.AcCriteria)
 		if err != nil || len(criteria) == 0 {
 			return ErrACRequired
 		}
@@ -232,7 +287,7 @@ func TransitionGuard(item BacklogItemTransitionInput, to BacklogStatus) error {
 		return nil
 
 	case from == BacklogStatusRefining && to == BacklogStatusReady:
-		criteria, err := ParseAcCriteria(item.AcCriteriaJSON)
+		criteria, err := ParseAcCriteria(item.AcCriteria)
 		if err != nil || len(criteria) == 0 {
 			return ErrACRequired
 		}
@@ -242,7 +297,7 @@ func TransitionGuard(item BacklogItemTransitionInput, to BacklogStatus) error {
 		if item.OverrideReason != "" {
 			return nil
 		}
-		if item.OverallOutcome != ReviewVerdictPass {
+		if item.OverallOutcome != ReviewOutcomePass {
 			return ErrVerdictRequired
 		}
 		return nil
