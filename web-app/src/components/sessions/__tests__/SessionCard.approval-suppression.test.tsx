@@ -47,6 +47,20 @@ jest.mock("@/lib/hooks/useFocusTrap", () => ({
   useFocusTrap: () => {},
 }));
 
+// useSessionActions pulls in useSessionService, which requires an
+// AnalyticsContextProvider we don't want to stand up for this focused test.
+jest.mock("@/lib/hooks/useSessionService", () => ({
+  useSessionService: () => ({
+    pauseSession: jest.fn(),
+    resumeSession: jest.fn(),
+    deleteSession: jest.fn(),
+    renameSession: jest.fn(),
+    restartSession: jest.fn(),
+    createCheckpoint: jest.fn(),
+    updateSession: jest.fn(),
+  }),
+}));
+
 jest.mock("@/components/ui/AppLink", () => ({
   AppLink: ({ href, children, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
     <a href={href} {...rest}>{children}</a>
