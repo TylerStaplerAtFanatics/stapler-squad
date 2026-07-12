@@ -105,6 +105,12 @@ func (s *BacklogService) AttachSessionToItem(
 					_ = s.storage.UpdateItemSessionGitActivity(ctx, is.ID, baseSHA, "", time.Now(), 0)
 					inst.SetDirBaseSHA(baseSHA)
 				}
+				// Persist synchronously so the review gate's worktree lookup (by session
+				// UUID) doesn't race the next periodic SaveInstances sweep — same fix as
+				// SpawnSessionFromItem.
+				if saveErr := s.storage.SaveInstances([]*session.Instance{inst}); saveErr != nil {
+					log.WarningLog.Printf("[AttachSessionToItem] failed to persist instance immediately after attach item=%s session=%s: %v", item.ID, inst.UUID, saveErr)
+				}
 				break
 			}
 		}

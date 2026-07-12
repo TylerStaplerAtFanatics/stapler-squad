@@ -82,7 +82,10 @@ func (r *ReviewGateRunner) Run(
 		diff, truncated, diffErr = GetGitDiff(ctx, wt.WorktreePath, wt.BaseCommitSHA)
 		if diffErr != nil {
 			log.WarningLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff (worktree) item=%s: %v; falling back to repo", item.ID, diffErr)
-			diff, truncated, diffErr = GetGitDiff(ctx, item.RepoPath, wt.BaseCommitSHA)
+			// item.RepoPath's own checked-out HEAD is not the work branch's tip, so an
+			// explicit branch ref is required here — implicit HEAD would diff against
+			// whatever the shared main checkout happens to have, not the agent's work.
+			diff, truncated, diffErr = GetGitDiffRef(ctx, item.RepoPath, wt.BaseCommitSHA, wt.BranchName)
 			if diffErr != nil {
 				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff (repo fallback) item=%s: %v", item.ID, diffErr)
 			}
