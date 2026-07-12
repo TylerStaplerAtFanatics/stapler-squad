@@ -1,8 +1,8 @@
 {
-  "id": "backlog:create-item",
+  "id": "backlog:submit-manual-review",
   "type": "backend",
   "service": "BacklogService",
-  "method": "CreateBacklogItem",
+  "method": "SubmitManualReview",
   "protoFile": "proto/session/v1/backlog.proto",
   "markerFound": true,
   "handlerFile": "server/services/backlog_service_lifecycle.go",
