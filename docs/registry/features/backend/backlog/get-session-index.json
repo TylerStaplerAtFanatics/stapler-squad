@@ -1,11 +1,10 @@
 {
-  "id": "backlog:create-item",
+  "id": "backlog:get-session-index",
   "type": "backend",
   "service": "BacklogService",
-  "method": "CreateBacklogItem",
+  "method": "GetSessionBacklogIndex",
   "protoFile": "proto/session/v1/backlog.proto",
-  "markerFound": true,
-  "handlerFile": "server/services/backlog_service_lifecycle.go",
+  "markerFound": false,
   "tested": false,
   "testIds": [],
   "lastModified": "2026-07-11T09:32:29.851760768-07:00"
