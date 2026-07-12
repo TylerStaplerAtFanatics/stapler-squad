@@ -1,12 +1,16 @@
 package session
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
 // TestParseHeadlessVerdictResult_ValidJSON verifies that well-formed JSON is parsed correctly.
@@ -150,4 +154,51 @@ func TestRunPreGateSecurityCheck_DetectsNewPatterns(t *testing.T) {
 			assert.Error(t, err, "pattern %q should be detected", tc.name)
 		})
 	}
+}
+
+// runGit runs a git command in dir for test setup, failing the test on error.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := safeexec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v failed: %s", args, out)
+}
+
+// TestGetGitDiff_ImplicitHEADMissesOtherBranchCommits demonstrates the bug that
+// GetGitDiffRef fixes: diffing baseSHA..HEAD in a directory whose checked-out
+// branch differs from the one that actually has the new commits produces an
+// empty (or unrelated) diff, even though the commits are reachable in the
+// shared object store.
+func TestGetGitDiff_ImplicitHEADMissesOtherBranchCommits(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o644))
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "initial")
+
+	baseSHA, err := GetGitHeadSHA(repo)
+	require.NoError(t, err)
+
+	// Feature branch gets a real commit, but the repo directory stays checked
+	// out on main — simulating a fallback diff running in the shared main repo
+	// checkout instead of the work session's own (now-gone) worktree.
+	runGit(t, repo, "branch", "feature")
+	runGit(t, repo, "checkout", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("new work\n"), 0o644))
+	runGit(t, repo, "add", "feature.txt")
+	runGit(t, repo, "commit", "-m", "feature work")
+	runGit(t, repo, "checkout", "main")
+
+	// Implicit HEAD (main) sees nothing — this is the bug.
+	diff, _, err := GetGitDiff(context.Background(), repo, baseSHA)
+	require.NoError(t, err)
+	assert.Empty(t, diff, "diffing against implicit HEAD in a directory checked out on the wrong branch must miss the work")
+
+	// Explicit branch ref sees the real commit — this is the fix.
+	diff, _, err = GetGitDiffRef(context.Background(), repo, baseSHA, "feature")
+	require.NoError(t, err)
+	assert.Contains(t, diff, "feature.txt", "GetGitDiffRef with an explicit branch name must find commits on that branch regardless of what's checked out")
 }

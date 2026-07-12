@@ -202,6 +202,15 @@ func (s *BacklogService) SpawnSessionFromItem(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to spawn session: %w", err))
 	}
 
+	// Persist the instance (and its Worktree row, with BaseCommitSha) synchronously now
+	// rather than waiting for the next periodic SaveInstances sweep. The review gate looks
+	// up worktree data by session UUID as soon as request_review fires from inside the
+	// spawned session; without this, a fast work session can request review before the
+	// worktree row exists, causing the review gate to fall back to an unreliable diff.
+	if saveErr := s.storage.SaveInstances([]*session.Instance{inst}); saveErr != nil {
+		log.WarningLog.Printf("[SpawnSessionFromItem] failed to persist instance immediately after spawn item=%s session=%s: %v", item.ID, inst.UUID, saveErr)
+	}
+
 	if req.Msg.Autonomous {
 		if s.autonomousStarter != nil {
 			log.InfoLog.Printf("[SpawnSessionFromItem] starting autonomous driver item=%s session=%s", item.ID, inst.UUID)
@@ -979,6 +988,7 @@ func (s *BacklogService) getWorkSessionDiff(ctx context.Context, repoPath string
 	}
 	diffDir := repoPath
 	diffBaseSHA := ""
+	diffHeadRef := ""
 	wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, workSession.SessionUUID)
 	if wtErr == nil && wt.WorktreePath != "" {
 		// Try the dedicated worktree first.
@@ -986,16 +996,20 @@ func (s *BacklogService) getWorkSessionDiff(ctx context.Context, repoPath string
 		if diffErr == nil {
 			return diff
 		}
-		// Worktree path is gone — fall through to repo fallback using the same base SHA.
+		// Worktree path is gone — fall through to repo fallback using the same base SHA
+		// and an explicit branch ref: repoPath's own checked-out HEAD is not the work
+		// branch's tip, so diffing against implicit HEAD would compare against whatever
+		// the shared main checkout happens to have, not the agent's actual work.
 		log.WarningLog.Printf("[TriggerReReview] GetGitDiff in worktree failed (path gone?): %v; falling back to repo", diffErr)
 		diffBaseSHA = wt.BaseCommitSHA
+		diffHeadRef = wt.BranchName
 	}
 	// Fallback: diff in the main repo between base and last commit. Git worktrees
 	// share the object store, so commits from any worktree are reachable here.
 	if diffBaseSHA == "" && workSession.LastCommitSha != "" {
 		diffBaseSHA = workSession.LastCommitSha
 	}
-	diff, _, diffErr := session.GetGitDiff(ctx, diffDir, diffBaseSHA)
+	diff, _, diffErr := session.GetGitDiffRef(ctx, diffDir, diffBaseSHA, diffHeadRef)
 	if diffErr != nil {
 		log.WarningLog.Printf("[TriggerReReview] GetGitDiff fallback in %s failed: %v", diffDir, diffErr)
 		return ""

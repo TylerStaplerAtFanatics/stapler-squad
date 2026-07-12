@@ -239,22 +239,43 @@ func IsWorktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 // GetGitDiff returns the diff of changes in worktreePath relative to baseSHA
 // (or HEAD~1 if baseSHA is empty). If the diff exceeds MaxDiffSizeReview bytes
 // it is truncated and truncated=true is returned.
+//
+// dir's own checked-out HEAD is used as the diff target. That's correct when
+// dir is the session's own worktree (HEAD there is the work branch's tip), but
+// wrong when dir is a fallback directory such as the shared main repo checkout
+// (HEAD there is whatever the main checkout has, not the work branch). Callers
+// diffing from a fallback directory must use GetGitDiffRef with an explicit
+// branch name instead.
 func GetGitDiff(ctx context.Context, worktreePath string, baseSHA string) (diff string, truncated bool, err error) {
-	// Use baseSHA..HEAD to show only committed changes. Comparing to the working
+	return GetGitDiffRef(ctx, worktreePath, baseSHA, "")
+}
+
+// GetGitDiffRef is like GetGitDiff but diffs baseSHA..headRef instead of
+// baseSHA..HEAD (headRef == "" behaves exactly like GetGitDiff). Callers must
+// pass an explicit headRef (typically a branch name) when dir isn't the
+// session's own worktree — e.g. diffing a work session's branch from the
+// shared main repo checkout after the session's own worktree directory has
+// been removed. Worktrees share the same object store, so any ref reachable
+// from any worktree of the repo resolves correctly regardless of dir.
+func GetGitDiffRef(ctx context.Context, dir string, baseSHA string, headRef string) (diff string, truncated bool, err error) {
+	if headRef == "" {
+		headRef = "HEAD"
+	}
+	// Use baseSHA..headRef to show only committed changes. Comparing to the working
 	// tree (git diff <SHA>) includes staged build artifacts and injected context
 	// files that pollute the reviewer's diff and can make it unreadable.
 	var rangeArg string
 	if baseSHA == "" {
-		rangeArg = "HEAD~1..HEAD"
+		rangeArg = headRef + "~1.." + headRef
 	} else {
-		rangeArg = baseSHA + "..HEAD"
+		rangeArg = baseSHA + ".." + headRef
 	}
 
 	cmd := safeexec.CommandContext(ctx, "git", "diff", rangeArg)
-	cmd.Dir = worktreePath
+	cmd.Dir = dir
 	out, runErr := cmd.Output()
 	if runErr != nil {
-		return "", false, fmt.Errorf("git diff %s in %s: %w", rangeArg, worktreePath, runErr)
+		return "", false, fmt.Errorf("git diff %s in %s: %w", rangeArg, dir, runErr)
 	}
 
 	raw := string(out)

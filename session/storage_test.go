@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/session/git"
 )
 
 // createTestStorage creates a temporary Storage backed by an Ent repository.
@@ -583,6 +585,53 @@ func TestStorage_SaveInstancesSync(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, []string{"sync-tag"}, rows[0].Tags, "Tags should be persisted by SaveInstancesSync")
 	assert.Equal(t, "sync-category", rows[0].Category, "Category should be persisted by SaveInstancesSync")
+}
+
+// TestSaveInstances_WorktreeDataQueryableImmediately is a regression test for the
+// backlog review-gate "(no diff available)" bug: a review can fire (via
+// request_review, from inside the spawned session) as soon as SpawnSessionFromItem
+// returns. If the instance's Worktree row (with BaseCommitSha) isn't persisted
+// synchronously at spawn time, GetWorktreeDataBySessionUUID returns not-found and
+// the review gate falls back to an unreliable diff. This asserts the underlying
+// mechanism SpawnSessionFromItem's synchronous SaveInstances call depends on: a
+// started, worktree-backed instance must be immediately queryable by UUID with no
+// delay and no intervening periodic save.
+func TestSaveInstances_WorktreeDataQueryableImmediately(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	inst := newTestInstance("worktree-session")
+	inst.UUID = "11111111-1111-1111-1111-111111111111"
+	inst.gitManager.worktree = git.NewGitWorktreeFromStorage(
+		"/repo", "/repo/../worktrees/worktree-session", "worktree-session", "backlog/some-item", "abc123def")
+
+	require.NoError(t, storage.SaveInstances([]*Instance{inst}))
+
+	wt, err := storage.GetWorktreeDataBySessionUUID(context.Background(), inst.UUID)
+	require.NoError(t, err)
+	assert.Equal(t, "abc123def", wt.BaseCommitSHA, "BaseCommitSha must be queryable immediately after SaveInstances, with no delay")
+	assert.Equal(t, "backlog/some-item", wt.BranchName)
+	assert.NotEmpty(t, wt.WorktreePath)
+}
+
+// TestSaveInstances_SkipsNotYetStartedInstance documents the gotcha that makes the
+// above regression possible in the first place: SaveInstances silently no-ops for
+// any instance where Started() is false, so a caller cannot rely on a freshly
+// constructed (but not yet started) Instance being persisted.
+func TestSaveInstances_SkipsNotYetStartedInstance(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	inst := &Instance{Title: "not-started", Path: "/tmp/test", UUID: "22222222-2222-2222-2222-222222222222"}
+	require.False(t, inst.Started())
+
+	require.NoError(t, storage.SaveInstances([]*Instance{inst}))
+
+	instances, err := storage.LoadInstances()
+	require.NoError(t, err)
+	for _, loaded := range instances {
+		assert.NotEqual(t, inst.UUID, loaded.UUID, "SaveInstances must not persist an instance that hasn't been marked Started()")
+	}
 }
 
 // TestDiffStatsDataRoundTrip verifies that save/load cycle preserves metadata
