@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/config"
+	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/git"
@@ -22,7 +22,6 @@ import (
 	"github.com/tstapler/stapler-squad/session/tokens"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
 
 // SessionCreator allows BacklogService to spawn sessions without importing handler internals.
 type SessionCreator interface {
@@ -243,8 +242,6 @@ func (s *BacklogService) resolveRepoPathInput(input string) (string, error) {
 	}
 	return localPath, nil
 }
-
-
 
 // itemSessionToProto converts an ItemSessionSummary to its proto representation.
 // costFor, if non-nil, is called with the tmux session UUID to populate EstimatedCostUsd.

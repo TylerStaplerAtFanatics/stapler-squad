@@ -359,19 +359,19 @@ type BacklogItemData struct {
 // It omits large text fields (Description, plan artifacts) and status-event history,
 // but eagerly includes ItemSessions (with ReviewVerdict) for cost/status display.
 type BacklogItemSummary struct {
-	ID                 string         `json:"id"`
-	ExternalID         string         `json:"external_id"`
-	Title              string         `json:"title"`
-	Status             BacklogStatus  `json:"status"`
-	Priority           int            `json:"priority"`
-	RepoPath           string         `json:"repo_path"`
-	AcceptanceCriteria AcCriteriaJSON `json:"acceptance_criteria"`
-	Notes              string         `json:"notes"`
-	PrURL              string         `json:"pr_url"`
-	PrNumber           int            `json:"pr_number"`
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
-	ArchivedAt         *time.Time     `json:"archived_at"`
+	ID                 string               `json:"id"`
+	ExternalID         string               `json:"external_id"`
+	Title              string               `json:"title"`
+	Status             BacklogStatus        `json:"status"`
+	Priority           int                  `json:"priority"`
+	RepoPath           string               `json:"repo_path"`
+	AcceptanceCriteria AcCriteriaJSON       `json:"acceptance_criteria"`
+	Notes              string               `json:"notes"`
+	PrURL              string               `json:"pr_url"`
+	PrNumber           int                  `json:"pr_number"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+	ArchivedAt         *time.Time           `json:"archived_at"`
 	ItemSessions       []ItemSessionSummary `json:"-"`
 }
 

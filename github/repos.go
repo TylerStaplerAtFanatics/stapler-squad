@@ -37,9 +37,9 @@ type IssueResult struct {
 
 // ghRepoJSON matches the GitHub REST API /user/repos and /search/repositories item shape.
 type ghRepoJSON struct {
-	FullName    string `json:"full_name"`
-	Name        string `json:"name"`
-	Owner       struct {
+	FullName string `json:"full_name"`
+	Name     string `json:"name"`
+	Owner    struct {
 		Login string `json:"login"`
 	} `json:"owner"`
 	Description string `json:"description"`
@@ -54,12 +54,12 @@ type ghSearchReposResponse struct {
 
 // ghIssueListJSON matches the GitHub REST API /repos/{owner}/{repo}/issues item shape.
 type ghIssueListJSON struct {
-	Number    int             `json:"number"`
-	Title     string          `json:"title"`
-	State     string          `json:"state"`
-	HTMLURL   string          `json:"html_url"`
-	CreatedAt string          `json:"created_at"`
-	UpdatedAt string          `json:"updated_at"`
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	State     string `json:"state"`
+	HTMLURL   string `json:"html_url"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 	Labels    []struct {
 		Name string `json:"name"`
 	} `json:"labels"`

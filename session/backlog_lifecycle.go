@@ -13,7 +13,6 @@ import (
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
-
 // ReviewGateSpawner can create a short-lived review session for a backlog item.
 // Deprecated: use headless.Pool via NewBacklogLifecycleListenerWithSpawner instead.
 // Retained for backward compatibility with existing tests and callers.

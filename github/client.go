@@ -236,7 +236,6 @@ func fetchLoginFromRequest(req *http.Request) (string, error) {
 	return u.Login, nil
 }
 
-
 // GetPRInfo fetches metadata for a pull request including review and CI status.
 func GetPRInfo(owner, repo string, prNumber int) (*PRInfo, error) {
 	return GetPRInfoCtx(context.Background(), owner, repo, prNumber)
@@ -684,7 +683,6 @@ func GetOwnerRepoFromRemote(repoPath string) (RepoRef, error) {
 	return r, nil
 }
 
-
 // GeneratePRPrompt generates a context prompt from PR information
 // This can be used to initialize a Claude Code session with PR context
 func GeneratePRPrompt(pr *PRInfo, includeDescription bool) string {
@@ -710,6 +708,7 @@ func GeneratePRPrompt(pr *PRInfo, includeDescription bool) string {
 
 	return sb.String()
 }
+
 // GetPRForBranchConditional is GetPRForBranch with ETag conditional request support.
 // Pass the previously returned newEtag (empty string for first call).
 // Returns (nil, etag, false, nil) on 304 Not Modified — caller should treat as unchanged.
