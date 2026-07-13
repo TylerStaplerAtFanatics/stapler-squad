@@ -231,9 +231,13 @@ func (d *AutonomousDriver) run(ctx context.Context) {
 			return
 		}
 
-		_, sendErr := d.controller.SendCommandImmediate(nextMsg + "\r")
-		if sendErr != nil {
-			log.Warn("AutonomousDriver: SendCommandImmediate failed", "session", sessionName, "turn", turnCount+1, "err", sendErr)
+		// Use SendKeys (raw PTY write) instead of SendCommandImmediate so that only
+		// "\r" is sent. SendCommandImmediate goes through the command executor which
+		// appends "\n", producing "\r\n". In Claude Code's TUI input, "\r\n" inserts
+		// text into the multiline buffer without submitting — identical to steer_session
+		// which uses inst.SendKeys(msg + "\r") directly and is known to work.
+		if sendErr := d.inst.SendKeys(nextMsg + "\r"); sendErr != nil {
+			log.Warn("AutonomousDriver: SendKeys failed", "session", sessionName, "turn", turnCount+1, "err", sendErr)
 			break
 		}
 		log.Info("AutonomousDriver: injected turn", "session", sessionName, "turn", turnCount+1)
