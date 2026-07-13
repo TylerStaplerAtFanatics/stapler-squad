@@ -739,3 +739,77 @@ func TestFromInstanceData_ActiveSession_DetectsAlreadyRunningTmux(t *testing.T) 
 
 	t.Logf("✓ FromInstanceData correctly hot-attached to the already-running tmux session (pid %d unchanged)", pidBefore)
 }
+
+// TestLoadInstances_DoesNotBlockOnStartingActiveSessions is a regression test
+// for the server-startup-hang bug: LoadInstances() used to call the public
+// FromInstanceData for every persisted session, which starts Active instances
+// synchronously — cold-restoring every session whose tmux process no longer
+// exists, one at a time, before LoadInstances() (and therefore the "runtime"
+// warren phase, and therefore the HTTP server bind in main.go) could return.
+// With even a handful of dead sessions this made server startup take minutes,
+// and the deploy script's health check would time out and roll back.
+//
+// LoadInstances() must instead defer Start() to the async "Step 6" background
+// loop in server/dependencies.go's BuildRuntimeDeps, which already exists
+// specifically so the HTTP server can bind immediately. This test asserts that
+// contract directly: a session persisted as Active, with no live tmux session
+// behind it (so a naive Start() would try to cold-restore, i.e. spawn a real
+// program), comes back from LoadInstances() unstarted and near-instantly,
+// rather than blocking on a relaunch.
+func TestLoadInstances_DoesNotBlockOnStartingActiveSessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test that starts real tmux sessions")
+	}
+
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	// Build and really start an instance so it passes SaveInstances' "must be
+	// Started()" gate, then persist it and kill the underlying tmux session to
+	// simulate a session whose process died (the exact scenario that used to
+	// make LoadInstances cold-restore synchronously, one session at a time).
+	instance, instCleanup, err := NewInstanceWithCleanup(InstanceOptions{
+		Title:            "load-instances-defer-start-test",
+		Path:             t.TempDir(),
+		Program:          "bash -c 'echo hi; exec bash'",
+		SessionType:      SessionTypeDirectory,
+		AutoYes:          true,
+		TmuxServerSocket: getTestTmuxSocket(t),
+	})
+	require.NoError(t, err)
+	defer func() {
+		if instCleanup != nil {
+			_ = instCleanup()
+		}
+	}()
+	startCleanup, err := instance.StartWithCleanup(true)
+	require.NoError(t, err)
+	if startCleanup != nil {
+		defer func() { _ = startCleanup() }()
+	}
+	require.True(t, instance.Started())
+
+	require.NoError(t, storage.SaveInstances([]*Instance{instance}))
+	require.NoError(t, instance.KillSession(), "simulate the process dying before the next server start")
+
+	start := time.Now()
+	instances, err := storage.LoadInstances()
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+
+	const budget = 3 * time.Second
+	assert.Lessf(t, elapsed, budget,
+		"LoadInstances took %s — Start() may be getting called synchronously again instead of deferred to the async Step 6 loop", elapsed)
+
+	var found *Instance
+	for _, inst := range instances {
+		if inst.UUID == instance.UUID {
+			found = inst
+			break
+		}
+	}
+	require.NotNil(t, found, "loaded instance not found")
+	assert.False(t, found.Started(), "instance should not be Started() yet — that's the async Step 6 loop's job")
+
+	t.Logf("✓ LoadInstances returned in %s without blocking on Start()", elapsed)
+}

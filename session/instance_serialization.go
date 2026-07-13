@@ -154,7 +154,27 @@ func (i *Instance) ToInstanceData() InstanceData {
 }
 
 // FromInstanceData creates a new Instance from serialized data
+// FromInstanceData reconstructs an *Instance from persisted data, starting it
+// synchronously (hot-attaching to an already-live tmux session or cold-restoring
+// one) before returning. Use for on-demand single-instance loads (e.g.
+// Registry.Acquire) where the caller needs a ready instance immediately.
+//
+// Bulk startup loads should use fromInstanceData(data, true) via LoadInstances
+// instead — starting every instance synchronously here is what made server
+// startup block on restoring all sessions (including cold-relaunching every
+// dead one) before the HTTP server could bind. See server/dependencies.go's
+// "Step 6" background goroutine, which already exists to start un-started
+// instances asynchronously once the deferred path skips Start() here.
 func FromInstanceData(data InstanceData) (*Instance, error) {
+	return fromInstanceData(data, false)
+}
+
+// fromInstanceData is the shared implementation. When deferStart is true, the
+// Active-branch (and Stopped-but-tmux-alive recovery) code paths still wire the
+// tmux session object (so HasSession()/TmuxAlive() report correctly) but skip
+// the synchronous Start() call, leaving Instance.Started() false so the async
+// Step 6 loop in BuildRuntimeDeps picks it up off the startup critical path.
+func fromInstanceData(data InstanceData, deferStart bool) (*Instance, error) {
 	// MIGRATION: Fix corrupted paths from before defensive tilde expansion was added
 	// Detect paths like "/absolute/path/~/other/path" and fix them
 	migratedPath := data.Path
@@ -374,7 +394,10 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		if instance.processManager.IsAlive() {
 			log.Warn("session stored as stopped but tmux is alive, recovering to active", "session", instance.Title)
 			instance.loadStatus(Active)
-			if err := instance.Start(false); err != nil {
+			if deferStart {
+				// Leave started=false: the async Step 6 loop will call Start(false)
+				// and hot-attach to this already-live session off the critical path.
+			} else if err := instance.Start(false); err != nil {
 				log.Warn("recovery start failed, keeping stopped", "session", instance.Title, "err", err)
 				instance.loadStatus(Stopped)
 				instance.started.Store(true)
@@ -420,7 +443,12 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithPrefix(instance.Title, instance.Program, tmuxPrefix))
 			}
 		}
-		if err := instance.Start(false); err != nil {
+		if deferStart {
+			// Leave started=false: the async Step 6 loop in BuildRuntimeDeps calls
+			// Start(false) later, off the startup critical path. That loop already
+			// hot-attaches to a live tmux session or cold-restores a dead one —
+			// the same logic this branch would otherwise run synchronously here.
+		} else if err := instance.Start(false); err != nil {
 			return nil, err
 		}
 	}

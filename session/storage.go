@@ -279,7 +279,10 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 	}
 	instances := make([]*Instance, 0, len(dataSlice))
 	for _, data := range dataSlice {
-		inst, err := FromInstanceData(data)
+		// Defer Start() to the async Step 6 loop in BuildRuntimeDeps so a bulk
+		// load (server startup) doesn't block on cold-restoring every dead
+		// session before the HTTP server can bind.
+		inst, err := fromInstanceData(data, true)
 		if err != nil {
 			log.Warn("skipping instance from repository", "session", data.Title, "err", err)
 			continue
