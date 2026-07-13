@@ -723,6 +723,11 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
+// shutdownHooksTimeout bounds how long shutdown hooks (state persistence,
+// pollers, etc.) may run before Shutdown proceeds to stop the HTTP server
+// regardless. Prevents a stuck hook from causing a SIGKILL on restart/stop.
+const shutdownHooksTimeout = 30 * time.Second
+
 // Shutdown gracefully shuts down the HTTP server.
 func (s *Server) Shutdown() error {
 	// Cancel the server's BaseContext first so active streaming connections
@@ -733,9 +738,23 @@ func (s *Server) Shutdown() error {
 	}
 
 	// Run registered hooks (e.g. capture pane paths, persist instance state) before
-	// stopping the HTTP server so in-flight requests complete first.
-	for _, hook := range s.shutdownHooks {
-		hook()
+	// stopping the HTTP server so in-flight requests complete first. Bounded by an
+	// overall deadline: a single slow/stuck hook must not be able to block process
+	// exit past systemd's stop timeout, which would trigger a SIGKILL that skips
+	// this cleanup entirely instead of just skipping whatever the slow hook was
+	// doing (systemd's default TimeoutStopSec is ~90s but this app has many
+	// sessions to persist under load, so give hooks a bounded but generous window).
+	hooksDone := make(chan struct{})
+	go func() {
+		defer close(hooksDone)
+		for _, hook := range s.shutdownHooks {
+			hook()
+		}
+	}()
+	select {
+	case <-hooksDone:
+	case <-time.After(shutdownHooksTimeout):
+		log.Warn("[shutdown] shutdown hooks did not complete within deadline, proceeding anyway", "timeout", shutdownHooksTimeout)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
