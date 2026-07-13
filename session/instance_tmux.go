@@ -481,7 +481,10 @@ func (i *Instance) SendInputViaControlMode(ctx context.Context, data []byte) err
 // The DoesSessionExist guard is omitted here: TmuxSession.GetPanePID already uses
 // the CM fast path (no subprocess) and falls back to display-message which returns
 // an error if the session is gone. Avoiding a separate list-sessions call per instance
-// prevents N concurrent tmux list-sessions subprocesses during HistoryLinker.ScanAll.
+// keeps this cheap for HistoryLinker.ScanAll, which calls this sequentially (not
+// fanned out) per session anyway -- and the display-message subprocess fallback is
+// itself gated (session/tmux's exec gate), so there's no need for a second guard
+// here even if that ever changes.
 func (i *Instance) GetPanePID() (int32, error) {
 	return i.pm().GetPanePID()
 }

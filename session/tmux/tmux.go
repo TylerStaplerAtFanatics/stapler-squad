@@ -29,11 +29,6 @@ import (
 
 const ProgramClaude = "claude"
 
-// capturePaneSem limits concurrent tmux capture-pane subprocesses to avoid
-// contention on the circuit breaker lock and OS process table pressure.
-// A global semaphore of 8 is sufficient for typical fan-out; callers that use
-// the control-mode fast path bypass this semaphore entirely.
-var capturePaneSem = make(chan struct{}, 8)
 
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
@@ -300,8 +295,9 @@ func ListAllSessions(serverSocket string) (map[string]bool, error) {
 	args := prependSocket(serverSocket, []string{"list-sessions", "-F", "#{session_name}"})
 	listCtx, listCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer listCancel()
-	cmd := safeexec.CommandContext(listCtx, Binary(), args...)
-	out, err := cmd.Output()
+	out, err := runGated(listCtx, serverSocket, func() ([]byte, error) {
+		return safeexec.CommandContext(listCtx, Binary(), args...).Output()
+	})
 	if err != nil {
 		// Collect stderr for server-down detection
 		combinedOutput := []byte(err.Error())
@@ -329,8 +325,9 @@ func checkServerNotRunning(serverSocket string) bool {
 	args := prependSocket(serverSocket, []string{"list-sessions"})
 	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer checkCancel()
-	cmd := safeexec.CommandContext(checkCtx, Binary(), args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runGated(checkCtx, serverSocket, func() ([]byte, error) {
+		return safeexec.CommandContext(checkCtx, Binary(), args...).CombinedOutput()
+	})
 	return err != nil && serverNotRunning(out)
 }
 
@@ -428,8 +425,9 @@ func EnsureServerRunning(serverSocket string) (TmuxServerReady, error) {
 	args := prependSocket(serverSocket, []string{"start-server"})
 	startCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer startCancel()
-	cmd := safeexec.CommandContext(startCtx, Binary(), args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runGated(startCtx, serverSocket, func() ([]byte, error) {
+		return safeexec.CommandContext(startCtx, Binary(), args...).CombinedOutput()
+	})
 	if err != nil {
 		return TmuxServerReady{}, fmt.Errorf("tmux start-server failed: %w (output: %s)", err, out)
 	}
@@ -441,8 +439,9 @@ func EnsureServerRunning(serverSocket string) (TmuxServerReady, error) {
 	remainArgs := prependSocket(serverSocket, []string{"set-option", "-g", "remain-on-exit", "on"})
 	remainCtx, remainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer remainCancel()
-	remainCmd := safeexec.CommandContext(remainCtx, Binary(), remainArgs...)
-	if out, err := remainCmd.CombinedOutput(); err != nil {
+	if out, err := runGated(remainCtx, serverSocket, func() ([]byte, error) {
+		return safeexec.CommandContext(remainCtx, Binary(), remainArgs...).CombinedOutput()
+	}); err != nil {
 		log.Warn("[tmux] failed to set global remain-on-exit default", "err", err, "output", string(out))
 	}
 
@@ -475,8 +474,9 @@ func SetExitEmpty(serverSocket string, enabled bool) error {
 	args := prependSocket(serverSocket, []string{"set-option", "-g", "exit-empty", value})
 	optCtx, optCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer optCancel()
-	cmd := safeexec.CommandContext(optCtx, Binary(), args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runGated(optCtx, serverSocket, func() ([]byte, error) {
+		return safeexec.CommandContext(optCtx, Binary(), args...).CombinedOutput()
+	})
 	if err != nil {
 		return fmt.Errorf("tmux set-option exit-empty %s failed: %w (output: %s)", value, err, out)
 	}
@@ -493,8 +493,10 @@ func CreateKeepaliveSession(serverSocket string) error {
 	hasArgs := prependSocket(serverSocket, []string{"has-session", "-t", keepaliveName})
 	hasCtx, hasCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer hasCancel()
-	hasCmd := safeexec.CommandContext(hasCtx, Binary(), hasArgs...)
-	if hasCmd.Run() == nil {
+	hasErr := runGatedErr(hasCtx, serverSocket, func() error {
+		return safeexec.CommandContext(hasCtx, Binary(), hasArgs...).Run()
+	})
+	if hasErr == nil {
 		return nil // already exists
 	}
 
@@ -502,8 +504,9 @@ func CreateKeepaliveSession(serverSocket string) error {
 	newArgs := prependSocket(serverSocket, []string{"new-session", "-d", "-s", keepaliveName})
 	newCtx, newCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer newCancel()
-	cmd := safeexec.CommandContext(newCtx, Binary(), newArgs...)
-	out, err := cmd.CombinedOutput()
+	out, err := runGated(newCtx, serverSocket, func() ([]byte, error) {
+		return safeexec.CommandContext(newCtx, Binary(), newArgs...).CombinedOutput()
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create keepalive session: %w (output: %s)", err, out)
 	}
@@ -794,7 +797,9 @@ func (t *TmuxSession) StartWithCleanup(workDir string) (CleanupFunc, error) {
 // creates a session (fresh start, and the "recreate after not found" restore fallback).
 func (t *TmuxSession) setRemainOnExit() {
 	remainCmd := t.buildTmuxCommand("set-option", "-t", t.sanitizedName, "remain-on-exit", "on")
-	if err := t.cmdExec.Run(remainCmd); err != nil {
+	if err := runGatedErr(context.Background(), t.serverSocket, func() error {
+		return t.cmdExec.Run(remainCmd)
+	}); err != nil {
 		log.Warn("failed to set remain-on-exit for session", "session", t.sanitizedName, "err", err)
 	}
 }
@@ -836,12 +841,17 @@ func (t *TmuxSession) start(workDir string, setupCleanup bool, cleanup *CleanupF
 
 	// Use cmdExec.Run() instead of pty.Start() for detached session creation
 	// since detached sessions don't need PTY attachment during creation
-	err := t.cmdExec.Run(cmd)
+	err := runGatedErr(context.Background(), t.serverSocket, func() error {
+		return t.cmdExec.Run(cmd)
+	})
 	if err != nil {
 		// Cleanup any partially created session if any exists.
 		if t.DoesSessionExist() {
 			cleanupCmd := t.buildTmuxCommand("kill-session", "-t", t.sanitizedName)
-			if cleanupErr := t.cmdExec.Run(cleanupCmd); cleanupErr != nil {
+			cleanupErr := runGatedErr(context.Background(), t.serverSocket, func() error {
+				return t.cmdExec.Run(cleanupCmd)
+			})
+			if cleanupErr != nil {
 				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
 			}
 			t.invalidateExistsCache() // Session was killed, invalidate cache
@@ -917,7 +927,9 @@ func (t *TmuxSession) start(workDir string, setupCleanup bool, cleanup *CleanupF
 
 	// Set history limit to enable scrollback (default is 2000, we'll use 10000 for more history)
 	historyCmd := t.buildTmuxCommand("set-option", "-t", t.sanitizedName, "history-limit", "10000")
-	if err := t.cmdExec.Run(historyCmd); err != nil {
+	if err := runGatedErr(context.Background(), t.serverSocket, func() error {
+		return t.cmdExec.Run(historyCmd)
+	}); err != nil {
 		log.Warn("failed to set history-limit for session", "session", t.sanitizedName, "err", err)
 	}
 
@@ -1001,7 +1013,9 @@ func (t *TmuxSession) RestoreWithWorkDir(workDir string) error {
 			}
 			restoreArgs = append(restoreArgs, "-c", workDir, t.program)
 			cmd := t.buildTmuxCommand(restoreArgs...)
-			err := t.cmdExec.Run(cmd)
+			err := runGatedErr(context.Background(), t.serverSocket, func() error {
+				return t.cmdExec.Run(cmd)
+			})
 			if err != nil {
 				// Session creation failed - but it might be because the session already exists
 				// (DoesSessionExist may have timed out and returned false incorrectly)
@@ -1528,7 +1542,10 @@ func (t *TmuxSession) Close() error {
 	// Check if session exists before trying to kill it
 	if t.DoesSessionExist() {
 		cmd := t.buildTmuxCommand("kill-session", "-t", t.sanitizedName)
-		if err := t.cmdExec.Run(cmd); err != nil {
+		gatedErr := runGatedErr(context.Background(), t.serverSocket, func() error {
+			return t.cmdExec.Run(cmd)
+		})
+		if err := gatedErr; err != nil {
 			// Check if this is the common "session not found" error
 			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 				// Exit code 1 usually means session doesn't exist or was already killed
@@ -1619,14 +1636,18 @@ func (t *TmuxSession) SetWindowSize(cols, rows int) error {
 			"resize-window", "-t", t.sanitizedName, "-x", colsStr, "-y", rowsStr); cmErr != nil {
 			log.Debug("SetWindowSize CM path failed, falling back", "session", t.sanitizedName, "err", cmErr)
 			cmd := t.buildTmuxCommand("resize-window", "-t", t.sanitizedName, "-x", colsStr, "-y", rowsStr)
-			if err := t.cmdExec.Run(cmd); err != nil {
+			if err := runGatedErr(context.Background(), t.serverSocket, func() error {
+				return t.cmdExec.Run(cmd)
+			}); err != nil {
 				log.Error("tmux resize-window failed", "session", t.sanitizedName, "err", err)
 				return fmt.Errorf("failed to resize tmux window: %w", err)
 			}
 		}
 	} else {
 		cmd := t.buildTmuxCommand("resize-window", "-t", t.sanitizedName, "-x", colsStr, "-y", rowsStr)
-		if err := t.cmdExec.Run(cmd); err != nil {
+		if err := runGatedErr(context.Background(), t.serverSocket, func() error {
+			return t.cmdExec.Run(cmd)
+		}); err != nil {
 			log.Error("tmux resize-window failed", "session", t.sanitizedName, "err", err)
 			return fmt.Errorf("failed to resize tmux window: %w", err)
 		}
@@ -1685,17 +1706,22 @@ func recoverFromServerFailure(serverSocket, caller string) {
 // existence checks always work regardless of breaker state.
 // Returns raw combined output and the first error encountered.
 func (t *TmuxSession) listSessionsRaw(ctx context.Context) ([]byte, error) {
-	cmdArgs := Socket(t.serverSocket).Args("list-sessions", "-F", "#{session_name}")
-	cmd := safeexec.CommandContext(ctx, Binary(), cmdArgs...)
-	output, err := t.cmdExec.CombinedOutput(cmd)
-	// If the circuit breaker is open, fall back to direct exec.
-	// "No sessions" (exit 1 when server running but empty) can cause false circuit
-	// breaker trips; the fallback ensures checks always work regardless of breaker state.
-	if errors.Is(err, executor.ErrCircuitOpen) {
-		cmd = safeexec.CommandContext(ctx, Binary(), cmdArgs...)
-		output, err = cmd.CombinedOutput()
-	}
-	return output, err
+	// Gated here (not by DoesSessionExist/DoesSessionExistNoCache's callers) so
+	// a singleflight-coalesced burst of concurrent callers consumes exactly one
+	// exec-gate slot, not one per caller.
+	return runGated(ctx, t.serverSocket, func() ([]byte, error) {
+		cmdArgs := Socket(t.serverSocket).Args("list-sessions", "-F", "#{session_name}")
+		cmd := safeexec.CommandContext(ctx, Binary(), cmdArgs...)
+		output, err := t.cmdExec.CombinedOutput(cmd)
+		// If the circuit breaker is open, fall back to direct exec.
+		// "No sessions" (exit 1 when server running but empty) can cause false circuit
+		// breaker trips; the fallback ensures checks always work regardless of breaker state.
+		if errors.Is(err, executor.ErrCircuitOpen) {
+			cmd = safeexec.CommandContext(ctx, Binary(), cmdArgs...)
+			output, err = cmd.CombinedOutput()
+		}
+		return output, err
+	})
 }
 
 func (t *TmuxSession) DoesSessionExist() bool {
@@ -1827,12 +1853,17 @@ func (t *TmuxSession) RefreshClient() error {
 
 	// Method 1: Use refresh-client command (preferred)
 	cmd := t.buildTmuxCommand("refresh-client", "-t", t.sanitizedName)
-	if err := t.cmdExec.Run(cmd); err != nil {
+	refreshErr := runGatedErr(context.Background(), t.serverSocket, func() error {
+		return t.cmdExec.Run(cmd)
+	})
+	if err := refreshErr; err != nil {
 		log.Warn("refresh-client failed, trying alternative", "session", t.sanitizedName, "err", err)
 
 		// Method 2: Send SIGWINCH via kill command
 		cmd = t.buildTmuxCommand("display-message", "-p", "-t", t.sanitizedName, "#{pane_pid}")
-		output, err := t.cmdExec.Output(cmd)
+		output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+			return t.cmdExec.Output(cmd)
+		})
 		if err != nil {
 			return fmt.Errorf("failed to get pane PID: %w", err)
 		}
@@ -1883,9 +1914,9 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 
 	cmd := t.buildTmuxCommand("capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
 	recordSpawn(time.Now())
-	capturePaneSem <- struct{}{}
-	output, err := t.cmdExec.Output(cmd)
-	<-capturePaneSem
+	output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+		return t.cmdExec.Output(cmd)
+	})
 	if err != nil {
 		recordFailure(time.Now())
 		// Invalidate cache so TmuxAlive() returns false on the next call without
@@ -1919,9 +1950,9 @@ func (t *TmuxSession) CapturePaneContentRaw() (string, error) {
 
 	cmd := t.buildTmuxCommand("capture-pane", "-p", "-e", "-t", t.sanitizedName)
 	recordSpawn(time.Now())
-	capturePaneSem <- struct{}{}
-	output, err := t.cmdExec.Output(cmd)
-	<-capturePaneSem
+	output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+		return t.cmdExec.Output(cmd)
+	})
 	if err != nil {
 		recordFailure(time.Now())
 		t.invalidateExistsCache()
@@ -1946,9 +1977,9 @@ func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, 
 	}
 
 	cmd := t.buildTmuxCommand("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
-	capturePaneSem <- struct{}{}
-	output, err := t.cmdExec.Output(cmd)
-	<-capturePaneSem
+	output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+		return t.cmdExec.Output(cmd)
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
 	}
@@ -1996,7 +2027,9 @@ func (t *TmuxSession) GetCursorPosition() (x, y int, err error) {
 	cmd := t.buildTmuxCommand("display-message", "-p", "-t", t.sanitizedName,
 		"#{cursor_x} #{cursor_y}")
 
-	output, err := t.cmdExec.Output(cmd)
+	output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+		return t.cmdExec.Output(cmd)
+	})
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to get cursor position for session '%s': %w", t.sanitizedName, err)
 	}
@@ -2034,7 +2067,9 @@ func (t *TmuxSession) GetPaneDimensions() (width, height int, err error) {
 	cmd := t.buildTmuxCommand("display-message", "-p", "-t", t.sanitizedName,
 		"#{pane_width} #{pane_height}")
 
-	output, err := t.cmdExec.Output(cmd)
+	output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+		return t.cmdExec.Output(cmd)
+	})
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to get pane dimensions for session '%s': %w", t.sanitizedName, err)
 	}
@@ -2068,8 +2103,10 @@ func CleanupSessionsOnServer(cmdExec executor.Executor, serverSocket string) err
 	// First try to list sessions
 	lsCtx, lsCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer lsCancel()
-	cmd := safeexec.CommandContext(lsCtx, Binary(), socket.Args("ls")...)
-	output, err := cmdExec.Output(cmd)
+	output, err := runGated(lsCtx, serverSocket, func() ([]byte, error) {
+		cmd := safeexec.CommandContext(lsCtx, Binary(), socket.Args("ls")...)
+		return cmdExec.Output(cmd)
+	})
 
 	// If there's an error and it's because no server is running, that's fine
 	// Exit code 1 typically means no sessions exist
@@ -2089,8 +2126,10 @@ func CleanupSessionsOnServer(cmdExec executor.Executor, serverSocket string) err
 	for _, match := range matches {
 		log.Info("cleaning up session", "session", match)
 		killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		killCmd := safeexec.CommandContext(killCtx, Binary(), socket.Args("kill-session", "-t", match)...)
-		runErr := cmdExec.Run(killCmd)
+		runErr := runGatedErr(killCtx, serverSocket, func() error {
+			killCmd := safeexec.CommandContext(killCtx, Binary(), socket.Args("kill-session", "-t", match)...)
+			return cmdExec.Run(killCmd)
+		})
 		killCancel()
 		if runErr != nil {
 			return fmt.Errorf("failed to kill tmux session %s: %v", match, runErr)
@@ -2192,7 +2231,9 @@ func (t *TmuxSession) GetPaneCurrentPath() (string, error) {
 	cmd := t.buildTmuxCommand("display-message", "-p", "-t", t.sanitizedName,
 		"#{pane_current_path}")
 
-	output, err := t.cmdExec.Output(cmd)
+	output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+		return t.cmdExec.Output(cmd)
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to get pane path for session '%s': %w", t.sanitizedName, err)
 	}
@@ -2221,7 +2262,9 @@ func (t *TmuxSession) GetPanePID() (int32, error) {
 	cmd := t.buildTmuxCommand("display-message", "-p", "-t", t.sanitizedName,
 		"#{pane_pid}")
 
-	output, err := t.cmdExec.Output(cmd)
+	output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+		return t.cmdExec.Output(cmd)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to get pane PID for session '%s': %w", t.sanitizedName, err)
 	}
@@ -2244,7 +2287,9 @@ func (t *TmuxSession) GetPanePID() (int32, error) {
 func (t *TmuxSession) ExitStatus() (code int, signal string, ok bool) {
 	cmd := t.buildTmuxCommand("display-message", "-p", "-t", t.sanitizedName,
 		"#{pane_dead_status}\t#{pane_dead_signal}")
-	output, err := t.cmdExec.Output(cmd)
+	output, err := runGated(context.Background(), t.serverSocket, func() ([]byte, error) {
+		return t.cmdExec.Output(cmd)
+	})
 	if err != nil {
 		return 0, "", false
 	}
