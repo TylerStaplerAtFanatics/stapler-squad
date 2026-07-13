@@ -323,9 +323,6 @@ func (g *GitWorktree) findExistingPR() (string, int, error) {
 	return url, num, nil
 }
 
-// conflictInfo captures the mergeability signal that tripped HasConflicts.
-type conflictInfo struct{ mergeStateStatus string }
-
 // reviewInfo captures the blocking review that tripped HasBlockingReviews.
 type reviewInfo struct{ author, body string }
 
@@ -343,10 +340,15 @@ type PRStatus struct {
 	// FeedbackText is a combined human-readable summary for the fix agent.
 	FeedbackText string
 
-	failedChecks    []string      // unexported; captured CI failures, consumed by render()
-	blockingReviews []reviewInfo  // unexported; one entry per CHANGES_REQUESTED review
-	conflict        *conflictInfo // unexported; nil unless HasConflicts
-	generalComments []string      // unexported; existing "general comments" section content (unchanged behavior, just relocated)
+	failedChecks    []string     // unexported; captured CI failures, consumed by render()
+	blockingReviews []reviewInfo // unexported; one entry per CHANGES_REQUESTED review
+	// conflictMergeStateStatus is the raw mergeStateStatus value that tripped
+	// HasConflicts; only meaningful when HasConflicts is true. A plain string
+	// rather than a nil-checked pointer, since HasConflicts is already the
+	// single source of truth for "is there a conflict" — render() branches on
+	// HasConflicts, not on this field's zero-ness.
+	conflictMergeStateStatus string
+	generalComments          []string // unexported; existing "general comments" section content (unchanged behavior, just relocated)
 }
 
 // render assembles FeedbackText from the fields captured during evaluation,
@@ -355,7 +357,7 @@ type PRStatus struct {
 func (s *PRStatus) render() string {
 	var sb strings.Builder
 
-	if s.conflict != nil {
+	if s.HasConflicts {
 		sb.WriteString("## Merge conflict\n")
 		sb.WriteString(fmt.Sprintf(
 			"This PR's branch has merge conflicts against its base branch (mergeStateStatus=%s) "+
@@ -378,7 +380,7 @@ func (s *PRStatus) render() string {
 				"delta looks disproportionate. This rebase will force-push over the PR's existing diff, which "+
 				"resets GitHub's review view — the diff-stat is the one artifact a human reviewer can check "+
 				"against your summary instead of trusting it on faith.\n\n",
-			s.conflict.mergeStateStatus))
+			s.conflictMergeStateStatus))
 	}
 
 	if len(s.failedChecks) > 0 {
@@ -474,7 +476,7 @@ func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 	mg := strings.ToUpper(payload.Mergeable)
 	if mss == "DIRTY" || mg == "CONFLICTING" {
 		status.HasConflicts = true
-		status.conflict = &conflictInfo{mergeStateStatus: payload.MergeStateStatus}
+		status.conflictMergeStateStatus = payload.MergeStateStatus
 	}
 
 	// Evaluate CI checks.

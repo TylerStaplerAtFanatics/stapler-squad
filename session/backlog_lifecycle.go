@@ -45,9 +45,10 @@ type prPendingChecker interface {
 	GetPRStatus(prNumber int) (*git.PRStatus, error)
 }
 
-// newPRPendingChecker constructs the PR-status checker for a given repo path.
-// Overridable in tests (mirrors the timeNow seam in instance_workspace.go:581).
-var newPRPendingChecker = func(repoPath string) prPendingChecker {
+// defaultPRPendingCheckerFactory constructs the PR-status checker for a given
+// repo path. This is the production default installed by newListenerBase;
+// SetPRPendingCheckerFactory overrides it in tests.
+func defaultPRPendingCheckerFactory(repoPath string) prPendingChecker {
 	return git.NewGitWorktreeFromStorage(repoPath, repoPath, "", "", "")
 }
 
@@ -75,6 +76,10 @@ type BacklogLifecycleListener struct {
 	// prFixMu guards prFixSpawner for concurrent Set/get access.
 	prFixMu      sync.RWMutex
 	prFixSpawner PRFixSpawner
+
+	// prPendingCheckerMu guards prPendingCheckerFactory for concurrent Set/get access.
+	prPendingCheckerMu      sync.RWMutex
+	prPendingCheckerFactory func(repoPath string) prPendingChecker
 
 	// reviewSem limits concurrent review gate goroutines.
 	reviewSem chan struct{}
@@ -132,6 +137,23 @@ func (l *BacklogLifecycleListener) getPRFixSpawner() PRFixSpawner {
 	return l.prFixSpawner
 }
 
+// SetPRPendingCheckerFactory overrides the factory used to construct the
+// PR-status checker for ReconcilePRPending. Overridable in tests (mirrors the
+// timeNow seam in instance_workspace.go:581); production code never needs to
+// call this, since newListenerBase installs defaultPRPendingCheckerFactory.
+func (l *BacklogLifecycleListener) SetPRPendingCheckerFactory(f func(repoPath string) prPendingChecker) {
+	l.prPendingCheckerMu.Lock()
+	defer l.prPendingCheckerMu.Unlock()
+	l.prPendingCheckerFactory = f
+}
+
+// getPRPendingCheckerFactory returns the current PR-pending-checker factory under a read lock.
+func (l *BacklogLifecycleListener) getPRPendingCheckerFactory() func(repoPath string) prPendingChecker {
+	l.prPendingCheckerMu.RLock()
+	defer l.prPendingCheckerMu.RUnlock()
+	return l.prPendingCheckerFactory
+}
+
 // getHeadlessPool returns the current headless pool under a read lock.
 func (l *BacklogLifecycleListener) getHeadlessPool() *headless.Pool {
 	l.poolMu.RLock()
@@ -150,10 +172,11 @@ func (l *BacklogLifecycleListener) Shutdown() {
 func newListenerBase(storage *Storage) *BacklogLifecycleListener {
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &BacklogLifecycleListener{
-		storage:        storage,
-		reviewSem:      make(chan struct{}, maxConcurrentReviewGates),
-		shutdownCtx:    ctx,
-		shutdownCancel: cancel,
+		storage:                 storage,
+		reviewSem:               make(chan struct{}, maxConcurrentReviewGates),
+		shutdownCtx:             ctx,
+		shutdownCancel:          cancel,
+		prPendingCheckerFactory: defaultPRPendingCheckerFactory,
 	}
 	l.runner = NewReviewGateRunner(storage, l.getHeadlessPool, l.getAutoReopener, nil)
 	return l
@@ -555,7 +578,7 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 		if repoPath == "" {
 			continue
 		}
-		g := newPRPendingChecker(repoPath)
+		g := l.getPRPendingCheckerFactory()(repoPath)
 
 		// 1. Check if the PR has been merged → done.
 		merged, mergedErr := g.IsPRMerged(item.PrNumber)
