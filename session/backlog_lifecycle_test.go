@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	stdlog "log"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/session/git"
 )
 
 // waitWithTimeout waits for the done channel to be closed or fails the test after 2 seconds.
@@ -432,6 +436,37 @@ func (m *mockReviewGateSpawner) SpawnReviewSession(ctx context.Context, item *Ba
 	return &Instance{}, nil
 }
 
+// fakePRPendingChecker is a test double implementing prPendingChecker, used to
+// inject canned IsPRMerged/GetPRStatus results without a live git worktree or
+// authenticated gh CLI.
+type fakePRPendingChecker struct {
+	merged    bool
+	mergedErr error
+	status    *git.PRStatus
+	statusErr error
+}
+
+func (f *fakePRPendingChecker) IsPRMerged(prNumber int) (bool, error) {
+	return f.merged, f.mergedErr
+}
+
+func (f *fakePRPendingChecker) GetPRStatus(prNumber int) (*git.PRStatus, error) {
+	return f.status, f.statusErr
+}
+
+// fakePRFixSpawner is a test double implementing PRFixSpawner, recording
+// whether/how AutoReopenForPRFix was called. Same shape as mockReviewGateSpawner.
+type fakePRFixSpawner struct {
+	spawnCalled    bool
+	lastFixContext string
+}
+
+func (f *fakePRFixSpawner) AutoReopenForPRFix(ctx context.Context, itemID string, fixContext string) error {
+	f.spawnCalled = true
+	f.lastFixContext = fixContext
+	return nil
+}
+
 // TestBacklogLifecycleListener_IgnoresEventsWhenDisabled verifies that when the listener
 // is disabled via SetEnabled(false), lifecycle events from an Instance are silently dropped
 // and no storage side effects occur.
@@ -566,4 +601,203 @@ func TestCreateItemSessionWithVerdict_Atomic(t *testing.T) {
 	assert.Equal(t, sessionUUID, sessions[0].SessionUUID)
 	require.NotNil(t, sessions[0].ReviewVerdict, "ReviewVerdict must be linked to the ItemSession")
 	assert.Equal(t, string(ReviewVerdictFail), sessions[0].ReviewVerdict.OverallOutcome)
+}
+
+// newPRPendingTestItem creates a pr_pending BacklogItem with the given PR
+// number/URL and a non-empty RepoPath (ReconcilePRPending skips items with an
+// empty RepoPath). The repo path is a placeholder — newPRPendingChecker is
+// overridden in these tests, so no real git/gh call is ever made against it.
+//
+// CreateBacklogItem does not persist PrURL/PrNumber (see ent_repository_backlog.go),
+// so those fields are set via a follow-up UpdateBacklogItem call, mirroring how
+// pushAndCreatePR itself stores them (backlog_lifecycle.go:500-506).
+func newPRPendingTestItem(t *testing.T, storage *Storage, prNumber int) *BacklogItemData {
+	t.Helper()
+	ctx := context.Background()
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "PR pending test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusPRPending),
+		RepoPath:           "/tmp/fake-repo",
+	})
+	require.NoError(t, err)
+
+	prURL := "https://github.com/TylerStaplerAtFanatics/stapler-squad/pull/152"
+	updated, err := storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{
+		PrURL:    &prURL,
+		PrNumber: &prNumber,
+	}, nil)
+	require.NoError(t, err)
+	return updated
+}
+
+// overridePRPendingChecker swaps newPRPendingChecker for the duration of the
+// test and restores the original on cleanup (mirrors the timeNow seam
+// override pattern used elsewhere in this package).
+func overridePRPendingChecker(t *testing.T, checker *fakePRPendingChecker) {
+	t.Helper()
+	orig := newPRPendingChecker
+	newPRPendingChecker = func(repoPath string) prPendingChecker { return checker }
+	t.Cleanup(func() { newPRPendingChecker = orig })
+}
+
+// redirectInfoLog swaps log.InfoLog for a logger writing to buf for the
+// duration of the test and restores the original on cleanup. Equivalent to
+// log.NewDummyLogger(buf, prefix) (log/log_test.go), reimplemented here
+// because that helper lives in a _test.go file in package log and is not
+// importable from other packages.
+func redirectInfoLog(t *testing.T, buf *bytes.Buffer) {
+	t.Helper()
+	orig := log.InfoLog
+	log.InfoLog = stdlog.New(buf, "INFO: ", 0)
+	t.Cleanup(func() { log.InfoLog = orig })
+}
+
+// TestReconcilePRPending_SpawnsFixSession_WhenHasConflictsTrue_Alone verifies
+// that HasConflicts=true alone (CI/reviews both false) is sufficient to spawn
+// a fix session, and that the fix context carries the "## Merge conflict"
+// section from FeedbackText.
+func TestReconcilePRPending_SpawnsFixSession_WhenHasConflictsTrue_Alone(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	newPRPendingTestItem(t, storage, 152)
+
+	overridePRPendingChecker(t, &fakePRPendingChecker{
+		merged: false,
+		status: &git.PRStatus{
+			HasConflicts: true,
+			FeedbackText: "## Merge conflict\n...",
+		},
+	})
+
+	listener := NewBacklogLifecycleListener(storage)
+	fakeSpawner := &fakePRFixSpawner{}
+	listener.SetPRFixSpawner(fakeSpawner)
+
+	er := storage.repo.(*EntRepository)
+	listener.ReconcilePRPending(context.Background(), er)
+
+	assert.True(t, fakeSpawner.spawnCalled, "conflict-only PRStatus should trigger a fix-session spawn")
+	assert.Contains(t, fakeSpawner.lastFixContext, "## Merge conflict")
+}
+
+// TestReconcilePRPending_LogsConflictTrue_WhenConflictTriggersSpawn verifies
+// that the spawn log line records conflict=true when HasConflicts triggered it.
+func TestReconcilePRPending_LogsConflictTrue_WhenConflictTriggersSpawn(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	newPRPendingTestItem(t, storage, 152)
+
+	overridePRPendingChecker(t, &fakePRPendingChecker{
+		status: &git.PRStatus{
+			HasConflicts: true,
+			FeedbackText: "## Merge conflict\n...",
+		},
+	})
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.SetPRFixSpawner(&fakePRFixSpawner{})
+
+	var buf bytes.Buffer
+	redirectInfoLog(t, &buf)
+
+	er := storage.repo.(*EntRepository)
+	listener.ReconcilePRPending(context.Background(), er)
+
+	assert.Contains(t, buf.String(), "conflict=true")
+}
+
+// TestReconcilePRPending_SpawnsFixSession_WhenCIFailingTrue is a regression
+// test for the pre-existing CIFailing trigger, previously untested at the
+// gate level. It also asserts the log line reports conflict=false so the
+// extended log format doesn't spuriously report a conflict when only CI failed.
+func TestReconcilePRPending_SpawnsFixSession_WhenCIFailingTrue(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	newPRPendingTestItem(t, storage, 152)
+
+	overridePRPendingChecker(t, &fakePRPendingChecker{
+		status: &git.PRStatus{
+			CIFailing:    true,
+			FeedbackText: "## Failing CI checks\n- build FAILED\n",
+		},
+	})
+
+	listener := NewBacklogLifecycleListener(storage)
+	fakeSpawner := &fakePRFixSpawner{}
+	listener.SetPRFixSpawner(fakeSpawner)
+
+	var buf bytes.Buffer
+	redirectInfoLog(t, &buf)
+
+	er := storage.repo.(*EntRepository)
+	listener.ReconcilePRPending(context.Background(), er)
+
+	assert.True(t, fakeSpawner.spawnCalled, "CIFailing alone should trigger a fix-session spawn")
+	assert.Contains(t, buf.String(), "CI=true")
+	assert.Contains(t, buf.String(), "conflict=false")
+}
+
+// TestReconcilePRPending_SpawnsFixSession_WhenHasBlockingReviewsTrue is a
+// regression test for the pre-existing HasBlockingReviews trigger, previously
+// untested at the gate level. It also asserts the log line reports
+// conflict=false so the extended log format doesn't spuriously report a
+// conflict when only a review blocked.
+func TestReconcilePRPending_SpawnsFixSession_WhenHasBlockingReviewsTrue(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	newPRPendingTestItem(t, storage, 152)
+
+	overridePRPendingChecker(t, &fakePRPendingChecker{
+		status: &git.PRStatus{
+			HasBlockingReviews: true,
+			FeedbackText:       "## Review: changes requested by @reviewer1\n",
+		},
+	})
+
+	listener := NewBacklogLifecycleListener(storage)
+	fakeSpawner := &fakePRFixSpawner{}
+	listener.SetPRFixSpawner(fakeSpawner)
+
+	var buf bytes.Buffer
+	redirectInfoLog(t, &buf)
+
+	er := storage.repo.(*EntRepository)
+	listener.ReconcilePRPending(context.Background(), er)
+
+	assert.True(t, fakeSpawner.spawnCalled, "HasBlockingReviews alone should trigger a fix-session spawn")
+	assert.Contains(t, buf.String(), "reviews=true")
+	assert.Contains(t, buf.String(), "conflict=false")
+}
+
+// TestReconcilePRPending_NoSpawn_WhenAllSignalsFalse verifies that a healthy
+// PR (all three signals false) does not trigger a spawn and leaves the item
+// in pr_pending — the extended 3-way gate must not over-trigger.
+func TestReconcilePRPending_NoSpawn_WhenAllSignalsFalse(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	item := newPRPendingTestItem(t, storage, 152)
+
+	overridePRPendingChecker(t, &fakePRPendingChecker{
+		status: &git.PRStatus{},
+	})
+
+	listener := NewBacklogLifecycleListener(storage)
+	fakeSpawner := &fakePRFixSpawner{}
+	listener.SetPRFixSpawner(fakeSpawner)
+
+	er := storage.repo.(*EntRepository)
+	listener.ReconcilePRPending(context.Background(), er)
+
+	assert.False(t, fakeSpawner.spawnCalled, "healthy PR (all signals false) must not trigger a spawn")
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusPRPending), fetched.Status, "item status must remain pr_pending")
 }
