@@ -605,8 +605,9 @@ func TestCreateItemSessionWithVerdict_Atomic(t *testing.T) {
 
 // newPRPendingTestItem creates a pr_pending BacklogItem with the given PR
 // number/URL and a non-empty RepoPath (ReconcilePRPending skips items with an
-// empty RepoPath). The repo path is a placeholder — newPRPendingChecker is
-// overridden in these tests, so no real git/gh call is ever made against it.
+// empty RepoPath). The repo path is a placeholder — the listener's PR-pending
+// checker factory is overridden in these tests, so no real git/gh call is
+// ever made against it.
 //
 // CreateBacklogItem does not persist PrURL/PrNumber (see ent_repository_backlog.go),
 // so those fields are set via a follow-up UpdateBacklogItem call, mirroring how
@@ -632,14 +633,13 @@ func newPRPendingTestItem(t *testing.T, storage *Storage, prNumber int) *Backlog
 	return updated
 }
 
-// overridePRPendingChecker swaps newPRPendingChecker for the duration of the
-// test and restores the original on cleanup (mirrors the timeNow seam
-// override pattern used elsewhere in this package).
-func overridePRPendingChecker(t *testing.T, checker *fakePRPendingChecker) {
+// overridePRPendingChecker installs checker as listener's PR-pending-checker
+// factory for the duration of the test (mirrors the timeNow seam override
+// pattern used elsewhere in this package). No cleanup is needed since the
+// factory lives on the listener instance, not a shared package var.
+func overridePRPendingChecker(t *testing.T, listener *BacklogLifecycleListener, checker *fakePRPendingChecker) {
 	t.Helper()
-	orig := newPRPendingChecker
-	newPRPendingChecker = func(repoPath string) prPendingChecker { return checker }
-	t.Cleanup(func() { newPRPendingChecker = orig })
+	listener.SetPRPendingCheckerFactory(func(repoPath string) prPendingChecker { return checker })
 }
 
 // redirectInfoLog swaps log.InfoLog for a logger writing to buf for the
@@ -664,15 +664,14 @@ func TestReconcilePRPending_SpawnsFixSession_WhenHasConflictsTrue_Alone(t *testi
 
 	newPRPendingTestItem(t, storage, 152)
 
-	overridePRPendingChecker(t, &fakePRPendingChecker{
+	listener := NewBacklogLifecycleListener(storage)
+	overridePRPendingChecker(t, listener, &fakePRPendingChecker{
 		merged: false,
 		status: &git.PRStatus{
 			HasConflicts: true,
 			FeedbackText: "## Merge conflict\n...",
 		},
 	})
-
-	listener := NewBacklogLifecycleListener(storage)
 	fakeSpawner := &fakePRFixSpawner{}
 	listener.SetPRFixSpawner(fakeSpawner)
 
@@ -691,14 +690,13 @@ func TestReconcilePRPending_LogsConflictTrue_WhenConflictTriggersSpawn(t *testin
 
 	newPRPendingTestItem(t, storage, 152)
 
-	overridePRPendingChecker(t, &fakePRPendingChecker{
+	listener := NewBacklogLifecycleListener(storage)
+	overridePRPendingChecker(t, listener, &fakePRPendingChecker{
 		status: &git.PRStatus{
 			HasConflicts: true,
 			FeedbackText: "## Merge conflict\n...",
 		},
 	})
-
-	listener := NewBacklogLifecycleListener(storage)
 	listener.SetPRFixSpawner(&fakePRFixSpawner{})
 
 	var buf bytes.Buffer
@@ -720,14 +718,13 @@ func TestReconcilePRPending_SpawnsFixSession_WhenCIFailingTrue(t *testing.T) {
 
 	newPRPendingTestItem(t, storage, 152)
 
-	overridePRPendingChecker(t, &fakePRPendingChecker{
+	listener := NewBacklogLifecycleListener(storage)
+	overridePRPendingChecker(t, listener, &fakePRPendingChecker{
 		status: &git.PRStatus{
 			CIFailing:    true,
 			FeedbackText: "## Failing CI checks\n- build FAILED\n",
 		},
 	})
-
-	listener := NewBacklogLifecycleListener(storage)
 	fakeSpawner := &fakePRFixSpawner{}
 	listener.SetPRFixSpawner(fakeSpawner)
 
@@ -753,14 +750,13 @@ func TestReconcilePRPending_SpawnsFixSession_WhenHasBlockingReviewsTrue(t *testi
 
 	newPRPendingTestItem(t, storage, 152)
 
-	overridePRPendingChecker(t, &fakePRPendingChecker{
+	listener := NewBacklogLifecycleListener(storage)
+	overridePRPendingChecker(t, listener, &fakePRPendingChecker{
 		status: &git.PRStatus{
 			HasBlockingReviews: true,
 			FeedbackText:       "## Review: changes requested by @reviewer1\n",
 		},
 	})
-
-	listener := NewBacklogLifecycleListener(storage)
 	fakeSpawner := &fakePRFixSpawner{}
 	listener.SetPRFixSpawner(fakeSpawner)
 
@@ -784,11 +780,10 @@ func TestReconcilePRPending_NoSpawn_WhenAllSignalsFalse(t *testing.T) {
 
 	item := newPRPendingTestItem(t, storage, 152)
 
-	overridePRPendingChecker(t, &fakePRPendingChecker{
+	listener := NewBacklogLifecycleListener(storage)
+	overridePRPendingChecker(t, listener, &fakePRPendingChecker{
 		status: &git.PRStatus{},
 	})
-
-	listener := NewBacklogLifecycleListener(storage)
 	fakeSpawner := &fakePRFixSpawner{}
 	listener.SetPRFixSpawner(fakeSpawner)
 
