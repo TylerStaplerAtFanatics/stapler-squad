@@ -359,7 +359,7 @@ func (s *PRStatus) render() string {
 
 	if s.HasConflicts {
 		sb.WriteString("## Merge conflict\n")
-		sb.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&sb,
 			"This PR's branch has merge conflicts against its base branch (mergeStateStatus=%s) "+
 				"and cannot be merged as-is.\n"+
 				"Rebase onto the base branch and resolve conflicts. This is not necessarily a "+
@@ -380,7 +380,7 @@ func (s *PRStatus) render() string {
 				"delta looks disproportionate. This rebase will force-push over the PR's existing diff, which "+
 				"resets GitHub's review view — the diff-stat is the one artifact a human reviewer can check "+
 				"against your summary instead of trusting it on faith.\n\n",
-			s.conflictMergeStateStatus))
+			s.conflictMergeStateStatus)
 	}
 
 	if len(s.failedChecks) > 0 {
