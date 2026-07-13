@@ -27,6 +27,10 @@ var testSocketPrefixes = []string{
 	"test_keepalive_",
 	"test_recovery_",
 	"integration_",
+	// Shared per-process isolated socket used by testSocketOnce (tmux.go) across
+	// every package's tests, not just this one — see extractTestSocketPID, which
+	// must split on "-" as well as "_" to find the embedded PID in this name.
+	"test-isolated-",
 }
 
 func TestMain(m *testing.M) {
@@ -66,12 +70,14 @@ func reapLeakedTestServers() {
 }
 
 // extractTestSocketPID finds the PID embedded in a test socket name.
-// Convention: each generator embeds os.Getpid() as a numeric segment.
-// PID range on this system is [2, 4194304); nanosecond timestamps and
-// rand.Int63() values are always >> pidMax, so the check is unambiguous.
+// Convention: each generator embeds os.Getpid() as a numeric segment,
+// delimited by "_" (e.g. "test_recovery_1234_5678") or "-" (e.g.
+// "test-isolated-1234"). PID range on this system is [2, 4194304);
+// nanosecond timestamps and rand.Int63() values are always >> pidMax, so the
+// check is unambiguous.
 func extractTestSocketPID(name string) (int, bool) {
 	const pidMax = 4194304 // /proc/sys/kernel/pid_max on this system
-	for _, part := range strings.Split(name, "_") {
+	for _, part := range strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' }) {
 		n, err := strconv.Atoi(part)
 		if err == nil && n >= 2 && n < pidMax {
 			return n, true
@@ -112,11 +118,11 @@ while kill -0 "$PID" 2>/dev/null; do
     sleep 1
 done
 if [ -d "$SOCKDIR" ]; then
-    for f in "$SOCKDIR"/test_* "$SOCKDIR"/integration_*; do
+    for f in "$SOCKDIR"/test_* "$SOCKDIR"/integration_* "$SOCKDIR"/test-isolated-*; do
         [ -S "$f" ] || continue
         name=$(basename "$f")
         case "$name" in
-            *_${PID}_*) tmux -L "$name" kill-server 2>/dev/null; true ;;
+            *_${PID}_*|*-${PID}) tmux -L "$name" kill-server 2>/dev/null; true ;;
         esac
     done
 fi
