@@ -323,18 +323,91 @@ func (g *GitWorktree) findExistingPR() (string, int, error) {
 	return url, num, nil
 }
 
-// PRStatus holds the CI and review state for a pull request.
+// conflictInfo captures the mergeability signal that tripped HasConflicts.
+type conflictInfo struct{ mergeStateStatus string }
+
+// reviewInfo captures the blocking review that tripped HasBlockingReviews.
+type reviewInfo struct{ author, body string }
+
+// PRStatus holds the CI, review, and conflict state for a pull request.
 type PRStatus struct {
 	// CIFailing is true when at least one CI check has a terminal failure.
 	CIFailing bool
 	// HasBlockingReviews is true when a reviewer has requested changes.
 	HasBlockingReviews bool
+	// HasConflicts is true when GitHub reports mergeStateStatus == "DIRTY" or
+	// mergeable == "CONFLICTING" — its branch cannot be merged as-is and needs
+	// a rebase. Both fields are checked (see Task 1.1.1d) because gh's
+	// mergeable field has been observed returning stale data (cli/cli#9583).
+	HasConflicts bool
 	// FeedbackText is a combined human-readable summary for the fix agent.
 	FeedbackText string
+
+	failedChecks    []string      // unexported; captured CI failures, consumed by render()
+	blockingReviews []reviewInfo  // unexported; one entry per CHANGES_REQUESTED review
+	conflict        *conflictInfo // unexported; nil unless HasConflicts
+	generalComments []string      // unexported; existing "general comments" section content (unchanged behavior, just relocated)
 }
 
-// GetPRStatus fetches the combined CI check status, reviewer decisions, and
-// PR comments for the given pull request number.
+// render assembles FeedbackText from the fields captured during evaluation,
+// in a fixed order (conflict first — features.md §2A), so FeedbackText can
+// never drift from the bools it's derived from.
+func (s *PRStatus) render() string {
+	var sb strings.Builder
+
+	if s.conflict != nil {
+		sb.WriteString("## Merge conflict\n")
+		sb.WriteString(fmt.Sprintf(
+			"This PR's branch has merge conflicts against its base branch (mergeStateStatus=%s) "+
+				"and cannot be merged as-is.\n"+
+				"Rebase onto the base branch and resolve conflicts. This is not necessarily a "+
+				"re-implementation of the original acceptance criteria — the PR's existing changes "+
+				"are still correct, they just need to be replayed onto a moved base.\n\n"+
+				"Follow these rules when resolving:\n"+
+				"- Push with `git push --force-with-lease`, never `--force`. This fails safely if "+
+				"the remote branch moved since you last fetched it, instead of silently discarding commits.\n"+
+				"- If a conflicting file is a config file (for example `.gitignore`) and one side of "+
+				"the conflict looks suspiciously short or placeholder-like compared to the other, prefer "+
+				"the longer/more-complete side rather than guessing — this repo has hit real `.gitignore` "+
+				"truncation incidents from automated rebases before.\n"+
+				"- If you cannot confidently resolve a conflicting hunk, leave the conflict markers in "+
+				"place, do not force-push, and say so clearly in your final message instead of guessing.\n"+
+				"- Before finishing, run `git diff --stat` comparing your final branch against the base "+
+				"branch's pre-rebase state, and paste that output verbatim into both your final report "+
+				"and the PR description. Call out `.gitignore` or any other config/lockfile whose line-count "+
+				"delta looks disproportionate. This rebase will force-push over the PR's existing diff, which "+
+				"resets GitHub's review view — the diff-stat is the one artifact a human reviewer can check "+
+				"against your summary instead of trusting it on faith.\n\n",
+			s.conflict.mergeStateStatus))
+	}
+
+	if len(s.failedChecks) > 0 {
+		sb.WriteString("## Failing CI checks\n")
+		for _, fc := range s.failedChecks {
+			sb.WriteString("- " + fc + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	for _, br := range s.blockingReviews {
+		sb.WriteString("## Review: changes requested by @" + br.author + "\n")
+		if br.body != "" {
+			sb.WriteString(br.body + "\n\n")
+		}
+	}
+
+	if len(s.generalComments) > 0 {
+		sb.WriteString("## PR comments\n")
+		for _, c := range s.generalComments {
+			sb.WriteString(c + "\n\n")
+		}
+	}
+
+	return sb.String()
+}
+
+// GetPRStatus fetches the combined CI check status, reviewer decisions,
+// mergeability, and PR comments for the given pull request number.
 func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
 	if err := checkGHCLI(); err != nil {
 		return nil, err
@@ -343,13 +416,20 @@ func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
 	defer cancel()
 
 	cmd := safeexec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber),
-		"--json", "statusCheckRollup,reviews,comments")
+		"--json", "statusCheckRollup,reviews,comments,mergeable,mergeStateStatus")
 	cmd.Dir = g.worktreePath
 	raw, err := g.runCombinedOutput(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view failed: %s (%w)", raw, err)
 	}
 
+	return parsePRStatusPayload(raw)
+}
+
+// parsePRStatusPayload parses gh pr view's combined JSON output, evaluates
+// all PR-status signals into structured fields, and renders FeedbackText
+// from them. It has no I/O dependency and is directly unit-testable.
+func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 	var payload struct {
 		StatusCheckRollup []struct {
 			Typename   string `json:"__typename"`
@@ -374,16 +454,30 @@ func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
 				Login string `json:"login"`
 			} `json:"author"`
 		} `json:"comments"`
+		Mergeable        string `json:"mergeable"`
+		MergeStateStatus string `json:"mergeStateStatus"`
 	}
-	if jsonErr := json.Unmarshal([]byte(raw), &payload); jsonErr != nil {
+	if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
 		return nil, fmt.Errorf("parse pr status: %w", jsonErr)
 	}
 
 	status := &PRStatus{}
-	var sb strings.Builder
+
+	// Evaluate mergeability first — a PR that can't even be rebased makes
+	// CI/review feedback moot until it's mergeable again. Check both fields:
+	// cli/cli#9583 documents gh's `mergeable` field returning stale/incorrect
+	// data vs. `mergeStateStatus` for the same PR (stack.md §3), so this is a
+	// belt-and-suspenders OR, not a single-field check. UNKNOWN on both fields
+	// falls through to "no signal this cycle" by construction — neither
+	// comparison below matches "UNKNOWN".
+	mss := strings.ToUpper(payload.MergeStateStatus)
+	mg := strings.ToUpper(payload.Mergeable)
+	if mss == "DIRTY" || mg == "CONFLICTING" {
+		status.HasConflicts = true
+		status.conflict = &conflictInfo{mergeStateStatus: payload.MergeStateStatus}
+	}
 
 	// Evaluate CI checks.
-	var failedChecks []string
 	for _, check := range payload.StatusCheckRollup {
 		name := check.Name
 		if name == "" {
@@ -403,37 +497,24 @@ func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
 			if url != "" {
 				entry += " (" + url + ")"
 			}
-			failedChecks = append(failedChecks, entry)
+			status.failedChecks = append(status.failedChecks, entry)
 		}
-	}
-	if len(failedChecks) > 0 {
-		sb.WriteString("## Failing CI checks\n")
-		for _, fc := range failedChecks {
-			sb.WriteString("- " + fc + "\n")
-		}
-		sb.WriteString("\n")
 	}
 
 	// Evaluate reviews.
 	for _, r := range payload.Reviews {
 		if strings.ToUpper(r.State) == "CHANGES_REQUESTED" {
 			status.HasBlockingReviews = true
-			sb.WriteString("## Review: changes requested by @" + r.Author.Login + "\n")
-			if r.Body != "" {
-				sb.WriteString(r.Body + "\n\n")
-			}
+			status.blockingReviews = append(status.blockingReviews, reviewInfo{author: r.Author.Login, body: r.Body})
 		}
 	}
 
 	// Include general PR comments as context.
-	if len(payload.Comments) > 0 {
-		sb.WriteString("## PR comments\n")
-		for _, c := range payload.Comments {
-			sb.WriteString("@" + c.Author.Login + ": " + c.Body + "\n\n")
-		}
+	for _, c := range payload.Comments {
+		status.generalComments = append(status.generalComments, "@"+c.Author.Login+": "+c.Body)
 	}
 
-	status.FeedbackText = sb.String()
+	status.FeedbackText = status.render()
 	return status, nil
 }
 

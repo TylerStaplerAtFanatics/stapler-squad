@@ -37,6 +37,20 @@ type PRFixSpawner interface {
 	AutoReopenForPRFix(ctx context.Context, itemID string, fixContext string) error
 }
 
+// prPendingChecker is the subset of GitWorktree's PR-status behavior that
+// ReconcilePRPending depends on. Defined here (the consumer) rather than in
+// package git, scoped to exactly what's called.
+type prPendingChecker interface {
+	IsPRMerged(prNumber int) (bool, error)
+	GetPRStatus(prNumber int) (*git.PRStatus, error)
+}
+
+// newPRPendingChecker constructs the PR-status checker for a given repo path.
+// Overridable in tests (mirrors the timeNow seam in instance_workspace.go:581).
+var newPRPendingChecker = func(repoPath string) prPendingChecker {
+	return git.NewGitWorktreeFromStorage(repoPath, repoPath, "", "", "")
+}
+
 // maxConcurrentReviewGates is the maximum number of review gates that can run
 // concurrently. This caps goroutine fan-out when many sessions exit simultaneously.
 const maxConcurrentReviewGates = 8
@@ -541,7 +555,7 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 		if repoPath == "" {
 			continue
 		}
-		g := git.NewGitWorktreeFromStorage(repoPath, repoPath, "", "", "")
+		g := newPRPendingChecker(repoPath)
 
 		// 1. Check if the PR has been merged → done.
 		merged, mergedErr := g.IsPRMerged(item.PrNumber)
@@ -565,19 +579,19 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 			log.DebugLog.Printf("[BacklogLifecycle] ReconcilePRPending GetPRStatus item=%s pr=%d: %v", item.ID, item.PrNumber, statusErr)
 			continue
 		}
-		if !prStatus.CIFailing && !prStatus.HasBlockingReviews {
+		if !prStatus.CIFailing && !prStatus.HasBlockingReviews && !prStatus.HasConflicts {
 			continue // PR is open and healthy — wait for merge.
 		}
 
-		// 3. CI failure or review changes requested → spawn fix session.
+		// 3. CI failure, review changes requested, or merge conflict → spawn fix session.
 		fixSpawner := l.getPRFixSpawner()
 		if fixSpawner == nil {
 			log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s: CI/review issues found but no PRFixSpawner configured", item.ID)
 			continue
 		}
 		fixCtx := fmt.Sprintf("PR #%d (%s) needs fixes:\n\n%s", item.PrNumber, item.PrURL, prStatus.FeedbackText)
-		log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s → in_progress for PR fix (CI=%v, reviews=%v)",
-			item.ID, prStatus.CIFailing, prStatus.HasBlockingReviews)
+		log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s → in_progress for PR fix (CI=%v, reviews=%v, conflict=%v)",
+			item.ID, prStatus.CIFailing, prStatus.HasBlockingReviews, prStatus.HasConflicts)
 		if fixErr := fixSpawner.AutoReopenForPRFix(ctx, item.ID.String(), fixCtx); fixErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending AutoReopenForPRFix item=%s: %v", item.ID, fixErr)
 		}
