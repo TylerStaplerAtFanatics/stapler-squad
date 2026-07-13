@@ -124,6 +124,15 @@ type TmuxSession struct {
 	existsSF       singleflight.Group //nolint:exhaustruct
 	existsCacheTTL time.Duration      // read-only after construction
 
+	// noCacheSF coalesces concurrent DoesSessionExistNoCache callers (health
+	// checker, hibernation sweeper, session-create retry loop, bulk restore,
+	// etc.) into a single in-flight subprocess. NoCache intentionally skips
+	// existsCache/existsSF for freshness, but with no coalescing at all here,
+	// every concurrent caller spawned its own tmux subprocess against an
+	// already-serialized single-threaded server — this preserves the
+	// always-fresh contract (no TTL) while still collapsing duplicates.
+	noCacheSF singleflight.Group //nolint:exhaustruct
+
 	// Control mode streaming infrastructure (replaces pipe-pane + FIFO)
 	controlModeCmd         *exec.Cmd              // tmux -C attach process
 	controlModeStdout      io.ReadCloser          // stdout pipe for control mode notifications
@@ -1755,39 +1764,49 @@ func (t *TmuxSession) invalidateExistsCache() {
 	t.existsCache.Store(existsCacheState{}) // zero time = cache invalid
 }
 
-// DoesSessionExistNoCache checks if session exists WITHOUT using cache.
-// This is used for critical validation before session creation to ensure we have
-// the most up-to-date information about session existence.
+// DoesSessionExistNoCache checks if session exists WITHOUT using the
+// time-based cache. This is used for critical validation before session
+// creation to ensure we have the most up-to-date information about session
+// existence.
+//
+// Concurrent callers (health checker, hibernation sweeper, the session-create
+// retry loop, bulk instance restore, etc.) are coalesced via noCacheSF into a
+// single in-flight subprocess — this keeps the "always fresh" contract (no
+// TTL) while eliminating the redundant concurrent tmux subprocess spawns that
+// used to hit an already-serialized single-threaded tmux server one-for-one
+// with callers.
 func (t *TmuxSession) DoesSessionExistNoCache() bool {
 	if t == nil {
 		return false
 	}
 
-	// Direct check without cache — use a longer timeout for critical validation.
-	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsNoCacheTimeout)
-	defer cancel()
+	v, _, _ := t.noCacheSF.Do("", func() (interface{}, error) {
+		// Direct check without cache — use a longer timeout for critical validation.
+		ctx, cancel := context.WithTimeout(context.Background(), sessionExistsNoCacheTimeout)
+		defer cancel()
 
-	output, err := t.listSessionsRaw(ctx)
-	if err != nil {
-		log.Warn("DoesSessionExistNoCache: tmux list-sessions failed", "session", t.sanitizedName, "err", err)
-		// Only attempt auto-recovery for the default server (not isolated test servers).
-		if t.serverSocket == "" && serverNotRunning(output) {
-			recoverFromServerFailure(t.serverSocket, "DoesSessionExistNoCache")
+		output, err := t.listSessionsRaw(ctx)
+		if err != nil {
+			log.Warn("DoesSessionExistNoCache: tmux list-sessions failed", "session", t.sanitizedName, "err", err)
+			// Only attempt auto-recovery for the default server (not isolated test servers).
+			if t.serverSocket == "" && serverNotRunning(output) {
+				recoverFromServerFailure(t.serverSocket, "DoesSessionExistNoCache")
+			}
+			return false, nil
 		}
-		return false
-	}
 
-	// Parse and log ALL sessions for debugging
-	sessions := strings.Split(strings.TrimSpace(string(output)), "\n")
-	log.Info("DoesSessionExistNoCache: checking for session in tmux sessions", "session", t.sanitizedName, "sessions", sessions)
+		// Parse and log ALL sessions for debugging
+		sessions := strings.Split(strings.TrimSpace(string(output)), "\n")
+		log.Info("DoesSessionExistNoCache: checking for session in tmux sessions", "session", t.sanitizedName, "sessions", sessions)
 
-	for _, session := range sessions {
-		if session == t.sanitizedName {
-			return true
+		for _, session := range sessions {
+			if session == t.sanitizedName {
+				return true, nil
+			}
 		}
-	}
-
-	return false
+		return false, nil
+	})
+	return v.(bool)
 }
 
 // RefreshClient sends a refresh signal to the tmux client,
