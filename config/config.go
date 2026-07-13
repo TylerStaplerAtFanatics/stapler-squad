@@ -243,6 +243,8 @@ type Config struct {
 	Hibernation HibernationConfig `json:"hibernation,omitempty"`
 	// Capacity holds configuration for the provider capacity monitoring and transition feature.
 	Capacity CapacityConfig `json:"capacity,omitempty"`
+	// TmuxExecGate bounds concurrent tmux subprocess execution across all processes.
+	TmuxExecGate TmuxExecGateConfig `json:"tmux_exec_gate,omitempty"`
 
 	// Escape analytics configuration
 
@@ -322,6 +324,9 @@ func defaultConfigWithExecutor(exec CommandExecutor) *Config {
 	cfg.KeyCategories = getDefaultKeyCategories()
 	cfg.VCSPreference = "auto" // Default to auto-detection (prefer JJ if available)
 	cfg.AvailablePrograms = availablePrograms
+	cfg.TmuxExecGate = TmuxExecGateConfig{
+		Slots: defaultTmuxExecGateSlots,
+	}
 	cfg.Hibernation = HibernationConfig{
 		Enabled:                   true,
 		IdleTimeoutMinutes:        20,
