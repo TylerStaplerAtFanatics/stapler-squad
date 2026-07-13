@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/session/tmux"
 )
 
 // TestSessionRestartWithConversationContinuity verifies that sessions restart
@@ -645,4 +646,96 @@ func TestInstanceWithWorktreeAndClaudeSession(t *testing.T) {
 	assert.NotNil(t, instance.GetClaudeSession())
 
 	t.Logf("✓ Claude session with git worktree restart succeeded")
+}
+
+// TestFromInstanceData_ActiveSession_DetectsAlreadyRunningTmux is a regression
+// test for a bug where reloading a persisted Active instance (e.g. via
+// LoadInstances(), which health.go's periodic health check calls on every
+// tick) always took the "cold restore" path in Instance.Start() and relaunched
+// the program — even when the underlying tmux session was still alive —
+// because FromInstanceData's Active branch never wired the freshly-constructed
+// Instance's TmuxProcessManager to the existing tmux session before calling
+// Start(). HasSession()/IsAlive() therefore always reported false on the first
+// check, regardless of the real tmux state, unlike the Paused/Stopped/Hibernated
+// branches which correctly call SetSession() first.
+//
+// Uses a real (but test-isolated, via a private tmux server socket) tmux
+// session rather than the mock builder: FromInstanceData calls Start()
+// internally, before a test gets a chance to inject a mock process manager on
+// the newly-constructed Instance, so this scenario can only be exercised
+// end-to-end against a real tmux server.
+//
+// Proves the fix by round-tripping a live instance through
+// ToInstanceData()/FromInstanceData() and asserting: the reconstructed
+// instance detects the live session (TmuxAlive()==true immediately), and its
+// pane's foreground PID is unchanged — i.e. it hot-attached to the same
+// process rather than relaunching it.
+func TestFromInstanceData_ActiveSession_DetectsAlreadyRunningTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test that starts real tmux sessions")
+	}
+
+	instance, cleanup, err := NewInstanceWithCleanup(InstanceOptions{
+		Title:            "active-restore-test",
+		Path:             t.TempDir(),
+		Program:          "bash -c 'echo test session; exec bash'",
+		SessionType:      SessionTypeDirectory,
+		AutoYes:          true,
+		TmuxServerSocket: getTestTmuxSocket(t),
+	})
+	require.NoError(t, err)
+	defer func() {
+		if cleanup != nil {
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				t.Logf("Cleanup warning: %v", cleanupErr)
+			}
+		}
+	}()
+
+	startCleanup, err := instance.StartWithCleanup(true)
+	require.NoError(t, err, "Session should start successfully")
+	defer func() {
+		if startCleanup != nil {
+			if cleanupErr := startCleanup(); cleanupErr != nil {
+				t.Logf("Start cleanup warning: %v", cleanupErr)
+			}
+		}
+	}()
+
+	require.True(t, instance.TmuxAlive(), "tmux session should be alive after Start")
+	require.Equal(t, Active, instance.Status, "instance should be Active after Start")
+
+	// A freshly-created tmux server socket can transiently fail "list-sessions"
+	// for a few ms right after creation (server startup lag), independent of
+	// this bug. Real health-checker calls always land against sessions that
+	// have been alive for seconds/minutes/hours, so wait for the tmux SERVER
+	// itself to stabilize before exercising the actual scenario under test.
+	// Must probe with a brand-new TmuxSession object each time (not `instance`,
+	// whose existsCache would just replay its own already-cached "true" and
+	// never actually wait for the server) — this mirrors exactly what
+	// FromInstanceData's restore path does: construct a fresh object and
+	// immediately check aliveness on it.
+	require.Eventually(t, func() bool {
+		probe := tmux.NewTmuxSessionWithServerSocket(instance.Title, instance.Program, "staplersquad_", instance.TmuxServerSocket, tmux.WithRegistry(nil))
+		return probe.DoesSessionExist()
+	}, 2*time.Second, 10*time.Millisecond, "tmux server should stabilize so a freshly-constructed session object can see it")
+
+	pidBefore, err := instance.GetPanePID()
+	require.NoError(t, err, "should be able to read the pane's foreground PID")
+	require.NotZero(t, pidBefore)
+
+	// Round-trip through the same serialize/deserialize path LoadInstances() uses.
+	data := instance.ToInstanceData()
+	restored, err := FromInstanceData(data)
+	require.NoError(t, err, "FromInstanceData should succeed for an Active instance with a live tmux session")
+
+	assert.True(t, restored.TmuxAlive(),
+		"restored instance should detect the already-running tmux session, not report it as dead")
+
+	pidAfter, err := restored.GetPanePID()
+	require.NoError(t, err, "restored instance should be able to read the pane's foreground PID")
+	assert.Equal(t, pidBefore, pidAfter,
+		"pane PID must be unchanged — a changed PID means the process was relaunched (cold restore) instead of hot-attached to the still-live session")
+
+	t.Logf("✓ FromInstanceData correctly hot-attached to the already-running tmux session (pid %d unchanged)", pidBefore)
 }
