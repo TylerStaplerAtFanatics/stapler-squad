@@ -67,6 +67,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		Tags:                 snap.Tags, // Include tags in serialization
 		SessionType:          snap.SessionType,
 		TmuxPrefix:           snap.TmuxPrefix,
+		TmuxServerSocket:     snap.TmuxServerSocket,
 		LastTerminalUpdate:   snap.LastTerminalUpdate,
 		LastMeaningfulOutput: snap.LastMeaningfulOutput,
 		LastOutputSignature:  snap.LastOutputSignature,
@@ -192,24 +193,25 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	}
 
 	instance := &Instance{
-		Title:         data.Title,
-		UUID:          data.UUID,
-		Path:          migratedPath, // Use migrated path
-		WorkingDir:    data.WorkingDir,
-		Branch:        data.Branch,
-		Status:        data.Status,
-		Height:        data.Height,
-		Width:         data.Width,
-		CreatedAt:     data.CreatedAt,
-		UpdatedAt:     data.UpdatedAt,
-		Program:       data.Program,
-		Prompt:        data.Prompt,
-		InitialPrompt: data.InitialPrompt,
-		Category:      data.Category,
-		IsExpanded:    data.IsExpanded,
-		Tags:          tags, // Use migrated tags (includes category if needed)
-		SessionType:   data.SessionType,
-		TmuxPrefix:    data.TmuxPrefix,
+		Title:            data.Title,
+		UUID:             data.UUID,
+		Path:             migratedPath, // Use migrated path
+		WorkingDir:       data.WorkingDir,
+		Branch:           data.Branch,
+		Status:           data.Status,
+		Height:           data.Height,
+		Width:            data.Width,
+		CreatedAt:        data.CreatedAt,
+		UpdatedAt:        data.UpdatedAt,
+		Program:          data.Program,
+		Prompt:           data.Prompt,
+		InitialPrompt:    data.InitialPrompt,
+		Category:         data.Category,
+		IsExpanded:       data.IsExpanded,
+		Tags:             tags, // Use migrated tags (includes category if needed)
+		SessionType:      data.SessionType,
+		TmuxPrefix:       data.TmuxPrefix,
+		TmuxServerSocket: data.TmuxServerSocket,
 		ReviewState: ReviewState{
 			LastTerminalUpdate:   data.LastTerminalUpdate,
 			LastMeaningfulOutput: data.LastMeaningfulOutput,
@@ -399,6 +401,25 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		}
 		instance.started.Store(true)
 	} else {
+		// Wire the tmux session object first (mirrors the Paused/Stopped/Hibernated
+		// branches above) so initTmuxSession()'s HasSession() check correctly detects
+		// an already-running tmux session instead of unconditionally treating every
+		// restore as a fresh launch. Without this, HasSession() is false on this
+		// freshly-constructed Instance regardless of whether the real tmux session
+		// is alive, so every LoadInstances() call (health checks, MCP tool handlers,
+		// etc.) logs a spurious "creating tmux session" and re-runs launch bookkeeping
+		// for every Active session, even ones that were never actually down.
+		tmuxPrefix := instance.TmuxPrefix
+		if tmuxPrefix == "" {
+			tmuxPrefix = "staplersquad_"
+		}
+		if tb, ok := instance.processManager.(*TmuxBackend); ok {
+			if instance.TmuxServerSocket != "" {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithServerSocket(instance.Title, instance.Program, tmuxPrefix, instance.TmuxServerSocket, tmux.WithRegistry(nil)))
+			} else {
+				tb.TmuxManager().SetSession(tmux.NewTmuxSessionWithPrefix(instance.Title, instance.Program, tmuxPrefix))
+			}
+		}
 		if err := instance.Start(false); err != nil {
 			return nil, err
 		}

@@ -70,6 +70,8 @@ type InstanceData struct {
 	ClaudeSession ClaudeSessionData `json:"claude_session,omitempty"`
 	// Tmux session prefix for isolation
 	TmuxPrefix string `json:"tmux_prefix,omitempty"`
+	// Tmux server socket name for isolation (used with tmux -L flag)
+	TmuxServerSocket string `json:"tmux_server_socket,omitempty"`
 
 	// Terminal update timestamps for activity tracking
 	LastTerminalUpdate   time.Time `json:"last_terminal_update,omitempty"`
