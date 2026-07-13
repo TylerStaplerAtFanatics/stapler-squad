@@ -1315,19 +1315,23 @@ func (h *ConnectRPCWebSocketHandler) streamViaTmuxCapturePane(stream *connectWeb
 						// External sessions: Use tmux commands (best effort)
 						// External sessions may be attached to other terminals which control the actual size
 						rwCtx, rwCancel := context.WithTimeout(context.Background(), 5*time.Second)
-						resizeCmd := safeexec.CommandContext(rwCtx, "tmux", "resize-window", "-t", tmuxSessionName,
-							"-x", fmt.Sprintf("%d", targetCols), "-y", fmt.Sprintf("%d", targetRows))
-						if err := resizeCmd.Run(); err != nil {
-							log.Warn("[streamViaTmuxCapture] failed to resize tmux window for external session", "tmux_session", tmuxSessionName, "err", err)
+						rwErr := runTmuxGatedErr(rwCtx, "", func() error {
+							return safeexec.CommandContext(rwCtx, "tmux", "resize-window", "-t", tmuxSessionName,
+								"-x", fmt.Sprintf("%d", targetCols), "-y", fmt.Sprintf("%d", targetRows)).Run()
+						})
+						if rwErr != nil {
+							log.Warn("[streamViaTmuxCapture] failed to resize tmux window for external session", "tmux_session", tmuxSessionName, "err", rwErr)
 						}
 						rwCancel()
 
 						// Also try to resize the pane
 						rpCtx, rpCancel := context.WithTimeout(context.Background(), 5*time.Second)
-						paneCmd := safeexec.CommandContext(rpCtx, "tmux", "resize-pane", "-t", tmuxSessionName,
-							"-x", fmt.Sprintf("%d", targetCols), "-y", fmt.Sprintf("%d", targetRows))
-						if err := paneCmd.Run(); err != nil {
-							log.Warn("[streamViaTmuxCapture] failed to resize tmux pane for external session", "tmux_session", tmuxSessionName, "err", err)
+						rpErr := runTmuxGatedErr(rpCtx, "", func() error {
+							return safeexec.CommandContext(rpCtx, "tmux", "resize-pane", "-t", tmuxSessionName,
+								"-x", fmt.Sprintf("%d", targetCols), "-y", fmt.Sprintf("%d", targetRows)).Run()
+						})
+						if rpErr != nil {
+							log.Warn("[streamViaTmuxCapture] failed to resize tmux pane for external session", "tmux_session", tmuxSessionName, "err", rpErr)
 						}
 						rpCancel()
 
@@ -1486,11 +1490,26 @@ func sendInputToTmux(tmuxSessionName string, data []byte) error {
 
 	skCtx, skCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer skCancel()
-	cmd := safeexec.CommandContext(skCtx, "tmux", args...)
-	if err := cmd.Run(); err != nil {
+	err := runTmuxGatedErr(skCtx, "", func() error {
+		return safeexec.CommandContext(skCtx, "tmux", args...).Run()
+	})
+	if err != nil {
 		return fmt.Errorf("tmux send-keys failed: %w", err)
 	}
 	return nil
+}
+
+// runTmuxGatedErr acquires a tmux exec-gate slot for serverSocket (bounded by
+// ctx), runs fn, then releases the slot. These 3 call sites are the only
+// direct tmux subprocess spawns in this file that don't already route through
+// a gated TmuxSession method (see session/tmux's runGated, which this mirrors).
+func runTmuxGatedErr(ctx context.Context, serverSocket string, fn func() error) error {
+	release, err := tmux.AcquireExecSlot(ctx, serverSocket)
+	if err != nil {
+		return fmt.Errorf("exec gate: %w", err)
+	}
+	defer release()
+	return fn()
 }
 
 // parseConnectHeaders parses HTTP headers from ConnectRPC format (key: value\r\n)
