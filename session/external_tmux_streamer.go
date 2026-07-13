@@ -190,6 +190,9 @@ func (s *ExternalTmuxStreamer) startControlMode() bool {
 	// of an external session to target instead.
 	//nolint:norawexec,tmuxsocketscope long-running control-mode process; pipes set up before cmd.Start(), WaitDelay not applicable; external session has no isolated variant
 	cmd := exec.CommandContext(s.ctx, tmux.Binary(), "-C", "attach-session", "-t", s.tmuxSessionName, "-r")
+	// Backs up ctx-based cleanup at the kernel level in case this process is
+	// SIGKILLed before ctx cancellation can run.
+	safeexec.EnsurePdeathsig(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
