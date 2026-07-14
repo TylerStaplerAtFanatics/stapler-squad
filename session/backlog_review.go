@@ -303,6 +303,34 @@ func GetGitDiffRef(ctx context.Context, dir string, baseSHA string, headRef stri
 	return raw, false, nil
 }
 
+// RecoverBaseCommitSHA attempts to self-heal a base commit SHA that no longer
+// resolves in the repository's object store — the concrete cause found via
+// manual QA on backlog item ae1e2070-db02-4ad7-8580-633ef9904f31, whose
+// worktrees.base_commit_sha was a stale/corrupted 40-char SHA unreachable from
+// any ref, causing every review attempt to see an empty diff and return a
+// false UNVERIFIABLE verdict even though real, complete work was committed on
+// the branch. Recomputes the merge-base of headRef against repoPath's own
+// checked-out HEAD, which is reachable from any worktree of the same repo
+// (worktrees share one object store). Returns an error if headRef itself
+// doesn't resolve either (e.g. the branch was deleted) — that case is not
+// recoverable here and must surface to a human.
+func RecoverBaseCommitSHA(ctx context.Context, repoPath, headRef string) (string, error) {
+	if headRef == "" {
+		return "", fmt.Errorf("cannot recover a base commit without a branch/ref to compare against")
+	}
+	cmd := safeexec.CommandContext(ctx, "git", "merge-base", "HEAD", headRef)
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git merge-base HEAD %s in %s: %w", headRef, repoPath, err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return "", fmt.Errorf("git merge-base HEAD %s in %s returned empty output", headRef, repoPath)
+	}
+	return sha, nil
+}
+
 // readPlanFile reads plan.md from the given artifacts directory.
 // Returns "" on any error (plan is best-effort context, not required).
 func readPlanFile(artifactsDir string) string {
