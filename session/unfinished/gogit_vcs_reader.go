@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -81,14 +82,89 @@ type reachableSetEntry struct {
 	expiry time.Time
 }
 
-// repoCacheMaxEntries is the maximum number of repositories held in repoCache
-// before eviction runs. Sized for typical multi-repo workspaces; adjust higher
-// only if scanning > 100 repos simultaneously.
+// repoCacheMaxEntries is the ABSOLUTE hard ceiling on repositories held in
+// repoCache, regardless of the memory budget below. It exists so a
+// misconfigured or miscalculated budget can never regress past this number —
+// the real day-to-day cap is effectiveCacheBudgetBytes()/approxBytesPerCachedRepo,
+// which is normally far smaller than this.
 const repoCacheMaxEntries = 100
 
 // repoCacheTTL is the duration after which an unaccessed repo entry is evicted.
-// 30 minutes covers the scanner's 30s cycle comfortably while bounding memory.
+// 30 minutes covers the scanner's poll cycle comfortably while bounding memory.
 const repoCacheTTL = 30 * time.Minute
+
+// approxBytesPerCachedRepo estimates the memory cost of one open *cachedRepo,
+// dominated by go-git's internal packfile index + object LRU cache. Measured
+// empirically (see ClearCache's doc comment / prior profiling sessions) at
+// ~96 MB per repo. This is an estimate, not a measurement of any single repo —
+// it drives a budget-based eviction policy, not exact accounting.
+const approxBytesPerCachedRepo = 96 * 1024 * 1024
+
+// repoCacheMemoryBudgetBytes is the default byte budget for repoCache under
+// normal (non-pressured) conditions. Deliberately far below the
+// repoCacheMaxEntries*approxBytesPerCachedRepo ceiling (~9.6 GB): this process
+// runs alongside many other memory-hungry tools on a single host, and a
+// scanner cache has no business claiming multiple GB of that budget on its
+// own. 1.5 GB covers roughly 16 simultaneously "hot" repos at the ~96 MB
+// estimate, which comfortably covers realistic concurrent-viewing workloads.
+const repoCacheMemoryBudgetBytes = 1536 * 1024 * 1024
+
+// highMemoryPressureThreshold/severeMemoryPressureThreshold gate
+// effectiveCacheBudgetBytes' tiered response. Measured against the Go
+// runtime's own HeapInuse (this process's heap, not host-wide memory) so the
+// signal is specific to this process's contribution to memory pressure.
+const (
+	highMemoryPressureThreshold   = 3 * 1024 * 1024 * 1024 // 3 GB heap in-use: halve the budget
+	severeMemoryPressureThreshold = 6 * 1024 * 1024 * 1024 // 6 GB heap in-use: floor to a handful of repos
+)
+
+// readHeapInUse returns the process's current in-use heap bytes. Declared as
+// a var (not a plain function) so tests can override it to simulate memory
+// pressure deterministically without needing to actually allocate gigabytes.
+var readHeapInUse = func() uint64 {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.HeapInuse
+}
+
+// effectiveCacheBudgetBytes returns the current byte budget for repoCache,
+// shrinking under real process memory pressure so the cache degrades
+// gracefully under load instead of contributing to an OOM. This is the
+// memory-based replacement for a flat entry-count cap: pruneRepoCache derives
+// its effective max-entries from this budget, not from a fixed constant.
+func effectiveCacheBudgetBytes() int64 {
+	heapInUse := readHeapInUse()
+	switch {
+	case heapInUse >= severeMemoryPressureThreshold:
+		return approxBytesPerCachedRepo * 5 // floor: keep only ~5 repos hot
+	case heapInUse >= highMemoryPressureThreshold:
+		return repoCacheMemoryBudgetBytes / 2
+	default:
+		return repoCacheMemoryBudgetBytes
+	}
+}
+
+// effectiveCacheMaxEntries derives the current entry-count cap from the
+// memory budget, clamped to repoCacheMaxEntries as an absolute ceiling and to
+// 1 as a floor (an empty cache would defeat the whole point of caching).
+func effectiveCacheMaxEntries() int64 {
+	n := effectiveCacheBudgetBytes() / approxBytesPerCachedRepo
+	if n > repoCacheMaxEntries {
+		n = repoCacheMaxEntries
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// UnderSeverePressure reports whether this process's heap is currently at or
+// above severeMemoryPressureThreshold. Scanner callers use this to skip a
+// scan cycle for a repo (staying on its last-known-good cached result)
+// instead of piling on more allocation while already under pressure.
+func (g *GoGitVCSReader) UnderSeverePressure() bool {
+	return readHeapInUse() >= severeMemoryPressureThreshold
+}
 
 // cachedRepo holds an open go-git Repository and a per-repo mutex that
 // serialises concurrent VCS reads. go-git's packfile reader is not safe for
@@ -130,8 +206,12 @@ type cachedRepo struct {
 }
 
 // pruneRepoCache evicts entries not accessed within repoCacheTTL, then trims
-// the oldest entries if the cache still exceeds repoCacheMaxEntries.
-// Designed to be called infrequently (e.g. when openRepoEntry detects overflow).
+// the oldest entries if the cache still exceeds the current memory-derived
+// budget (effectiveCacheMaxEntries) — NOT a flat constant, so the effective
+// cap shrinks automatically under real process memory pressure. Called both
+// reactively (openRepoEntry on overflow) and proactively (Scanner's periodic
+// prune ticker), so it must stay cheap: a single Range scan plus a sort of
+// the surviving entries.
 func (g *GoGitVCSReader) pruneRepoCache() {
 	cutoff := time.Now().Add(-repoCacheTTL).UnixNano()
 	type liveEntry struct {
@@ -151,24 +231,44 @@ func (g *GoGitVCSReader) pruneRepoCache() {
 		return true
 	})
 
-	// LRU trim: if still over cap after TTL pass, evict coldest entries.
-	if len(live) > repoCacheMaxEntries {
+	// LRU trim: if still over the memory-derived budget after the TTL pass,
+	// evict the coldest entries down to that budget.
+	maxEntries := effectiveCacheMaxEntries()
+	if int64(len(live)) > maxEntries {
 		slices.SortFunc(live, func(a, b liveEntry) int {
 			return cmp.Compare(a.accessedAtNs, b.accessedAtNs)
 		})
-		for _, e := range live[:len(live)-repoCacheMaxEntries] {
+		for _, e := range live[:int64(len(live))-maxEntries] {
 			g.repoCache.Delete(e.key)
 			atomic.AddInt64(&g.repoCacheSize, -1)
 		}
 	}
 }
 
+// PruneToMemoryBudget runs a gentle, budget-respecting prune pass: evicts
+// idle-past-TTL entries, then LRU-trims any remaining excess down to the
+// current memory-derived budget. Intended to run proactively on a short
+// ticker (Scanner does this every minute) rather than only reactively on
+// overflow, so cache pressure never has a chance to build up between polls.
+// Unlike ClearCache, entries that are still hot (recently accessed, within
+// budget) are left alone — this is the normal-operation degradation path;
+// ClearCache remains available as a rarely-used emergency escape valve.
+func (g *GoGitVCSReader) PruneToMemoryBudget() {
+	g.pruneRepoCache()
+}
+
 // ClearCache evicts ALL cached *git.Repository entries, allowing their
-// internal go-git object LRU caches (~96 MB per repo) to be garbage-collected.
-// Callers already holding a *cachedRepo reference (mid-scan) are unaffected —
-// their reference keeps the object alive until the operation finishes.
-// The next operation for an evicted repo re-opens it from disk (fast: only
-// the pack index is read, not all objects).
+// internal go-git object LRU caches (~96 MB per repo, approxBytesPerCachedRepo)
+// to be garbage-collected. Callers already holding a *cachedRepo reference
+// (mid-scan) are unaffected — their reference keeps the object alive until
+// the operation finishes. The next operation for an evicted repo re-opens it
+// from disk (fast: only the pack index is read, not all objects).
+//
+// This is intentionally NOT called on a routine ticker — PruneToMemoryBudget
+// is the gentle, budget-respecting path for normal operation. ClearCache is
+// reserved as an emergency escape valve for severe memory pressure (see
+// Scanner.Start's prune ticker), since it evicts hot repos along with cold
+// ones and forces needless re-opens for anything still actively in use.
 func (g *GoGitVCSReader) ClearCache() {
 	g.repoCache.Range(func(k, _ any) bool {
 		g.repoCache.Delete(k)
@@ -1341,8 +1441,11 @@ func (g *GoGitVCSReader) openRepoEntry(path string) (*cachedRepo, error) {
 		return entry, nil
 	}
 
-	// Trigger eviction before adding a new entry if the cache is large.
-	if atomic.LoadInt64(&g.repoCacheSize) >= repoCacheMaxEntries {
+	// Trigger eviction before adding a new entry if the cache is at or past
+	// the current memory-derived budget (not the flat repoCacheMaxEntries
+	// ceiling — effectiveCacheMaxEntries() is normally far smaller and
+	// shrinks further under real memory pressure).
+	if atomic.LoadInt64(&g.repoCacheSize) >= effectiveCacheMaxEntries() {
 		g.pruneRepoCache()
 		// Re-check after eviction — another goroutine may have stored this path.
 		if v, ok := g.repoCache.Load(path); ok {
