@@ -490,6 +490,7 @@ type ItemSession struct {
 	TriageResult          *TriageResult          `protobuf:"bytes,12,opt,name=triage_result,json=triageResult,proto3" json:"triage_result,omitempty"`
 	EstimatedCostUsd      float64                `protobuf:"fixed64,13,opt,name=estimated_cost_usd,json=estimatedCostUsd,proto3" json:"estimated_cost_usd,omitempty"`
 	WorktreeBranch        string                 `protobuf:"bytes,14,opt,name=worktree_branch,json=worktreeBranch,proto3" json:"worktree_branch,omitempty"`
+	WorktreePath          string                 `protobuf:"bytes,15,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -618,6 +619,13 @@ func (x *ItemSession) GetEstimatedCostUsd() float64 {
 func (x *ItemSession) GetWorktreeBranch() string {
 	if x != nil {
 		return x.WorktreeBranch
+	}
+	return ""
+}
+
+func (x *ItemSession) GetWorktreePath() string {
+	if x != nil {
+		return x.WorktreePath
 	}
 	return ""
 }
@@ -4376,7 +4384,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x14clarifying_questions\x18\x03 \x03(\tR\x13clarifyingQuestions\x12,\n" +
 	"\x05tasks\x18\x04 \x03(\v2\x16.session.v1.TriageTaskR\x05tasks\x12\x1c\n" +
 	"\titeration\x18\x05 \x01(\x05R\titeration\x12\x1a\n" +
-	"\bfeedback\x18\x06 \x01(\tR\bfeedback\"\xdc\x05\n" +
+	"\bfeedback\x18\x06 \x01(\tR\bfeedback\"\x81\x06\n" +
 	"\vItemSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fsession_uuid\x18\x02 \x01(\tR\vsessionUuid\x12!\n" +
@@ -4394,7 +4402,8 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x0ereview_verdict\x18\v \x01(\v2\x19.session.v1.ReviewVerdictR\rreviewVerdict\x12=\n" +
 	"\rtriage_result\x18\f \x01(\v2\x18.session.v1.TriageResultR\ftriageResult\x12,\n" +
 	"\x12estimated_cost_usd\x18\r \x01(\x01R\x10estimatedCostUsd\x12'\n" +
-	"\x0fworktree_branch\x18\x0e \x01(\tR\x0eworktreeBranch\"\xc0\x01\n" +
+	"\x0fworktree_branch\x18\x0e \x01(\tR\x0eworktreeBranch\x12#\n" +
+	"\rworktree_path\x18\x0f \x01(\tR\fworktreePath\"\xc0\x01\n" +
 	"\x12BacklogStatusEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vfrom_status\x18\x02 \x01(\tR\n" +

@@ -69,6 +69,8 @@ export interface LinkedSession {
   estimatedCostUsd: number;
   /** Git branch name for the session's worktree, if one exists. */
   worktreeBranch?: string;
+  /** Absolute path to the session's git worktree, if one exists. */
+  worktreePath?: string;
 }
 
 export interface BacklogItem {
@@ -154,6 +156,7 @@ function mapItemSession(s: ItemSessionProto): LinkedSession {
     endedAt: s.endedAt ? new Date(Number(s.endedAt.seconds) * 1000).toISOString() : undefined,
     estimatedCostUsd: s.estimatedCostUsd ?? 0,
     worktreeBranch: s.worktreeBranch || undefined,
+    worktreePath: s.worktreePath || undefined,
   };
 
   // Map review verdict if present

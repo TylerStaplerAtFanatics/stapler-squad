@@ -81,7 +81,7 @@ func (s *BacklogService) GetBacklogItem(
 	}
 
 	p := backlogItemToProto(item, s.buildCostLookup())
-	// Populate worktree_branch for each linked work session.
+	// Populate worktree_branch/worktree_path for each linked work session.
 	for _, is := range p.ItemSessions {
 		if is.SessionUuid == "" {
 			continue
@@ -89,6 +89,9 @@ func (s *BacklogService) GetBacklogItem(
 		wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUuid)
 		if wtErr == nil && wt.BranchName != "" {
 			is.WorktreeBranch = wt.BranchName
+		}
+		if wtErr == nil && wt.WorktreePath != "" {
+			is.WorktreePath = wt.WorktreePath
 		}
 	}
 

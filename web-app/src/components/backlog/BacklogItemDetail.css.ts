@@ -428,6 +428,13 @@ export const artifactsPath = style({
   wordBreak: "break-all",
 });
 
+export const worktreePathRow = style({
+  display: "flex",
+  alignItems: "center",
+  gap: vars.space["2"],
+  flexWrap: "wrap",
+});
+
 export const workflowTimeline = style({
   display: "flex",
   flexDirection: "column",
