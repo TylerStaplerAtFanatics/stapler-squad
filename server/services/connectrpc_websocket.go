@@ -250,7 +250,12 @@ func (h *ConnectRPCWebSocketHandler) getOrRefreshSnapshot(
 	captureFn func() (string, error),
 ) (string, error) {
 	if snap, ok := h.snapshotCache.Load(sessionID); ok && !snap.dirty {
-		log.Info("[SnapshotCache] serving cached snapshot", "session", sessionID, "bytes", len(snap.content), "age", time.Since(snap.capturedAt).Round(time.Millisecond))
+		// Debug, not Info: this fires on every WebSocket connect (production) and
+		// every benchmark iteration (BenchmarkSnapshotCacheHit/Miss run into the
+		// hundreds of millions of iterations). At Info level this previously
+		// produced tens of millions of log lines during `go test -bench`, which
+		// blew past CI log size limits and failed the benchmark job.
+		log.Debug("[SnapshotCache] serving cached snapshot", "session", sessionID, "bytes", len(snap.content), "age", time.Since(snap.capturedAt).Round(time.Millisecond))
 		return snap.content, nil
 	}
 
@@ -265,7 +270,7 @@ func (h *ConnectRPCWebSocketHandler) getOrRefreshSnapshot(
 		dirty:      false,
 	})
 
-	log.Info("[SnapshotCache] refreshed snapshot", "session", sessionID, "bytes", len(content))
+	log.Debug("[SnapshotCache] refreshed snapshot", "session", sessionID, "bytes", len(content))
 	return content, nil
 }
 
