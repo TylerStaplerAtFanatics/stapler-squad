@@ -417,3 +417,63 @@ proven innocent by a targeted `-race` test, not by reading the method name. The 
 is real extra engineering effort (§5.3) but not infeasible — it is appropriately staged out
 rather than either skipped silently or used to block the (already independently valuable)
 Stage 0 sharing win described in §7.
+
+## 10. Production-hardening pass — addendum (post-Stage-2)
+
+A later pass addressed this document's two explicitly-flagged honesty gaps and pushed further
+production-readiness work. Full detail lives in that pass's own report and in the code/tests it
+added (`mmap_realrepo_test.go`, `mmap_adversarial_test.go`, `mmap_truncation_test.go`,
+`soak_test.go`); summarized here for anyone reading this design doc without that report:
+
+- **§1's "17 total -race passes" gap**: `TestMmapIndex_PinnedReadersSurviveConcurrentRealRepack`
+  was re-run clean 200+ times total across this pass (a `-count=200` run and a follow-up
+  `-count=60` run, both `-race`, both 100% clean) — but the `-count=200` run's own repeated
+  execution surfaced a REAL bug: the test itself leaked a `packWatchLoop` goroutine + fsnotify
+  watcher every iteration (never called `stopPackWatch`), and the accumulation across ~150+
+  iterations measurably slowed later iterations (3.4s → 13s+) before the whole binary hit `go
+  test`'s default 10-minute timeout. Root-caused and fixed (every mmap-engaging test now cleans
+  up); re-verified clean and flat-timing afterward. This was a test-hygiene bug, not a
+  production one — `Registry.Prune`'s eviction path already calls `stopPackWatch` correctly —
+  but it is the exact mechanism that WOULD leak in production if `Prune` ever stopped running.
+- **§7's "18% synthetic fixture, should be more on a real repo" gap**: measured directly
+  against this repository's own real `.git/objects/pack/*.idx` (~1.6MB, real production scale)
+  using the same `TotalAlloc`-delta technique as §7's synthetic-fixture test. Result: the mmap
+  loader allocates **~92–96% less heap** than the copy-based loader on this real repo's index
+  (~1.78MB copy-based vs. ~72–139KB mmap-based) — confirming and substantially exceeding the
+  synthetic fixture's 18% figure, as this document's own §7 caveat predicted.
+- **New finding, fixed**: `loadMemoryIndexMmap` panicked (slice-bounds-out-of-range) on a
+  corrupted/adversarial `.idx` with a non-monotonic fanout table, instead of returning a clean
+  decode error the way the copy-based loader degrades. Fixed by validating fanout monotonicity
+  before any bucket-range arithmetic; proven via a table-driven adversarial-input test plus a
+  Go native fuzz target (`FuzzLoadMemoryIndexMmap`, 13M+ executions / 90s, zero crashes
+  post-fix).
+- **New finding, documented not fixed**: a `.idx` file truncated in place while mapped (NOT
+  git's own repack behavior, which is safe per §5.3's unlink analysis — this requires external
+  corruption or a misbehaving third-party tool) causes a hard process crash (SIGBUS), proven in
+  a subprocess-isolated test. `runtime/debug.SetPanicOnFault` is a proven, available mitigation
+  (also demonstrated) but was deliberately not wired into production code — see the activation
+  runbook (`mmap-activation-runbook.md`) for the cost/benefit reasoning.
+- **New finding, fixed**: a soak test (many repos/worktrees, sustained concurrent
+  open/close/repack/prune load) found that BOTH modes — not mmap-specific — can surface
+  `dotgit.ErrPackfileNotFound` (an upstream go-git sentinel distinct from
+  `plumbing.ErrObjectNotFound`) when a lookup races a concurrent repack; existing
+  `errors.Is(err, plumbing.ErrObjectNotFound)`-based tolerance elsewhere in this codebase did
+  not catch it. Fixed by translating it in `SharedObjectStore`'s pack-open path. Also
+  quantified: under an intentionally adversarial repack cadence, copy-based mode hit this on
+  ~98% of operations (no automatic staleness recovery) vs. mmap mode's ~19% (sub-second
+  fsnotify recovery) — i.e. mmap mode is measurably MORE resilient to concurrent repacks than
+  the copy-based mode, not less.
+- **No goroutine/fd leak, confirmed**: the soak test's forced-full-eviction assertions show
+  goroutine count and open-fd count both return exactly to baseline after eviction, and heap
+  shows only a small (~200KB) residual — eviction genuinely reclaims resources.
+- **fsnotify watcher consolidation (§ "one extra watcher per commondir" trade-off)**:
+  investigated sharing `scanner.go`'s existing fsnotify infrastructure instead of
+  `mmapwatch.go`'s private per-commondir watcher. Feasible in principle (a shared
+  `*fsnotify.Watcher` instance registering both `.git`-dir and `objects/pack` paths, with a
+  consumer-owned — likely `gogit_vcs_reader.go` — event-dispatch loop routing pack-dir events
+  into a new exported `Registry` entry point), but is a real cross-package refactor, not a
+  quick win, for a savings that is small and bounded at this project's actual operating scale
+  (one extra fd + one goroutine per currently-live mmap-enabled commondir, capped by
+  `registryMaxEntries=100`). Recommendation: leave as documented technical debt unless
+  profiling ever shows real pressure from it specifically — not attempted, per this task's own
+  instruction not to force an architecturally awkward change under time pressure.

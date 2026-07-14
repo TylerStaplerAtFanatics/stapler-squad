@@ -327,7 +327,42 @@ func (s *SharedObjectStore) dirObject(h plumbing.Hash) (billy.File, error) {
 func (s *SharedObjectStore) dirObjectPack(pack plumbing.Hash) (billy.File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.dir.ObjectPack(pack)
+	f, err := s.dir.ObjectPack(pack)
+	if err != nil {
+		if errors.Is(err, dotgit.ErrPackfileNotFound) || os.IsNotExist(err) {
+			// s.index (built by ensureIndex, refreshed by refreshIndexes) can
+			// legitimately name a pack whose underlying file a CONCURRENT
+			// repack has since unlinked — refreshIndexes/mmapwatch.go's
+			// fsnotify watcher (mmap mode) or Registry.Prune's coarser
+			// TTL-driven store recreation (copy-based mode, which has no
+			// automatic refresh at all — see mmapwatch.go's package doc)
+			// eventually catches up, but there is always a window where a
+			// lookup can race ahead of that catch-up. Found and measured via
+			// this task's soak test (TestGogitstore_SoakUnderSustainedLoad,
+			// soak_test.go): under an intentionally adversarial concurrent-
+			// repack cadence, copy-based mode hit this on ~98% of
+			// operations (no fsnotify catch-up at all) vs mmap mode's ~19%
+			// (sub-second fsnotify catch-up) — informative for the
+			// UseMmapIndex activation decision, but the error-translation
+			// fix here applies to BOTH modes equally.
+			//
+			// dotgit.ObjectPack returns dotgit.ErrPackfileNotFound in this
+			// situation — a DIFFERENT sentinel than plumbing.ErrObjectNotFound,
+			// and go-git's own upstream ObjectStorage.getFromPackfile
+			// (storage/filesystem/object.go) has this identical gap: it
+			// propagates whatever raw error the pack-open call returns,
+			// unwrapped — so this is not a gogitstore-introduced regression.
+			// It matters here because gogit_vcs_reader.go's callers (e.g.
+			// findMergeBase) already tolerate plumbing.ErrObjectNotFound
+			// specifically as "skip and continue" — translating the sentinel
+			// here lets that existing tolerance logic actually catch this
+			// case, instead of a transient staleness race surfacing as an
+			// unhandled scan failure.
+			return nil, plumbing.ErrObjectNotFound
+		}
+		return nil, err
+	}
+	return f, nil
 }
 
 // findObjectInPackfile returns which pack (if any) contains h and its

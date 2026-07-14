@@ -91,9 +91,28 @@ func loadMemoryIndexMmap(mapped []byte) (*idxfile.MemoryIndex, error) {
 	idx.Version = version
 
 	fanoutOff := idxMagicLen + idxVersionLen
+	var prevFanout uint32
 	for k := 0; k < 256; k++ {
 		off := fanoutOff + k*4
-		idx.Fanout[k] = encbin.BigEndian.Uint32(mapped[off : off+4])
+		v := encbin.BigEndian.Uint32(mapped[off : off+4])
+		// A well-formed fanout table is cumulative and therefore
+		// non-decreasing (idx.Fanout[k] is "count of objects with a first
+		// hash byte <= k"). A corrupted/adversarial table with a
+		// decreasing entry would make the per-bucket `buckets := cum -
+		// prevCum` subtraction below underflow (uint32 wraparound to a
+		// value near 2^32), which — unlike decoder.go's io.ReadFull-based
+		// copy loader, which merely fails an oversized make()/ReadFull —
+		// turns directly into an out-of-bounds `mapped[n0:n1:n1]` slice
+		// expression here and PANICS the whole process instead of
+		// returning a clean decode error. Caught empirically (this task's
+		// adversarial-input hardening pass) via
+		// TestMmapIndex_MalformedInput_NeverPanics/non-monotonic-fanout —
+		// reject it here, before any bucket arithmetic runs.
+		if v < prevFanout {
+			return nil, fmt.Errorf("%w: fanout table is not non-decreasing at bucket %d (%d < %d)", idxfile.ErrMalformedIdxFile, k, v, prevFanout)
+		}
+		prevFanout = v
+		idx.Fanout[k] = v
 		idx.FanoutMapping[k] = idxNoMapping
 	}
 

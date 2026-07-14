@@ -91,6 +91,23 @@ func TestRegistry_UseMmapIndex_True_EngagesMmapLoader(t *testing.T) {
 	forceIndexBuild(t, repo)
 
 	ws := repo.Storer.(*WorktreeStorer) //nolint:errcheck
+	// ensureIndex (via forceIndexBuild above) starts this store's
+	// mmapwatch.go pack-dir fsnotify watcher goroutine, since UseMmapIndex is
+	// true. Nothing else in this test's lifecycle stops it — production code
+	// only stops it via Registry.Prune's eviction path (registry.go), which
+	// this test never triggers. Without this cleanup, running this test
+	// (and the other mmap-engaging tests in this file) under `-count=N`
+	// leaks N watcher goroutines + N open fsnotify/inotify file descriptors
+	// per test, which is not just untidy: a stress run of a DIFFERENT test
+	// in this same binary (TestMmapIndex_PinnedReadersSurviveConcurrentRealRepack
+	// under `go test -count=200`) hit exactly this leak, accumulating enough
+	// goroutines/fds across iterations that later iterations measurably
+	// slowed down (3.4s baseline growing past 13s) and the whole binary
+	// eventually hit go test's default 10-minute timeout — see this task's
+	// report for the full root-cause writeup. Every mmap-engaging test in
+	// this file now cleans up the same way.
+	t.Cleanup(func() { ws.shared.stopPackWatch() })
+
 	ws.shared.mu.Lock()
 	defer ws.shared.mu.Unlock()
 	if len(ws.shared.index) == 0 {
@@ -123,6 +140,10 @@ func TestMmapIndex_HeapAllocation_LowerThanCopyBased(t *testing.T) {
 
 	measure := func(useMmap bool) uint64 {
 		store := newSharedObjectStore(commonDirAbs, commonFs, cache.NewObjectLRU(cache.FileSize(1<<20)), 0, useMmap)
+		// See TestRegistry_UseMmapIndex_True_EngagesMmapLoader's cleanup
+		// comment: ensureIndex below starts a pack-watch goroutine when
+		// useMmap is true; nothing else here would ever stop it.
+		t.Cleanup(func() { store.stopPackWatch() })
 		runtime.GC()
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
@@ -175,6 +196,8 @@ func TestSharedIndex_MmapMode_RefreshDetectsRepack(t *testing.T) {
 	forceIndexBuild(t, repo)
 	ws := repo.Storer.(*WorktreeStorer) //nolint:errcheck
 	store := ws.shared
+	// See TestRegistry_UseMmapIndex_True_EngagesMmapLoader's cleanup comment.
+	t.Cleanup(func() { store.stopPackWatch() })
 
 	store.mu.Lock()
 	if len(store.index) != 1 {
@@ -272,6 +295,10 @@ func TestPackWatch_FsnotifyTriggersRefresh(t *testing.T) {
 	forceIndexBuild(t, repo)
 	ws := repo.Storer.(*WorktreeStorer) //nolint:errcheck
 	store := ws.shared
+	// See TestRegistry_UseMmapIndex_True_EngagesMmapLoader's cleanup
+	// comment. Doubly important here since this test's whole point is to
+	// exercise the watcher goroutine directly.
+	t.Cleanup(func() { store.stopPackWatch() })
 
 	store.mu.Lock()
 	var oldHash plumbing.Hash
@@ -337,6 +364,14 @@ func TestMmapIndex_PinnedReadersSurviveConcurrentRealRepack(t *testing.T) {
 		t.Fatalf("resolveGitFilesystems: %v", err)
 	}
 	store := newSharedObjectStore(commonDirAbs, commonFs, cache.NewObjectLRU(cache.FileSize(1<<20)), 0, true)
+	// See TestRegistry_UseMmapIndex_True_EngagesMmapLoader's cleanup
+	// comment — this is the exact test whose repeated (`-count=200`)
+	// execution surfaced the leak this cleanup fixes: without it, every
+	// iteration leaks its packWatchLoop goroutine and fsnotify watcher
+	// forever, and the accumulation across ~150+ iterations measurably
+	// slowed later iterations down (3.4s baseline growing past 13s) before
+	// the whole binary hit go test's default 10-minute timeout.
+	t.Cleanup(func() { store.stopPackWatch() })
 	if err := store.ensureIndex(); err != nil {
 		t.Fatalf("ensureIndex: %v", err)
 	}
