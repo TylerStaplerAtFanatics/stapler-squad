@@ -565,6 +565,15 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 	// notification only — a slow-but-alive agent should not be force-stopped.
 	l.reconcileStaleWorkSessions(ctx)
 
+	// Self-heal pr_pending items whose pr_number is missing (0) despite having a
+	// pr_url — otherwise permanently invisible to FindPRPendingItems' PrNumberGT(0)
+	// filter below, so they'd never get polled. See BackfillMissingPRNumbers doc.
+	if n, backfillErr := er.BackfillMissingPRNumbers(ctx); backfillErr != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] BackfillMissingPRNumbers error: %v", backfillErr)
+	} else if n > 0 {
+		log.InfoLog.Printf("[BacklogLifecycle] BackfillMissingPRNumbers: backfilled pr_number for %d item(s)", n)
+	}
+
 	// Poll pr_pending items: auto-transition to done when the PR is merged.
 	l.ReconcilePRPending(ctx, er)
 }

@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -511,6 +513,48 @@ func (r *EntRepository) FindPRPendingItems(ctx context.Context) ([]*ent.BacklogI
 		return nil, fmt.Errorf("failed to query pr_pending items: %w", err)
 	}
 	return items, nil
+}
+
+// prNumberFromURLRe extracts the trailing PR number from a GitHub PR URL,
+// e.g. "https://github.com/owner/repo/pull/148" -> 148.
+var prNumberFromURLRe = regexp.MustCompile(`/pull/(\d+)/?$`)
+
+// BackfillMissingPRNumbers finds pr_pending items with a pr_url but no
+// pr_number (pr_number == 0) and parses the number out of the URL. Such items
+// are otherwise permanently invisible to FindPRPendingItems' PrNumberGT(0)
+// filter, so ReconcilePRPending never polls them — a real stuck-forever case
+// found via manual QA against live data, not something the loop itself would
+// ever have surfaced. Best-effort: a URL that doesn't match is left as-is and
+// logged, not treated as fatal.
+func (r *EntRepository) BackfillMissingPRNumbers(ctx context.Context) (int, error) {
+	items, err := r.client.BacklogItem.Query().
+		Where(
+			backlogitem.Status(string(BacklogStatusPRPending)),
+			backlogitem.PrNumberEQ(0),
+			backlogitem.PrURLNotNil(),
+			backlogitem.PrURLNEQ(""),
+		).
+		All(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query items with missing pr_number: %w", err)
+	}
+
+	backfilled := 0
+	for _, item := range items {
+		m := prNumberFromURLRe.FindStringSubmatch(item.PrURL)
+		if m == nil {
+			continue
+		}
+		num, convErr := strconv.Atoi(m[1])
+		if convErr != nil || num <= 0 {
+			continue
+		}
+		if _, updateErr := r.client.BacklogItem.UpdateOneID(item.ID).SetPrNumber(num).Save(ctx); updateErr != nil {
+			return backfilled, fmt.Errorf("failed to backfill pr_number for item %s: %w", item.ID, updateErr)
+		}
+		backfilled++
+	}
+	return backfilled, nil
 }
 
 // --- ReviewVerdict lookup ---
