@@ -284,15 +284,34 @@ func DefaultConfig() *Config {
 	return defaultConfigWithExecutor(nil)
 }
 
+// testModeSentinelProgram replaces the real default program whenever a Config is
+// auto-constructed (no explicit executor) under `go test`. Without this,
+// GetClaudeCommand's PATH fallback (lookPathOnlyExecutor.LookPath, which is a real
+// exec.LookPath) finds and returns the genuine, locally-installed "claude" binary --
+// so a test that forgets to isolate its config/cleanup doesn't just leak an idle
+// process, it leaks a live, authenticated, tool-wielding Claude Code agent (with its
+// own MCP server tree) running indefinitely. "true" exits immediately, so a leaked
+// tmux pane closes itself instead of staying up forever.
+const testModeSentinelProgram = "true"
+
 // defaultConfigWithExecutor creates the default Config using the provided executor.
 // Pass nil to use the default timeout executor.
 func defaultConfigWithExecutor(exec CommandExecutor) *Config {
 	cfg := NewConfigWithExecutor(exec)
 
-	program, err := cfg.GetClaudeCommand()
-	if err != nil {
-		log.Error("failed to get claude command", "err", err)
-		program = defaultProgram
+	var program string
+	if exec == nil && IsTestMode() {
+		// Auto-constructed (DefaultConfig()/LoadConfig()) and running under go test:
+		// never resolve to a real launchable program. Tests that intentionally need
+		// real program resolution pass an explicit executor (see TestDefaultConfig).
+		program = testModeSentinelProgram
+	} else {
+		var err error
+		program, err = cfg.GetClaudeCommand()
+		if err != nil {
+			log.Error("failed to get claude command", "err", err)
+			program = defaultProgram
+		}
 	}
 
 	availablePrograms := cfg.GetAvailablePrograms()
