@@ -16,6 +16,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/approvalrule"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/classificationanalytics"
 	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
 	"github.com/tstapler/stapler-squad/session/ent/claudesession"
@@ -49,6 +50,7 @@ const (
 	TypeApprovalRule            = "ApprovalRule"
 	TypeBacklogItem             = "BacklogItem"
 	TypeBacklogStatusEvent      = "BacklogStatusEvent"
+	TypeBacklogStuckState       = "BacklogStuckState"
 	TypeClassificationAnalytics = "ClassificationAnalytics"
 	TypeClaudeMetadata          = "ClaudeMetadata"
 	TypeClaudeSession           = "ClaudeSession"
@@ -3009,6 +3011,9 @@ type BacklogItemMutation struct {
 	status_events           map[uuid.UUID]struct{}
 	removedstatus_events    map[uuid.UUID]struct{}
 	clearedstatus_events    bool
+	stuck_states            map[uuid.UUID]struct{}
+	removedstuck_states     map[uuid.UUID]struct{}
+	clearedstuck_states     bool
 	source                  *uuid.UUID
 	clearedsource           bool
 	done                    bool
@@ -4199,6 +4204,60 @@ func (m *BacklogItemMutation) ResetStatusEvents() {
 	m.removedstatus_events = nil
 }
 
+// AddStuckStateIDs adds the "stuck_states" edge to the BacklogStuckState entity by ids.
+func (m *BacklogItemMutation) AddStuckStateIDs(ids ...uuid.UUID) {
+	if m.stuck_states == nil {
+		m.stuck_states = make(map[uuid.UUID]struct{})
+	}
+	for i := range ids {
+		m.stuck_states[ids[i]] = struct{}{}
+	}
+}
+
+// ClearStuckStates clears the "stuck_states" edge to the BacklogStuckState entity.
+func (m *BacklogItemMutation) ClearStuckStates() {
+	m.clearedstuck_states = true
+}
+
+// StuckStatesCleared reports if the "stuck_states" edge to the BacklogStuckState entity was cleared.
+func (m *BacklogItemMutation) StuckStatesCleared() bool {
+	return m.clearedstuck_states
+}
+
+// RemoveStuckStateIDs removes the "stuck_states" edge to the BacklogStuckState entity by IDs.
+func (m *BacklogItemMutation) RemoveStuckStateIDs(ids ...uuid.UUID) {
+	if m.removedstuck_states == nil {
+		m.removedstuck_states = make(map[uuid.UUID]struct{})
+	}
+	for i := range ids {
+		delete(m.stuck_states, ids[i])
+		m.removedstuck_states[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedStuckStates returns the removed IDs of the "stuck_states" edge to the BacklogStuckState entity.
+func (m *BacklogItemMutation) RemovedStuckStatesIDs() (ids []uuid.UUID) {
+	for id := range m.removedstuck_states {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// StuckStatesIDs returns the "stuck_states" edge IDs in the mutation.
+func (m *BacklogItemMutation) StuckStatesIDs() (ids []uuid.UUID) {
+	for id := range m.stuck_states {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetStuckStates resets all changes to the "stuck_states" edge.
+func (m *BacklogItemMutation) ResetStuckStates() {
+	m.stuck_states = nil
+	m.clearedstuck_states = false
+	m.removedstuck_states = nil
+}
+
 // SetSourceID sets the "source" edge to the ItemSource entity by id.
 func (m *BacklogItemMutation) SetSourceID(id uuid.UUID) {
 	m.source = &id
@@ -4796,7 +4855,7 @@ func (m *BacklogItemMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *BacklogItemMutation) AddedEdges() []string {
-	edges := make([]string, 0, 4)
+	edges := make([]string, 0, 5)
 	if m.item_sessions != nil {
 		edges = append(edges, backlogitem.EdgeItemSessions)
 	}
@@ -4805,6 +4864,9 @@ func (m *BacklogItemMutation) AddedEdges() []string {
 	}
 	if m.status_events != nil {
 		edges = append(edges, backlogitem.EdgeStatusEvents)
+	}
+	if m.stuck_states != nil {
+		edges = append(edges, backlogitem.EdgeStuckStates)
 	}
 	if m.source != nil {
 		edges = append(edges, backlogitem.EdgeSource)
@@ -4834,6 +4896,12 @@ func (m *BacklogItemMutation) AddedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case backlogitem.EdgeStuckStates:
+		ids := make([]ent.Value, 0, len(m.stuck_states))
+		for id := range m.stuck_states {
+			ids = append(ids, id)
+		}
+		return ids
 	case backlogitem.EdgeSource:
 		if id := m.source; id != nil {
 			return []ent.Value{*id}
@@ -4844,7 +4912,7 @@ func (m *BacklogItemMutation) AddedIDs(name string) []ent.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *BacklogItemMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 4)
+	edges := make([]string, 0, 5)
 	if m.removeditem_sessions != nil {
 		edges = append(edges, backlogitem.EdgeItemSessions)
 	}
@@ -4853,6 +4921,9 @@ func (m *BacklogItemMutation) RemovedEdges() []string {
 	}
 	if m.removedstatus_events != nil {
 		edges = append(edges, backlogitem.EdgeStatusEvents)
+	}
+	if m.removedstuck_states != nil {
+		edges = append(edges, backlogitem.EdgeStuckStates)
 	}
 	return edges
 }
@@ -4879,13 +4950,19 @@ func (m *BacklogItemMutation) RemovedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case backlogitem.EdgeStuckStates:
+		ids := make([]ent.Value, 0, len(m.removedstuck_states))
+		for id := range m.removedstuck_states {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *BacklogItemMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 4)
+	edges := make([]string, 0, 5)
 	if m.cleareditem_sessions {
 		edges = append(edges, backlogitem.EdgeItemSessions)
 	}
@@ -4894,6 +4971,9 @@ func (m *BacklogItemMutation) ClearedEdges() []string {
 	}
 	if m.clearedstatus_events {
 		edges = append(edges, backlogitem.EdgeStatusEvents)
+	}
+	if m.clearedstuck_states {
+		edges = append(edges, backlogitem.EdgeStuckStates)
 	}
 	if m.clearedsource {
 		edges = append(edges, backlogitem.EdgeSource)
@@ -4911,6 +4991,8 @@ func (m *BacklogItemMutation) EdgeCleared(name string) bool {
 		return m.clearedsessions
 	case backlogitem.EdgeStatusEvents:
 		return m.clearedstatus_events
+	case backlogitem.EdgeStuckStates:
+		return m.clearedstuck_states
 	case backlogitem.EdgeSource:
 		return m.clearedsource
 	}
@@ -4940,6 +5022,9 @@ func (m *BacklogItemMutation) ResetEdge(name string) error {
 		return nil
 	case backlogitem.EdgeStatusEvents:
 		m.ResetStatusEvents()
+		return nil
+	case backlogitem.EdgeStuckStates:
+		m.ResetStuckStates()
 		return nil
 	case backlogitem.EdgeSource:
 		m.ResetSource()
@@ -5624,6 +5709,849 @@ func (m *BacklogStatusEventMutation) ResetEdge(name string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown BacklogStatusEvent edge %s", name)
+}
+
+// BacklogStuckStateMutation represents an operation that mutates the BacklogStuckState nodes in the graph.
+type BacklogStuckStateMutation struct {
+	config
+	op                Op
+	typ               string
+	id                *uuid.UUID
+	reason            *string
+	first_detected_at *time.Time
+	last_checked_at   *time.Time
+	notified_at       *time.Time
+	resolved_at       *time.Time
+	snoozed_until     *time.Time
+	context           *string
+	clearedFields     map[string]struct{}
+	item              *uuid.UUID
+	cleareditem       bool
+	done              bool
+	oldValue          func(context.Context) (*BacklogStuckState, error)
+	predicates        []predicate.BacklogStuckState
+}
+
+var _ ent.Mutation = (*BacklogStuckStateMutation)(nil)
+
+// backlogstuckstateOption allows management of the mutation configuration using functional options.
+type backlogstuckstateOption func(*BacklogStuckStateMutation)
+
+// newBacklogStuckStateMutation creates new mutation for the BacklogStuckState entity.
+func newBacklogStuckStateMutation(c config, op Op, opts ...backlogstuckstateOption) *BacklogStuckStateMutation {
+	m := &BacklogStuckStateMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeBacklogStuckState,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withBacklogStuckStateID sets the ID field of the mutation.
+func withBacklogStuckStateID(id uuid.UUID) backlogstuckstateOption {
+	return func(m *BacklogStuckStateMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *BacklogStuckState
+		)
+		m.oldValue = func(ctx context.Context) (*BacklogStuckState, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().BacklogStuckState.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withBacklogStuckState sets the old BacklogStuckState of the mutation.
+func withBacklogStuckState(node *BacklogStuckState) backlogstuckstateOption {
+	return func(m *BacklogStuckStateMutation) {
+		m.oldValue = func(context.Context) (*BacklogStuckState, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m BacklogStuckStateMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m BacklogStuckStateMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// SetID sets the value of the id field. Note that this
+// operation is only accepted on creation of BacklogStuckState entities.
+func (m *BacklogStuckStateMutation) SetID(id uuid.UUID) {
+	m.id = &id
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *BacklogStuckStateMutation) ID() (id uuid.UUID, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *BacklogStuckStateMutation) IDs(ctx context.Context) ([]uuid.UUID, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []uuid.UUID{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().BacklogStuckState.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetItemID sets the "item_id" field.
+func (m *BacklogStuckStateMutation) SetItemID(u uuid.UUID) {
+	m.item = &u
+}
+
+// ItemID returns the value of the "item_id" field in the mutation.
+func (m *BacklogStuckStateMutation) ItemID() (r uuid.UUID, exists bool) {
+	v := m.item
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldItemID returns the old "item_id" field's value of the BacklogStuckState entity.
+// If the BacklogStuckState object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStuckStateMutation) OldItemID(ctx context.Context) (v uuid.UUID, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldItemID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldItemID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldItemID: %w", err)
+	}
+	return oldValue.ItemID, nil
+}
+
+// ResetItemID resets all changes to the "item_id" field.
+func (m *BacklogStuckStateMutation) ResetItemID() {
+	m.item = nil
+}
+
+// SetReason sets the "reason" field.
+func (m *BacklogStuckStateMutation) SetReason(s string) {
+	m.reason = &s
+}
+
+// Reason returns the value of the "reason" field in the mutation.
+func (m *BacklogStuckStateMutation) Reason() (r string, exists bool) {
+	v := m.reason
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldReason returns the old "reason" field's value of the BacklogStuckState entity.
+// If the BacklogStuckState object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStuckStateMutation) OldReason(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldReason is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldReason requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldReason: %w", err)
+	}
+	return oldValue.Reason, nil
+}
+
+// ResetReason resets all changes to the "reason" field.
+func (m *BacklogStuckStateMutation) ResetReason() {
+	m.reason = nil
+}
+
+// SetFirstDetectedAt sets the "first_detected_at" field.
+func (m *BacklogStuckStateMutation) SetFirstDetectedAt(t time.Time) {
+	m.first_detected_at = &t
+}
+
+// FirstDetectedAt returns the value of the "first_detected_at" field in the mutation.
+func (m *BacklogStuckStateMutation) FirstDetectedAt() (r time.Time, exists bool) {
+	v := m.first_detected_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFirstDetectedAt returns the old "first_detected_at" field's value of the BacklogStuckState entity.
+// If the BacklogStuckState object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStuckStateMutation) OldFirstDetectedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFirstDetectedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFirstDetectedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFirstDetectedAt: %w", err)
+	}
+	return oldValue.FirstDetectedAt, nil
+}
+
+// ResetFirstDetectedAt resets all changes to the "first_detected_at" field.
+func (m *BacklogStuckStateMutation) ResetFirstDetectedAt() {
+	m.first_detected_at = nil
+}
+
+// SetLastCheckedAt sets the "last_checked_at" field.
+func (m *BacklogStuckStateMutation) SetLastCheckedAt(t time.Time) {
+	m.last_checked_at = &t
+}
+
+// LastCheckedAt returns the value of the "last_checked_at" field in the mutation.
+func (m *BacklogStuckStateMutation) LastCheckedAt() (r time.Time, exists bool) {
+	v := m.last_checked_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldLastCheckedAt returns the old "last_checked_at" field's value of the BacklogStuckState entity.
+// If the BacklogStuckState object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStuckStateMutation) OldLastCheckedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldLastCheckedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldLastCheckedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldLastCheckedAt: %w", err)
+	}
+	return oldValue.LastCheckedAt, nil
+}
+
+// ResetLastCheckedAt resets all changes to the "last_checked_at" field.
+func (m *BacklogStuckStateMutation) ResetLastCheckedAt() {
+	m.last_checked_at = nil
+}
+
+// SetNotifiedAt sets the "notified_at" field.
+func (m *BacklogStuckStateMutation) SetNotifiedAt(t time.Time) {
+	m.notified_at = &t
+}
+
+// NotifiedAt returns the value of the "notified_at" field in the mutation.
+func (m *BacklogStuckStateMutation) NotifiedAt() (r time.Time, exists bool) {
+	v := m.notified_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldNotifiedAt returns the old "notified_at" field's value of the BacklogStuckState entity.
+// If the BacklogStuckState object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStuckStateMutation) OldNotifiedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldNotifiedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldNotifiedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldNotifiedAt: %w", err)
+	}
+	return oldValue.NotifiedAt, nil
+}
+
+// ClearNotifiedAt clears the value of the "notified_at" field.
+func (m *BacklogStuckStateMutation) ClearNotifiedAt() {
+	m.notified_at = nil
+	m.clearedFields[backlogstuckstate.FieldNotifiedAt] = struct{}{}
+}
+
+// NotifiedAtCleared returns if the "notified_at" field was cleared in this mutation.
+func (m *BacklogStuckStateMutation) NotifiedAtCleared() bool {
+	_, ok := m.clearedFields[backlogstuckstate.FieldNotifiedAt]
+	return ok
+}
+
+// ResetNotifiedAt resets all changes to the "notified_at" field.
+func (m *BacklogStuckStateMutation) ResetNotifiedAt() {
+	m.notified_at = nil
+	delete(m.clearedFields, backlogstuckstate.FieldNotifiedAt)
+}
+
+// SetResolvedAt sets the "resolved_at" field.
+func (m *BacklogStuckStateMutation) SetResolvedAt(t time.Time) {
+	m.resolved_at = &t
+}
+
+// ResolvedAt returns the value of the "resolved_at" field in the mutation.
+func (m *BacklogStuckStateMutation) ResolvedAt() (r time.Time, exists bool) {
+	v := m.resolved_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldResolvedAt returns the old "resolved_at" field's value of the BacklogStuckState entity.
+// If the BacklogStuckState object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStuckStateMutation) OldResolvedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldResolvedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldResolvedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldResolvedAt: %w", err)
+	}
+	return oldValue.ResolvedAt, nil
+}
+
+// ClearResolvedAt clears the value of the "resolved_at" field.
+func (m *BacklogStuckStateMutation) ClearResolvedAt() {
+	m.resolved_at = nil
+	m.clearedFields[backlogstuckstate.FieldResolvedAt] = struct{}{}
+}
+
+// ResolvedAtCleared returns if the "resolved_at" field was cleared in this mutation.
+func (m *BacklogStuckStateMutation) ResolvedAtCleared() bool {
+	_, ok := m.clearedFields[backlogstuckstate.FieldResolvedAt]
+	return ok
+}
+
+// ResetResolvedAt resets all changes to the "resolved_at" field.
+func (m *BacklogStuckStateMutation) ResetResolvedAt() {
+	m.resolved_at = nil
+	delete(m.clearedFields, backlogstuckstate.FieldResolvedAt)
+}
+
+// SetSnoozedUntil sets the "snoozed_until" field.
+func (m *BacklogStuckStateMutation) SetSnoozedUntil(t time.Time) {
+	m.snoozed_until = &t
+}
+
+// SnoozedUntil returns the value of the "snoozed_until" field in the mutation.
+func (m *BacklogStuckStateMutation) SnoozedUntil() (r time.Time, exists bool) {
+	v := m.snoozed_until
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSnoozedUntil returns the old "snoozed_until" field's value of the BacklogStuckState entity.
+// If the BacklogStuckState object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStuckStateMutation) OldSnoozedUntil(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSnoozedUntil is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSnoozedUntil requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSnoozedUntil: %w", err)
+	}
+	return oldValue.SnoozedUntil, nil
+}
+
+// ClearSnoozedUntil clears the value of the "snoozed_until" field.
+func (m *BacklogStuckStateMutation) ClearSnoozedUntil() {
+	m.snoozed_until = nil
+	m.clearedFields[backlogstuckstate.FieldSnoozedUntil] = struct{}{}
+}
+
+// SnoozedUntilCleared returns if the "snoozed_until" field was cleared in this mutation.
+func (m *BacklogStuckStateMutation) SnoozedUntilCleared() bool {
+	_, ok := m.clearedFields[backlogstuckstate.FieldSnoozedUntil]
+	return ok
+}
+
+// ResetSnoozedUntil resets all changes to the "snoozed_until" field.
+func (m *BacklogStuckStateMutation) ResetSnoozedUntil() {
+	m.snoozed_until = nil
+	delete(m.clearedFields, backlogstuckstate.FieldSnoozedUntil)
+}
+
+// SetContext sets the "context" field.
+func (m *BacklogStuckStateMutation) SetContext(s string) {
+	m.context = &s
+}
+
+// Context returns the value of the "context" field in the mutation.
+func (m *BacklogStuckStateMutation) Context() (r string, exists bool) {
+	v := m.context
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldContext returns the old "context" field's value of the BacklogStuckState entity.
+// If the BacklogStuckState object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogStuckStateMutation) OldContext(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldContext is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldContext requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldContext: %w", err)
+	}
+	return oldValue.Context, nil
+}
+
+// ClearContext clears the value of the "context" field.
+func (m *BacklogStuckStateMutation) ClearContext() {
+	m.context = nil
+	m.clearedFields[backlogstuckstate.FieldContext] = struct{}{}
+}
+
+// ContextCleared returns if the "context" field was cleared in this mutation.
+func (m *BacklogStuckStateMutation) ContextCleared() bool {
+	_, ok := m.clearedFields[backlogstuckstate.FieldContext]
+	return ok
+}
+
+// ResetContext resets all changes to the "context" field.
+func (m *BacklogStuckStateMutation) ResetContext() {
+	m.context = nil
+	delete(m.clearedFields, backlogstuckstate.FieldContext)
+}
+
+// ClearItem clears the "item" edge to the BacklogItem entity.
+func (m *BacklogStuckStateMutation) ClearItem() {
+	m.cleareditem = true
+	m.clearedFields[backlogstuckstate.FieldItemID] = struct{}{}
+}
+
+// ItemCleared reports if the "item" edge to the BacklogItem entity was cleared.
+func (m *BacklogStuckStateMutation) ItemCleared() bool {
+	return m.cleareditem
+}
+
+// ItemIDs returns the "item" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// ItemID instead. It exists only for internal usage by the builders.
+func (m *BacklogStuckStateMutation) ItemIDs() (ids []uuid.UUID) {
+	if id := m.item; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetItem resets all changes to the "item" edge.
+func (m *BacklogStuckStateMutation) ResetItem() {
+	m.item = nil
+	m.cleareditem = false
+}
+
+// Where appends a list predicates to the BacklogStuckStateMutation builder.
+func (m *BacklogStuckStateMutation) Where(ps ...predicate.BacklogStuckState) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the BacklogStuckStateMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *BacklogStuckStateMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.BacklogStuckState, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *BacklogStuckStateMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *BacklogStuckStateMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (BacklogStuckState).
+func (m *BacklogStuckStateMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *BacklogStuckStateMutation) Fields() []string {
+	fields := make([]string, 0, 8)
+	if m.item != nil {
+		fields = append(fields, backlogstuckstate.FieldItemID)
+	}
+	if m.reason != nil {
+		fields = append(fields, backlogstuckstate.FieldReason)
+	}
+	if m.first_detected_at != nil {
+		fields = append(fields, backlogstuckstate.FieldFirstDetectedAt)
+	}
+	if m.last_checked_at != nil {
+		fields = append(fields, backlogstuckstate.FieldLastCheckedAt)
+	}
+	if m.notified_at != nil {
+		fields = append(fields, backlogstuckstate.FieldNotifiedAt)
+	}
+	if m.resolved_at != nil {
+		fields = append(fields, backlogstuckstate.FieldResolvedAt)
+	}
+	if m.snoozed_until != nil {
+		fields = append(fields, backlogstuckstate.FieldSnoozedUntil)
+	}
+	if m.context != nil {
+		fields = append(fields, backlogstuckstate.FieldContext)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *BacklogStuckStateMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case backlogstuckstate.FieldItemID:
+		return m.ItemID()
+	case backlogstuckstate.FieldReason:
+		return m.Reason()
+	case backlogstuckstate.FieldFirstDetectedAt:
+		return m.FirstDetectedAt()
+	case backlogstuckstate.FieldLastCheckedAt:
+		return m.LastCheckedAt()
+	case backlogstuckstate.FieldNotifiedAt:
+		return m.NotifiedAt()
+	case backlogstuckstate.FieldResolvedAt:
+		return m.ResolvedAt()
+	case backlogstuckstate.FieldSnoozedUntil:
+		return m.SnoozedUntil()
+	case backlogstuckstate.FieldContext:
+		return m.Context()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *BacklogStuckStateMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case backlogstuckstate.FieldItemID:
+		return m.OldItemID(ctx)
+	case backlogstuckstate.FieldReason:
+		return m.OldReason(ctx)
+	case backlogstuckstate.FieldFirstDetectedAt:
+		return m.OldFirstDetectedAt(ctx)
+	case backlogstuckstate.FieldLastCheckedAt:
+		return m.OldLastCheckedAt(ctx)
+	case backlogstuckstate.FieldNotifiedAt:
+		return m.OldNotifiedAt(ctx)
+	case backlogstuckstate.FieldResolvedAt:
+		return m.OldResolvedAt(ctx)
+	case backlogstuckstate.FieldSnoozedUntil:
+		return m.OldSnoozedUntil(ctx)
+	case backlogstuckstate.FieldContext:
+		return m.OldContext(ctx)
+	}
+	return nil, fmt.Errorf("unknown BacklogStuckState field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *BacklogStuckStateMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case backlogstuckstate.FieldItemID:
+		v, ok := value.(uuid.UUID)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetItemID(v)
+		return nil
+	case backlogstuckstate.FieldReason:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetReason(v)
+		return nil
+	case backlogstuckstate.FieldFirstDetectedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFirstDetectedAt(v)
+		return nil
+	case backlogstuckstate.FieldLastCheckedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetLastCheckedAt(v)
+		return nil
+	case backlogstuckstate.FieldNotifiedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetNotifiedAt(v)
+		return nil
+	case backlogstuckstate.FieldResolvedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetResolvedAt(v)
+		return nil
+	case backlogstuckstate.FieldSnoozedUntil:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSnoozedUntil(v)
+		return nil
+	case backlogstuckstate.FieldContext:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetContext(v)
+		return nil
+	}
+	return fmt.Errorf("unknown BacklogStuckState field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *BacklogStuckStateMutation) AddedFields() []string {
+	return nil
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *BacklogStuckStateMutation) AddedField(name string) (ent.Value, bool) {
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *BacklogStuckStateMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown BacklogStuckState numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *BacklogStuckStateMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(backlogstuckstate.FieldNotifiedAt) {
+		fields = append(fields, backlogstuckstate.FieldNotifiedAt)
+	}
+	if m.FieldCleared(backlogstuckstate.FieldResolvedAt) {
+		fields = append(fields, backlogstuckstate.FieldResolvedAt)
+	}
+	if m.FieldCleared(backlogstuckstate.FieldSnoozedUntil) {
+		fields = append(fields, backlogstuckstate.FieldSnoozedUntil)
+	}
+	if m.FieldCleared(backlogstuckstate.FieldContext) {
+		fields = append(fields, backlogstuckstate.FieldContext)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *BacklogStuckStateMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *BacklogStuckStateMutation) ClearField(name string) error {
+	switch name {
+	case backlogstuckstate.FieldNotifiedAt:
+		m.ClearNotifiedAt()
+		return nil
+	case backlogstuckstate.FieldResolvedAt:
+		m.ClearResolvedAt()
+		return nil
+	case backlogstuckstate.FieldSnoozedUntil:
+		m.ClearSnoozedUntil()
+		return nil
+	case backlogstuckstate.FieldContext:
+		m.ClearContext()
+		return nil
+	}
+	return fmt.Errorf("unknown BacklogStuckState nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *BacklogStuckStateMutation) ResetField(name string) error {
+	switch name {
+	case backlogstuckstate.FieldItemID:
+		m.ResetItemID()
+		return nil
+	case backlogstuckstate.FieldReason:
+		m.ResetReason()
+		return nil
+	case backlogstuckstate.FieldFirstDetectedAt:
+		m.ResetFirstDetectedAt()
+		return nil
+	case backlogstuckstate.FieldLastCheckedAt:
+		m.ResetLastCheckedAt()
+		return nil
+	case backlogstuckstate.FieldNotifiedAt:
+		m.ResetNotifiedAt()
+		return nil
+	case backlogstuckstate.FieldResolvedAt:
+		m.ResetResolvedAt()
+		return nil
+	case backlogstuckstate.FieldSnoozedUntil:
+		m.ResetSnoozedUntil()
+		return nil
+	case backlogstuckstate.FieldContext:
+		m.ResetContext()
+		return nil
+	}
+	return fmt.Errorf("unknown BacklogStuckState field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *BacklogStuckStateMutation) AddedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.item != nil {
+		edges = append(edges, backlogstuckstate.EdgeItem)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *BacklogStuckStateMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case backlogstuckstate.EdgeItem:
+		if id := m.item; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *BacklogStuckStateMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 1)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *BacklogStuckStateMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *BacklogStuckStateMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.cleareditem {
+		edges = append(edges, backlogstuckstate.EdgeItem)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *BacklogStuckStateMutation) EdgeCleared(name string) bool {
+	switch name {
+	case backlogstuckstate.EdgeItem:
+		return m.cleareditem
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *BacklogStuckStateMutation) ClearEdge(name string) error {
+	switch name {
+	case backlogstuckstate.EdgeItem:
+		m.ClearItem()
+		return nil
+	}
+	return fmt.Errorf("unknown BacklogStuckState unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *BacklogStuckStateMutation) ResetEdge(name string) error {
+	switch name {
+	case backlogstuckstate.EdgeItem:
+		m.ResetItem()
+		return nil
+	}
+	return fmt.Errorf("unknown BacklogStuckState edge %s", name)
 }
 
 // ClassificationAnalyticsMutation represents an operation that mutates the ClassificationAnalytics nodes in the graph.

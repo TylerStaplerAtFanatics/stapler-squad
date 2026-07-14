@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
 	"github.com/tstapler/stapler-squad/session/ent/session"
@@ -359,6 +360,21 @@ func (_c *BacklogItemCreate) AddStatusEvents(v ...*BacklogStatusEvent) *BacklogI
 	return _c.AddStatusEventIDs(ids...)
 }
 
+// AddStuckStateIDs adds the "stuck_states" edge to the BacklogStuckState entity by IDs.
+func (_c *BacklogItemCreate) AddStuckStateIDs(ids ...uuid.UUID) *BacklogItemCreate {
+	_c.mutation.AddStuckStateIDs(ids...)
+	return _c
+}
+
+// AddStuckStates adds the "stuck_states" edges to the BacklogStuckState entity.
+func (_c *BacklogItemCreate) AddStuckStates(v ...*BacklogStuckState) *BacklogItemCreate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddStuckStateIDs(ids...)
+}
+
 // SetSourceID sets the "source" edge to the ItemSource entity by ID.
 func (_c *BacklogItemCreate) SetSourceID(id uuid.UUID) *BacklogItemCreate {
 	_c.mutation.SetSourceID(id)
@@ -644,6 +660,22 @@ func (_c *BacklogItemCreate) createSpec() (*BacklogItem, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.StuckStatesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StuckStatesTable,
+			Columns: []string{backlogitem.StuckStatesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstuckstate.FieldID, field.TypeUUID),
 			},
 		}
 		for _, k := range nodes {

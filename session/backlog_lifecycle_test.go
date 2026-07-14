@@ -694,7 +694,8 @@ func TestFindStuckReviewItems_ReturnsAbandonedItem_ExcludesActiveAndGateless(t *
 // TestReconcileStuckReviewItems_NotifiesOncePerItem verifies the ReconcileStuck
 // safety net surfaces abandoned review items via a notification (fixing their
 // total invisibility to both the human operator and every other reconciler),
-// and that repeat ticks do not re-notify for the same item.
+// once the 15-minute grace (Story 2.1.3, abandonedReview pure fn) has
+// elapsed, and that repeat ticks do not re-notify for the same item.
 func TestReconcileStuckReviewItems_NotifiesOncePerItem(t *testing.T) {
 	storage, cleanup := createTestStorage(t)
 	defer cleanup()
@@ -707,10 +708,19 @@ func TestReconcileStuckReviewItems_NotifiesOncePerItem(t *testing.T) {
 	listener.SetNotifier(notifier)
 
 	er := storage.repo.(*EntRepository)
+
+	// First tick opens the row but must NOT notify yet — the item just
+	// entered review (within the grace window).
+	listener.reconcileStuckReviewItems(ctx, er)
+	assert.Empty(t, notifier.calls, "must not notify before the 15-minute grace elapses")
+
+	// Backdate the row past the grace so the next tick is notification-worthy.
+	backdateStuckFirstDetected(t, er, item.ID, "abandoned_review", time.Now().Add(-20*time.Minute))
+
 	listener.reconcileStuckReviewItems(ctx, er)
 	assert.Equal(t, []string{"Review item needs attention"}, notifier.calls)
 
-	// Second tick must not re-notify for the same item.
+	// Third tick must not re-notify for the same item.
 	listener.reconcileStuckReviewItems(ctx, er)
 	assert.Len(t, notifier.calls, 1, "must not re-notify the same item on a repeat tick")
 

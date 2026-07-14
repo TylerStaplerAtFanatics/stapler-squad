@@ -10,6 +10,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/approvalrule"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/classificationanalytics"
 	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
 	"github.com/tstapler/stapler-squad/session/ent/claudesession"
@@ -190,6 +191,20 @@ func init() {
 	backlogstatuseventDescID := backlogstatuseventFields[0].Descriptor()
 	// backlogstatusevent.DefaultID holds the default value on creation for the id field.
 	backlogstatusevent.DefaultID = backlogstatuseventDescID.Default.(func() uuid.UUID)
+	backlogstuckstateFields := schema.BacklogStuckState{}.Fields()
+	_ = backlogstuckstateFields
+	// backlogstuckstateDescFirstDetectedAt is the schema descriptor for first_detected_at field.
+	backlogstuckstateDescFirstDetectedAt := backlogstuckstateFields[3].Descriptor()
+	// backlogstuckstate.DefaultFirstDetectedAt holds the default value on creation for the first_detected_at field.
+	backlogstuckstate.DefaultFirstDetectedAt = backlogstuckstateDescFirstDetectedAt.Default.(func() time.Time)
+	// backlogstuckstateDescLastCheckedAt is the schema descriptor for last_checked_at field.
+	backlogstuckstateDescLastCheckedAt := backlogstuckstateFields[4].Descriptor()
+	// backlogstuckstate.DefaultLastCheckedAt holds the default value on creation for the last_checked_at field.
+	backlogstuckstate.DefaultLastCheckedAt = backlogstuckstateDescLastCheckedAt.Default.(func() time.Time)
+	// backlogstuckstateDescID is the schema descriptor for id field.
+	backlogstuckstateDescID := backlogstuckstateFields[0].Descriptor()
+	// backlogstuckstate.DefaultID holds the default value on creation for the id field.
+	backlogstuckstate.DefaultID = backlogstuckstateDescID.Default.(func() uuid.UUID)
 	classificationanalyticsFields := schema.ClassificationAnalytics{}.Fields()
 	_ = classificationanalyticsFields
 	// classificationanalyticsDescAnalyticsID is the schema descriptor for analytics_id field.

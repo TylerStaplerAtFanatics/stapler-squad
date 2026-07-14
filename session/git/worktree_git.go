@@ -342,6 +342,25 @@ type PRStatus struct {
 	// "not merged" as "still open and healthy" — a closed PR will never merge on
 	// its own no matter how long ReconcilePRPending keeps polling it.
 	IsClosed bool
+	// IsDraft is true when the PR is still marked draft on GitHub. Captured from
+	// the same gh pr view call as everything else on this struct (no second API
+	// call) so callers such as the backlog stuck-item detector (prReadyToMergeSolo)
+	// can gate on it without an extra fetch.
+	IsDraft bool
+	// Mergeable is the raw upper-cased GitHub `mergeable` field ("MERGEABLE",
+	// "CONFLICTING", or "UNKNOWN"). HasConflicts is the belt-and-suspenders
+	// bool derived from this plus mergeStateStatus (see above); Mergeable is
+	// exposed separately for callers (prReadyToMergeSolo) that want the literal
+	// "MERGEABLE" check called out in ADR-001 rather than the inverse-of-conflict
+	// approximation.
+	Mergeable string
+	// ApprovedCount is the number of current non-dismissed APPROVED reviews.
+	ApprovedCount int
+	// ChangesRequestedCount is the number of current non-dismissed
+	// CHANGES_REQUESTED reviews (equivalently, len of the reviews backing
+	// HasBlockingReviews — exposed as a count so callers building a
+	// github.PRInfo-shaped value don't need to re-derive it from the bool).
+	ChangesRequestedCount int
 	// FeedbackText is a combined human-readable summary for the fix agent.
 	FeedbackText string
 
@@ -423,7 +442,7 @@ func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
 	defer cancel()
 
 	cmd := safeexec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber),
-		"--json", "statusCheckRollup,reviews,comments,mergeable,mergeStateStatus,state")
+		"--json", "statusCheckRollup,reviews,comments,mergeable,mergeStateStatus,state,isDraft")
 	cmd.Dir = g.worktreePath
 	raw, err := g.runCombinedOutput(cmd)
 	if err != nil {
@@ -464,6 +483,7 @@ func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 		Mergeable        string `json:"mergeable"`
 		MergeStateStatus string `json:"mergeStateStatus"`
 		State            string `json:"state"`
+		IsDraft          bool   `json:"isDraft"`
 	}
 	if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
 		return nil, fmt.Errorf("parse pr status: %w", jsonErr)
@@ -471,6 +491,8 @@ func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 
 	status := &PRStatus{}
 	status.IsClosed = strings.ToUpper(payload.State) == "CLOSED"
+	status.IsDraft = payload.IsDraft
+	status.Mergeable = strings.ToUpper(payload.Mergeable)
 
 	// Evaluate mergeability first — a PR that can't even be rebased makes
 	// CI/review feedback moot until it's mergeable again. Check both fields:
@@ -512,9 +534,13 @@ func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 
 	// Evaluate reviews.
 	for _, r := range payload.Reviews {
-		if strings.ToUpper(r.State) == "CHANGES_REQUESTED" {
+		switch strings.ToUpper(r.State) {
+		case "CHANGES_REQUESTED":
 			status.HasBlockingReviews = true
+			status.ChangesRequestedCount++
 			status.blockingReviews = append(status.blockingReviews, reviewInfo{author: r.Author.Login, body: r.Body})
+		case "APPROVED":
+			status.ApprovedCount++
 		}
 	}
 

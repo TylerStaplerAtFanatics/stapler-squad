@@ -816,6 +816,17 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Warn("could not determine config dir for analytics DB", "err", configErr)
 	}
 
+	// One-time startup backfill: seed durable BacklogStuckState rows (with
+	// notified_at pre-set) for items that are already stuck, so the first
+	// genuine reconcile tick below does not re-notify for conditions already
+	// known before this restart. Must run before the ticker starts. Gated on
+	// the backlog feature flag directly (backlogCtrl isn't constructed until
+	// after the ticker below) — seeding rows a disabled ticker will never
+	// maintain would leave stale, un-reconciled rows behind.
+	if cfg.GetFeatureFlag("backlog") {
+		backlogLifecycleListener.BackfillStuckStates(context.Background())
+	}
+
 	// 60 s reconcile ticker: safety net for abnormal exits where EventExited cannot fire.
 	// This goroutine is the only fallback for review-gate respawn, stale-item detection,
 	// and PR-pending polling (merge/CI/conflict) — a panic here must not kill it silently.
@@ -868,6 +879,22 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	backlogSvc.SetSyncFeatureEnabledCheck(backlogCtrl.IsEnabled)
 	backlogLifecycleListener.SetAutoReopener(backlogSvc)
 	backlogLifecycleListener.SetPRFixSpawner(backlogSvc)
+	// Wire the zombie-session liveness checker (pre-mortem F3, Task 2.1.3d):
+	// reuses the existing session.Registry + Instance.TmuxSessionExists rather
+	// than inventing a new liveness mechanism. Acquire failure (session not
+	// tracked live) is treated as "not alive" — the whole point of this check
+	// is to catch sessions whose DB row looks active but whose process is gone.
+	if svc.Registry != nil {
+		registry := svc.Registry
+		backlogLifecycleListener.SetSessionLivenessChecker(func(sessionUUID string) bool {
+			alive := false
+			_ = registry.WithInstance(context.Background(), sessionUUID, func(li *session.LiveInstance) error {
+				alive = li.TmuxSessionExists()
+				return nil
+			})
+			return alive
+		})
+	}
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetReviewGateTrigger(backlogLifecycleListener)
 	// Wire the tmux-UUID → Claude-conversation-UUID resolver so GetClaudeHistoryMessages

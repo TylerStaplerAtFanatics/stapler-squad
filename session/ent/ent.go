@@ -16,6 +16,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/approvalrule"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/classificationanalytics"
 	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
 	"github.com/tstapler/stapler-squad/session/ent/claudesession"
@@ -97,6 +98,7 @@ func checkColumn(t, c string) error {
 			approvalrule.Table:            approvalrule.ValidColumn,
 			backlogitem.Table:             backlogitem.ValidColumn,
 			backlogstatusevent.Table:      backlogstatusevent.ValidColumn,
+			backlogstuckstate.Table:       backlogstuckstate.ValidColumn,
 			classificationanalytics.Table: classificationanalytics.ValidColumn,
 			claudemetadata.Table:          claudemetadata.ValidColumn,
 			claudesession.Table:           claudesession.ValidColumn,

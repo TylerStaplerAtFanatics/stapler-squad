@@ -20,6 +20,8 @@ type Tx struct {
 	BacklogItem *BacklogItemClient
 	// BacklogStatusEvent is the client for interacting with the BacklogStatusEvent builders.
 	BacklogStatusEvent *BacklogStatusEventClient
+	// BacklogStuckState is the client for interacting with the BacklogStuckState builders.
+	BacklogStuckState *BacklogStuckStateClient
 	// ClassificationAnalytics is the client for interacting with the ClassificationAnalytics builders.
 	ClassificationAnalytics *ClassificationAnalyticsClient
 	// ClaudeMetadata is the client for interacting with the ClaudeMetadata builders.
@@ -189,6 +191,7 @@ func (tx *Tx) init() {
 	tx.ApprovalRule = NewApprovalRuleClient(tx.config)
 	tx.BacklogItem = NewBacklogItemClient(tx.config)
 	tx.BacklogStatusEvent = NewBacklogStatusEventClient(tx.config)
+	tx.BacklogStuckState = NewBacklogStuckStateClient(tx.config)
 	tx.ClassificationAnalytics = NewClassificationAnalyticsClient(tx.config)
 	tx.ClaudeMetadata = NewClaudeMetadataClient(tx.config)
 	tx.ClaudeSession = NewClaudeSessionClient(tx.config)
