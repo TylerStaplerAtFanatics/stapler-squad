@@ -313,6 +313,30 @@ func (i *Instance) TmuxAlive() bool {
 	return i.pm().IsAlive()
 }
 
+// PaneProcessDead reports whether the tmux session is alive (TmuxAlive()==true)
+// but the wrapped program running in the pane has already exited. remain-on-exit
+// keeps the tmux session/pane around as a "Pane is dead (signal N, ...)"
+// placeholder after the wrapped program is killed (e.g. OOM SIGKILL) or crashes,
+// rather than tearing the session down -- so TmuxAlive() alone reports this
+// session as healthy forever. Health checks must consult this in addition to
+// TmuxAlive() to detect that failure mode. Returns false for non-tmux backends
+// (e.g. native process manager), which have no equivalent placeholder state.
+func (i *Instance) PaneProcessDead() bool {
+	if !i.TmuxAlive() {
+		return false
+	}
+	tb, ok := i.pm().(*TmuxBackend)
+	if !ok {
+		return false
+	}
+	tm := tb.TmuxManager()
+	if tm == nil {
+		return false
+	}
+	_, _, dead := tm.PaneExitStatus()
+	return dead
+}
+
 // GetPTYReader returns the PTY file handle for the tmux session.
 func (i *Instance) GetPTYReader() (*os.File, error) {
 	if !i.started.Load() {

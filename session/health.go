@@ -102,6 +102,32 @@ func (h *SessionHealthChecker) checkInstances(instances []*Instance) []HealthChe
 	return results
 }
 
+// recoveryDebounced increments the consecutive-failure counter for title and
+// reports whether failureThreshold has been reached (in which case the
+// counter is reset to 0 so the next failure starts a fresh debounce window).
+// Shared by every failure mode checkSingleSession detects (missing tmux
+// session, dead pane process, ...) so that N consecutive failures of any kind
+// -- not just the same kind -- trigger a recovery attempt.
+func (h *SessionHealthChecker) recoveryDebounced(title string) (attempt bool, count int) {
+	h.failureCountsMu.Lock()
+	defer h.failureCountsMu.Unlock()
+	h.failureCounts[title]++
+	count = h.failureCounts[title]
+	if count >= failureThreshold {
+		h.failureCounts[title] = 0
+		return true, count
+	}
+	return false, count
+}
+
+// resetFailureCount clears the consecutive-failure counter for title, called
+// whenever a session is observed healthy.
+func (h *SessionHealthChecker) resetFailureCount(title string) {
+	h.failureCountsMu.Lock()
+	delete(h.failureCounts, title)
+	h.failureCountsMu.Unlock()
+}
+
 // checkSingleSession performs a health check on a single session
 func (h *SessionHealthChecker) checkSingleSession(instance *Instance) HealthCheckResult {
 	result := HealthCheckResult{
@@ -125,26 +151,18 @@ func (h *SessionHealthChecker) checkSingleSession(instance *Instance) HealthChec
 
 	// Check if instance thinks it's started but tmux session doesn't exist
 	if instance.Started() {
-		if !instance.TmuxAlive() {
+		switch {
+		case !instance.TmuxAlive():
 			result.IsHealthy = false
 			result.Issues = append(result.Issues, "Instance marked as started but tmux session doesn't exist")
 
 			// Debounce: only recover after failureThreshold consecutive failures.
 			// This prevents spurious recovery attempts caused by transient check glitches.
-			h.failureCountsMu.Lock()
-			h.failureCounts[instance.Title]++
-			count := h.failureCounts[instance.Title]
-			h.failureCountsMu.Unlock()
-
-			if count < failureThreshold {
+			attempt, count := h.recoveryDebounced(instance.Title)
+			if !attempt {
 				log.Debug("health check: deferring recovery", "session", instance.Title, "count", count, "threshold", failureThreshold)
 				result.Actions = append(result.Actions, fmt.Sprintf("Failure %d/%d: deferring recovery", count, failureThreshold))
 			} else {
-				// Threshold reached - attempt recovery
-				h.failureCountsMu.Lock()
-				h.failureCounts[instance.Title] = 0 // Reset counter after attempt
-				h.failureCountsMu.Unlock()
-
 				result.RecoveryAttempted = true
 				if err := instance.Start(false); err != nil {
 					result.Issues = append(result.Issues, fmt.Sprintf("Recovery failed: %v", err))
@@ -161,11 +179,51 @@ func (h *SessionHealthChecker) checkSingleSession(instance *Instance) HealthChec
 					}
 				}
 			}
-		} else {
+
+		case instance.PaneProcessDead():
+			// tmux session object is alive, but remain-on-exit has left a dead
+			// "Pane is dead (signal N, ...)" placeholder because the wrapped
+			// program exited/was killed (e.g. OOM SIGKILL). TmuxAlive() alone
+			// cannot see this -- it only checks session existence -- so without
+			// this branch the session is reported healthy forever and never
+			// respawns. See session/instance_tmux.go PaneProcessDead() doc.
+			result.IsHealthy = false
+			result.Issues = append(result.Issues, "tmux session alive but pane process has exited (remain-on-exit placeholder)")
+
+			attempt, count := h.recoveryDebounced(instance.Title)
+			if !attempt {
+				log.Debug("health check: deferring dead-pane recovery", "session", instance.Title, "count", count, "threshold", failureThreshold)
+				result.Actions = append(result.Actions, fmt.Sprintf("Failure %d/%d: deferring recovery", count, failureThreshold))
+			} else {
+				result.RecoveryAttempted = true
+				// The stale session must be torn down first: Start(false) treats
+				// an existing (even dead-paned) tmux session as "already running"
+				// and just reattaches to it via RestoreWithWorkDir, which does
+				// NOT relaunch the wrapped program. Killing it first forces
+				// Start(false) down the cold-restore path that actually
+				// recreates the session and relaunches the program (with
+				// --resume when a conversation UUID is known).
+				if err := instance.KillSession(); err != nil {
+					result.Issues = append(result.Issues, fmt.Sprintf("failed to kill stale dead-pane session: %v", err))
+				}
+				if err := instance.Start(false); err != nil {
+					result.Issues = append(result.Issues, fmt.Sprintf("Recovery failed: %v", err))
+					result.RecoverySuccess = false
+					result.Actions = append(result.Actions, "Failed to respawn dead pane")
+				} else {
+					result.RecoverySuccess = true
+					result.Actions = append(result.Actions, "Respawned dead pane by recreating tmux session")
+					if instance.TmuxAlive() && !instance.PaneProcessDead() {
+						result.IsHealthy = true
+					} else {
+						result.Issues = append(result.Issues, "Session still unhealthy after recovery attempt")
+					}
+				}
+			}
+
+		default:
 			// Session is healthy - reset any accumulated failure count
-			h.failureCountsMu.Lock()
-			delete(h.failureCounts, instance.Title)
-			h.failureCountsMu.Unlock()
+			h.resetFailureCount(instance.Title)
 			result.Actions = append(result.Actions, "Tmux session is healthy")
 		}
 	}
