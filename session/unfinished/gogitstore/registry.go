@@ -97,18 +97,39 @@ type Registry struct {
 	// created with; flipping this field does not retroactively convert an
 	// already-open store.
 	//
-	// Default false: session/unfinished/gogit_vcs_reader.go's
-	// gogitstoreRegistry() — the constructor for the Registry actually used
-	// by the live production scanner — does not set this field, so the
-	// original copy-based (io.ReadFull) loader remains the active
-	// production path unless and until a coordinator deliberately adds
-	// UseMmapIndex: true there after reviewing this stage's safety proof
-	// (see gogitstore_test.go / mmapindex_test.go / mmap_stage2_test.go, and
-	// design doc §5.3's honest accounting of what is and isn't proven).
+	// Default false. Safe to set directly via a struct literal (&Registry{
+	// UseMmapIndex: true}) only before the Registry is shared across
+	// goroutines (e.g. in a test, before Open is ever called). Once a
+	// Registry may be read concurrently by acquire() — true for any
+	// production Registry — use SetUseMmapIndex instead, which holds the
+	// same mutex acquire() reads this field under; a bare field write from
+	// another goroutine after that point is a data race.
+	//
+	// session/unfinished/gogit_vcs_reader.go's gogitstoreRegistry() — the
+	// constructor for the Registry actually used by the live production
+	// scanner — leaves this at its zero value and instead calls
+	// SetUseMmapIndex on every openRepoEntry call with the live value of
+	// the "unfinished:mmap-index" feature flag, so toggling that flag
+	// (config.SetFeatureFlag, e.g. via the Settings UI) takes effect for
+	// the next repo opened or re-opened after eviction — no process
+	// restart required — without needing this field to itself be an
+	// atomic type, since every write funnels through this one
+	// mutex-guarded setter.
 	UseMmapIndex bool
 
 	mu     sync.Mutex
 	stores map[string]*SharedObjectStore // key: filepath.Clean'd absolute commondir
+}
+
+// SetUseMmapIndex sets UseMmapIndex under the same mutex acquire() reads it
+// under — the safe way to change this field on a Registry that may already
+// be in concurrent use (i.e. any production Registry). Only affects
+// SharedObjectStores created after this call; see UseMmapIndex's doc
+// comment.
+func (r *Registry) SetUseMmapIndex(v bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.UseMmapIndex = v
 }
 
 // NewRegistry returns a Registry using go-git's own default object-cache
