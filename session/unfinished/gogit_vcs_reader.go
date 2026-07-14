@@ -18,10 +18,13 @@ import (
 	"github.com/go-git/go-billy/v5/osfs"
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
 	"github.com/tstapler/stapler-squad/log"
 	"golang.org/x/sync/singleflight"
 )
@@ -330,6 +333,36 @@ type GoGitVCSReader struct {
 	hasUncommittedSF singleflight.Group //nolint:exhaustruct
 	// commitMessagesSF deduplicates concurrent CommitMessages calls for the same key.
 	commitMessagesSF singleflight.Group //nolint:exhaustruct
+
+	// objectCacheByCommonDir shares one decoded-object *cache.ObjectLRU per
+	// underlying repo (keyed by its resolved common .git dir, not worktree
+	// path) across every worktree of that repo. Safe: cache.ObjectLRU guards
+	// all its own state with an internal mutex, and objects are keyed by
+	// content hash, so worktrees of the same repo see identical content for
+	// any given hash — there is nothing worktree-specific to get wrong by
+	// sharing this cache. This does NOT share the parsed pack-index itself
+	// (storage/filesystem's ObjectStorage.index is unexported and cannot be
+	// reached from here); that redundancy is a separate, larger effort
+	// (see session/unfinished/design/pluggable-gitstore.md). Unbounded by
+	// worktree count — bounded by distinct commondir count, which is far
+	// smaller; not wired into repoCache's TTL eviction since a small,
+	// repo-count-bounded residual is low severity.
+	objectCacheByCommonDir sync.Map // map[string]*cache.ObjectLRU
+}
+
+// perRepoObjectCacheSize replaces go-git's PlainOpenWithOptions default of
+// cache.DefaultMaxSize (96MB, plumbing/cache/common.go) with a much smaller
+// budget. 96MB was sized for an interactive single-repo CLI tool holding one
+// repo open for a whole session; this scanner holds many repos "hot"
+// concurrently, so a smaller per-repo cache trades a bit more re-decoding on
+// a cache miss for a much lower memory ceiling per resident repo.
+const perRepoObjectCacheSize = 12 * cache.MiByte
+
+// sharedObjectCache returns the *cache.ObjectLRU shared by every worktree of
+// the repo whose common .git dir is commonDir, creating one on first use.
+func (g *GoGitVCSReader) sharedObjectCache(commonDir string) *cache.ObjectLRU {
+	v, _ := g.objectCacheByCommonDir.LoadOrStore(commonDir, cache.NewObjectLRU(perRepoObjectCacheSize))
+	return v.(*cache.ObjectLRU)
 }
 
 var _ VCSReader = (*GoGitVCSReader)(nil)
@@ -1455,12 +1488,20 @@ func (g *GoGitVCSReader) openRepoEntry(path string) (*cachedRepo, error) {
 		}
 	}
 
-	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{
-		DetectDotGit:          true,
-		EnableDotGitCommonDir: true,
-	})
+	// Open via the lower-level API instead of PlainOpenWithOptions so the
+	// object cache size is ours to control — PlainOpenWithOptions hardcodes
+	// cache.NewObjectLRUDefault() (96MB) with no way to override it. The
+	// commondir/worktree filesystem split below reproduces exactly what
+	// PlainOpenWithOptions(path, &git.PlainOpenOptions{DetectDotGit: true,
+	// EnableDotGitCommonDir: true}) does internally.
+	dotFs := osfs.New(worktreeGitDir(path))
+	commonDir := gitCommonDir(path)
+	commonFs := osfs.New(commonDir)
+	repoFs := dotgit.NewRepositoryFilesystem(dotFs, commonFs)
+	storer := filesystem.NewStorage(repoFs, g.sharedObjectCache(commonDir))
+	repo, err := git.Open(storer, osfs.New(path))
 	if err != nil {
-		return nil, fmt.Errorf("plain open %s: %w", path, err)
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	entry := &cachedRepo{repo: repo, accessedAtNs: now}
 	actual, loaded := g.repoCache.LoadOrStore(path, entry)
