@@ -828,6 +828,51 @@ func TestReconcilePRPending_ClosedWithoutMerge_ClearsPRFieldsAndReopens(t *testi
 	assert.Empty(t, fetched.PrURL, "PrURL must be cleared so the next pushAndCreatePR creates a fresh PR")
 }
 
+// TestBackfillMissingPRNumbers_ParsesNumberFromURL is a regression test for a
+// live-data bug found via manual QA: a pr_pending item can have pr_url set but
+// pr_number left at 0 (e.g. from a pre-migration row), making it permanently
+// invisible to FindPRPendingItems' PrNumberGT(0) filter. Verifies the number is
+// parsed out of the URL and persisted.
+func TestBackfillMissingPRNumbers_ParsesNumberFromURL(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Missing pr_number test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusPRPending),
+		RepoPath:           "/tmp/fake-repo",
+	})
+	require.NoError(t, err)
+
+	prURL := "https://github.com/tstapler/stapler-squad/pull/148"
+	_, err = storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{PrURL: &prURL}, nil)
+	require.NoError(t, err)
+
+	er := storage.repo.(*EntRepository)
+
+	// Before backfill: invisible to FindPRPendingItems despite being pr_pending with a URL.
+	before, err := er.FindPRPendingItems(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, before, "item with pr_number=0 must not be returned before backfill")
+
+	n, err := er.BackfillMissingPRNumbers(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 148, fetched.PrNumber)
+
+	// After backfill: now visible to FindPRPendingItems.
+	after, err := er.FindPRPendingItems(ctx)
+	require.NoError(t, err)
+	require.Len(t, after, 1)
+	assert.Equal(t, item.ID, after[0].ID.String())
+}
+
 // fakePRCreator is a test double implementing prCreator, letting tests inject
 // canned push/CreatePR results without a live git worktree or authenticated gh CLI.
 type fakePRCreator struct {
