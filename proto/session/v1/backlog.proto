@@ -435,6 +435,15 @@ service BacklogService {
   // SubmitManualReview allows a user to submit a review verdict directly,
   // without running an AI review session.
   rpc SubmitManualReview(SubmitManualReviewRequest) returns (SubmitManualReviewResponse) {}
+
+  // ListStuckBacklogItems returns open (unresolved, un-snoozed) stuck backlog
+  // items — items that have stopped progressing toward merge, with a reason,
+  // since-when, and PR context.
+  rpc ListStuckBacklogItems(ListStuckBacklogItemsRequest) returns (ListStuckBacklogItemsResponse) {}
+
+  // SnoozeStuckItem suppresses a stuck row from the active view and from
+  // re-notification until the given time.
+  rpc SnoozeStuckItem(SnoozeStuckItemRequest) returns (SnoozeStuckItemResponse) {}
 }
 
 message ImportGitHubIssueRequest {
@@ -554,4 +563,64 @@ message SubmitManualReviewRequest {
 
 message SubmitManualReviewResponse {
   BacklogItem item = 1;
+}
+
+// --- Stuck backlog item visibility ---
+
+// StuckReason mirrors domain.StuckReason (session/domain/backlog.go) — the
+// validated string-backed enum of classes a backlog item can be "stuck" for.
+// STUCK_REASON_UNSPECIFIED is also used as the safe fallback when an unknown
+// string is encountered mapping a DB row to proto (never panics).
+enum StuckReason {
+  STUCK_REASON_UNSPECIFIED = 0;
+  STUCK_REASON_PR_READY_UNMERGED = 1;
+  STUCK_REASON_REWORK_CAP = 2;
+  STUCK_REASON_ABANDONED_REVIEW = 3;
+  STUCK_REASON_STALE_WORK = 4;
+  STUCK_REASON_BOUNCING = 5;
+  STUCK_REASON_PUSH_FAILED = 6;
+}
+
+// StuckBacklogItem is a single open (unresolved, un-snoozed) BacklogStuckState
+// row joined with its parent item's rendering-relevant fields.
+message StuckBacklogItem {
+  string item_id = 1;
+  string title = 2;
+  string status = 3;
+  StuckReason reason = 4;
+  google.protobuf.Timestamp first_detected_at = 5;
+  google.protobuf.Timestamp last_checked_at = 6;
+  int32 pr_number = 7;
+  string pr_url = 8;
+  string context = 9;
+  // snoozed_until is present only when the row was already scheduled to
+  // become un-snoozed at query time (ListStuckBacklogItems only ever returns
+  // rows that are currently un-snoozed, so this is normally unset).
+  google.protobuf.Timestamp snoozed_until = 10;
+  // allow_auto_merge surfaces the repo's GitHub auto-merge setting, read-only
+  // and best-effort (see plan.md Story 4.1.4 / ADR discussion). This field is
+  // declared here so the Phase 4 frontend work doesn't require a second
+  // proto-gen round-trip, but it is intentionally left unset (not populated)
+  // by the ListStuckBacklogItems handler added in this change — Phase 4 owns
+  // fetching and populating it. Unset means "not fetched / unknown", not
+  // "auto-merge disabled".
+  optional bool allow_auto_merge = 11;
+}
+
+message ListStuckBacklogItemsRequest {}
+
+message ListStuckBacklogItemsResponse {
+  repeated StuckBacklogItem items = 1;
+}
+
+message SnoozeStuckItemRequest {
+  string item_id = 1;
+  StuckReason reason = 2;
+  google.protobuf.Timestamp until = 3;
+}
+
+message SnoozeStuckItemResponse {
+  // applied is true when an open row matching (item_id, reason) was found
+  // and snoozed; false when no such open row exists (not an error).
+  bool applied = 1;
 }

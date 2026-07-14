@@ -74,11 +74,13 @@ type BacklogItemEdges struct {
 	Sessions []*Session `json:"sessions,omitempty"`
 	// StatusEvents holds the value of the status_events edge.
 	StatusEvents []*BacklogStatusEvent `json:"status_events,omitempty"`
+	// StuckStates holds the value of the stuck_states edge.
+	StuckStates []*BacklogStuckState `json:"stuck_states,omitempty"`
 	// Source holds the value of the source edge.
 	Source *ItemSource `json:"source,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [4]bool
+	loadedTypes [5]bool
 }
 
 // ItemSessionsOrErr returns the ItemSessions value or an error if the edge
@@ -108,12 +110,21 @@ func (e BacklogItemEdges) StatusEventsOrErr() ([]*BacklogStatusEvent, error) {
 	return nil, &NotLoadedError{edge: "status_events"}
 }
 
+// StuckStatesOrErr returns the StuckStates value or an error if the edge
+// was not loaded in eager-loading.
+func (e BacklogItemEdges) StuckStatesOrErr() ([]*BacklogStuckState, error) {
+	if e.loadedTypes[3] {
+		return e.StuckStates, nil
+	}
+	return nil, &NotLoadedError{edge: "stuck_states"}
+}
+
 // SourceOrErr returns the Source value or an error if the edge
 // was not loaded in eager-loading, or loaded but was not found.
 func (e BacklogItemEdges) SourceOrErr() (*ItemSource, error) {
 	if e.Source != nil {
 		return e.Source, nil
-	} else if e.loadedTypes[3] {
+	} else if e.loadedTypes[4] {
 		return nil, &NotFoundError{label: itemsource.Label}
 	}
 	return nil, &NotLoadedError{edge: "source"}
@@ -313,6 +324,11 @@ func (_m *BacklogItem) QuerySessions() *SessionQuery {
 // QueryStatusEvents queries the "status_events" edge of the BacklogItem entity.
 func (_m *BacklogItem) QueryStatusEvents() *BacklogStatusEventQuery {
 	return NewBacklogItemClient(_m.config).QueryStatusEvents(_m)
+}
+
+// QueryStuckStates queries the "stuck_states" edge of the BacklogItem entity.
+func (_m *BacklogItem) QueryStuckStates() *BacklogStuckStateQuery {
+	return NewBacklogItemClient(_m.config).QueryStuckStates(_m)
 }
 
 // QuerySource queries the "source" edge of the BacklogItem entity.

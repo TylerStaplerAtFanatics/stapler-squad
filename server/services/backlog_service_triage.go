@@ -19,6 +19,7 @@ import (
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
@@ -26,7 +27,26 @@ import (
 // notifyReworkCapHit publishes an operator-facing notification when the auto-rework
 // loop (review→rework or PR-fix→rework) hits maxAutoReworkIterations and leaves an
 // item stranded for manual action. No-op if no event bus is wired.
-func (s *BacklogService) notifyReworkCapHit(itemID, itemTitle, context string) {
+//
+// Story 2.1.2: also writes a durable rework_cap BacklogStuckState row (threshold
+// 0 — the cap hit is a discrete, definitive event, marked the moment it's hit)
+// so the cap-hit is restart-surviving and notify-once is DB-backed, not lost on
+// a missed toast. The durable write is additive to the notification, not a
+// gate: a MarkStuck/MarkStuckNotified failure is logged but must never
+// suppress the notification itself.
+func (s *BacklogService) notifyReworkCapHit(ctx context.Context, itemID, itemTitle string, currentStatus session.BacklogStatus, capContext string) {
+	if s.storage != nil {
+		applied, err := s.storage.MarkStuck(ctx, itemID, domain.StuckReasonReworkCap, currentStatus,
+			fmt.Sprintf("hit the %d-iteration rework cap %s", maxAutoReworkIterations, capContext))
+		if err != nil {
+			log.WarningLog.Printf("[notifyReworkCapHit] MarkStuck item=%s: %v", itemID, err)
+		} else if applied {
+			if _, notifyErr := s.storage.MarkStuckNotified(ctx, itemID, domain.StuckReasonReworkCap); notifyErr != nil {
+				log.WarningLog.Printf("[notifyReworkCapHit] MarkStuckNotified item=%s: %v", itemID, notifyErr)
+			}
+		}
+	}
+
 	if s.eventBus == nil {
 		return
 	}
@@ -35,7 +55,7 @@ func (s *BacklogService) notifyReworkCapHit(itemID, itemTitle, context string) {
 		int32(sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING),
 		int32(sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM),
 		"Auto-rework cap reached",
-		fmt.Sprintf("%s — hit the %d-iteration rework cap %s. Left for manual review.", itemTitle, maxAutoReworkIterations, context),
+		fmt.Sprintf("%s — hit the %d-iteration rework cap %s. Left for manual review.", itemTitle, maxAutoReworkIterations, capContext),
 		map[string]string{"item_id": itemID},
 	))
 }
@@ -420,7 +440,7 @@ func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID
 	}
 	if workCount >= maxAutoReworkIterations {
 		log.InfoLog.Printf("[AutoReopenAfterFailedReview] item %s has %d work sessions (cap %d); leaving in review for manual action", itemID, workCount, maxAutoReworkIterations)
-		s.notifyReworkCapHit(itemID, item.Title, "after a failed review verdict")
+		s.notifyReworkCapHit(ctx, itemID, item.Title, session.BacklogStatus(item.Status), "after a failed review verdict")
 		return nil
 	}
 
@@ -434,6 +454,16 @@ func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID
 	}
 	if _, err := s.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusInProgress, precondition); err != nil {
 		return fmt.Errorf("transition to in_progress: %w", err)
+	}
+
+	// The item just left review for in_progress — resolve any open rework_cap
+	// or abandoned_review rows immediately (Task 2.1.5b) rather than waiting
+	// for the self-heal sweep's next tick.
+	if _, resolveErr := s.storage.ResolveStuck(ctx, itemID, domain.StuckReasonReworkCap); resolveErr != nil {
+		log.WarningLog.Printf("[AutoReopenAfterFailedReview] ResolveStuck(rework_cap) item=%s: %v", itemID, resolveErr)
+	}
+	if _, resolveErr := s.storage.ResolveStuck(ctx, itemID, domain.StuckReasonAbandonedReview); resolveErr != nil {
+		log.WarningLog.Printf("[AutoReopenAfterFailedReview] ResolveStuck(abandoned_review) item=%s: %v", itemID, resolveErr)
 	}
 
 	_, spawnErr := s.SpawnSessionFromItem(ctx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
@@ -481,7 +511,7 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 	}
 	if workCount >= maxAutoReworkIterations {
 		log.InfoLog.Printf("[AutoReopenForPRFix] item %s has %d work sessions (cap %d); leaving in pr_pending for manual action", itemID, workCount, maxAutoReworkIterations)
-		s.notifyReworkCapHit(itemID, item.Title, "while fixing PR #"+fmt.Sprint(item.PrNumber))
+		s.notifyReworkCapHit(ctx, itemID, item.Title, session.BacklogStatus(item.Status), "while fixing PR #"+fmt.Sprint(item.PrNumber))
 		return nil
 	}
 
@@ -493,6 +523,15 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 	}
 	if _, err := s.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusInProgress, precondition); err != nil {
 		return fmt.Errorf("transition to in_progress: %w", err)
+	}
+
+	// The item just left pr_pending for in_progress — resolve any open
+	// rework_cap, pr_ready_unmerged, or push_failed rows immediately (Task
+	// 2.1.5b) rather than waiting for the self-heal sweep's next tick.
+	for _, reason := range []domain.StuckReason{domain.StuckReasonReworkCap, domain.StuckReasonPRReadyUnmerged, domain.StuckReasonPushFailed} {
+		if _, resolveErr := s.storage.ResolveStuck(ctx, itemID, reason); resolveErr != nil {
+			log.WarningLog.Printf("[AutoReopenForPRFix] ResolveStuck(%s) item=%s: %v", reason, itemID, resolveErr)
+		}
 	}
 
 	// Prepend the PR failure context to the item's notes so the spawned session
@@ -898,6 +937,13 @@ Do not modify the code. Only write the review verdict.
 
 		log.InfoLog.Printf("[TriggerReReview] headless re-review complete for item %s (outcome %s)", item.ID, overall)
 
+		// A fresh review verdict now exists — resolve any open abandoned_review
+		// row immediately (Task 2.1.5b) rather than waiting for the self-heal
+		// sweep's next tick.
+		if _, resolveErr := s.storage.ResolveStuck(ctx, item.ID, domain.StuckReasonAbandonedReview); resolveErr != nil {
+			log.WarningLog.Printf("[TriggerReReview] ResolveStuck(abandoned_review) item=%s: %v", item.ID, resolveErr)
+		}
+
 		return connect.NewResponse(&sessionv1.TriggerReReviewResponse{
 			ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 		}), nil
@@ -952,6 +998,13 @@ Do not modify the code. Only write the review verdict.
 	}
 
 	log.InfoLog.Printf("[TriggerReReview] spawned re-review session %s for item %s", inst.UUID, item.ID)
+
+	// A review session is active again — resolve any open abandoned_review row
+	// immediately (Task 2.1.5b) rather than waiting for the self-heal sweep's
+	// next tick.
+	if _, resolveErr := s.storage.ResolveStuck(ctx, item.ID, domain.StuckReasonAbandonedReview); resolveErr != nil {
+		log.WarningLog.Printf("[TriggerReReview] ResolveStuck(abandoned_review) item=%s: %v", item.ID, resolveErr)
+	}
 
 	return connect.NewResponse(&sessionv1.TriggerReReviewResponse{
 		ItemSession: itemSessionToProto(is, s.buildCostLookup()),

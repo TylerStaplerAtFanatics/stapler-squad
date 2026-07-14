@@ -27,6 +27,54 @@ const (
 // when no priority is specified. Lower values indicate higher priority.
 const DefaultBacklogPriority = 3
 
+// StuckReason is a validated string-backed enum of the classes a backlog item
+// can be "stuck" for — matching the house BacklogStatus/ReviewOutcome style
+// (validated at the boundary via IsValid, not a truly-unrepresentable sum
+// type). Only these compile-time constants should ever reach MarkStuck; no
+// unvalidated string should reach the DB.
+type StuckReason string
+
+const (
+	// StuckReasonPRReadyUnmerged: a pr_pending item's PR is green, mergeable,
+	// and unmerged past the threshold (see prReadyToMergeSolo).
+	StuckReasonPRReadyUnmerged StuckReason = "pr_ready_unmerged"
+	// StuckReasonReworkCap: the auto-rework loop hit maxAutoReworkIterations
+	// and parked the item for manual action.
+	StuckReasonReworkCap StuckReason = "rework_cap"
+	// StuckReasonAbandonedReview: a review-status item has a review verdict on
+	// record but nothing active in flight.
+	StuckReasonAbandonedReview StuckReason = "abandoned_review"
+	// StuckReasonStaleWork: an in_progress item's active work session reported
+	// no progress for longer than maxWorkSessionStaleness.
+	StuckReasonStaleWork StuckReason = "stale_work"
+	// StuckReasonBouncing: an item crossed in_progress <-> review >= bounceThreshold
+	// times within bounceLookback with no PASS verdict.
+	StuckReasonBouncing StuckReason = "bouncing"
+	// StuckReasonPushFailed: pushAndCreatePR failed (push rejected / gh pr
+	// create errored) leaving a post-review item with no pr_number.
+	StuckReasonPushFailed StuckReason = "push_failed"
+)
+
+// AllStuckReasons lists every valid StuckReason constant.
+var AllStuckReasons = []StuckReason{
+	StuckReasonPRReadyUnmerged,
+	StuckReasonReworkCap,
+	StuckReasonAbandonedReview,
+	StuckReasonStaleWork,
+	StuckReasonBouncing,
+	StuckReasonPushFailed,
+}
+
+// IsValid reports whether r is a known stuck reason value.
+func (r StuckReason) IsValid() bool {
+	switch r {
+	case StuckReasonPRReadyUnmerged, StuckReasonReworkCap, StuckReasonAbandonedReview,
+		StuckReasonStaleWork, StuckReasonBouncing, StuckReasonPushFailed:
+		return true
+	}
+	return false
+}
+
 // AcStatus represents the status of a single acceptance criterion.
 type AcStatus string
 

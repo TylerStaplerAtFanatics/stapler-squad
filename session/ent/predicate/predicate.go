@@ -18,6 +18,9 @@ type BacklogItem func(*sql.Selector)
 // BacklogStatusEvent is the predicate function for backlogstatusevent builders.
 type BacklogStatusEvent func(*sql.Selector)
 
+// BacklogStuckState is the predicate function for backlogstuckstate builders.
+type BacklogStuckState func(*sql.Selector)
+
 // ClassificationAnalytics is the predicate function for classificationanalytics builders.
 type ClassificationAnalytics func(*sql.Selector)
 

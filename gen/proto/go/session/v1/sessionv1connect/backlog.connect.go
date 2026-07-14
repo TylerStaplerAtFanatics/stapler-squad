@@ -117,6 +117,12 @@ const (
 	// BacklogServiceSubmitManualReviewProcedure is the fully-qualified name of the BacklogService's
 	// SubmitManualReview RPC.
 	BacklogServiceSubmitManualReviewProcedure = "/session.v1.BacklogService/SubmitManualReview"
+	// BacklogServiceListStuckBacklogItemsProcedure is the fully-qualified name of the BacklogService's
+	// ListStuckBacklogItems RPC.
+	BacklogServiceListStuckBacklogItemsProcedure = "/session.v1.BacklogService/ListStuckBacklogItems"
+	// BacklogServiceSnoozeStuckItemProcedure is the fully-qualified name of the BacklogService's
+	// SnoozeStuckItem RPC.
+	BacklogServiceSnoozeStuckItemProcedure = "/session.v1.BacklogService/SnoozeStuckItem"
 )
 
 // BacklogServiceClient is a client for the session.v1.BacklogService service.
@@ -180,6 +186,13 @@ type BacklogServiceClient interface {
 	// SubmitManualReview allows a user to submit a review verdict directly,
 	// without running an AI review session.
 	SubmitManualReview(context.Context, *connect.Request[v1.SubmitManualReviewRequest]) (*connect.Response[v1.SubmitManualReviewResponse], error)
+	// ListStuckBacklogItems returns open (unresolved, un-snoozed) stuck backlog
+	// items — items that have stopped progressing toward merge, with a reason,
+	// since-when, and PR context.
+	ListStuckBacklogItems(context.Context, *connect.Request[v1.ListStuckBacklogItemsRequest]) (*connect.Response[v1.ListStuckBacklogItemsResponse], error)
+	// SnoozeStuckItem suppresses a stuck row from the active view and from
+	// re-notification until the given time.
+	SnoozeStuckItem(context.Context, *connect.Request[v1.SnoozeStuckItemRequest]) (*connect.Response[v1.SnoozeStuckItemResponse], error)
 }
 
 // NewBacklogServiceClient constructs a client for the session.v1.BacklogService service. By
@@ -361,6 +374,18 @@ func NewBacklogServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(backlogServiceMethods.ByName("SubmitManualReview")),
 			connect.WithClientOptions(opts...),
 		),
+		listStuckBacklogItems: connect.NewClient[v1.ListStuckBacklogItemsRequest, v1.ListStuckBacklogItemsResponse](
+			httpClient,
+			baseURL+BacklogServiceListStuckBacklogItemsProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("ListStuckBacklogItems")),
+			connect.WithClientOptions(opts...),
+		),
+		snoozeStuckItem: connect.NewClient[v1.SnoozeStuckItemRequest, v1.SnoozeStuckItemResponse](
+			httpClient,
+			baseURL+BacklogServiceSnoozeStuckItemProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("SnoozeStuckItem")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -394,6 +419,8 @@ type backlogServiceClient struct {
 	getBacklogItemCost          *connect.Client[v1.GetBacklogItemCostRequest, v1.GetBacklogItemCostResponse]
 	getSessionBacklogIndex      *connect.Client[v1.GetSessionBacklogIndexRequest, v1.GetSessionBacklogIndexResponse]
 	submitManualReview          *connect.Client[v1.SubmitManualReviewRequest, v1.SubmitManualReviewResponse]
+	listStuckBacklogItems       *connect.Client[v1.ListStuckBacklogItemsRequest, v1.ListStuckBacklogItemsResponse]
+	snoozeStuckItem             *connect.Client[v1.SnoozeStuckItemRequest, v1.SnoozeStuckItemResponse]
 }
 
 // CreateBacklogItem calls session.v1.BacklogService.CreateBacklogItem.
@@ -536,6 +563,16 @@ func (c *backlogServiceClient) SubmitManualReview(ctx context.Context, req *conn
 	return c.submitManualReview.CallUnary(ctx, req)
 }
 
+// ListStuckBacklogItems calls session.v1.BacklogService.ListStuckBacklogItems.
+func (c *backlogServiceClient) ListStuckBacklogItems(ctx context.Context, req *connect.Request[v1.ListStuckBacklogItemsRequest]) (*connect.Response[v1.ListStuckBacklogItemsResponse], error) {
+	return c.listStuckBacklogItems.CallUnary(ctx, req)
+}
+
+// SnoozeStuckItem calls session.v1.BacklogService.SnoozeStuckItem.
+func (c *backlogServiceClient) SnoozeStuckItem(ctx context.Context, req *connect.Request[v1.SnoozeStuckItemRequest]) (*connect.Response[v1.SnoozeStuckItemResponse], error) {
+	return c.snoozeStuckItem.CallUnary(ctx, req)
+}
+
 // BacklogServiceHandler is an implementation of the session.v1.BacklogService service.
 type BacklogServiceHandler interface {
 	// CreateBacklogItem adds a new item to the backlog.
@@ -597,6 +634,13 @@ type BacklogServiceHandler interface {
 	// SubmitManualReview allows a user to submit a review verdict directly,
 	// without running an AI review session.
 	SubmitManualReview(context.Context, *connect.Request[v1.SubmitManualReviewRequest]) (*connect.Response[v1.SubmitManualReviewResponse], error)
+	// ListStuckBacklogItems returns open (unresolved, un-snoozed) stuck backlog
+	// items — items that have stopped progressing toward merge, with a reason,
+	// since-when, and PR context.
+	ListStuckBacklogItems(context.Context, *connect.Request[v1.ListStuckBacklogItemsRequest]) (*connect.Response[v1.ListStuckBacklogItemsResponse], error)
+	// SnoozeStuckItem suppresses a stuck row from the active view and from
+	// re-notification until the given time.
+	SnoozeStuckItem(context.Context, *connect.Request[v1.SnoozeStuckItemRequest]) (*connect.Response[v1.SnoozeStuckItemResponse], error)
 }
 
 // NewBacklogServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -774,6 +818,18 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 		connect.WithSchema(backlogServiceMethods.ByName("SubmitManualReview")),
 		connect.WithHandlerOptions(opts...),
 	)
+	backlogServiceListStuckBacklogItemsHandler := connect.NewUnaryHandler(
+		BacklogServiceListStuckBacklogItemsProcedure,
+		svc.ListStuckBacklogItems,
+		connect.WithSchema(backlogServiceMethods.ByName("ListStuckBacklogItems")),
+		connect.WithHandlerOptions(opts...),
+	)
+	backlogServiceSnoozeStuckItemHandler := connect.NewUnaryHandler(
+		BacklogServiceSnoozeStuckItemProcedure,
+		svc.SnoozeStuckItem,
+		connect.WithSchema(backlogServiceMethods.ByName("SnoozeStuckItem")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/session.v1.BacklogService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case BacklogServiceCreateBacklogItemProcedure:
@@ -832,6 +888,10 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 			backlogServiceGetSessionBacklogIndexHandler.ServeHTTP(w, r)
 		case BacklogServiceSubmitManualReviewProcedure:
 			backlogServiceSubmitManualReviewHandler.ServeHTTP(w, r)
+		case BacklogServiceListStuckBacklogItemsProcedure:
+			backlogServiceListStuckBacklogItemsHandler.ServeHTTP(w, r)
+		case BacklogServiceSnoozeStuckItemProcedure:
+			backlogServiceSnoozeStuckItemHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -951,4 +1011,12 @@ func (UnimplementedBacklogServiceHandler) GetSessionBacklogIndex(context.Context
 
 func (UnimplementedBacklogServiceHandler) SubmitManualReview(context.Context, *connect.Request[v1.SubmitManualReviewRequest]) (*connect.Response[v1.SubmitManualReviewResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.SubmitManualReview is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) ListStuckBacklogItems(context.Context, *connect.Request[v1.ListStuckBacklogItemsRequest]) (*connect.Response[v1.ListStuckBacklogItemsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.ListStuckBacklogItems is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) SnoozeStuckItem(context.Context, *connect.Request[v1.SnoozeStuckItemRequest]) (*connect.Response[v1.SnoozeStuckItemResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.SnoozeStuckItem is not implemented"))
 }

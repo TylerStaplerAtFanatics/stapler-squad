@@ -196,6 +196,39 @@ var (
 			},
 		},
 	}
+	// BacklogStuckStatesColumns holds the columns for the "backlog_stuck_states" table.
+	BacklogStuckStatesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeUUID},
+		{Name: "reason", Type: field.TypeString},
+		{Name: "first_detected_at", Type: field.TypeTime},
+		{Name: "last_checked_at", Type: field.TypeTime},
+		{Name: "notified_at", Type: field.TypeTime, Nullable: true},
+		{Name: "resolved_at", Type: field.TypeTime, Nullable: true},
+		{Name: "snoozed_until", Type: field.TypeTime, Nullable: true},
+		{Name: "context", Type: field.TypeString, Nullable: true},
+		{Name: "item_id", Type: field.TypeUUID},
+	}
+	// BacklogStuckStatesTable holds the schema information for the "backlog_stuck_states" table.
+	BacklogStuckStatesTable = &schema.Table{
+		Name:       "backlog_stuck_states",
+		Columns:    BacklogStuckStatesColumns,
+		PrimaryKey: []*schema.Column{BacklogStuckStatesColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "backlog_stuck_states_backlog_items_stuck_states",
+				Columns:    []*schema.Column{BacklogStuckStatesColumns[8]},
+				RefColumns: []*schema.Column{BacklogItemsColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "backlogstuckstate_item_id_reason",
+				Unique:  true,
+				Columns: []*schema.Column{BacklogStuckStatesColumns[8], BacklogStuckStatesColumns[1]},
+			},
+		},
+	}
 	// ClassificationAnalyticsColumns holds the columns for the "classification_analytics" table.
 	ClassificationAnalyticsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt, Increment: true},
@@ -891,6 +924,7 @@ var (
 		ApprovalRulesTable,
 		BacklogItemsTable,
 		BacklogStatusEventsTable,
+		BacklogStuckStatesTable,
 		ClassificationAnalyticsTable,
 		ClaudeMetadataTable,
 		ClaudeSessionsTable,
@@ -916,6 +950,7 @@ var (
 func init() {
 	BacklogItemsTable.ForeignKeys[0].RefTable = ItemSourcesTable
 	BacklogStatusEventsTable.ForeignKeys[0].RefTable = BacklogItemsTable
+	BacklogStuckStatesTable.ForeignKeys[0].RefTable = BacklogItemsTable
 	ClaudeMetadataTable.ForeignKeys[0].RefTable = ClaudeSessionsTable
 	ClaudeSessionsTable.ForeignKeys[0].RefTable = SessionsTable
 	DiffStatsTable.ForeignKeys[0].RefTable = SessionsTable
