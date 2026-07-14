@@ -7,6 +7,9 @@ import { useBacklogService } from "@/lib/hooks/useBacklogService";
 import { useSessionService } from "@/lib/hooks/useSessionService";
 import { useAnalytics } from "@/lib/analytics";
 import { getStatusLabel } from "@/lib/backlog/status";
+import { useVcsStatus } from "@/lib/hooks/useVcsStatus";
+import { VcsStatusDisplay } from "@/components/shared/VcsStatusDisplay";
+import { getApiBaseUrl } from "@/lib/config";
 import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
 import { SessionMonitor } from "./SessionMonitor";
@@ -15,6 +18,7 @@ import { InlineError } from "./InlineError";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import { TriageReviewPanel } from "./TriageReviewPanel";
 import { ReviewChangesModal } from "./ReviewChangesModal";
+import { BacklogFileBrowserModal } from "./BacklogFileBrowserModal";
 import * as styles from "./BacklogItemDetail.css";
 
 interface BacklogItemDetailProps {
@@ -75,6 +79,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   // Review changes modal
   const [showChangesModal, setShowChangesModal] = useState(false);
 
+  // File browser modal
+  const [showFileBrowser, setShowFileBrowser] = useState(false);
+
   // Manual review form
   const [showManualReview, setShowManualReview] = useState(false);
   const [manualReviewOutcome, setManualReviewOutcome] = useState("PASS");
@@ -86,6 +93,21 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
 
   // Triage progress tracking
   const [triageElapsedSeconds, setTriageElapsedSeconds] = useState(0);
+
+  // Version control state for the most recent work session's worktree.
+  const [copiedWorktreePath, setCopiedWorktreePath] = useState(false);
+  const latestWorkSession = [...(item?.linkedSessions ?? [])].reverse().find((s) => s.role === "work");
+  const { data: vcsStatus } = useVcsStatus(latestWorkSession?.sessionId ?? "", getApiBaseUrl());
+  const handleCopyWorktreePath = useCallback((path: string) => {
+    navigator.clipboard.writeText(path)
+      .then(() => {
+        setCopiedWorktreePath(true);
+        setTimeout(() => setCopiedWorktreePath(false), 1500);
+      })
+      .catch((err) => {
+        console.warn("[BacklogItemDetail] clipboard write failed", err);
+      });
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1016,6 +1038,34 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           </div>
         )}
 
+        {/* Version Control — VCS state + worktree path for the most recent work session */}
+        {latestWorkSession && (vcsStatus || latestWorkSession.worktreePath) && (
+          <div className={styles.section}>
+            <h3 className={styles.sectionTitle}>Version Control</h3>
+            {latestWorkSession.worktreePath && (
+              <div className={styles.worktreePathRow}>
+                <code className={styles.artifactsPath}>{latestWorkSession.worktreePath}</code>
+                <button
+                  className={styles.editButton}
+                  onClick={() => handleCopyWorktreePath(latestWorkSession.worktreePath!)}
+                  title="Copy worktree path"
+                >
+                  {copiedWorktreePath ? "✓" : "📋"}
+                </button>
+                <button
+                  className={styles.editButton}
+                  onClick={() => setShowFileBrowser(true)}
+                  title="Browse files in this worktree"
+                  data-testid="backlog-browse-files"
+                >
+                  📁 Browse
+                </button>
+              </div>
+            )}
+            {vcsStatus && <VcsStatusDisplay status={vcsStatus} />}
+          </div>
+        )}
+
         {/* Linked Sessions */}
         {item.linkedSessions.length > 0 && (
           <div className={styles.section}>
@@ -1208,6 +1258,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           )}
         </div>
       </div>
+
+      {showFileBrowser && latestWorkSession && (
+        <BacklogFileBrowserModal
+          sessionId={latestWorkSession.sessionId}
+          sessionTitle={item.title}
+          onClose={() => setShowFileBrowser(false)}
+        />
+      )}
     </article>
   );
 }
