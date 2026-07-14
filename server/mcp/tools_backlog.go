@@ -67,6 +67,14 @@ type ReviewCompletionSignaler interface {
 	StopDriverForSession(sessionTitle string)
 }
 
+// ReviewTrigger allows the MCP handler to spawn a review gate immediately when
+// request_review is called, instead of waiting for the next ReconcileStuck tick
+// (up to 60s later). Implemented by SessionService, which delegates to the
+// BacklogLifecycleListener wired via SetReviewGateTrigger.
+type ReviewTrigger interface {
+	TriggerReviewForSession(sessionUUID string)
+}
+
 // --- Handler struct ---
 
 type backlogHandlers struct {
@@ -74,6 +82,7 @@ type backlogHandlers struct {
 	store         session.InstanceStore
 	eventBus      *events.EventBus         // optional; nil means notifications are disabled
 	reviewStopper ReviewCompletionSignaler // optional; nil means no driver stop on review verdict
+	reviewTrigger ReviewTrigger            // optional; nil means review gate waits for the next reconcile tick
 }
 
 // --- get_backlog_item ---
@@ -313,6 +322,13 @@ func (h *backlogHandlers) requestReview(ctx context.Context, req mcpgo.CallToolR
 	}
 
 	log.InfoLog.Printf("[mcp:request_review] session=%s item=%s transitioned to review message=%q verification_notes_len=%d", callerUUID, itemID, message, len(verificationNotes))
+
+	// Spawn the review gate immediately rather than waiting for the next 60s
+	// ReconcileStuck tick — that tick is meant as a fallback for the rare case this
+	// call is unavailable, not the primary trigger.
+	if h.reviewTrigger != nil {
+		h.reviewTrigger.TriggerReviewForSession(callerUUID)
+	}
 
 	return mcpgo.NewToolResultText(fmt.Sprintf(
 		"Review requested for item %s. The item has been moved to review status.", itemID,

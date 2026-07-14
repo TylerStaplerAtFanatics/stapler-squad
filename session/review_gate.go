@@ -21,23 +21,26 @@ type ReviewGateRunner struct {
 	storage         *Storage
 	getPool         func() *headless.Pool
 	getAutoReopener func() AutoReopenSpawner
+	getNotifier     func() Notifier
 	sessionCreator  ReviewGateSpawner
 }
 
 // NewReviewGateRunner constructs a ReviewGateRunner.
-// getPool and getAutoReopener are getter functions (typically method values from
-// BacklogLifecycleListener) so the runner sees the latest values when dynamic
-// setters are called after construction.
+// getPool, getAutoReopener, and getNotifier are getter functions (typically method
+// values from BacklogLifecycleListener) so the runner sees the latest values when
+// dynamic setters are called after construction.
 func NewReviewGateRunner(
 	storage *Storage,
 	getPool func() *headless.Pool,
 	getAutoReopener func() AutoReopenSpawner,
+	getNotifier func() Notifier,
 	sessionCreator ReviewGateSpawner,
 ) *ReviewGateRunner {
 	return &ReviewGateRunner{
 		storage:         storage,
 		getPool:         getPool,
 		getAutoReopener: getAutoReopener,
+		getNotifier:     getNotifier,
 		sessionCreator:  sessionCreator,
 	}
 }
@@ -123,6 +126,16 @@ func (r *ReviewGateRunner) Run(
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (security block) item=%s: %v", item.ID, updateErr)
 		}
 		log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate security check blocked for item %s — FAIL verdict recorded", item.ID)
+		if r.getNotifier != nil {
+			if n := r.getNotifier(); n != nil {
+				n.Notify(item.ID,
+					"Review blocked by security check",
+					fmt.Sprintf("%s — override required to proceed.", item.Title),
+					7, // sessionv1.NotificationType_NOTIFICATION_TYPE_ERROR
+					3, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH
+				)
+			}
+		}
 		return
 	}
 

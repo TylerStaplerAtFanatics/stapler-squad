@@ -13,6 +13,16 @@ import (
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
+// Notifier publishes an operator-facing notification. Implemented outside this
+// package (typically a thin adapter over the event bus) since this package cannot
+// import pkg/events directly — pkg/events imports session, so the reverse import
+// would be a cycle. notificationType and priority are int32 values matching
+// sessionv1.NotificationType / sessionv1.NotificationPriority; this package stays
+// free of the proto dependency and just passes the raw values through.
+type Notifier interface {
+	Notify(itemID, title, message string, notificationType, priority int32)
+}
+
 // ReviewGateSpawner can create a short-lived review session for a backlog item.
 // Deprecated: use headless.Pool via NewBacklogLifecycleListenerWithSpawner instead.
 // Retained for backward compatibility with existing tests and callers.
@@ -43,6 +53,23 @@ type PRFixSpawner interface {
 type prPendingChecker interface {
 	IsPRMerged(prNumber int) (bool, error)
 	GetPRStatus(prNumber int) (*git.PRStatus, error)
+}
+
+// prCreator is the subset of GitWorktree's push/PR-creation behavior that
+// pushAndCreatePR depends on. Defined here (the consumer), scoped to exactly
+// what's called, mirroring prPendingChecker below.
+type prCreator interface {
+	CommitChanges(commitMessage string) error
+	PushBranch() error
+	CreatePR(title, body string) (prURL string, prNumber int, err error)
+	EnablePRAutoMerge(prNumber int) error
+}
+
+// defaultPRCreatorFactory constructs the push/PR-creation client for a given
+// worktree. This is the production default installed by newListenerBase;
+// SetPRCreatorFactory overrides it in tests.
+func defaultPRCreatorFactory(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator {
+	return git.NewGitWorktreeFromStorage(repoPath, worktreePath, sessionName, branchName, baseCommitSHA)
 }
 
 // defaultPRPendingCheckerFactory constructs the PR-status checker for a given
@@ -80,6 +107,22 @@ type BacklogLifecycleListener struct {
 	// prPendingCheckerMu guards prPendingCheckerFactory for concurrent Set/get access.
 	prPendingCheckerMu      sync.RWMutex
 	prPendingCheckerFactory func(repoPath string) prPendingChecker
+
+	// prCreatorMu guards prCreatorFactory for concurrent Set/get access.
+	prCreatorMu      sync.RWMutex
+	prCreatorFactory func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator
+
+	// notifierMu guards notifier for concurrent Set/get access.
+	notifierMu sync.RWMutex
+	notifier   Notifier
+
+	// staleWorkNotifiedMu guards staleWorkNotified for concurrent access.
+	// Tracks which in_progress item IDs have already been flagged as stale by
+	// ReconcileStuck so repeat ticks don't re-notify every 60s. In-memory only —
+	// resets on server restart, which is an acceptable tradeoff for avoiding a
+	// schema migration for a best-effort notification.
+	staleWorkNotifiedMu sync.Mutex
+	staleWorkNotified   map[string]bool
 
 	// reviewSem limits concurrent review gate goroutines.
 	reviewSem chan struct{}
@@ -154,6 +197,45 @@ func (l *BacklogLifecycleListener) getPRPendingCheckerFactory() func(repoPath st
 	return l.prPendingCheckerFactory
 }
 
+// SetPRCreatorFactory overrides the factory used to construct the push/PR-creation
+// client for pushAndCreatePR. Overridable in tests; production code never needs to
+// call this, since newListenerBase installs defaultPRCreatorFactory.
+func (l *BacklogLifecycleListener) SetPRCreatorFactory(f func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator) {
+	l.prCreatorMu.Lock()
+	defer l.prCreatorMu.Unlock()
+	l.prCreatorFactory = f
+}
+
+// getPRCreatorFactory returns the current PR-creator factory under a read lock.
+func (l *BacklogLifecycleListener) getPRCreatorFactory() func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator {
+	l.prCreatorMu.RLock()
+	defer l.prCreatorMu.RUnlock()
+	return l.prCreatorFactory
+}
+
+// SetNotifier wires in the notifier used to publish operator-facing notifications
+// (PR creation failures, security blocks, stale work sessions, rework-cap hits).
+// Optional — nil means notifications are disabled.
+func (l *BacklogLifecycleListener) SetNotifier(n Notifier) {
+	l.notifierMu.Lock()
+	defer l.notifierMu.Unlock()
+	l.notifier = n
+}
+
+// getNotifier returns the current notifier under a read lock.
+func (l *BacklogLifecycleListener) getNotifier() Notifier {
+	l.notifierMu.RLock()
+	defer l.notifierMu.RUnlock()
+	return l.notifier
+}
+
+// notify publishes a best-effort operator notification. No-op if no notifier is wired.
+func (l *BacklogLifecycleListener) notify(itemID, title, message string, notificationType, priority int32) {
+	if n := l.getNotifier(); n != nil {
+		n.Notify(itemID, title, message, notificationType, priority)
+	}
+}
+
 // getHeadlessPool returns the current headless pool under a read lock.
 func (l *BacklogLifecycleListener) getHeadlessPool() *headless.Pool {
 	l.poolMu.RLock()
@@ -177,8 +259,10 @@ func newListenerBase(storage *Storage) *BacklogLifecycleListener {
 		shutdownCtx:             ctx,
 		shutdownCancel:          cancel,
 		prPendingCheckerFactory: defaultPRPendingCheckerFactory,
+		prCreatorFactory:        defaultPRCreatorFactory,
+		staleWorkNotified:       make(map[string]bool),
 	}
-	l.runner = NewReviewGateRunner(storage, l.getHeadlessPool, l.getAutoReopener, nil)
+	l.runner = NewReviewGateRunner(storage, l.getHeadlessPool, l.getAutoReopener, l.getNotifier, nil)
 	return l
 }
 
@@ -444,45 +528,112 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 
 	// Re-spawn review gates for items stuck in "review" with no review session.
 	// Occurs when the headless pool was unavailable at the time of the work session exit.
-	if l.getHeadlessPool() == nil && l.sessionCreator == nil {
-		return
-	}
-	items, gateErr := er.FindReviewItemsWithoutGate(ctx)
-	if gateErr != nil {
-		log.ErrorLog.Printf("[BacklogLifecycle] FindReviewItemsWithoutGate error: %v", gateErr)
-		return
-	}
-	for _, item := range items {
-		var workSession *ItemSessionSummary
-		if len(item.Edges.ItemSessions) > 0 {
-			s := itemSessionToSummary(item.Edges.ItemSessions[0])
-			workSession = &s
-		}
-		if workSession == nil {
-			log.DebugLog.Printf("[BacklogLifecycle] ReconcileStuckReviewGates: item %s has no work session, skipping", item.ID)
-			continue
-		}
-		log.InfoLog.Printf("[BacklogLifecycle] ReconcileStuckReviewGates: re-spawning review gate for item %s", item.ID)
-		itemData := backlogItemToData(item)
-		isCopy := *workSession
-		go func(itemCopy *BacklogItemData, isCopy ItemSessionSummary) {
-			select {
-			case l.reviewSem <- struct{}{}:
-			case <-l.shutdownCtx.Done():
-				return
+	// Scoped to this block only (not an early return) — PR-pending polling and staleness
+	// detection below must still run even when no review mechanism is configured.
+	if l.getHeadlessPool() != nil || l.sessionCreator != nil {
+		items, gateErr := er.FindReviewItemsWithoutGate(ctx)
+		if gateErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] FindReviewItemsWithoutGate error: %v", gateErr)
+		} else {
+			for _, item := range items {
+				var workSession *ItemSessionSummary
+				if len(item.Edges.ItemSessions) > 0 {
+					s := itemSessionToSummary(item.Edges.ItemSessions[0])
+					workSession = &s
+				}
+				if workSession == nil {
+					log.DebugLog.Printf("[BacklogLifecycle] ReconcileStuckReviewGates: item %s has no work session, skipping", item.ID)
+					continue
+				}
+				log.InfoLog.Printf("[BacklogLifecycle] ReconcileStuckReviewGates: re-spawning review gate for item %s", item.ID)
+				itemData := backlogItemToData(item)
+				isCopy := *workSession
+				go func(itemCopy *BacklogItemData, isCopy ItemSessionSummary) {
+					select {
+					case l.reviewSem <- struct{}{}:
+					case <-l.shutdownCtx.Done():
+						return
+					}
+					defer func() { <-l.reviewSem }()
+					l.spawnReviewGate(itemCopy, isCopy)
+				}(&itemData, isCopy)
 			}
-			defer func() { <-l.reviewSem }()
-			l.spawnReviewGate(itemCopy, isCopy)
-		}(&itemData, isCopy)
+		}
 	}
+
+	// Flag in_progress work sessions that have gone quiet for too long. Detection +
+	// notification only — a slow-but-alive agent should not be force-stopped.
+	l.reconcileStaleWorkSessions(ctx)
 
 	// Poll pr_pending items: auto-transition to done when the PR is merged.
 	l.ReconcilePRPending(ctx, er)
 }
 
+// maxWorkSessionStaleness is the longest an in_progress work session can go without
+// reporting progress before ReconcileStuck flags it as stale. Mirrors the order of
+// magnitude of maxTriageSessionAge (server/services/backlog_service_triage.go).
+const maxWorkSessionStaleness = 2 * time.Hour
+
+// reconcileStaleWorkSessions notifies once per item when an in_progress backlog item's
+// active work session has gone longer than maxWorkSessionStaleness without progress.
+// Best-effort: query/notify failures are logged, never returned.
+func (l *BacklogLifecycleListener) reconcileStaleWorkSessions(ctx context.Context) {
+	items, err := l.storage.ListBacklogItems(ctx, BacklogItemFilter{
+		Statuses: []string{string(BacklogStatusInProgress)},
+	})
+	if err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] reconcileStaleWorkSessions list error: %v", err)
+		return
+	}
+	for _, item := range items {
+		sessions, sessErr := l.storage.ListItemSessions(ctx, item.ID)
+		if sessErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileStaleWorkSessions ListItemSessions item=%s: %v", item.ID, sessErr)
+			continue
+		}
+		var active *ItemSessionSummary
+		for i := range sessions {
+			if sessions[i].Role == SessionRoleWork && sessions[i].EndedAt == nil {
+				active = &sessions[i]
+				break
+			}
+		}
+		if active == nil {
+			continue
+		}
+		lastProgress := active.CreatedAt
+		if active.LastProgressAt != nil {
+			lastProgress = *active.LastProgressAt
+		}
+		if time.Since(lastProgress) < maxWorkSessionStaleness {
+			continue
+		}
+
+		l.staleWorkNotifiedMu.Lock()
+		alreadyNotified := l.staleWorkNotified[item.ID]
+		if !alreadyNotified {
+			l.staleWorkNotified[item.ID] = true
+		}
+		l.staleWorkNotifiedMu.Unlock()
+		if alreadyNotified {
+			continue
+		}
+
+		log.WarningLog.Printf("[BacklogLifecycle] item %s work session %s stale (no progress since %s)", item.ID, active.SessionUUID, lastProgress)
+		l.notify(item.ID,
+			"Work session may be stuck",
+			fmt.Sprintf("%s — no progress reported in over %s. It may be hung or working silently.", item.Title, maxWorkSessionStaleness),
+			8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
+			2, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
+		)
+	}
+}
+
 // pushAndCreatePR commits any dirty state, pushes the branch, creates a GitHub PR,
 // stores the PR URL and number on the item, then transitions to pr_pending.
-// Falls back to direct done transition when no worktree exists or gh CLI is unavailable.
+// Falls back to a direct done transition only when there was genuinely nothing to
+// ship (no worktree). If code was committed but push/PR-creation fails, the item
+// stays in review and a notification is published — see stayInReviewAndNotify.
 func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
 	fallbackToDone := func(reason string) {
 		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s falling back to done: %s", item.ID, reason)
@@ -493,13 +644,28 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *Ba
 		}
 	}
 
+	// stayInReviewAndNotify handles push/PR-creation failures. Unlike fallbackToDone,
+	// this must NOT transition the item to done: code was committed to the worktree but
+	// never reached GitHub, so marking it done would silently discard that fact. The
+	// item stays in review — a human can retry via TriggerReReview, or fix the underlying
+	// issue (auth, network, branch protection) and let the next review pass retry.
+	stayInReviewAndNotify := func(reason string, err error) {
+		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s: %s: %v — leaving in review, code is committed but not shipped", item.ID, reason, err)
+		l.notify(item.ID,
+			"PR creation failed",
+			fmt.Sprintf("%s — %s: %v. Code is committed locally but not pushed; retry or investigate manually.", item.Title, reason, err),
+			7, // sessionv1.NotificationType_NOTIFICATION_TYPE_ERROR
+			3, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH
+		)
+	}
+
 	wt, wtErr := l.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
 	if wtErr != nil || wt.WorktreePath == "" {
 		fallbackToDone("no worktree")
 		return
 	}
 
-	g := git.NewGitWorktreeFromStorage(wt.RepoPath, wt.WorktreePath, wt.SessionName, wt.BranchName, wt.BaseCommitSHA)
+	g := l.getPRCreatorFactory()(wt.RepoPath, wt.WorktreePath, wt.SessionName, wt.BranchName, wt.BaseCommitSHA)
 
 	// Commit any remaining dirty state.
 	commitMsg := fmt.Sprintf("[claudesquad] work complete for %q (pre-PR)", item.Title)
@@ -509,8 +675,7 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *Ba
 
 	// Push branch to origin.
 	if pushErr := g.PushBranch(); pushErr != nil {
-		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR push item=%s: %v", item.ID, pushErr)
-		fallbackToDone("push failed")
+		stayInReviewAndNotify("push failed", pushErr)
 		return
 	}
 
@@ -525,11 +690,20 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *Ba
 	} else {
 		prTitle := item.Title
 		prBody := fmt.Sprintf("Automated PR for backlog item: %s\n\nItem ID: %s", item.Title, item.ID)
+		if pool := l.getHeadlessPool(); pool != nil {
+			diff, _, diffErr := GetGitDiff(ctx, wt.WorktreePath, wt.BaseCommitSHA)
+			if diffErr != nil {
+				log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR GetGitDiff for description item=%s: %v; using boilerplate body", item.ID, diffErr)
+			} else if drafted, draftErr := headless.DraftPRDescription(ctx, pool, diff, wt.BranchName); draftErr != nil {
+				log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR DraftPRDescription item=%s: %v; using boilerplate body", item.ID, draftErr)
+			} else if drafted != "" {
+				prBody = drafted
+			}
+		}
 		var prErr error
 		prURL, prNumber, prErr = g.CreatePR(prTitle, prBody)
 		if prErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR create PR item=%s: %v", item.ID, prErr)
-			fallbackToDone("PR creation failed")
+			stayInReviewAndNotify("PR creation failed", prErr)
 			return
 		}
 		// Cache PR URL + number on the item so the reconciler and UI can use them.
@@ -602,12 +776,40 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 			log.DebugLog.Printf("[BacklogLifecycle] ReconcilePRPending GetPRStatus item=%s pr=%d: %v", item.ID, item.PrNumber, statusErr)
 			continue
 		}
+
+		fixSpawner := l.getPRFixSpawner()
+
+		// 2b. Closed without merging (human rejected it) — IsPRMerged already returned
+		// false above, and without this check a closed PR reads identically to a
+		// healthy open one (no failing CI, no blocking review, no conflict), so the
+		// loop below would poll it forever. Clear the cached PR fields so the next
+		// pushAndCreatePR call creates a fresh PR instead of reusing the closed one.
+		if prStatus.IsClosed {
+			closedPrURL, closedPrNum := item.PrURL, item.PrNumber
+			emptyURL, zeroNum := "", 0
+			if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
+				PrURL:    &emptyURL,
+				PrNumber: &zeroNum,
+			}, nil); updateErr != nil {
+				log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending clear closed PR fields item=%s: %v", item.ID, updateErr)
+			}
+			if fixSpawner == nil {
+				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s: PR #%d closed without merging but no PRFixSpawner configured", item.ID, closedPrNum)
+				continue
+			}
+			fixCtx := fmt.Sprintf("PR #%d (%s) was closed without merging. Investigate why, address any concerns, and open a fresh PR.", closedPrNum, closedPrURL)
+			log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s → in_progress: PR #%d closed without merging", item.ID, closedPrNum)
+			if fixErr := fixSpawner.AutoReopenForPRFix(ctx, item.ID.String(), fixCtx); fixErr != nil {
+				log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending AutoReopenForPRFix (closed) item=%s: %v", item.ID, fixErr)
+			}
+			continue
+		}
+
 		if !prStatus.CIFailing && !prStatus.HasBlockingReviews && !prStatus.HasConflicts {
 			continue // PR is open and healthy — wait for merge.
 		}
 
 		// 3. CI failure, review changes requested, or merge conflict → spawn fix session.
-		fixSpawner := l.getPRFixSpawner()
 		if fixSpawner == nil {
 			log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s: CI/review issues found but no PRFixSpawner configured", item.ID)
 			continue

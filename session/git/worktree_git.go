@@ -337,6 +337,11 @@ type PRStatus struct {
 	// a rebase. Both fields are checked (see Task 1.1.1d) because gh's
 	// mergeable field has been observed returning stale data (cli/cli#9583).
 	HasConflicts bool
+	// IsClosed is true when the PR's state is CLOSED (rejected by a human without
+	// merging) rather than OPEN or MERGED. Callers must check this before treating
+	// "not merged" as "still open and healthy" — a closed PR will never merge on
+	// its own no matter how long ReconcilePRPending keeps polling it.
+	IsClosed bool
 	// FeedbackText is a combined human-readable summary for the fix agent.
 	FeedbackText string
 
@@ -418,7 +423,7 @@ func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
 	defer cancel()
 
 	cmd := safeexec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber),
-		"--json", "statusCheckRollup,reviews,comments,mergeable,mergeStateStatus")
+		"--json", "statusCheckRollup,reviews,comments,mergeable,mergeStateStatus,state")
 	cmd.Dir = g.worktreePath
 	raw, err := g.runCombinedOutput(cmd)
 	if err != nil {
@@ -458,12 +463,14 @@ func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 		} `json:"comments"`
 		Mergeable        string `json:"mergeable"`
 		MergeStateStatus string `json:"mergeStateStatus"`
+		State            string `json:"state"`
 	}
 	if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
 		return nil, fmt.Errorf("parse pr status: %w", jsonErr)
 	}
 
 	status := &PRStatus{}
+	status.IsClosed = strings.ToUpper(payload.State) == "CLOSED"
 
 	// Evaluate mergeability first — a PR that can't even be rebased makes
 	// CI/review feedback moot until it's mergeable again. Check both fields:

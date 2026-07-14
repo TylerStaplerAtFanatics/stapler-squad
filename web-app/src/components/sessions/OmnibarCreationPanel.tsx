@@ -54,18 +54,18 @@ export const SESSION_TYPES = [
     description:
       "Use this when starting something brand new — e.g. a side project or prototype. Creates a directory, runs git init, and makes an initial commit.",
   },
-  {
-    value: "autonomous",
-    label: "Fix Autonomously (Beta)",
-    description:
-      "Use this when you want to hand off a well-defined task and walk away — e.g. a small bug fix or chore. An LLM reviewer approves risky tool calls instead of you; you'll be notified when it's done. To stop it, delete or hibernate the session.",
-  },
 ] as const;
+
+// Autonomous mode's hint text, shown when the "Autonomous mode" checkbox is checked.
+// Not a session type itself — it's an orthogonal flag that composes with whichever
+// type is selected above (see AUTONOMOUS_MODE_HINT usage below).
+export const AUTONOMOUS_MODE_HINT =
+  "Hand off a well-defined task and walk away — e.g. a small bug fix or chore. An LLM reviewer approves risky tool calls instead of you; you'll be notified when it's done. To stop it, delete or hibernate the session.";
 
 type SessionTypeValue = (typeof SESSION_TYPES)[number]["value"];
 
 const PRIMARY_TYPES = SESSION_TYPES.slice(0, 2).concat([SESSION_TYPES[3]]); // new_worktree, directory, one_off
-const ADVANCED_TYPES = [SESSION_TYPES[2], SESSION_TYPES[4], SESSION_TYPES[5]]; // existing_worktree, new_project, autonomous
+const ADVANCED_TYPES = [SESSION_TYPES[2], SESSION_TYPES[4]]; // existing_worktree, new_project
 const ADVANCED_VALUES = new Set<string>(ADVANCED_TYPES.map((t) => t.value));
 
 // Radio options for the "Open as" sub-selector inside New Project mode.
@@ -210,6 +210,7 @@ export function OmnibarCreationPanel({
     sessionName, branch, program, category, autoYes,
     useTitleAsBranch, sessionType, existingWorktree, workingDir,
     parentDir, projectName, newProjectSessionType, createIfMissing, firstPrompt,
+    autonomousMode,
   } = formState;
 
   // Slash command autocomplete for the firstPrompt textarea.
@@ -501,6 +502,22 @@ export function OmnibarCreationPanel({
           </span>
         </div>
 
+        {/* Autonomous mode — an orthogonal flag, not a session type: it composes with
+            whichever type is selected above instead of forcing a scratch directory. */}
+        {sessionType !== "one_off" && (
+          <div className={field}>
+            <label className={checkboxClass}>
+              <input
+                type="checkbox"
+                checked={autonomousMode}
+                onChange={(e) => setFormField("autonomousMode", e.target.checked)}
+              />
+              🤖 Autonomous mode (Beta)
+            </label>
+            <span className={hint}>{AUTONOMOUS_MODE_HINT}</span>
+          </div>
+        )}
+
         {/* One-off informational banner */}
         {sessionType === "one_off" && (
           <div className={hint} style={{ marginTop: 0 }}>
@@ -696,7 +713,7 @@ export function OmnibarCreationPanel({
         )}
 
         {/* Working Directory */}
-        {sessionType !== "one_off" && sessionType !== "new_project" && sessionType !== "autonomous" && (
+        {sessionType !== "one_off" && sessionType !== "new_project" && (
           <div className={field}>
             <label className={labelClass} htmlFor="omnibar-working-dir">
               Working Directory

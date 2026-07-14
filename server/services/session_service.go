@@ -725,6 +725,13 @@ func (s *SessionService) SetReviewGateTrigger(t ReviewGateTrigger) {
 	s.autonomousSvc.SetReviewGateTrigger(t)
 }
 
+// TriggerReviewForSession is a public passthrough to the wired ReviewGateTrigger.
+// Satisfies mcp.ReviewTrigger so request_review can spawn a review gate immediately
+// instead of waiting for the next ReconcileStuck tick.
+func (s *SessionService) TriggerReviewForSession(sessionUUID string) {
+	s.autonomousSvc.TriggerReviewForSession(sessionUUID)
+}
+
 // SpawnReviewSession satisfies the session.ReviewGateSpawner interface so that
 // BacklogLifecycleListener can spawn one-shot review sessions automatically when
 // a work session exits. The session is tagged "backlog:review" and runs one-shot.
