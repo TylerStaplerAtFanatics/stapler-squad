@@ -498,6 +498,39 @@ func (r *EntRepository) FindReviewItemsWithoutGate(ctx context.Context) ([]*ent.
 	return items, nil
 }
 
+// FindStuckReviewItems returns backlog items in "review" status that already
+// have at least one review ItemSession (so FindReviewItemsWithoutGate's "no
+// gate at all" filter won't catch them) but currently have no active (EndedAt
+// still nil) review or work session — i.e. nothing is in flight for the item,
+// yet it never resolved to done/in_progress/pr_pending.
+//
+// This is the class of item left behind when AutoReopenAfterFailedReview's
+// spawn attempt failed and rolled the status back to "review" (e.g. blocked by
+// hasActiveWorkSession because the prior work session's underlying tmux/CLI
+// session never got marked ended), or when a legacy/interactive review session
+// exited without ever calling submit_review_verdict. Both cases leave the item
+// permanently invisible to every other reconciler: FindReviewItemsWithoutGate
+// excludes it (a review session does exist), and reconcileStaleWorkSessions
+// only scans "in_progress" items. Found via manual QA against a live-data item
+// stuck in review for 24+ hours with three UNVERIFIABLE re-review verdicts and
+// only ever one work session on record.
+func (r *EntRepository) FindStuckReviewItems(ctx context.Context) ([]*ent.BacklogItem, error) {
+	items, err := r.client.BacklogItem.Query().
+		Where(
+			backlogitem.Status(string(BacklogStatusReview)),
+			backlogitem.HasItemSessionsWith(itemsession.SessionRole(SessionRoleReview)),
+			backlogitem.Not(backlogitem.HasItemSessionsWith(
+				itemsession.EndedAtIsNil(),
+				itemsession.SessionRoleIn(SessionRoleReview, SessionRoleWork),
+			)),
+		).
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query stuck review items: %w", err)
+	}
+	return items, nil
+}
+
 // FindPRPendingItems returns backlog items in "pr_pending" status that have a
 // PR number set. Used by ReconcilePRPending to poll for merged PRs.
 func (r *EntRepository) FindPRPendingItems(ctx context.Context) ([]*ent.BacklogItem, error) {
