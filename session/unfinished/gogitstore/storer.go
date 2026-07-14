@@ -1,6 +1,8 @@
 package gogitstore
 
 import (
+	"sync"
+
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/storer"
@@ -37,6 +39,40 @@ import (
 type WorktreeStorer struct {
 	*filesystem.Storage
 	shared *SharedObjectStore
+
+	// packHandles is this worktree's own cache of open pack file handles —
+	// see store.go's packHandleCache doc comment for why this must live here
+	// (per worktree) rather than on the shared SharedObjectStore (per
+	// commondir). Zero value is ready to use.
+	packHandles packHandleCache
+
+	// closeOnce guards release() (SharedObjectStore.release, called via
+	// Close below) against being invoked more than once for this
+	// WorktreeStorer. release() is not idempotent — it always decrements an
+	// atomic refcount — so a double call would under-count live references
+	// and could cause Registry.Prune to evict a store still in use by
+	// another worktree. Callers (session/unfinished's GoGitVCSReader) are
+	// expected to call Close exactly once when evicting the cachedRepo that
+	// wraps this WorktreeStorer, but closeOnce makes a defensive double-call
+	// harmless rather than a silent correctness bug.
+	closeOnce sync.Once
+}
+
+// Close releases this WorktreeStorer's claim on its SharedObjectStore's
+// reference count and closes any cached pack file handles (see
+// packHandles). Callers MUST call this exactly once when a cachedRepo
+// wrapping this WorktreeStorer is evicted from GoGitVCSReader.repoCache —
+// see gogit_vcs_reader.go's pruneRepoCache/ClearCache/openRepoEntry. Safe to
+// call more than once; only the first call has any effect. Returns nil
+// unconditionally — pack handle close errors are logged, not propagated,
+// since a failed close on an already-evicted worktree has no actionable
+// recovery for the caller.
+func (w *WorktreeStorer) Close() error {
+	w.closeOnce.Do(func() {
+		w.packHandles.closeAll()
+		w.shared.release()
+	})
+	return nil
 }
 
 var _ storer.EncodedObjectStorer = (*WorktreeStorer)(nil)
@@ -57,9 +93,11 @@ func (w *WorktreeStorer) SetEncodedObject(plumbing.EncodedObject) (plumbing.Hash
 }
 
 // EncodedObject implements storer.EncodedObjectStorer by delegating to the
-// shared, commondir-scoped object store.
+// shared, commondir-scoped object store, passing this worktree's own
+// per-worktree pack handle cache (packHandles) so repeated packfile reads
+// reuse one open handle instead of opening a fresh one every call.
 func (w *WorktreeStorer) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
-	return w.shared.EncodedObject(t, h)
+	return w.shared.encodedObject(t, h, &w.packHandles)
 }
 
 // IterEncodedObjects implements storer.EncodedObjectStorer. See
@@ -76,7 +114,7 @@ func (w *WorktreeStorer) HasEncodedObject(h plumbing.Hash) error {
 
 // EncodedObjectSize implements storer.EncodedObjectStorer.
 func (w *WorktreeStorer) EncodedObjectSize(h plumbing.Hash) (int64, error) {
-	return w.shared.EncodedObjectSize(h)
+	return w.shared.encodedObjectSize(h, &w.packHandles)
 }
 
 // AddAlternate implements storer.EncodedObjectStorer. Unimplemented in the

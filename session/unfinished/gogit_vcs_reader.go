@@ -23,9 +23,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
-	"github.com/go-git/go-git/v5/storage/filesystem"
-	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/session/unfinished/gogitstore"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -208,18 +207,52 @@ type cachedRepo struct {
 	untrackedMatcher      gitignore.Matcher
 }
 
+// gogitstoreCloser is implemented by storage.Storer values that hold a
+// reference into a gogitstore.Registry and must release it when the
+// cachedRepo wrapping them is evicted from repoCache — concretely,
+// *gogitstore.WorktreeStorer (see gogitstore/storer.go's Close method).
+// Declared here, in the consumer package, scoped to exactly the one method
+// this file needs — see .claude/rules/interface-pollution-checklist.md
+// (interfaces belong next to their consumer, not their implementer).
+type gogitstoreCloser interface {
+	Close() error
+}
+
+// releaseGogitstoreRef releases entry's claim on its gogitstore Registry
+// entry (a SharedObjectStore reference count decrement), if entry.repo.Storer
+// implements the Close hook. In production this is always true — entry.repo
+// comes from gogitstore.Open via openRepoEntry — but must stay nil-safe:
+// gogit_vcs_reader_memory_test.go's seedFakeCacheEntries populates repoCache
+// directly with *cachedRepo values that have a nil repo, and this function
+// is called from every repoCache eviction path (pruneRepoCache, ClearCache,
+// and the discarded-duplicate-open branch of openRepoEntry), so it must
+// tolerate those synthetic entries without panicking.
+func releaseGogitstoreRef(entry *cachedRepo) {
+	if entry == nil || entry.repo == nil {
+		return
+	}
+	if c, ok := entry.repo.Storer.(gogitstoreCloser); ok {
+		_ = c.Close()
+	}
+}
+
 // pruneRepoCache evicts entries not accessed within repoCacheTTL, then trims
 // the oldest entries if the cache still exceeds the current memory-derived
 // budget (effectiveCacheMaxEntries) — NOT a flat constant, so the effective
 // cap shrinks automatically under real process memory pressure. Called both
 // reactively (openRepoEntry on overflow) and proactively (Scanner's periodic
 // prune ticker), so it must stay cheap: a single Range scan plus a sort of
-// the surviving entries.
+// the surviving entries. Every eviction here also releases the evicted
+// entry's gogitstore SharedObjectStore reference (releaseGogitstoreRef) so
+// that store becomes eligible for its own eviction by
+// GoGitVCSReader.gogitstoreRegistry().Prune() once nothing in repoCache
+// references it anymore.
 func (g *GoGitVCSReader) pruneRepoCache() {
 	cutoff := time.Now().Add(-repoCacheTTL).UnixNano()
 	type liveEntry struct {
 		key          string
 		accessedAtNs int64
+		entry        *cachedRepo
 	}
 	var live []liveEntry
 	g.repoCache.Range(func(k, v any) bool {
@@ -228,8 +261,9 @@ func (g *GoGitVCSReader) pruneRepoCache() {
 		if ts < cutoff {
 			g.repoCache.Delete(k)
 			atomic.AddInt64(&g.repoCacheSize, -1)
+			releaseGogitstoreRef(entry)
 		} else {
-			live = append(live, liveEntry{k.(string), ts})
+			live = append(live, liveEntry{k.(string), ts, entry})
 		}
 		return true
 	})
@@ -244,6 +278,7 @@ func (g *GoGitVCSReader) pruneRepoCache() {
 		for _, e := range live[:int64(len(live))-maxEntries] {
 			g.repoCache.Delete(e.key)
 			atomic.AddInt64(&g.repoCacheSize, -1)
+			releaseGogitstoreRef(e.entry)
 		}
 	}
 }
@@ -273,9 +308,10 @@ func (g *GoGitVCSReader) PruneToMemoryBudget() {
 // Scanner.Start's prune ticker), since it evicts hot repos along with cold
 // ones and forces needless re-opens for anything still actively in use.
 func (g *GoGitVCSReader) ClearCache() {
-	g.repoCache.Range(func(k, _ any) bool {
+	g.repoCache.Range(func(k, v any) bool {
 		g.repoCache.Delete(k)
 		atomic.AddInt64(&g.repoCacheSize, -1)
+		releaseGogitstoreRef(v.(*cachedRepo))
 		return true
 	})
 }
@@ -334,20 +370,18 @@ type GoGitVCSReader struct {
 	// commitMessagesSF deduplicates concurrent CommitMessages calls for the same key.
 	commitMessagesSF singleflight.Group //nolint:exhaustruct
 
-	// objectCacheByCommonDir shares one decoded-object *cache.ObjectLRU per
-	// underlying repo (keyed by its resolved common .git dir, not worktree
-	// path) across every worktree of that repo. Safe: cache.ObjectLRU guards
-	// all its own state with an internal mutex, and objects are keyed by
-	// content hash, so worktrees of the same repo see identical content for
-	// any given hash — there is nothing worktree-specific to get wrong by
-	// sharing this cache. This does NOT share the parsed pack-index itself
-	// (storage/filesystem's ObjectStorage.index is unexported and cannot be
-	// reached from here); that redundancy is a separate, larger effort
-	// (see session/unfinished/design/pluggable-gitstore.md). Unbounded by
-	// worktree count — bounded by distinct commondir count, which is far
-	// smaller; not wired into repoCache's TTL eviction since a small,
-	// repo-count-bounded residual is low severity.
-	objectCacheByCommonDir sync.Map // map[string]*cache.ObjectLRU
+	// gogitstoreReg shares both the decoded-object cache AND the parsed
+	// pack-index across every worktree of the same repo (keyed by resolved
+	// common .git dir, not worktree path) — see
+	// session/unfinished/gogitstore and session/unfinished/design/
+	// pluggable-gitstore.md. Supersedes an earlier version of this field
+	// that only shared the object cache; the pack-index parse was the
+	// dominant cost per the original heap profile and is unexported inside
+	// go-git's own filesystem.ObjectStorage, so gogitstore reimplements
+	// storer.EncodedObjectStorer directly to reach it. Lazily initialized
+	// via gogitstoreRegistry() so GoGitVCSReader{} stays zero-value safe.
+	gogitstoreReg     *gogitstore.Registry
+	gogitstoreRegOnce sync.Once
 }
 
 // perRepoObjectCacheSize replaces go-git's PlainOpenWithOptions default of
@@ -358,11 +392,15 @@ type GoGitVCSReader struct {
 // a cache miss for a much lower memory ceiling per resident repo.
 const perRepoObjectCacheSize = 12 * cache.MiByte
 
-// sharedObjectCache returns the *cache.ObjectLRU shared by every worktree of
-// the repo whose common .git dir is commonDir, creating one on first use.
-func (g *GoGitVCSReader) sharedObjectCache(commonDir string) *cache.ObjectLRU {
-	v, _ := g.objectCacheByCommonDir.LoadOrStore(commonDir, cache.NewObjectLRU(perRepoObjectCacheSize))
-	return v.(*cache.ObjectLRU)
+// gogitstoreRegistry returns the shared gogitstore.Registry, creating it on
+// first use. One Registry per GoGitVCSReader — a fresh Registry per call
+// would defeat the whole point of cross-worktree sharing (see
+// gogitstore.Registry's own doc comment).
+func (g *GoGitVCSReader) gogitstoreRegistry() *gogitstore.Registry {
+	g.gogitstoreRegOnce.Do(func() {
+		g.gogitstoreReg = &gogitstore.Registry{CacheMaxSize: int64(perRepoObjectCacheSize)}
+	})
+	return g.gogitstoreReg
 }
 
 var _ VCSReader = (*GoGitVCSReader)(nil)
@@ -1488,18 +1526,14 @@ func (g *GoGitVCSReader) openRepoEntry(path string) (*cachedRepo, error) {
 		}
 	}
 
-	// Open via the lower-level API instead of PlainOpenWithOptions so the
-	// object cache size is ours to control — PlainOpenWithOptions hardcodes
-	// cache.NewObjectLRUDefault() (96MB) with no way to override it. The
-	// commondir/worktree filesystem split below reproduces exactly what
-	// PlainOpenWithOptions(path, &git.PlainOpenOptions{DetectDotGit: true,
-	// EnableDotGitCommonDir: true}) does internally.
-	dotFs := osfs.New(worktreeGitDir(path))
-	commonDir := gitCommonDir(path)
-	commonFs := osfs.New(commonDir)
-	repoFs := dotgit.NewRepositoryFilesystem(dotFs, commonFs)
-	storer := filesystem.NewStorage(repoFs, g.sharedObjectCache(commonDir))
-	repo, err := git.Open(storer, osfs.New(path))
+	// Open via gogitstore instead of PlainOpenWithOptions: shares both the
+	// decoded-object cache and the parsed pack-index across every worktree
+	// of the same repo (keyed by resolved common .git dir), instead of
+	// PlainOpenWithOptions's per-worktree 96MB cache plus a fresh index
+	// parse on every open. All downstream logic below is unchanged — it
+	// operates on the returned *git.Repository exactly as it did with
+	// PlainOpenWithOptions.
+	repo, err := gogitstore.Open(path, g.gogitstoreRegistry())
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -1507,6 +1541,16 @@ func (g *GoGitVCSReader) openRepoEntry(path string) (*cachedRepo, error) {
 	actual, loaded := g.repoCache.LoadOrStore(path, entry)
 	if !loaded {
 		atomic.AddInt64(&g.repoCacheSize, 1)
+	} else {
+		// Another goroutine won the race to store the canonical entry for
+		// this path first. The repo we just opened here — and its
+		// WorktreeStorer's claim on the shared gogitstore Registry entry —
+		// is discarded; release that reference immediately so it doesn't
+		// keep a SharedObjectStore's refcount artificially nonzero forever
+		// (an orphaned reference that would block Prune from ever evicting
+		// it, even though nothing in repoCache actually points at this
+		// particular *cachedRepo).
+		releaseGogitstoreRef(entry)
 	}
 	return actual.(*cachedRepo), nil
 }

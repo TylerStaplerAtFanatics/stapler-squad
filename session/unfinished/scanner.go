@@ -261,6 +261,14 @@ func (s *Scanner) Start(ctx context.Context) {
 					} else {
 						r.PruneToMemoryBudget()
 					}
+					// gogitstoreRegistry's SharedObjectStores are reference-counted
+					// separately from repoCache (see gogit_vcs_reader.go's
+					// releaseGogitstoreRef) — a store only becomes evictable once
+					// every cachedRepo that referenced it has itself been evicted
+					// above, so this Prune runs every tick regardless of which
+					// branch fired, mirroring the two-cache relationship rather
+					// than duplicating pressure-tier logic here.
+					r.gogitstoreRegistry().Prune()
 				}
 			}
 		}()
