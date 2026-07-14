@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,6 +73,12 @@ func (r *ReviewGateRunner) Run(
 	var diff string
 	var truncated bool
 	var uncommittedWarning string
+	// worktreeDiffErr is set only when we positively know a worktree/base-commit exists
+	// for this session but the diff still couldn't be computed (e.g. a stale/corrupted
+	// base_commit_sha pointing at a pruned or otherwise nonexistent git object). That is
+	// an infrastructure failure, not "no changes were made" — see the block below that
+	// blocks the review instead of silently handing the reviewer an empty diff.
+	var worktreeDiffErr error
 	wt, wtErr := r.storage.GetWorktreeDataBySessionUUID(ctx, is.SessionUUID)
 	if wtErr == nil && wt.WorktreePath != "" {
 		// Belt-and-suspenders layer 2: warn if the worktree still has uncommitted changes.
@@ -91,6 +98,7 @@ func (r *ReviewGateRunner) Run(
 			diff, truncated, diffErr = GetGitDiffRef(ctx, item.RepoPath, wt.BaseCommitSHA, wt.BranchName)
 			if diffErr != nil {
 				log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff (repo fallback) item=%s: %v", item.ID, diffErr)
+				worktreeDiffErr = diffErr
 			}
 		}
 	} else {
@@ -100,8 +108,94 @@ func (r *ReviewGateRunner) Run(
 			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate GetGitDiff item=%s: %v", item.ID, diffErr)
 		}
 	}
+	// Auto-repair: a broken base_commit_sha (stale/corrupted/garbage-collected — the
+	// exact failure found via manual QA on item ae1e2070) is recoverable in the common
+	// case, because the branch itself is still reachable from repoPath's object store
+	// even when the recorded SHA is not. Recompute the merge-base and retry once before
+	// giving up; this lets a genuinely-complete review proceed on a real diff instead of
+	// unconditionally blocking (or worse, silently returning an empty one).
+	if worktreeDiffErr != nil && wt.BranchName != "" {
+		if recoveredSHA, recoverErr := RecoverBaseCommitSHA(ctx, item.RepoPath, wt.BranchName); recoverErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] spawnReviewGate RecoverBaseCommitSHA item=%s: %v", item.ID, recoverErr)
+		} else if recoveredDiff, recoveredTruncated, retryErr := GetGitDiffRef(ctx, item.RepoPath, recoveredSHA, wt.BranchName); retryErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] spawnReviewGate retry with recovered base %s item=%s: %v", recoveredSHA, item.ID, retryErr)
+		} else if strings.TrimSpace(recoveredDiff) == "" {
+			// A recovered base that produces an empty diff is indistinguishable from
+			// "nothing changed" and just as unsafe to hand the reviewer as the original
+			// failure — e.g. when the recovered merge-base collapses to headRef itself
+			// (no divergence from repoPath's checked-out branch). Do not treat this as a
+			// successful repair; fall through to the explicit-block path below instead of
+			// silently manufacturing a misleading empty-but-"valid" diff.
+			log.WarningLog.Printf("[BacklogLifecycle] spawnReviewGate recovered base %s item=%s produced an empty diff — not trusting it, falling through to block", recoveredSHA, item.ID)
+		} else {
+			log.InfoLog.Printf("[BacklogLifecycle] spawnReviewGate auto-repaired broken base_commit_sha item=%s recovered=%s (recorded=%s)", item.ID, recoveredSHA, wt.BaseCommitSHA)
+			diff, truncated = recoveredDiff, recoveredTruncated
+			worktreeDiffErr = nil
+			if r.getNotifier != nil {
+				if n := r.getNotifier(); n != nil {
+					n.Notify(item.ID,
+						"Review auto-repaired a broken diff",
+						fmt.Sprintf("%s — the recorded base commit was missing/corrupted; recomputed it from the branch and continued the review normally. The stored value should still be corrected so this doesn't repeat every run.", item.Title),
+						8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
+						2, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
+					)
+				}
+			}
+		}
+	}
 	if uncommittedWarning != "" {
 		diff = uncommittedWarning + diff
+	}
+
+	// A worktree/base-commit was recorded for this session but the diff could not be
+	// computed against it even after the repo-fallback attempt AND the auto-repair
+	// retry above — most likely the branch itself is gone too, or repoPath has no
+	// merge-base with it. Proceeding here would hand the reviewer an empty diff
+	// indistinguishable from "no changes made," producing a false UNVERIFIABLE/FAIL
+	// verdict that masks the real (infrastructure) problem and, via the auto-reopen
+	// loop, can spin forever without ever fixing the underlying cause. Block the review
+	// with a verdict that says so explicitly instead.
+	if worktreeDiffErr != nil {
+		summary := fmt.Sprintf("Review blocked: could not compute a diff for this session (%v). "+
+			"The recorded base commit may be missing or corrupted — this needs investigation, not rework.", worktreeDiffErr)
+		diffFailIS, createErr := r.storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+			ItemID:      item.ID,
+			SessionUUID: "diff-error-" + uuid.New().String(),
+			SessionRole: SessionRoleReview,
+			AcSnapshot:  is.AcSnapshot,
+		}, ReviewVerdictData{
+			OverallOutcome: ReviewVerdictFail,
+			Summary:        summary,
+		})
+		if createErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate CreateItemSessionWithVerdict (diff error) item=%s: %v", item.ID, createErr)
+			return
+		}
+		if updateErr := r.storage.UpdateItemSessionEnded(ctx, diffFailIS.ID, time.Now()); updateErr != nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate UpdateItemSessionEnded (diff error) item=%s: %v", item.ID, updateErr)
+		}
+		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate diff computation failed for item %s — review blocked, FAIL verdict recorded", item.ID)
+		if r.getNotifier != nil {
+			if n := r.getNotifier(); n != nil {
+				n.Notify(item.ID,
+					"Review blocked — diff computation failed",
+					fmt.Sprintf("%s — recorded base commit may be missing or corrupted. Needs investigation.", item.Title),
+					7, // sessionv1.NotificationType_NOTIFICATION_TYPE_ERROR
+					3, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH
+				)
+			}
+		}
+		// Feed into the same auto-reopen/cap-and-notify machinery used for real FAIL
+		// verdicts, so a persistently broken worktree still surfaces to a human via
+		// notifyReworkCapHit after maxAutoReworkIterations instead of looping silently.
+		if reopener := r.getAutoReopener(); reopener != nil {
+			go func() {
+				if err := reopener.AutoReopenAfterFailedReview(ctx, item.ID); err != nil {
+					log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate AutoReopenAfterFailedReview (diff error) item=%s: %v", item.ID, err)
+				}
+			}()
+		}
+		return
 	}
 
 	// Security check — block if secrets detected.
