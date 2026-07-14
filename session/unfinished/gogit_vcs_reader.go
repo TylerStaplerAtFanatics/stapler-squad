@@ -23,6 +23,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/unfinished/gogitstore"
 	"golang.org/x/sync/singleflight"
@@ -392,15 +393,37 @@ type GoGitVCSReader struct {
 // a cache miss for a much lower memory ceiling per resident repo.
 const perRepoObjectCacheSize = 12 * cache.MiByte
 
+// mmapIndexFeatureFlag is the feature-flag name gating gogitstore's
+// mmap-backed .idx loader — see server/services/feature_flag_service.go's
+// knownFeatureFlags and session/unfinished/design/mmap-activation-runbook.md.
+const mmapIndexFeatureFlag = "unfinished:mmap-index"
+
 // gogitstoreRegistry returns the shared gogitstore.Registry, creating it on
 // first use. One Registry per GoGitVCSReader — a fresh Registry per call
 // would defeat the whole point of cross-worktree sharing (see
-// gogitstore.Registry's own doc comment).
+// gogitstore.Registry's own doc comment). Does NOT set UseMmapIndex here —
+// that is refreshed live on every openRepoEntry call instead (see
+// syncMmapIndexFlag), so toggling the feature flag takes effect for the
+// next repo opened without a process restart.
 func (g *GoGitVCSReader) gogitstoreRegistry() *gogitstore.Registry {
 	g.gogitstoreRegOnce.Do(func() {
 		g.gogitstoreReg = &gogitstore.Registry{CacheMaxSize: int64(perRepoObjectCacheSize)}
 	})
 	return g.gogitstoreReg
+}
+
+// syncMmapIndexFlag reads the live, persisted state of mmapIndexFeatureFlag
+// and applies it to reg via the mutex-guarded SetUseMmapIndex (never writes
+// the field directly — see Registry.UseMmapIndex's doc comment on why a
+// bare write would race acquire()'s read). config.LoadConfig() re-reads the
+// config file from disk on every call (no in-memory caching), so this
+// always reflects the latest value — including one just changed via the
+// Settings UI's feature-flag toggle — at the cost of one small disk read
+// per call. Called from openRepoEntry, which only runs on a repoCache
+// miss (bounded by distinct-repo count and TTL eviction, not per
+// git-operation), so that cost is negligible in practice.
+func syncMmapIndexFlag(reg *gogitstore.Registry) {
+	reg.SetUseMmapIndex(config.LoadConfig().GetFeatureFlag(mmapIndexFeatureFlag))
 }
 
 var _ VCSReader = (*GoGitVCSReader)(nil)
@@ -1533,7 +1556,9 @@ func (g *GoGitVCSReader) openRepoEntry(path string) (*cachedRepo, error) {
 	// parse on every open. All downstream logic below is unchanged — it
 	// operates on the returned *git.Repository exactly as it did with
 	// PlainOpenWithOptions.
-	repo, err := gogitstore.Open(path, g.gogitstoreRegistry())
+	reg := g.gogitstoreRegistry()
+	syncMmapIndexFlag(reg)
+	repo, err := gogitstore.Open(path, reg)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
