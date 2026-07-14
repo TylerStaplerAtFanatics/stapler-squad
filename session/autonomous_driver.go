@@ -187,6 +187,7 @@ func (d *AutonomousDriver) run(ctx context.Context) {
 	startupCancel()
 
 	outcome := AutonomousDriverOutcome{}
+	malformedResponseCount := 0
 
 	for turnCount := 0; turnCount < d.maxTurns; turnCount++ {
 		if ctx.Err() != nil {
@@ -214,6 +215,7 @@ func (d *AutonomousDriver) run(ctx context.Context) {
 
 		nextMsg, done, reason, parseErr := parseOrchestrationResponse(resp)
 		if parseErr != nil {
+			malformedResponseCount++
 			log.Warn("AutonomousDriver: malformed LLM response, retrying", "session", sessionName, "turn", turnCount+1, "resp", resp)
 			continue
 		}
@@ -253,7 +255,11 @@ func (d *AutonomousDriver) run(ctx context.Context) {
 	}
 
 	if !outcome.Done {
-		outcome = AutonomousDriverOutcome{Stuck: true, Reason: "max turns reached", Turns: d.maxTurns}
+		reason := "max turns reached"
+		if malformedResponseCount > 0 {
+			reason = fmt.Sprintf("max turns reached (%d malformed orchestrator responses)", malformedResponseCount)
+		}
+		outcome = AutonomousDriverOutcome{Stuck: true, Reason: reason, Turns: d.maxTurns}
 	}
 	d.fireCompletion(sessionName, outcome)
 }

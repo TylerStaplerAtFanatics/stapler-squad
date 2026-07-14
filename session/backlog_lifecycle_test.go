@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	stdlog "log"
 	"sync"
 	"testing"
@@ -795,4 +796,214 @@ func TestReconcilePRPending_NoSpawn_WhenAllSignalsFalse(t *testing.T) {
 	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
 	require.NoError(t, err)
 	assert.Equal(t, string(BacklogStatusPRPending), fetched.Status, "item status must remain pr_pending")
+}
+
+// TestReconcilePRPending_ClosedWithoutMerge_ClearsPRFieldsAndReopens verifies that
+// a PR closed without merging (state=CLOSED, not caught by IsPRMerged since that
+// only returns true for MERGED) does not stall forever as a "healthy open PR" —
+// it must clear the cached PrNumber/PrURL (so the next pushAndCreatePR creates a
+// fresh PR instead of reusing the closed one) and spawn a fix session.
+func TestReconcilePRPending_ClosedWithoutMerge_ClearsPRFieldsAndReopens(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	item := newPRPendingTestItem(t, storage, 152)
+
+	listener := NewBacklogLifecycleListener(storage)
+	overridePRPendingChecker(t, listener, &fakePRPendingChecker{
+		merged: false,
+		status: &git.PRStatus{IsClosed: true},
+	})
+	fakeSpawner := &fakePRFixSpawner{}
+	listener.SetPRFixSpawner(fakeSpawner)
+
+	er := storage.repo.(*EntRepository)
+	listener.ReconcilePRPending(context.Background(), er)
+
+	assert.True(t, fakeSpawner.spawnCalled, "a closed-without-merge PR must trigger a fix-session spawn")
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, fetched.PrNumber, "PrNumber must be cleared so the next pushAndCreatePR creates a fresh PR")
+	assert.Empty(t, fetched.PrURL, "PrURL must be cleared so the next pushAndCreatePR creates a fresh PR")
+}
+
+// fakePRCreator is a test double implementing prCreator, letting tests inject
+// canned push/CreatePR results without a live git worktree or authenticated gh CLI.
+type fakePRCreator struct {
+	pushErr      error
+	createErr    error
+	createURL    string
+	createNumber int
+	pushCalled   bool
+	createCalled bool
+}
+
+func (f *fakePRCreator) CommitChanges(commitMessage string) error { return nil }
+func (f *fakePRCreator) PushBranch() error {
+	f.pushCalled = true
+	return f.pushErr
+}
+func (f *fakePRCreator) CreatePR(title, body string) (string, int, error) {
+	f.createCalled = true
+	return f.createURL, f.createNumber, f.createErr
+}
+func (f *fakePRCreator) EnablePRAutoMerge(prNumber int) error { return nil }
+
+// fakeNotifier is a test double implementing Notifier, recording every call.
+type fakeNotifier struct {
+	calls []string // title of each Notify call, in order
+}
+
+func (f *fakeNotifier) Notify(itemID, title, message string, notificationType, priority int32) {
+	f.calls = append(f.calls, title)
+}
+
+// newPushAndCreatePRTestFixture creates a review-status BacklogItem with a linked
+// work ItemSession and a saved Instance backed by a git worktree, so
+// GetWorktreeDataBySessionUUID (which pushAndCreatePR depends on) resolves.
+// Returns the item and the ItemSessionSummary pushAndCreatePR expects as its
+// second argument.
+func newPushAndCreatePRTestFixture(t *testing.T, storage *Storage) (*BacklogItemData, ItemSessionSummary) {
+	t.Helper()
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Push and create PR test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusReview),
+		RepoPath:           "/tmp/fake-repo",
+	})
+	require.NoError(t, err)
+
+	sessionUUID := uuid.New().String()
+	is, err := storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: sessionUUID,
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	inst := newTestInstance("push-pr-test")
+	inst.UUID = sessionUUID
+	inst.gitManager.worktree = git.NewGitWorktreeFromStorage(
+		"/tmp/fake-repo", "/tmp/fake-repo/../worktrees/push-pr-test", "push-pr-test", "backlog/push-pr-test", "abc123")
+	require.NoError(t, storage.SaveInstances([]*Instance{inst}))
+
+	return item, ItemSessionSummary{ID: is.ID, SessionUUID: sessionUUID, BacklogItemID: item.ID}
+}
+
+// TestPushAndCreatePR_PushFails_LeavesItemInReview_AndNotifies verifies that a
+// failed git push does NOT transition the item to done — code is committed but
+// never reached GitHub, so marking it done would silently discard that fact.
+// The item must stay in review and a notification must be published.
+func TestPushAndCreatePR_PushFails_LeavesItemInReview_AndNotifies(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	item, is := newPushAndCreatePRTestFixture(t, storage)
+
+	listener := NewBacklogLifecycleListener(storage)
+	fakeCreator := &fakePRCreator{pushErr: errors.New("push rejected: non-fast-forward")}
+	listener.SetPRCreatorFactory(func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator {
+		return fakeCreator
+	})
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.pushAndCreatePR(context.Background(), item, is)
+
+	assert.True(t, fakeCreator.pushCalled)
+	assert.False(t, fakeCreator.createCalled, "CreatePR must not be attempted after a push failure")
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusReview), fetched.Status, "item must stay in review, not silently become done")
+	assert.Contains(t, notifier.calls, "PR creation failed")
+}
+
+// TestPushAndCreatePR_CreatePRFails_LeavesItemInReview_AndNotifies verifies that a
+// failed `gh pr create` call (push already succeeded) does NOT transition the item
+// to done, for the same reason as the push-failure case above.
+func TestPushAndCreatePR_CreatePRFails_LeavesItemInReview_AndNotifies(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	item, is := newPushAndCreatePRTestFixture(t, storage)
+
+	listener := NewBacklogLifecycleListener(storage)
+	fakeCreator := &fakePRCreator{createErr: errors.New("gh: authentication required")}
+	listener.SetPRCreatorFactory(func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator {
+		return fakeCreator
+	})
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.pushAndCreatePR(context.Background(), item, is)
+
+	assert.True(t, fakeCreator.pushCalled)
+	assert.True(t, fakeCreator.createCalled)
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusReview), fetched.Status, "item must stay in review, not silently become done")
+	assert.Contains(t, notifier.calls, "PR creation failed")
+}
+
+// TestPushAndCreatePR_ReusesExistingPR_WhenAlreadySet verifies the "PR already
+// exists from a previous attempt" branch skips CreatePR and reuses the cached
+// PrNumber/PrURL — a regression guard for the reuse-vs-recreate logic that
+// TestReconcilePRPending's closed-PR handling depends on clearing correctly.
+func TestPushAndCreatePR_ReusesExistingPR_WhenAlreadySet(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	item, is := newPushAndCreatePRTestFixture(t, storage)
+	existingURL := "https://github.com/TylerStaplerAtFanatics/stapler-squad/pull/999"
+	existingNum := 999
+	updated, err := storage.UpdateBacklogItem(context.Background(), item.ID, BacklogItemUpdate{
+		PrURL:    &existingURL,
+		PrNumber: &existingNum,
+	}, nil)
+	require.NoError(t, err)
+
+	listener := NewBacklogLifecycleListener(storage)
+	fakeCreator := &fakePRCreator{}
+	listener.SetPRCreatorFactory(func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator {
+		return fakeCreator
+	})
+
+	listener.pushAndCreatePR(context.Background(), updated, is)
+
+	assert.False(t, fakeCreator.createCalled, "must reuse the existing PR instead of creating a new one")
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusPRPending), fetched.Status)
+	assert.Equal(t, existingNum, fetched.PrNumber)
+}
+
+// TestPushAndCreatePR_NoWorktree_FallsBackToDone verifies the one case where
+// falling back directly to done is still correct: no worktree ever existed, so
+// there is genuinely nothing to lose by marking the item done.
+func TestPushAndCreatePR_NoWorktree_FallsBackToDone(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "No worktree test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.pushAndCreatePR(ctx, item, ItemSessionSummary{SessionUUID: uuid.New().String()})
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusDone), fetched.Status)
 }

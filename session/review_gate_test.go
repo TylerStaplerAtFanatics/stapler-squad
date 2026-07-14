@@ -41,7 +41,7 @@ func TestReviewGateRunner_SkipReviewGate(t *testing.T) {
 	}
 	getAutoReopener := func() AutoReopenSpawner { return nil }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
 
 	runner.Run(context.Background(), item, is, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
 		onPassCalled.Store(true)
@@ -103,7 +103,7 @@ func TestReviewGateRunner_HeadlessPassPath(t *testing.T) {
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
 
 	var onPassCalled atomic.Bool
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
@@ -167,7 +167,7 @@ func TestReviewGateRunner_ThreadsVerificationNotesIntoPrompt(t *testing.T) {
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {})
 
 	require.Equal(t, 1, fakeRunner.CallCount(), "pool must be called exactly once")

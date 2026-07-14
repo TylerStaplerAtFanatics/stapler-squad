@@ -481,6 +481,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// The pool is passed at construction time to close the race window that existed when
 	// SetHeadlessPool was called hundreds of lines after instance wiring.
 	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithPool(storage, headlessPool)
+	backlogLifecycleListener.SetNotifier(&services.EventBusNotifier{Bus: eventBus})
 
 	// Step 5 (continued): wire dependencies to each instance
 	// inst.SetReviewQueue and inst.SetStatusManager are called per-instance in a loop;
@@ -816,12 +817,21 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}
 
 	// 60 s reconcile ticker: safety net for abnormal exits where EventExited cannot fire.
+	// This goroutine is the only fallback for review-gate respawn, stale-item detection,
+	// and PR-pending polling (merge/CI/conflict) — a panic here must not kill it silently.
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		ctx := context.Background()
 		for range ticker.C {
-			backlogLifecycleListener.ReconcileStuck(ctx)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error("backlog reconcile ticker recovered from panic", "recover", r)
+					}
+				}()
+				backlogLifecycleListener.ReconcileStuck(ctx)
+			}()
 		}
 	}()
 
@@ -843,6 +853,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	}
 
 	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine)
+	backlogSvc.SetEventBus(eventBus)
 	backlogSvc.SetSessionStopper(sessionService)
 	backlogSvc.SetAutonomousDriverStarter(sessionService)
 	if headlessPool != nil {

@@ -17,10 +17,28 @@ import (
 	"github.com/google/uuid"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
+
+// notifyReworkCapHit publishes an operator-facing notification when the auto-rework
+// loop (review→rework or PR-fix→rework) hits maxAutoReworkIterations and leaves an
+// item stranded for manual action. No-op if no event bus is wired.
+func (s *BacklogService) notifyReworkCapHit(itemID, itemTitle, context string) {
+	if s.eventBus == nil {
+		return
+	}
+	s.eventBus.Publish(events.NewNotificationEvent(
+		"", "", uuid.New().String(),
+		int32(sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING),
+		int32(sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM),
+		"Auto-rework cap reached",
+		fmt.Sprintf("%s — hit the %d-iteration rework cap %s. Left for manual review.", itemTitle, maxAutoReworkIterations, context),
+		map[string]string{"item_id": itemID},
+	))
+}
 
 // headlessTriageUUIDPrefix is prepended to all synthetic ItemSession UUIDs created by the
 // headless triage path. The orphan guard uses this prefix to identify sessions that have no
@@ -402,6 +420,7 @@ func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID
 	}
 	if workCount >= maxAutoReworkIterations {
 		log.InfoLog.Printf("[AutoReopenAfterFailedReview] item %s has %d work sessions (cap %d); leaving in review for manual action", itemID, workCount, maxAutoReworkIterations)
+		s.notifyReworkCapHit(itemID, item.Title, "after a failed review verdict")
 		return nil
 	}
 
@@ -462,6 +481,7 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 	}
 	if workCount >= maxAutoReworkIterations {
 		log.InfoLog.Printf("[AutoReopenForPRFix] item %s has %d work sessions (cap %d); leaving in pr_pending for manual action", itemID, workCount, maxAutoReworkIterations)
+		s.notifyReworkCapHit(itemID, item.Title, "while fixing PR #"+fmt.Sprint(item.PrNumber))
 		return nil
 	}
 

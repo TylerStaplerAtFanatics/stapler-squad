@@ -51,6 +51,15 @@ func (a *AutonomousOrchestrationService) SetReviewGateTrigger(t ReviewGateTrigge
 	a.reviewGateTrigger = t
 }
 
+// TriggerReviewForSession is a public passthrough to the wired ReviewGateTrigger, used
+// by the request_review MCP tool to spawn a review gate immediately instead of waiting
+// for the next ReconcileStuck tick. No-op if no trigger is wired.
+func (a *AutonomousOrchestrationService) TriggerReviewForSession(sessionUUID string) {
+	if a.reviewGateTrigger != nil {
+		a.reviewGateTrigger.TriggerReviewForSession(sessionUUID)
+	}
+}
+
 // NewAutonomousOrchestrationService creates a new service.
 // pool may be nil when the claude binary is not found; methods degrade gracefully.
 func NewAutonomousOrchestrationService(pool *headless.Pool, bus *events.EventBus) *AutonomousOrchestrationService {

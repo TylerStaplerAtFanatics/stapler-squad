@@ -16,6 +16,7 @@ import (
 	"github.com/tstapler/stapler-squad/config"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
@@ -112,6 +113,15 @@ type BacklogService struct {
 	// tokenStore and pricing power per-session cost estimates surfaced in the UI.
 	tokenStore tokens.TokenStoreReader
 	pricing    *tokens.PricingTable
+
+	// eventBus publishes operator-facing notifications (e.g. rework-iteration-cap hit).
+	// Optional — nil means those notifications are disabled.
+	eventBus *events.EventBus
+}
+
+// SetEventBus wires in the event bus used to publish operator-facing notifications.
+func (s *BacklogService) SetEventBus(b *events.EventBus) {
+	s.eventBus = b
 }
 
 // NewBacklogService creates a BacklogService with all optional dependencies.
