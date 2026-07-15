@@ -1006,6 +1006,7 @@ type fakePRCreator struct {
 	createErr    error
 	createURL    string
 	createNumber int
+	autoMergeErr error
 	pushCalled   bool
 	createCalled bool
 }
@@ -1019,7 +1020,7 @@ func (f *fakePRCreator) CreatePR(title, body string) (string, int, error) {
 	f.createCalled = true
 	return f.createURL, f.createNumber, f.createErr
 }
-func (f *fakePRCreator) EnablePRAutoMerge(prNumber int) error { return nil }
+func (f *fakePRCreator) EnablePRAutoMerge(prNumber int) error { return f.autoMergeErr }
 
 // fakeNotifier is a test double implementing Notifier, recording every call.
 type fakeNotifier struct {
@@ -1120,6 +1121,38 @@ func TestPushAndCreatePR_CreatePRFails_LeavesItemInReview_AndNotifies(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, string(BacklogStatusReview), fetched.Status, "item must stay in review, not silently become done")
 	assert.Contains(t, notifier.calls, "PR creation failed")
+}
+
+// TestPushAndCreatePR_AutoMergeFails_StillTransitionsButNotifies verifies the fix for
+// the silent-auto-merge-fallback bug: when EnablePRAutoMerge fails (e.g. no branch
+// protection configured), the item still transitions to pr_pending as normal (the PR
+// itself was created successfully — ReconcilePRPending will still poll it), but the
+// operator must be notified that nothing will initiate the merge automatically.
+// Previously this only reached the log file.
+func TestPushAndCreatePR_AutoMergeFails_StillTransitionsButNotifies(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	item, is := newPushAndCreatePRTestFixture(t, storage)
+
+	listener := NewBacklogLifecycleListener(storage)
+	fakeCreator := &fakePRCreator{
+		createURL:    "https://github.com/TylerStaplerAtFanatics/stapler-squad/pull/321",
+		createNumber: 321,
+		autoMergeErr: errors.New("auto-merge is not enabled for this repository"),
+	}
+	listener.SetPRCreatorFactory(func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator {
+		return fakeCreator
+	})
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.pushAndCreatePR(context.Background(), item, is)
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusPRPending), fetched.Status, "the PR was created successfully — the item must still advance to pr_pending")
+	assert.Contains(t, notifier.calls, "Auto-merge not enabled", "operator must be told the PR needs a manual merge, not just a log line")
 }
 
 // TestPushAndCreatePR_ReusesExistingPR_WhenAlreadySet verifies the "PR already
