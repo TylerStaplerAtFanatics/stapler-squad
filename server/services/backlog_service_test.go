@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
+	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
@@ -1428,6 +1429,66 @@ func TestTriggerTriage_Success(t *testing.T) {
 	require.NoError(t, listErr)
 	require.Len(t, sessions, 1)
 	assert.NotNil(t, sessions[0].EndedAt, "triage item session should be marked ended on success")
+}
+
+// TestTriggerTriage_PersistFailurePublishesNotification verifies the fix for the
+// swallowed-persistence-error bug: when the final idea->ready status transition fails
+// after a successful triage (e.g. a concurrent status change broke its precondition), the
+// operator must get a notification — previously this only reached the log file, leaving
+// the item stuck at 'idea' with zero operator-visible signal that anything went wrong.
+func TestTriggerTriage_PersistFailurePublishesNotification(t *testing.T) {
+	storage := createTestStorage(t)
+	// Delay the fake LLM call so the test can race a status change in underneath it,
+	// deterministically forcing the final TransitionBacklogItemStatus precondition to fail.
+	pool := &fakeHeadlessPool{response: validTriageJSON(), delay: 200 * time.Millisecond}
+	svc := NewBacklogService(storage, nil, nil, nil)
+	svc.SetHeadlessPool(pool)
+	eventBus := events.NewEventBus(4)
+	svc.SetEventBus(eventBus)
+
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:    "persist failure test item",
+		Status:   string(session.BacklogStatusIdea),
+		Priority: 3,
+		RepoPath: t.TempDir(),
+	})
+	require.NoError(t, err)
+
+	subCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ch, _ := eventBus.Subscribe(subCtx)
+
+	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId: item.ID,
+	}))
+	require.NoError(t, trigErr)
+
+	// Move the item off 'idea' while the delayed headless call is still in flight.
+	_, err = storage.TransitionBacklogItemStatus(t.Context(), item.ID, session.BacklogStatusReview, nil)
+	require.NoError(t, err)
+
+	var notif *events.Event
+	for i := 0; i < 5; i++ {
+		select {
+		case ev := <-ch:
+			if ev.Type == events.EventNotification {
+				notif = ev
+			}
+		case <-time.After(3 * time.Second):
+			i = 5
+		}
+		if notif != nil {
+			break
+		}
+	}
+	require.NotNil(t, notif, "a persistence failure during triage completion must publish an operator notification")
+	assert.Contains(t, notif.NotificationTitle, "save step failed")
+	assert.Contains(t, notif.NotificationMessage, "advancing the item to Ready")
+
+	// The item must remain wherever the test left it (review) — not silently ready.
+	updated, loadErr := storage.GetBacklogItem(t.Context(), item.ID)
+	require.NoError(t, loadErr)
+	assert.Equal(t, string(session.BacklogStatusReview), updated.Status)
 }
 
 // TestTriggerTriage_RefineWithFeedback: a second TriggerTriage call with feedback
