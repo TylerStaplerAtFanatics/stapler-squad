@@ -92,10 +92,22 @@ if [[ ! -f "./configure" ]]; then
   TARBALL_URL="https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz"
   TMPTAR="$(mktemp /tmp/tmux-XXXXXX.tar.gz)"
   log "Downloading configure from release tarball (${TARBALL_URL})..."
+  # configure also needs generated files a plain git checkout doesn't have —
+  # aclocal.m4, Makefile.in, and the etc/ autotools scaffold (install-sh,
+  # config.guess/sub, missing, depcomp, compile) — release tarballs bundle these,
+  # git checkouts don't (they're produced by `automake`/`autoreconf` at dist time).
   if curl -fsSL -o "$TMPTAR" "$TARBALL_URL" 2>/dev/null && \
-     tar xzf "$TMPTAR" -C /tmp "tmux-${TMUX_VERSION}/configure" 2>/dev/null; then
+     tar xzf "$TMPTAR" -C /tmp \
+       "tmux-${TMUX_VERSION}/configure" \
+       "tmux-${TMUX_VERSION}/aclocal.m4" \
+       "tmux-${TMUX_VERSION}/Makefile.in" \
+       "tmux-${TMUX_VERSION}/etc" 2>/dev/null; then
     cp "/tmp/tmux-${TMUX_VERSION}/configure" ./configure
     chmod +x ./configure
+    cp "/tmp/tmux-${TMUX_VERSION}/aclocal.m4" ./aclocal.m4
+    cp "/tmp/tmux-${TMUX_VERSION}/Makefile.in" ./Makefile.in
+    mkdir -p ./etc
+    cp -rn "/tmp/tmux-${TMUX_VERSION}/etc/." ./etc/
     rm -f "$TMPTAR"
     log "configure extracted from release tarball"
   else
