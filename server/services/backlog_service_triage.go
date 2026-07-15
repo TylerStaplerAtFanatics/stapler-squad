@@ -1023,6 +1023,18 @@ Do not modify the code. Only write the review verdict.
 			log.WarningLog.Printf("[TriggerReReview] ResolveStuck(abandoned_review) item=%s: %v", item.ID, resolveErr)
 		}
 
+		// On PASS, auto-transition to done rather than leaving the item sitting in
+		// review awaiting a manual "Approve — Mark Done" click — matches the
+		// behavior of the tmux-driven submit_review_verdict MCP tool and
+		// SubmitManualReview, both of which already auto-transition on PASS.
+		// Best-effort: verdict is already persisted regardless of transition outcome.
+		if overall == session.ReviewVerdictPass {
+			precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
+			if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, precondition); transErr != nil {
+				log.WarningLog.Printf("[TriggerReReview] PASS but transition to done failed: %v", transErr)
+			}
+		}
+
 		return connect.NewResponse(&sessionv1.TriggerReReviewResponse{
 			ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 		}), nil
