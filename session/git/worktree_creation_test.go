@@ -56,6 +56,50 @@ func TestNewWorktreeSetup_SetsBaseCommitSHA(t *testing.T) {
 	assert.Len(t, wt.GetBaseCommitSHA(), 40, "baseCommitSHA must be a full SHA-1")
 }
 
+// TestCleanup_PreservesBranchWithCommits verifies the fix for the branch-deletion bug: a
+// worktree branch with a commit that exists nowhere else must survive Cleanup(). Cleanup()
+// used to unconditionally delete the branch reference via go-git's RemoveReference, which
+// would silently destroy unpushed/unmerged work with no way to recover it (found live via
+// mcp__stapler-squad__stop_session — see docs/tasks/backlog-feature-improvement.md).
+func TestCleanup_PreservesBranchWithCommits(t *testing.T) {
+	repoDir := setupTestRepo(t)
+
+	wt, branchName, err := NewGitWorktree(repoDir, "test-cleanup-preserves-branch")
+	require.NoError(t, err)
+	require.NoError(t, wt.Setup())
+
+	// Make a commit inside the worktree that exists on this branch only.
+	worktreePath := wt.GetWorktreePath()
+	require.NoError(t, os.WriteFile(filepath.Join(worktreePath, "new-file.txt"), []byte("unpushed work"), 0644))
+	run := func(args ...string) {
+		t.Helper()
+		cmd := safeexec.CommandContext(context.Background(), "git", args...)
+		cmd.Dir = worktreePath
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %s failed: %s", strings.Join(args, " "), out)
+	}
+	run("add", ".")
+	run("commit", "-m", "unpushed commit that must survive cleanup")
+
+	require.NoError(t, wt.Cleanup())
+
+	// The worktree directory must be gone...
+	_, statErr := os.Stat(worktreePath)
+	assert.True(t, os.IsNotExist(statErr), "worktree directory should be removed by Cleanup()")
+
+	// ...but the branch — and its commit — must still exist in the main repo.
+	branchCmd := safeexec.CommandContext(context.Background(), "git", "rev-parse", "--verify", branchName)
+	branchCmd.Dir = repoDir
+	out, err := branchCmd.CombinedOutput()
+	assert.NoError(t, err, "branch %s must still exist after Cleanup(): %s", branchName, out)
+
+	logCmd := safeexec.CommandContext(context.Background(), "git", "log", branchName, "--oneline")
+	logCmd.Dir = repoDir
+	logOut, err := logCmd.CombinedOutput()
+	require.NoError(t, err)
+	assert.Contains(t, string(logOut), "unpushed commit that must survive cleanup")
+}
+
 // TestNewWorktreeSetup_WorktreePathExists verifies that the worktree directory is created
 // on disk after Setup().
 func TestNewWorktreeSetup_WorktreePathExists(t *testing.T) {
