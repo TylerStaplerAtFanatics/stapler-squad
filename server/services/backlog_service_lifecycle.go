@@ -157,6 +157,7 @@ func (s *BacklogService) CreateBacklogItem(
 		RepoPath:           repoPath,
 		SkipReviewGate:     req.Msg.SkipReviewGate,
 		SkipPlanning:       req.Msg.SkipPlanning,
+		AutoSpawnSession:   req.Msg.AutoSpawnSession,
 		Notes:              req.Msg.Notes,
 	}
 
@@ -231,6 +232,8 @@ func (s *BacklogService) UpdateBacklogItem(
 	update.SkipReviewGate = &skipRG
 	skipP := req.Msg.SkipPlanning
 	update.SkipPlanning = &skipP
+	autoSpawn := req.Msg.AutoSpawnSession
+	update.AutoSpawnSession = &autoSpawn
 	if req.Msg.Notes != "" {
 		notes := req.Msg.Notes
 		update.Notes = &notes

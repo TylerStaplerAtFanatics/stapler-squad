@@ -38,6 +38,7 @@ export function BacklogItemForm({
   const [priority, setPriority] = useState<number>(initialValues?.priority ?? 3);
   const [skipPlanning, setSkipPlanning] = useState(initialValues?.skipPlanning ?? false);
   const [skipReviewGate, setSkipReviewGate] = useState(initialValues?.skipReviewGate ?? false);
+  const [autoSpawnSession, setAutoSpawnSession] = useState(initialValues?.autoSpawnSession ?? false);
   const [acCriteria, setAcCriteria] = useState<AcCriterion[]>(
     initialValues?.acCriteria ?? []
   );
@@ -76,6 +77,7 @@ export function BacklogItemForm({
           priority,
           skipPlanning,
           skipReviewGate,
+          autoSpawnSession,
           acCriteria: acCriteria.map((c, i) => ({ ...c, index: i })),
           skipTriage: isVague,
         });
@@ -83,7 +85,7 @@ export function BacklogItemForm({
         setSubmitting(false);
       }
     },
-    [title, description, repoPath, priority, skipPlanning, skipReviewGate, acCriteria, onSubmit, validate]
+    [title, description, repoPath, priority, skipPlanning, skipReviewGate, autoSpawnSession, acCriteria, onSubmit, validate]
   );
 
   const addCriterion = useCallback(() => {
@@ -243,6 +245,24 @@ export function BacklogItemForm({
           </label>
           <span className={styles.checkboxHint}>
             Mark work done without an automated review pass first.
+          </span>
+        </div>
+
+        <div className={styles.fieldGroup}>
+          <label className={styles.checkboxRow} htmlFor="backlog-auto-spawn-session">
+            <input
+              id="backlog-auto-spawn-session"
+              type="checkbox"
+              className={styles.checkboxInput}
+              checked={autoSpawnSession}
+              onChange={(e) => setAutoSpawnSession(e.target.checked)}
+              disabled={busy}
+              data-testid="backlog-auto-spawn-session-checkbox"
+            />
+            <span className={styles.checkboxLabel}>Auto-spawn work session</span>
+          </label>
+          <span className={styles.checkboxHint}>
+            Skip the manual &quot;Spawn Session&quot; click — start work automatically once triage marks the item ready.
           </span>
         </div>
       </div>

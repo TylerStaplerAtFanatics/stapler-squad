@@ -171,6 +171,20 @@ func (_u *BacklogItemUpdate) SetNillableSkipPlanning(v *bool) *BacklogItemUpdate
 	return _u
 }
 
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (_u *BacklogItemUpdate) SetAutoSpawnSession(v bool) *BacklogItemUpdate {
+	_u.mutation.SetAutoSpawnSession(v)
+	return _u
+}
+
+// SetNillableAutoSpawnSession sets the "auto_spawn_session" field if the given value is not nil.
+func (_u *BacklogItemUpdate) SetNillableAutoSpawnSession(v *bool) *BacklogItemUpdate {
+	if v != nil {
+		_u.SetAutoSpawnSession(*v)
+	}
+	return _u
+}
+
 // SetPlanApproved sets the "plan_approved" field.
 func (_u *BacklogItemUpdate) SetPlanApproved(v bool) *BacklogItemUpdate {
 	_u.mutation.SetPlanApproved(v)
@@ -651,6 +665,9 @@ func (_u *BacklogItemUpdate) sqlSave(ctx context.Context) (_node int, err error)
 	if value, ok := _u.mutation.SkipPlanning(); ok {
 		_spec.SetField(backlogitem.FieldSkipPlanning, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.AutoSpawnSession(); ok {
+		_spec.SetField(backlogitem.FieldAutoSpawnSession, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.PlanApproved(); ok {
 		_spec.SetField(backlogitem.FieldPlanApproved, field.TypeBool, value)
 	}
@@ -1076,6 +1093,20 @@ func (_u *BacklogItemUpdateOne) SetSkipPlanning(v bool) *BacklogItemUpdateOne {
 func (_u *BacklogItemUpdateOne) SetNillableSkipPlanning(v *bool) *BacklogItemUpdateOne {
 	if v != nil {
 		_u.SetSkipPlanning(*v)
+	}
+	return _u
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (_u *BacklogItemUpdateOne) SetAutoSpawnSession(v bool) *BacklogItemUpdateOne {
+	_u.mutation.SetAutoSpawnSession(v)
+	return _u
+}
+
+// SetNillableAutoSpawnSession sets the "auto_spawn_session" field if the given value is not nil.
+func (_u *BacklogItemUpdateOne) SetNillableAutoSpawnSession(v *bool) *BacklogItemUpdateOne {
+	if v != nil {
+		_u.SetAutoSpawnSession(*v)
 	}
 	return _u
 }
@@ -1589,6 +1620,9 @@ func (_u *BacklogItemUpdateOne) sqlSave(ctx context.Context) (_node *BacklogItem
 	}
 	if value, ok := _u.mutation.SkipPlanning(); ok {
 		_spec.SetField(backlogitem.FieldSkipPlanning, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AutoSpawnSession(); ok {
+		_spec.SetField(backlogitem.FieldAutoSpawnSession, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.PlanApproved(); ok {
 		_spec.SetField(backlogitem.FieldPlanApproved, field.TypeBool, value)

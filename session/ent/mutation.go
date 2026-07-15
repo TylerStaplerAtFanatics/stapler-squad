@@ -2988,6 +2988,7 @@ type BacklogItemMutation struct {
 	repo_path               *string
 	skip_review_gate        *bool
 	skip_planning           *bool
+	auto_spawn_session      *bool
 	plan_approved           *bool
 	plan_approved_at        *time.Time
 	plan_artifacts_path     *string
@@ -3470,6 +3471,42 @@ func (m *BacklogItemMutation) OldSkipPlanning(ctx context.Context) (v bool, err 
 // ResetSkipPlanning resets all changes to the "skip_planning" field.
 func (m *BacklogItemMutation) ResetSkipPlanning() {
 	m.skip_planning = nil
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (m *BacklogItemMutation) SetAutoSpawnSession(b bool) {
+	m.auto_spawn_session = &b
+}
+
+// AutoSpawnSession returns the value of the "auto_spawn_session" field in the mutation.
+func (m *BacklogItemMutation) AutoSpawnSession() (r bool, exists bool) {
+	v := m.auto_spawn_session
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAutoSpawnSession returns the old "auto_spawn_session" field's value of the BacklogItem entity.
+// If the BacklogItem object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogItemMutation) OldAutoSpawnSession(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAutoSpawnSession is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAutoSpawnSession requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAutoSpawnSession: %w", err)
+	}
+	return oldValue.AutoSpawnSession, nil
+}
+
+// ResetAutoSpawnSession resets all changes to the "auto_spawn_session" field.
+func (m *BacklogItemMutation) ResetAutoSpawnSession() {
+	m.auto_spawn_session = nil
 }
 
 // SetPlanApproved sets the "plan_approved" field.
@@ -4331,7 +4368,7 @@ func (m *BacklogItemMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *BacklogItemMutation) Fields() []string {
-	fields := make([]string, 0, 20)
+	fields := make([]string, 0, 21)
 	if m.title != nil {
 		fields = append(fields, backlogitem.FieldTitle)
 	}
@@ -4355,6 +4392,9 @@ func (m *BacklogItemMutation) Fields() []string {
 	}
 	if m.skip_planning != nil {
 		fields = append(fields, backlogitem.FieldSkipPlanning)
+	}
+	if m.auto_spawn_session != nil {
+		fields = append(fields, backlogitem.FieldAutoSpawnSession)
 	}
 	if m.plan_approved != nil {
 		fields = append(fields, backlogitem.FieldPlanApproved)
@@ -4416,6 +4456,8 @@ func (m *BacklogItemMutation) Field(name string) (ent.Value, bool) {
 		return m.SkipReviewGate()
 	case backlogitem.FieldSkipPlanning:
 		return m.SkipPlanning()
+	case backlogitem.FieldAutoSpawnSession:
+		return m.AutoSpawnSession()
 	case backlogitem.FieldPlanApproved:
 		return m.PlanApproved()
 	case backlogitem.FieldPlanApprovedAt:
@@ -4465,6 +4507,8 @@ func (m *BacklogItemMutation) OldField(ctx context.Context, name string) (ent.Va
 		return m.OldSkipReviewGate(ctx)
 	case backlogitem.FieldSkipPlanning:
 		return m.OldSkipPlanning(ctx)
+	case backlogitem.FieldAutoSpawnSession:
+		return m.OldAutoSpawnSession(ctx)
 	case backlogitem.FieldPlanApproved:
 		return m.OldPlanApproved(ctx)
 	case backlogitem.FieldPlanApprovedAt:
@@ -4553,6 +4597,13 @@ func (m *BacklogItemMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetSkipPlanning(v)
+		return nil
+	case backlogitem.FieldAutoSpawnSession:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAutoSpawnSession(v)
 		return nil
 	case backlogitem.FieldPlanApproved:
 		v, ok := value.(bool)
@@ -4812,6 +4863,9 @@ func (m *BacklogItemMutation) ResetField(name string) error {
 		return nil
 	case backlogitem.FieldSkipPlanning:
 		m.ResetSkipPlanning()
+		return nil
+	case backlogitem.FieldAutoSpawnSession:
+		m.ResetAutoSpawnSession()
 		return nil
 	case backlogitem.FieldPlanApproved:
 		m.ResetPlanApproved()

@@ -236,17 +236,30 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, submitManualReview, archiveBacklogItem, deleteBacklogItem, onClose, load]
   );
 
+  // The backend writes skipPlanning/skipReviewGate/autoSpawnSession unconditionally on
+  // every UpdateBacklogItem call (they're plain proto bools, not optional — no "unset"
+  // wire representation), so any partial update that omits them silently resets them to
+  // false. Every partial updateBacklogItem call below must spread these current values.
+  const currentFlags = useCallback(
+    () => ({
+      skipPlanning: item?.skipPlanning ?? false,
+      skipReviewGate: item?.skipReviewGate ?? false,
+      autoSpawnSession: item?.autoSpawnSession ?? false,
+    }),
+    [item]
+  );
+
   const handleSaveNotes = useCallback(async () => {
     if (!item) return;
     setActionLoading(true);
     try {
-      const updated = await updateBacklogItem(item.id, { notes: notesValue });
+      const updated = await updateBacklogItem(item.id, { ...currentFlags(), notes: notesValue });
       if (updated) setItem(updated);
       setEditingNotes(false);
     } finally {
       setActionLoading(false);
     }
-  }, [item, notesValue, updateBacklogItem]);
+  }, [item, notesValue, updateBacklogItem, currentFlags]);
 
   const handleUpdateItem = useCallback(
     async (data: BacklogItemInput) => {
@@ -307,7 +320,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         text: s.text,
         status: "pending" as const,
       }));
-      const updated = await updateBacklogItem(item.id, { acCriteria: newAcCriteria });
+      const updated = await updateBacklogItem(item.id, { ...currentFlags(), acCriteria: newAcCriteria });
       if (!updated) {
         throw new Error("Failed to apply suggestions — item may have been modified by another process. Reload and try again.");
       }
@@ -320,14 +333,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
       // Store pre-apply criteria for undo (returned via throw on error, used by panel)
       void preApplyCriteria; // captured in panel for undo
     },
-    [item, updateBacklogItem, transitionStatus, load]
+    [item, updateBacklogItem, transitionStatus, load, currentFlags]
   );
 
   const handleUndoTriageSuggestions = useCallback(
     async (preApplyCriteria: AcCriterion[]) => {
       if (!item) return;
       // Revert AC to the pre-apply snapshot
-      const updated = await updateBacklogItem(item.id, { acCriteria: preApplyCriteria });
+      const updated = await updateBacklogItem(item.id, { ...currentFlags(), acCriteria: preApplyCriteria });
       if (!updated) {
         throw new Error("Failed to undo — item may have been modified. Reload and try again.");
       }
@@ -335,7 +348,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
       await transitionStatus(item.id, "idea");
       await load();
     },
-    [item, updateBacklogItem, transitionStatus, load]
+    [item, updateBacklogItem, transitionStatus, load, currentFlags]
   );
 
   const handleGateApprove = useCallback(async () => {
@@ -361,7 +374,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
       if (feedback.trim()) {
         const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
         const note = `\n\n[Revision feedback ${timestamp}]\n${feedback.trim()}`;
-        await updateBacklogItem(item.id, { notes: (item.notes ?? "") + note });
+        await updateBacklogItem(item.id, { ...currentFlags(), notes: (item.notes ?? "") + note });
       }
       await transitionStatus(item.id, "in_progress");
       // Spawn a new work session immediately — the backend now accepts in_progress.
@@ -370,7 +383,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     } finally {
       setActionLoading(false);
     }
-  }, [item, transitionStatus, spawnSessionFromItem, updateBacklogItem, load]);
+  }, [item, transitionStatus, spawnSessionFromItem, updateBacklogItem, load, currentFlags]);
 
   const handleGateOverride = useCallback(
     async (reason: string) => {

@@ -83,6 +83,8 @@ export interface BacklogItem {
   repoPath?: string;
   skipPlanning: boolean;
   skipReviewGate: boolean;
+  /** When true, a work session is spawned automatically once the item reaches ready — no manual "Spawn Session" click required. */
+  autoSpawnSession: boolean;
   planApproved: boolean;
   planArtifactsPath?: string;
   acCriteria: AcCriterion[];
@@ -123,6 +125,7 @@ export interface BacklogItemInput {
   priority?: number;
   skipPlanning?: boolean;
   skipReviewGate?: boolean;
+  autoSpawnSession?: boolean;
   acCriteria?: AcCriterion[];
   notes?: string;
   skipTriage?: boolean;
@@ -264,6 +267,7 @@ function mapBacklogItem(p: BacklogItemProto): BacklogItem {
     repoPath: p.repoPath || undefined,
     skipPlanning: p.skipPlanning,
     skipReviewGate: p.skipReviewGate,
+    autoSpawnSession: p.autoSpawnSession,
     planApproved: p.planApproved,
     planArtifactsPath: p.planArtifactsPath || undefined,
     acCriteria: (p.acceptanceCriteria ?? []).map(mapAcCriterion),
@@ -423,6 +427,7 @@ export function useBacklogService(): UseBacklogServiceReturn {
           priority: data.priority ?? 3,
           skipPlanning: data.skipPlanning ?? false,
           skipReviewGate: data.skipReviewGate ?? false,
+          autoSpawnSession: data.autoSpawnSession ?? false,
           acceptanceCriteria: toProtoAcCriteria(data.acCriteria ?? []),
           notes: data.notes ?? "",
           skipTriage: data.skipTriage ?? false,
@@ -452,6 +457,7 @@ export function useBacklogService(): UseBacklogServiceReturn {
           priority: data.priority,
           skipPlanning: data.skipPlanning,
           skipReviewGate: data.skipReviewGate,
+          autoSpawnSession: data.autoSpawnSession,
           acceptanceCriteria: data.acCriteria ? toProtoAcCriteria(data.acCriteria) : undefined,
           notes: data.notes,
         });

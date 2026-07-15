@@ -35,6 +35,8 @@ type BacklogItem struct {
 	SkipReviewGate bool `json:"skip_review_gate,omitempty"`
 	// SkipPlanning holds the value of the "skip_planning" field.
 	SkipPlanning bool `json:"skip_planning,omitempty"`
+	// When true, a work session is spawned automatically once the item reaches ready — no manual 'Spawn Session' click required.
+	AutoSpawnSession bool `json:"auto_spawn_session,omitempty"`
 	// PlanApproved holds the value of the "plan_approved" field.
 	PlanApproved bool `json:"plan_approved,omitempty"`
 	// PlanApprovedAt holds the value of the "plan_approved_at" field.
@@ -135,7 +137,7 @@ func (*BacklogItem) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case backlogitem.FieldSkipReviewGate, backlogitem.FieldSkipPlanning, backlogitem.FieldPlanApproved:
+		case backlogitem.FieldSkipReviewGate, backlogitem.FieldSkipPlanning, backlogitem.FieldAutoSpawnSession, backlogitem.FieldPlanApproved:
 			values[i] = new(sql.NullBool)
 		case backlogitem.FieldPriority, backlogitem.FieldPrNumber:
 			values[i] = new(sql.NullInt64)
@@ -215,6 +217,12 @@ func (_m *BacklogItem) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field skip_planning", values[i])
 			} else if value.Valid {
 				_m.SkipPlanning = value.Bool
+			}
+		case backlogitem.FieldAutoSpawnSession:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field auto_spawn_session", values[i])
+			} else if value.Valid {
+				_m.AutoSpawnSession = value.Bool
 			}
 		case backlogitem.FieldPlanApproved:
 			if value, ok := values[i].(*sql.NullBool); !ok {
@@ -382,6 +390,9 @@ func (_m *BacklogItem) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("skip_planning=")
 	builder.WriteString(fmt.Sprintf("%v", _m.SkipPlanning))
+	builder.WriteString(", ")
+	builder.WriteString("auto_spawn_session=")
+	builder.WriteString(fmt.Sprintf("%v", _m.AutoSpawnSession))
 	builder.WriteString(", ")
 	builder.WriteString("plan_approved=")
 	builder.WriteString(fmt.Sprintf("%v", _m.PlanApproved))

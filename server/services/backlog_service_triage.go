@@ -825,6 +825,22 @@ func (s *BacklogService) TriggerTriage(
 			s.notifyTriagePersistFailure(cleanupCtx, itemID, item.Title, persistFailures, statusAdvanced)
 		}
 
+		// Opt-in: skip the manual "Spawn Session" click when the item is configured to
+		// auto-spawn. Autonomous: true bypasses the planning-approval gate the same way
+		// AutoReopenForPRFix's spawn already does — a human never gets to review the plan
+		// first, which is the whole point of this toggle (default false; existing manual
+		// flow is unchanged unless explicitly opted in).
+		if statusAdvanced && item.AutoSpawnSession {
+			if _, spawnErr := s.SpawnSessionFromItem(cleanupCtx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+				ItemId:     itemID,
+				Autonomous: true,
+			})); spawnErr != nil {
+				log.WarningLog.Printf("[TriggerTriage] auto-spawn session item=%s: %v", itemID, spawnErr)
+			} else {
+				log.InfoLog.Printf("[TriggerTriage] auto-spawned work session item=%s (auto_spawn_session=true)", itemID)
+			}
+		}
+
 		_ = s.storage.UpdateItemSessionEnded(cleanupCtx, isID, time.Now())
 		log.InfoLog.Printf("[TriggerTriage] headless triage complete item=%s suggestions=%d tasks=%d",
 			itemID, len(result.Suggestions), len(result.Tasks))
