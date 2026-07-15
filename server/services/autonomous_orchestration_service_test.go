@@ -308,3 +308,64 @@ func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_LogsRealLooku
 	assert.Contains(t, buf.String(), "failed to load linked backlog item")
 	assert.Contains(t, buf.String(), "level=WARN", "a genuine lookup failure must be diagnosable, not silent")
 }
+
+// TestAutonomousOrchestrationService_OnAutonomousDriverComplete_UnrecognizedRoleStillNotifies
+// verifies the fix for the silent-default-role bug: an item session with a role the switch
+// doesn't recognize (e.g. a new pipeline stage added elsewhere without updating this switch)
+// must still log at Warn AND publish the generic done/stuck notification — previously it fell
+// into the same silent early-return as the expected SessionRoleReview case, leaving the
+// operator with zero signal that anything happened at all.
+func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_UnrecognizedRoleStillNotifies(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+	eventBus := events.NewEventBus(4)
+	svc := NewSessionService(storage, eventBus)
+
+	const title = "unrecognized-role-test"
+	inst := &session.Instance{
+		Title: title, UUID: title + "-uuid", Path: "/tmp/test",
+		Status: session.Paused, Program: "claude", AutonomousMode: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	require.NoError(t, storage.AddInstance(inst))
+	svc.autonomousSvc.SetInstanceFinder(func(_ string) *session.Instance { return inst })
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Unrecognized role test item",
+		Status: string(session.BacklogStatusIdea),
+	})
+	require.NoError(t, err)
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: inst.UUID,
+		SessionRole: "future-pipeline-stage", // not triage/work/review
+	})
+	require.NoError(t, err)
+
+	buf := captureLogs(t)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, _ := eventBus.Subscribe(subCtx)
+
+	svc.autonomousSvc.onAutonomousDriverComplete(title, session.AutonomousDriverOutcome{Done: true, Reason: "test done", Turns: 1})
+
+	assert.Contains(t, buf.String(), "unrecognized session role")
+	assert.Contains(t, buf.String(), "level=WARN", "an unrecognized role must be diagnosable, not silent")
+
+	var notif *events.Event
+	for i := 0; i < 5; i++ {
+		select {
+		case ev := <-ch:
+			if ev.Type == events.EventNotification {
+				notif = ev
+			}
+		case <-time.After(2 * time.Second):
+			i = 5
+		}
+		if notif != nil {
+			break
+		}
+	}
+	require.NotNil(t, notif, "the operator must still get the generic complete/stuck notification, not silence")
+	assert.Equal(t, "Autonomous fix complete", notif.NotificationTitle)
+}
