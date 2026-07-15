@@ -18,6 +18,7 @@ import (
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/headless"
+	"github.com/tstapler/stapler-squad/session/scrollback"
 )
 
 // ─── fakeHeadlessPool ─────────────────────────────────────────────────────────
@@ -29,19 +30,35 @@ type fakeHeadlessPool struct {
 	responses []string // if set, returned in order (one per call) instead of response
 	err       error
 	delay     time.Duration // simulates a slow LLM call; see TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext
+	cost      float64       // returned as CallBlocking's cost; see TestTriggerReReview_HappyPath_ThreadsCallCostIntoItemSession
 	calls     []fakePoolCall
 }
 
 type fakePoolCall struct {
-	key        headless.FeatureKey
-	workDir    string
-	userPrompt string
+	key            headless.FeatureKey
+	workDir        string
+	userPrompt     string
+	systemPrompt   string
+	allowedTools   string
+	permissionMode string
+	ctxDeadline    time.Time
+	hasDeadline    bool
 }
 
-func (f *fakeHeadlessPool) CallBlockingWithOptions(ctx context.Context, key headless.FeatureKey, _, userPrompt string, opts headless.CallOptions) (string, error) {
+func (f *fakeHeadlessPool) CallBlocking(ctx context.Context, key headless.FeatureKey, systemPrompt, userPrompt string, opts headless.CallOptions) (string, float64, error) {
 	f.mu.Lock()
 	callIndex := len(f.calls)
-	f.calls = append(f.calls, fakePoolCall{key: key, workDir: opts.WorkDir, userPrompt: userPrompt})
+	deadline, hasDeadline := ctx.Deadline()
+	f.calls = append(f.calls, fakePoolCall{
+		key:            key,
+		workDir:        opts.WorkDir,
+		userPrompt:     userPrompt,
+		systemPrompt:   systemPrompt,
+		allowedTools:   opts.AllowedTools,
+		permissionMode: opts.PermissionMode,
+		ctxDeadline:    deadline,
+		hasDeadline:    hasDeadline,
+	})
 	delay := f.delay
 	resp := f.response
 	if callIndex < len(f.responses) {
@@ -54,10 +71,10 @@ func (f *fakeHeadlessPool) CallBlockingWithOptions(ctx context.Context, key head
 		select {
 		case <-timer.C:
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", 0, ctx.Err()
 		}
 	}
-	return resp, f.err
+	return resp, f.cost, f.err
 }
 
 func (f *fakeHeadlessPool) callCount() int {
@@ -1193,6 +1210,324 @@ func TestTriggerReReview_SetsBacklogCategory(t *testing.T) {
 		"re-review session should have Category == Backlog")
 }
 
+// ─── TriggerReReview: BuildReviewCallOptions wiring (Story 2.2.3) + timeout degrade (Story 2.2.4) ──
+
+// setupItemInReview creates a backlog item with repoPath and no worktree/work session,
+// transitions it ready -> in_progress -> review, and returns its ID. With no work
+// session, TriggerReReview's getWorkSessionDiff returns "" unconditionally, guaranteeing
+// the empty-diff (codebase-read) path for tests that don't need real diff content.
+func setupItemInReview(t *testing.T, svc *BacklogService, repoPath string) string {
+	t.Helper()
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    "test item",
+		RepoPath: repoPath,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusReady),
+	}))
+	require.NoError(t, err)
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusInProgress),
+	}))
+	require.NoError(t, err)
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusReview),
+	}))
+	require.NoError(t, err)
+	return itemID
+}
+
+// TestTriggerReReview_EmptyDiff_UsesWorkDirAndCodebaseAccessPrompt verifies that an
+// empty-diff re-review call is routed through BuildReviewCallOptions' codebase-access
+// branch: WorkDir is set to the resolved codebase work dir (item.RepoPath, since no
+// work session/worktree is recorded), and the resulting PASS verdict (backed by real
+// tool_reads evidence) is persisted as-is.
+func TestTriggerReReview_EmptyDiff_UsesWorkDirAndCodebaseAccessPrompt(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("x"), 0o644))
+	itemID := setupItemInReview(t, svc, repoDir)
+
+	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"found it","tool_reads":["marker.txt"],"verdicts":[]}`}
+	svc.SetHeadlessPool(pool)
+	// Bypass the Story 2.2.6 capability self-check: it would otherwise consume the
+	// fake pool's single scripted response for its own marker-file smoke test
+	// before the real re-review call this test is asserting on ever runs.
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	resp, err := svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.ItemSession)
+
+	require.Equal(t, 1, pool.callCount())
+	call := pool.firstCall()
+	assert.Equal(t, repoDir, call.workDir, "empty-diff re-review must be granted WorkDir access to the codebase")
+	assert.Equal(t, headless.CodebaseReadAllowedTools, call.allowedTools)
+	assert.Equal(t, session.PermissionModeBypassPermissions, call.permissionMode)
+	assert.Equal(t, headless.HeadlessReviewSystemPromptWithCodebaseAccess(), call.systemPrompt)
+
+	outcome, err := storage.GetMostRecentReviewVerdictForItem(t.Context(), itemID)
+	require.NoError(t, err)
+	assert.Equal(t, session.ReviewVerdictPass, outcome)
+}
+
+// TestTriggerReReview_EmptyDiff_ContextExtrasReachPrompt is a wiring-level test
+// proving that on the codebase-read (empty-diff) path, TriggerReReview actually
+// fetches prior review sessions, the full notes history, and the item's Description,
+// and that all of this reaches the actual prompt text sent to the pool.
+func TestTriggerReReview_EmptyDiff_ContextExtrasReachPrompt(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("x"), 0o644))
+
+	createdItem, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:              "Context extras re-review test",
+		Description:        "Add OAuth2 login support end to end",
+		AcceptanceCriteria: `[{"index":0,"text":"test","status":"pending"}]`,
+		Status:             string(session.BacklogStatusReview),
+		RepoPath:           repoDir,
+	})
+	require.NoError(t, err)
+	itemID := createdItem.ID
+
+	// A prior review session+verdict — must surface in "## Prior Review Attempts".
+	_, err = storage.CreateItemSessionWithVerdict(t.Context(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: "prior-review-1",
+		SessionRole: session.SessionRoleReview,
+	}, session.ReviewVerdictData{
+		OverallOutcome: session.ReviewVerdictUnverifiable,
+		Summary:        "prior attempt could not locate satisfying evidence",
+	})
+	require.NoError(t, err)
+
+	// A report_progress note — must surface in "## Full Notes History".
+	require.NoError(t, storage.AppendProgressNote(t.Context(), itemID, 0, "investigated the auth package first", "in_progress"))
+
+	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"found it","tool_reads":["marker.txt"],"verdicts":[]}`}
+	svc.SetHeadlessPool(pool)
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	resp, err := svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.ItemSession)
+
+	require.Equal(t, 1, pool.callCount())
+	prompt := pool.firstCall().userPrompt
+
+	assert.Contains(t, prompt, "## Prior Review Attempts", "prior review sessions must be fetched and rendered")
+	assert.Contains(t, prompt, "prior attempt could not locate satisfying evidence")
+	assert.Contains(t, prompt, "## Full Notes History", "progress notes must be fetched and rendered")
+	assert.Contains(t, prompt, "investigated the auth package first")
+	assert.Contains(t, prompt, "## Item Context", "item description must reach the prompt")
+	assert.Contains(t, prompt, "Add OAuth2 login support end to end")
+}
+
+// TestTriggerReReview_HappyPath_ThreadsCallCostIntoItemSession verifies (MUST FIX #3)
+// that TriggerReReview's success path captures headlessPool.CallBlocking's returned
+// cost and persists it as the ItemSession's EstimatedCostUsd, matching the sibling
+// ReviewGateRunner.Run behavior — previously the cost was discarded via `_`.
+func TestTriggerReReview_HappyPath_ThreadsCallCostIntoItemSession(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("x"), 0o644))
+	itemID := setupItemInReview(t, svc, repoDir)
+
+	const wantCost = 0.0421
+	pool := &fakeHeadlessPool{
+		response: `{"overall":"PASS","summary":"found it","tool_reads":["marker.txt"],"verdicts":[]}`,
+		cost:     wantCost,
+	}
+	svc.SetHeadlessPool(pool)
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	resp, err := svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.ItemSession)
+
+	assert.InDelta(t, wantCost, resp.Msg.ItemSession.EstimatedCostUsd, 1e-9,
+		"TriggerReReview's success path must thread CallBlocking's cost into the persisted ItemSession")
+}
+
+// TestTriggerReReview_EmptyDiff_UsesShorterCodebaseReadTimeout verifies the empty-diff
+// re-review call runs under headless.CodebaseReadCallTimeout (600s), not the plain
+// headless.DefaultCallTimeout (900s).
+func TestTriggerReReview_EmptyDiff_UsesShorterCodebaseReadTimeout(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoDir := t.TempDir()
+	itemID := setupItemInReview(t, svc, repoDir)
+
+	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"ok","tool_reads":[],"verdicts":[]}`}
+	svc.SetHeadlessPool(pool)
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	before := time.Now()
+	_, err := svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err)
+
+	require.Equal(t, 1, pool.callCount())
+	call := pool.firstCall()
+	require.True(t, call.hasDeadline, "empty-diff re-review call must run under a bounded context deadline")
+	remaining := call.ctxDeadline.Sub(before)
+	assert.Less(t, remaining, headless.DefaultCallTimeout, "empty-diff call must use a timeout shorter than the plain DefaultCallTimeout")
+	assert.InDelta(t, headless.CodebaseReadCallTimeout.Seconds(), remaining.Seconds(), 5, "empty-diff call must use CodebaseReadCallTimeout specifically")
+}
+
+// TestTriggerReReview_CodebaseReadTimeout_RecordsUnverifiableNotFail verifies that a
+// context.DeadlineExceeded on the codebase-read (empty-diff) path degrades to
+// UNVERIFIABLE — not a generic RPC error and not FAIL — per ADR-001's 2026-07-14
+// Repair Pass Addendum.
+func TestTriggerReReview_CodebaseReadTimeout_RecordsUnverifiableNotFail(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoDir := t.TempDir()
+	itemID := setupItemInReview(t, svc, repoDir)
+
+	// delay is deliberately longer than the short outer ctx below, so CallBlocking
+	// naturally observes ctx.Done() (context.DeadlineExceeded) instead of completing.
+	pool := &fakeHeadlessPool{delay: 5 * time.Second}
+	svc.SetHeadlessPool(pool)
+	// Bypass the Story 2.2.6 capability self-check so this test exercises the
+	// call-timeout degrade path it's actually named for, not the (also-UNVERIFIABLE,
+	// but different) capability-self-check-failure path.
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	shortCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	resp, err := svc.TriggerReReview(shortCtx, connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err, "a codebase-read timeout must not surface as an RPC error — it must be recorded as an UNVERIFIABLE verdict")
+	require.NotNil(t, resp.Msg.ItemSession)
+
+	outcome, err := storage.GetMostRecentReviewVerdictForItem(context.Background(), itemID)
+	require.NoError(t, err)
+	assert.Equal(t, session.ReviewVerdictUnverifiable, outcome, "a codebase-read timeout must degrade to UNVERIFIABLE, never be recorded as FAIL")
+}
+
+// TestTriggerReReview_CodebaseReadEmptyToolReads_DowngradesPassToUnverifiable verifies
+// that a PASS verdict returned on the codebase-read path with an empty tool_reads list
+// is downgraded to UNVERIFIABLE before being persisted.
+func TestTriggerReReview_CodebaseReadEmptyToolReads_DowngradesPassToUnverifiable(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoDir := t.TempDir()
+	itemID := setupItemInReview(t, svc, repoDir)
+
+	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"trust me, it's already implemented","tool_reads":[],"verdicts":[]}`}
+	svc.SetHeadlessPool(pool)
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	resp, err := svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.ItemSession)
+
+	outcome, err := storage.GetMostRecentReviewVerdictForItem(t.Context(), itemID)
+	require.NoError(t, err)
+	assert.Equal(t, session.ReviewVerdictUnverifiable, outcome, "a PASS with no tool_reads evidence on the codebase-read path must be downgraded")
+}
+
+// TestTriggerReReview_CodebaseReadFabricatedToolReadsPath_DowngradesPassToUnverifiable
+// verifies that a PASS verdict citing a tool_reads path that does not actually exist
+// under the codebase work dir is downgraded to UNVERIFIABLE.
+func TestTriggerReReview_CodebaseReadFabricatedToolReadsPath_DowngradesPassToUnverifiable(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoDir := t.TempDir() // deliberately empty — no files created here
+	itemID := setupItemInReview(t, svc, repoDir)
+
+	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"found it","tool_reads":["does/not/exist.go"],"verdicts":[]}`}
+	svc.SetHeadlessPool(pool)
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	resp, err := svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.ItemSession)
+
+	outcome, err := storage.GetMostRecentReviewVerdictForItem(t.Context(), itemID)
+	require.NoError(t, err)
+	assert.Equal(t, session.ReviewVerdictUnverifiable, outcome, "a PASS citing a fabricated tool_reads path must be downgraded")
+}
+
+// TestTriggerReReview_CapabilitySelfCheckFails_RecordsUnverifiableWithoutAttemptingCodebaseReadCall
+// verifies that when the codebase-read capability self-check has already failed,
+// TriggerReReview records an UNVERIFIABLE verdict directly and never attempts the real
+// AllowedTools/PermissionMode-bearing codebase-read call — shares
+// headless.CodebaseReadCapabilitySelfCheck's contract with ReviewGateRunner (Story
+// 2.2.6c: a failure discovered via either call site short-circuits the other).
+func TestTriggerReReview_CapabilitySelfCheckFails_RecordsUnverifiableWithoutAttemptingCodebaseReadCall(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("x"), 0o644))
+	itemID := setupItemInReview(t, svc, repoDir)
+
+	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"found it","tool_reads":["marker.txt"],"verdicts":[]}`}
+	svc.SetHeadlessPool(pool)
+	svc.SetCapabilityCheck(headless.NewFailedCapabilitySelfCheckForTesting())
+
+	resp, err := svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err, "a failed capability self-check must not surface as an RPC error — it must be recorded as an UNVERIFIABLE verdict")
+	require.NotNil(t, resp.Msg.ItemSession)
+
+	assert.Equal(t, 0, pool.callCount(), "no real codebase-read call should have been attempted once the capability self-check has failed")
+
+	outcome, err := storage.GetMostRecentReviewVerdictForItem(t.Context(), itemID)
+	require.NoError(t, err)
+	assert.Equal(t, session.ReviewVerdictUnverifiable, outcome, "a failed capability self-check must degrade the re-review to UNVERIFIABLE")
+}
+
+// TestResolveACSnapshot_MergesLiveNoteIntoStaleWorkSessionSnapshot verifies that
+// a Note written via report_progress onto the live item's AcceptanceCriteria after
+// the work session's AcSnapshot was captured at spawn time is merged into the
+// snapshot returned by resolveACSnapshot, so TriggerReReview doesn't hand the
+// reviewer a stale, note-less AC list.
+func TestResolveACSnapshot_MergesLiveNoteIntoStaleWorkSessionSnapshot(t *testing.T) {
+	staleSnapshot := session.AcCriteriaJSON(`[{"index":0,"text":"Do the thing","status":"pending"}]`)
+	liveAC := session.AcCriteriaJSON(`[{"index":0,"text":"Do the thing","status":"done","note":"finished via report_progress"}]`)
+
+	workSession := &session.ItemSessionSummary{AcSnapshot: staleSnapshot}
+
+	result := resolveACSnapshot(workSession, liveAC)
+
+	require.Len(t, result, 1)
+	assert.Equal(t, "finished via report_progress", result[0].Note)
+	assert.Equal(t, session.AcStatusDone, result[0].Status)
+}
+
+// TestResolveACSnapshot_NoWorkSession_ReturnsLiveAC verifies the live AC criteria
+// are returned unchanged when there is no work session snapshot to merge against.
+func TestResolveACSnapshot_NoWorkSession_ReturnsLiveAC(t *testing.T) {
+	liveAC := session.AcCriteriaJSON(`[{"index":0,"text":"Do the thing","status":"done","note":"live note"}]`)
+
+	result := resolveACSnapshot(nil, liveAC)
+
+	require.Len(t, result, 1)
+	assert.Equal(t, "live note", result[0].Note)
+	assert.Equal(t, session.AcStatusDone, result[0].Status)
+}
+
 // ─── T-11: Auto-triage, double-trigger guard, itemSessionToProto ─────────────
 
 // TestCreateBacklogItem_SkipsTriageWhenSkipTriageTrue: skip_triage=true → triage_triggered=false,
@@ -1865,4 +2200,42 @@ func TestGetSyncHistory_SetsTruncatedWhenHistoryExceedsCap(t *testing.T) {
 	require.NoError(t, histErr)
 	assert.Len(t, resp.Msg.Events, 200)
 	assert.True(t, resp.Msg.Truncated)
+}
+
+// TestBacklogService_ScrollbackManager_ConcurrentSetAndGet_NoRace is a regression test
+// for a real data race: BacklogService.scrollbackManager used to be a bare, unguarded
+// field, set via SetScrollbackManager and read directly by TriggerReReview. In
+// production, server/dependencies.go wires SetScrollbackManager well after the HTTP
+// server can already be serving TriggerReReview RPCs (the server starts controllers
+// and begins accepting requests before all dependency wiring, including
+// SetScrollbackManager, completes), so the field is genuinely read and written
+// concurrently. This test concurrently calls SetScrollbackManager and the internal
+// getScrollbackManager (the same accessor TriggerReReview now uses) many times; run
+// with `go test -race`, it fails on the pre-fix bare field and passes once the field
+// is guarded by scrollbackMu.
+func TestBacklogService_ScrollbackManager_ConcurrentSetAndGet_NoRace(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	sm1 := scrollback.NewScrollbackManager(scrollback.DefaultScrollbackConfig())
+	sm2 := scrollback.NewScrollbackManager(scrollback.DefaultScrollbackConfig())
+
+	var wg sync.WaitGroup
+	const n = 100
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				svc.SetScrollbackManager(sm1)
+			} else {
+				svc.SetScrollbackManager(sm2)
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = svc.getScrollbackManager()
+		}()
+	}
+	wg.Wait()
 }
