@@ -13,6 +13,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
+	"github.com/tstapler/stapler-squad/session/scrollback"
 )
 
 // Notifier publishes an operator-facing notification. Implemented outside this
@@ -161,6 +162,14 @@ func (l *BacklogLifecycleListener) SetAutoReopener(r AutoReopenSpawner) {
 	l.autoReopenMu.Lock()
 	defer l.autoReopenMu.Unlock()
 	l.autoReopener = r
+}
+
+// SetScrollbackManager wires in the scrollback manager used to write a searchable
+// session transcript file on the empty-diff codebase-read review path. Delegates to
+// the underlying ReviewGateRunner, which owns the field. Optional — nil (the default)
+// simply omits the "## Session Transcript" prompt section.
+func (l *BacklogLifecycleListener) SetScrollbackManager(sm *scrollback.ScrollbackManager) {
+	l.runner.SetScrollbackManager(sm)
 }
 
 // getAutoReopener returns the current auto-reopener under a read lock.

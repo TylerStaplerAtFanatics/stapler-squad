@@ -250,7 +250,7 @@ func TestReconcilePRPending_should_markStuck_When_PRGreenMergeableUnapproved(t *
 	backdateStuckFirstDetected(t, er, item.ID, domain.StuckReasonPRReadyUnmerged, time.Now().Add(-31*time.Minute))
 
 	listener.ReconcilePRPending(ctx, er)
-	assert.Equal(t, []string{"PR ready to merge"}, notifier.calls)
+	assert.Equal(t, []string{"PR ready to merge"}, notifier.titles())
 
 	// Third tick: PR still ready — must not re-notify.
 	listener.ReconcilePRPending(ctx, er)
@@ -431,7 +431,7 @@ func TestReconcileStaleWorkSessions_should_writeDurableStaleWorkRow_When_ActiveS
 	require.Len(t, open, 1)
 	assert.Equal(t, item.ID, open[0].ItemID)
 	assert.Equal(t, domain.StuckReasonStaleWork, open[0].Reason)
-	assert.Equal(t, []string{"Work session may be stuck"}, notifier.calls)
+	assert.Equal(t, []string{"Work session may be stuck"}, notifier.titles())
 
 	// Repeat tick must not re-notify (DB-backed notify-once dedup).
 	listener.reconcileStaleWorkSessions(ctx, er)
@@ -493,7 +493,7 @@ func TestReconcileOrphanedTriageItems_should_writeDurableRowNotifyOnce_When_Tria
 	require.Len(t, open, 1)
 	assert.Equal(t, item.ID, open[0].ItemID)
 	assert.Equal(t, domain.StuckReasonOrphanedTriage, open[0].Reason)
-	assert.Equal(t, []string{"Triage may be stuck"}, notifier.calls)
+	assert.Equal(t, []string{"Triage may be stuck"}, notifier.titles())
 
 	// Repeat tick must not re-notify (DB-backed notify-once dedup).
 	listener.reconcileOrphanedTriageItems(ctx, er)
@@ -608,7 +608,7 @@ func TestReconcileBouncingItems_should_writeBouncingRowNotifyOnce_When_ThreeCycl
 	require.NoError(t, err)
 	require.Len(t, open, 1)
 	assert.Equal(t, domain.StuckReasonBouncing, open[0].Reason)
-	assert.Equal(t, []string{"Item is thrashing between work and review"}, notifier.calls)
+	assert.Equal(t, []string{"Item is thrashing between work and review"}, notifier.titles())
 
 	// Repeat tick must not re-notify.
 	listener.reconcileBouncingItems(ctx, er)
@@ -667,7 +667,7 @@ func TestStayInReviewAndNotify_should_markPushFailedRow_When_PushAndCreatePRFail
 
 	listener.pushAndCreatePR(ctx, item, is)
 
-	assert.Contains(t, notifier.calls, "PR creation failed", "existing ERROR toast must still fire")
+	assert.Contains(t, notifier.titles(), "PR creation failed", "existing ERROR toast must still fire")
 
 	er := storage.repo.(*EntRepository)
 	open, err := er.FindOpenStuckStates(ctx)
