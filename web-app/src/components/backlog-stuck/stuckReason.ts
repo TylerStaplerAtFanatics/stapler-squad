@@ -20,6 +20,7 @@ export const STUCK_REASON_LABELS: Record<StuckReason, string> = {
   [StuckReason.STALE_WORK]: "Stale work session",
   [StuckReason.BOUNCING]: "Not converging",
   [StuckReason.PUSH_FAILED]: "Push/PR-create failed",
+  [StuckReason.ORPHANED_TRIAGE]: "Triage session ended without finishing",
 };
 
 /** Decorative icon glyph for every StuckReason (never the sole signal — text label always accompanies it). */
@@ -31,6 +32,7 @@ export const STUCK_REASON_ICONS: Record<StuckReason, string> = {
   [StuckReason.STALE_WORK]: "🟠",
   [StuckReason.BOUNCING]: "🔁",
   [StuckReason.PUSH_FAILED]: "⛔",
+  [StuckReason.ORPHANED_TRIAGE]: "🟡",
 };
 
 /** vanilla-extract class per StuckReason (design/ux.md Surface 7 chip legend). */
@@ -42,6 +44,7 @@ export const STUCK_REASON_CLASS: Record<StuckReason, string> = {
   [StuckReason.STALE_WORK]: styles.chipStaleWork,
   [StuckReason.BOUNCING]: styles.chipBouncing,
   [StuckReason.PUSH_FAILED]: styles.chipPushFailed,
+  [StuckReason.ORPHANED_TRIAGE]: styles.chipOrphanedTriage,
 };
 
 /** Derived (not stored) reason label/class for a stale GitHub-status check (design/ux.md Surface 8). */

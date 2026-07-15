@@ -68,6 +68,8 @@ func statusForSeedReason(reason domain.StuckReason) session.BacklogStatus {
 		return session.BacklogStatusPRPending
 	case domain.StuckReasonStaleWork, domain.StuckReasonBouncing:
 		return session.BacklogStatusInProgress
+	case domain.StuckReasonOrphanedTriage:
+		return session.BacklogStatusIdea
 	default: // abandoned_review, rework_cap, push_failed
 		return session.BacklogStatusReview
 	}

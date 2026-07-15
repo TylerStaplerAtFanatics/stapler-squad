@@ -18,6 +18,7 @@ const GROUP_ORDER: StuckReason[] = [
   StuckReason.PR_READY_UNMERGED,
   StuckReason.ABANDONED_REVIEW,
   StuckReason.STALE_WORK,
+  StuckReason.ORPHANED_TRIAGE,
   StuckReason.REWORK_CAP,
   StuckReason.BOUNCING,
   StuckReason.PUSH_FAILED,

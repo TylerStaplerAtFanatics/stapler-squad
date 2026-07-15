@@ -68,6 +68,15 @@ export const chipPushFailed = style([
   },
 ]);
 
+export const chipOrphanedTriage = style([
+  chip,
+  {
+    background: vars.color.warningBg,
+    color: vars.color.warningText,
+    border: `1px solid ${vars.color.warning}`,
+  },
+]);
+
 export const chipUnknown = style([
   chip,
   {
