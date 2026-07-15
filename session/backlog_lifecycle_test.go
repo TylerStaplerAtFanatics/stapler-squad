@@ -604,6 +604,128 @@ func TestCreateItemSessionWithVerdict_Atomic(t *testing.T) {
 	assert.Equal(t, string(ReviewVerdictFail), sessions[0].ReviewVerdict.OverallOutcome)
 }
 
+// newStuckReviewTestItem creates a review-status BacklogItem with a review
+// ItemSession carrying the given verdict outcome. If endReviewSession is true,
+// the review session's EndedAt is set (simulating the review session having
+// exited) — the item then qualifies as "stuck" per FindStuckReviewItems as
+// long as no other active session exists. If withActiveWorkSession is true, a
+// second ItemSession (role=work, EndedAt nil) is attached, simulating rework
+// still in progress — this should exclude the item from FindStuckReviewItems.
+func newStuckReviewTestItem(t *testing.T, storage *Storage, outcome ReviewOutcome, endReviewSession, withActiveWorkSession bool) *BacklogItemData {
+	t.Helper()
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Stuck review test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	reviewIS, err := storage.CreateItemSessionWithVerdict(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "headless-review-" + uuid.New().String(),
+		SessionRole: SessionRoleReview,
+	}, ReviewVerdictData{
+		OverallOutcome: outcome,
+		Summary:        "no diff available",
+	})
+	require.NoError(t, err)
+
+	if endReviewSession {
+		require.NoError(t, storage.UpdateItemSessionEnded(ctx, reviewIS.ID, time.Now()))
+	}
+
+	if withActiveWorkSession {
+		_, err := storage.CreateItemSession(ctx, ItemSessionData{
+			ItemID:      item.ID,
+			SessionUUID: uuid.New().String(),
+			SessionRole: SessionRoleWork,
+		})
+		require.NoError(t, err)
+	}
+
+	return item
+}
+
+// TestFindStuckReviewItems_ReturnsAbandonedItem_ExcludesActiveAndGateless is a
+// regression test for a live-data bug found via manual QA: an item whose
+// AutoReopenAfterFailedReview spawn attempt failed and rolled the status back
+// to "review" already has a review ItemSession on record, so
+// FindReviewItemsWithoutGate never re-checks it and the item sits abandoned
+// forever. FindStuckReviewItems must catch exactly that case while excluding
+// items with an active session (review still running, or rework in progress)
+// and items with no review session at all (that's FindReviewItemsWithoutGate's
+// job, not this one's).
+func TestFindStuckReviewItems_ReturnsAbandonedItem_ExcludesActiveAndGateless(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	abandoned := newStuckReviewTestItem(t, storage, ReviewVerdictUnverifiable, true, false)
+	stillReviewing := newStuckReviewTestItem(t, storage, ReviewVerdictUnverifiable, false, false)
+	reworkInProgress := newStuckReviewTestItem(t, storage, ReviewVerdictFail, true, true)
+
+	// Gateless item: review status but no review ItemSession at all — belongs
+	// to FindReviewItemsWithoutGate, must NOT show up here.
+	gateless, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Gateless review item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	er := storage.repo.(*EntRepository)
+	stuck, err := er.FindStuckReviewItems(ctx)
+	require.NoError(t, err)
+
+	gotIDs := make([]string, 0, len(stuck))
+	for _, item := range stuck {
+		gotIDs = append(gotIDs, item.ID.String())
+	}
+	assert.Contains(t, gotIDs, abandoned.ID)
+	assert.NotContains(t, gotIDs, stillReviewing.ID, "item with an active (unfinished) review session must be excluded")
+	assert.NotContains(t, gotIDs, reworkInProgress.ID, "item with an active work session (rework in progress) must be excluded")
+	assert.NotContains(t, gotIDs, gateless.ID, "item with no review session at all belongs to FindReviewItemsWithoutGate, not FindStuckReviewItems")
+}
+
+// TestReconcileStuckReviewItems_NotifiesOncePerItem verifies the ReconcileStuck
+// safety net surfaces abandoned review items via a notification (fixing their
+// total invisibility to both the human operator and every other reconciler),
+// and that repeat ticks do not re-notify for the same item.
+func TestReconcileStuckReviewItems_NotifiesOncePerItem(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	item := newStuckReviewTestItem(t, storage, ReviewVerdictUnverifiable, true, false)
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	er := storage.repo.(*EntRepository)
+	listener.reconcileStuckReviewItems(ctx, er)
+	assert.Equal(t, []string{"Review item needs attention"}, notifier.titles())
+	require.Len(t, notifier.calls, 1)
+	// The message body must interpolate the item's title and last verdict outcome,
+	// not just fire a generic notification — this is the actionable content an
+	// operator needs to triage the stuck item without digging further.
+	assert.Contains(t, notifier.calls[0].Message, "Stuck review test item")
+	assert.Contains(t, notifier.calls[0].Message, "UNVERIFIABLE")
+
+	// Second tick must not re-notify for the same item.
+	listener.reconcileStuckReviewItems(ctx, er)
+	assert.Len(t, notifier.calls, 1, "must not re-notify the same item on a repeat tick")
+
+	// Item status itself must be untouched — this reconciler is detection-only.
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusReview), fetched.Status)
+}
+
 // newPRPendingTestItem creates a pr_pending BacklogItem with the given PR
 // number/URL and a non-empty RepoPath (ReconcilePRPending skips items with an
 // empty RepoPath). The repo path is a placeholder — the listener's PR-pending
@@ -895,13 +1017,31 @@ func (f *fakePRCreator) CreatePR(title, body string) (string, int, error) {
 }
 func (f *fakePRCreator) EnablePRAutoMerge(prNumber int) error { return nil }
 
+// fakeNotifierCall records a single Notify invocation's title and message body, so
+// tests can assert on interpolated message content (e.g. that a verdict/outcome
+// actually reached the message), not just which notification fired.
+type fakeNotifierCall struct {
+	Title   string
+	Message string
+}
+
 // fakeNotifier is a test double implementing Notifier, recording every call.
 type fakeNotifier struct {
-	calls []string // title of each Notify call, in order
+	calls []fakeNotifierCall // one per Notify call, in order
 }
 
 func (f *fakeNotifier) Notify(itemID, title, message string, notificationType, priority int32) {
-	f.calls = append(f.calls, title)
+	f.calls = append(f.calls, fakeNotifierCall{Title: title, Message: message})
+}
+
+// titles returns just the Title of every recorded call, in order — for tests (the
+// majority) that only care which notification fired, not its message body.
+func (f *fakeNotifier) titles() []string {
+	titles := make([]string, len(f.calls))
+	for i, c := range f.calls {
+		titles[i] = c.Title
+	}
+	return titles
 }
 
 // newPushAndCreatePRTestFixture creates a review-status BacklogItem with a linked
@@ -965,7 +1105,7 @@ func TestPushAndCreatePR_PushFails_LeavesItemInReview_AndNotifies(t *testing.T) 
 	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
 	require.NoError(t, err)
 	assert.Equal(t, string(BacklogStatusReview), fetched.Status, "item must stay in review, not silently become done")
-	assert.Contains(t, notifier.calls, "PR creation failed")
+	assert.Contains(t, notifier.titles(), "PR creation failed")
 }
 
 // TestPushAndCreatePR_CreatePRFails_LeavesItemInReview_AndNotifies verifies that a
@@ -993,7 +1133,7 @@ func TestPushAndCreatePR_CreatePRFails_LeavesItemInReview_AndNotifies(t *testing
 	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
 	require.NoError(t, err)
 	assert.Equal(t, string(BacklogStatusReview), fetched.Status, "item must stay in review, not silently become done")
-	assert.Contains(t, notifier.calls, "PR creation failed")
+	assert.Contains(t, notifier.titles(), "PR creation failed")
 }
 
 // TestPushAndCreatePR_ReusesExistingPR_WhenAlreadySet verifies the "PR already

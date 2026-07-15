@@ -11,6 +11,7 @@ import (
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
+	"github.com/tstapler/stapler-squad/session/scrollback"
 )
 
 // Notifier publishes an operator-facing notification. Implemented outside this
@@ -124,6 +125,14 @@ type BacklogLifecycleListener struct {
 	staleWorkNotifiedMu sync.Mutex
 	staleWorkNotified   map[string]bool
 
+	// stuckReviewNotifiedMu guards stuckReviewNotified for concurrent access.
+	// Tracks which review-status item IDs have already been flagged by
+	// ReconcileStuck as "abandoned" (has a review verdict, nothing active in
+	// flight) so repeat ticks don't re-notify every 60s. In-memory only, same
+	// tradeoff as staleWorkNotified above.
+	stuckReviewNotifiedMu sync.Mutex
+	stuckReviewNotified   map[string]bool
+
 	// reviewSem limits concurrent review gate goroutines.
 	reviewSem chan struct{}
 
@@ -156,6 +165,14 @@ func (l *BacklogLifecycleListener) SetAutoReopener(r AutoReopenSpawner) {
 	l.autoReopenMu.Lock()
 	defer l.autoReopenMu.Unlock()
 	l.autoReopener = r
+}
+
+// SetScrollbackManager wires in the scrollback manager used to write a searchable
+// session transcript file on the empty-diff codebase-read review path. Delegates to
+// the underlying ReviewGateRunner, which owns the field. Optional — nil (the default)
+// simply omits the "## Session Transcript" prompt section.
+func (l *BacklogLifecycleListener) SetScrollbackManager(sm *scrollback.ScrollbackManager) {
+	l.runner.SetScrollbackManager(sm)
 }
 
 // getAutoReopener returns the current auto-reopener under a read lock.
@@ -261,6 +278,7 @@ func newListenerBase(storage *Storage) *BacklogLifecycleListener {
 		prPendingCheckerFactory: defaultPRPendingCheckerFactory,
 		prCreatorFactory:        defaultPRCreatorFactory,
 		staleWorkNotified:       make(map[string]bool),
+		stuckReviewNotified:     make(map[string]bool),
 	}
 	l.runner = NewReviewGateRunner(storage, l.getHeadlessPool, l.getAutoReopener, l.getNotifier, nil)
 	return l
@@ -574,8 +592,56 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 		log.InfoLog.Printf("[BacklogLifecycle] BackfillMissingPRNumbers: backfilled pr_number for %d item(s)", n)
 	}
 
+	// Flag review-status items that already have a review verdict but nothing
+	// active in flight (AutoReopenAfterFailedReview's spawn failed and rolled
+	// back, or a legacy review session exited without a verdict). Detection +
+	// notification only, same rationale as reconcileStaleWorkSessions above:
+	// these items are otherwise invisible to every other reconciler.
+	l.reconcileStuckReviewItems(ctx, er)
+
 	// Poll pr_pending items: auto-transition to done when the PR is merged.
 	l.ReconcilePRPending(ctx, er)
+}
+
+// reconcileStuckReviewItems notifies once per item when a review-status item
+// has a review verdict on record but no active review or work session — i.e.
+// it is not mid-cycle, it is simply abandoned. See FindStuckReviewItems for
+// the two known causes. Best-effort: query/notify failures are logged, never
+// returned.
+func (l *BacklogLifecycleListener) reconcileStuckReviewItems(ctx context.Context, er *EntRepository) {
+	items, err := er.FindStuckReviewItems(ctx)
+	if err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] reconcileStuckReviewItems query error: %v", err)
+		return
+	}
+	for _, item := range items {
+		l.stuckReviewNotifiedMu.Lock()
+		alreadyNotified := l.stuckReviewNotified[item.ID.String()]
+		if !alreadyNotified {
+			l.stuckReviewNotified[item.ID.String()] = true
+		}
+		l.stuckReviewNotifiedMu.Unlock()
+		if alreadyNotified {
+			continue
+		}
+
+		outcome, verdictErr := er.GetMostRecentReviewVerdictForItem(ctx, item.ID.String())
+		if verdictErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileStuckReviewItems GetMostRecentReviewVerdictForItem item=%s: %v", item.ID, verdictErr)
+		}
+		outcomeDesc := "no verdict recorded"
+		if outcome != "" {
+			outcomeDesc = fmt.Sprintf("last verdict: %s", outcome)
+		}
+
+		log.WarningLog.Printf("[BacklogLifecycle] item %s stuck in review with nothing in flight (%s)", item.ID, outcomeDesc)
+		l.notify(item.ID.String(),
+			"Review item needs attention",
+			fmt.Sprintf("%s — stuck in review with no active session (%s). It may need manual re-review or rework.", item.Title, outcomeDesc),
+			8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
+			2, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
+		)
+	}
 }
 
 // maxWorkSessionStaleness is the longest an in_progress work session can go without
