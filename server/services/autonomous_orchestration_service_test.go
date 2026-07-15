@@ -152,3 +152,73 @@ func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_DeregistersDr
 	// The driver must have been removed from the registry.
 	svc.autonomousSvc.stopAndDeregisterDriver(title) // no panic = already deregistered
 }
+
+// TestAutonomousOrchestrationService_OnAutonomousDriverComplete_NotifiesStatusUpdateFailure
+// verifies the fix for the notification/transition-divergence bug: when the driver reports
+// Done but the backlog item's status transition fails its optimistic-concurrency precondition
+// (e.g. a concurrent status change), the published notification must say so explicitly rather
+// than announcing a plain "complete" while the item is silently stuck.
+func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_NotifiesStatusUpdateFailure(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+	eventBus := events.NewEventBus(4)
+	svc := NewSessionService(storage, eventBus)
+
+	const title = "notif-race-test"
+	inst := &session.Instance{
+		Title:          title,
+		UUID:           title + "-uuid",
+		Path:           "/tmp/test",
+		Status:         session.Paused,
+		Program:        "claude",
+		AutonomousMode: true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	require.NoError(t, storage.AddInstance(inst))
+	// Bypass the real ReviewQueuePoller (not wired in this unit test) and resolve the
+	// instance directly, matching what FindLiveInstance would return once wired.
+	svc.autonomousSvc.SetInstanceFinder(func(_ string) *session.Instance { return inst })
+
+	// Item is already at 'review' — the triage-role transition below expects 'idea', so its
+	// precondition will fail and TransitionBacklogItemStatus must return an error.
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Notification race test item",
+		Status: string(session.BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: inst.UUID,
+		SessionRole: session.SessionRoleTriage,
+	})
+	require.NoError(t, err)
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, _ := eventBus.Subscribe(subCtx)
+
+	outcome := session.AutonomousDriverOutcome{Done: true, Reason: "test done", Turns: 1}
+	svc.autonomousSvc.onAutonomousDriverComplete(title, outcome)
+
+	// onAutonomousDriverComplete also publishes a session.updated event before the
+	// notification (badge update for autonomous_mode/autonomous_outcome) — skip past it.
+	var notif *events.Event
+	for i := 0; i < 5; i++ {
+		select {
+		case ev := <-ch:
+			if ev.Type == events.EventNotification {
+				notif = ev
+			}
+		case <-time.After(2 * time.Second):
+			i = 5
+		}
+		if notif != nil {
+			break
+		}
+	}
+	require.NotNil(t, notif, "expected a notification event")
+	assert.Contains(t, notif.NotificationTitle, "status update failed", "operator must be told the status update failed, not just 'complete'")
+	assert.Equal(t, int32(9), notif.NotificationType, "a divergence between driver-done and status-update-failed must surface as a FAILURE notification")
+}

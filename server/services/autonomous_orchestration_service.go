@@ -236,6 +236,10 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 	a.bus.Publish(events.NewSessionUpdatedEvent(inst, []string{"autonomous_mode", "autonomous_outcome"}))
 
 	// Look up the backlog item linked to this session.
+	// statusTransitionErr is surfaced in the notification below so the operator never sees
+	// "complete" while the backlog item silently failed to advance (e.g. a concurrent status
+	// change broke the optimistic-concurrency precondition).
+	var statusTransitionErr error
 	if a.storageGetter != nil {
 		concreteStorage := a.storageGetter()
 		if concreteStorage != nil {
@@ -276,6 +280,7 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 					}
 					precondition := &session.BacklogItemPrecondition{ExpectedStatus: expectedStatus}
 					if _, transErr := concreteStorage.TransitionBacklogItemStatus(ctx, item.ID, toStatus, precondition); transErr != nil {
+						statusTransitionErr = transErr
 						log.Warn("[AutonomousDriver] failed to transition backlog item", "item", item.ID, "to", toStatus, "err", transErr)
 					} else {
 						log.Info("[AutonomousDriver] backlog item transitioned", "item", item.ID, "to", toStatus, "done", outcome.Done)
@@ -301,6 +306,14 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 	} else {
 		title = "Autonomous fix stuck"
 		body = fmt.Sprintf("Session '%s' stopped after %d turns without completing. Open the session to review what was accomplished and give the next instruction.", instanceName, outcome.Turns)
+		notifType = int32(9) // NotificationType_FAILURE
+	}
+	if statusTransitionErr != nil {
+		// The driver finished (or got stuck), but the backlog item's status update failed.
+		// Never let the operator see "complete" while the item is silently stuck in its
+		// previous status — override the notification to say so explicitly.
+		title += " — status update failed"
+		body += fmt.Sprintf(" The backlog item status could not be updated (%v); it may be stuck in its previous status — check manually.", statusTransitionErr)
 		notifType = int32(9) // NotificationType_FAILURE
 	}
 	a.bus.Publish(events.NewNotificationEvent(
