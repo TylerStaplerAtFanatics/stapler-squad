@@ -5,7 +5,9 @@ package services
 // These tests do not require tmux or a real headless pool.
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -151,4 +153,88 @@ func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_DeregistersDr
 
 	// The driver must have been removed from the registry.
 	svc.autonomousSvc.stopAndDeregisterDriver(title) // no panic = already deregistered
+}
+
+// captureLogs swaps the default slog logger for one that writes to a buffer at Debug level,
+// restoring the previous logger via t.Cleanup. Returns the buffer to inspect after the call.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// TestAutonomousOrchestrationService_OnAutonomousDriverComplete_LogsNotLinkedAtDebug verifies
+// the fix for the swallowed-error bug: when no item session is linked to the completing
+// session (the common, expected case — most autonomous sessions are not backlog-linked), the
+// lookup "failure" must log at Debug, not escalate to Warn.
+func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_LogsNotLinkedAtDebug(t *testing.T) {
+	storage := createTestStorage(t)
+	eventBus := events.NewEventBus(4)
+	svc := NewSessionService(storage, eventBus)
+
+	const title = "not-linked-test"
+	inst := &session.Instance{
+		Title: title, UUID: title + "-uuid", Path: "/tmp/test",
+		Status: session.Paused, Program: "claude", AutonomousMode: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	require.NoError(t, storage.AddInstance(inst))
+	svc.autonomousSvc.SetInstanceFinder(func(_ string) *session.Instance { return inst })
+
+	buf := captureLogs(t)
+	svc.autonomousSvc.onAutonomousDriverComplete(title, session.AutonomousDriverOutcome{Done: true, Reason: "test done", Turns: 1})
+
+	assert.Contains(t, buf.String(), "no linked backlog item session")
+	assert.NotContains(t, buf.String(), "level=WARN", "the expected not-linked case must not escalate to Warn")
+}
+
+// TestAutonomousOrchestrationService_OnAutonomousDriverComplete_LogsRealLookupFailureAtWarn
+// verifies the other half of the fix: when an item session IS found but its linked backlog
+// item cannot be loaded (a genuine data-integrity problem, not "not linked"), the failure
+// must log at Warn so it's diagnosable — previously this took the identical silent path as
+// the expected not-linked case above.
+func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_LogsRealLookupFailureAtWarn(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+	eventBus := events.NewEventBus(4)
+	svc := NewSessionService(storage, eventBus)
+
+	const title = "dangling-item-session-test"
+	inst := &session.Instance{
+		Title: title, UUID: title + "-uuid", Path: "/tmp/test",
+		Status: session.Paused, Program: "claude", AutonomousMode: true,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	require.NoError(t, storage.AddInstance(inst))
+	svc.autonomousSvc.SetInstanceFinder(func(_ string) *session.Instance { return inst })
+
+	// Create a real backlog item + item session (FK-valid), then delete the backlog item —
+	// simulating an operator deleting an item while its autonomous session is still running.
+	// If the item session row also disappears via cascade, GetItemSessionBySessionUUID will
+	// return ErrNotFound and this test will report that below instead of asserting blindly.
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Deleted-out-from-under-us item",
+		Status: string(session.BacklogStatusIdea),
+	})
+	require.NoError(t, err)
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: inst.UUID,
+		SessionRole: session.SessionRoleTriage,
+	})
+	require.NoError(t, err)
+	require.NoError(t, storage.DeleteBacklogItem(ctx, item.ID))
+
+	if _, lookupErr := storage.GetItemSessionBySessionUUID(ctx, inst.UUID); lookupErr != nil {
+		t.Skip("DeleteBacklogItem cascades to the item session too — this scenario isn't reachable via the public Storage API")
+	}
+
+	buf := captureLogs(t)
+	svc.autonomousSvc.onAutonomousDriverComplete(title, session.AutonomousDriverOutcome{Done: true, Reason: "test done", Turns: 1})
+
+	assert.Contains(t, buf.String(), "failed to load linked backlog item")
+	assert.Contains(t, buf.String(), "level=WARN", "a genuine lookup failure must be diagnosable, not silent")
 }
