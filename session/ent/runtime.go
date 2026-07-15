@@ -9,6 +9,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/analyticsevent"
 	"github.com/tstapler/stapler-squad/session/ent/approvalrule"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogprogressnote"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/classificationanalytics"
@@ -181,6 +182,20 @@ func init() {
 	backlogitemDescID := backlogitemFields[0].Descriptor()
 	// backlogitem.DefaultID holds the default value on creation for the id field.
 	backlogitem.DefaultID = backlogitemDescID.Default.(func() uuid.UUID)
+	backlogprogressnoteFields := schema.BacklogProgressNote{}.Fields()
+	_ = backlogprogressnoteFields
+	// backlogprogressnoteDescCriterionIndex is the schema descriptor for criterion_index field.
+	backlogprogressnoteDescCriterionIndex := backlogprogressnoteFields[2].Descriptor()
+	// backlogprogressnote.CriterionIndexValidator is a validator for the "criterion_index" field. It is called by the builders before save.
+	backlogprogressnote.CriterionIndexValidator = backlogprogressnoteDescCriterionIndex.Validators[0].(func(int) error)
+	// backlogprogressnoteDescCreatedAt is the schema descriptor for created_at field.
+	backlogprogressnoteDescCreatedAt := backlogprogressnoteFields[5].Descriptor()
+	// backlogprogressnote.DefaultCreatedAt holds the default value on creation for the created_at field.
+	backlogprogressnote.DefaultCreatedAt = backlogprogressnoteDescCreatedAt.Default.(func() time.Time)
+	// backlogprogressnoteDescID is the schema descriptor for id field.
+	backlogprogressnoteDescID := backlogprogressnoteFields[0].Descriptor()
+	// backlogprogressnote.DefaultID holds the default value on creation for the id field.
+	backlogprogressnote.DefaultID = backlogprogressnoteDescID.Default.(func() uuid.UUID)
 	backlogstatuseventFields := schema.BacklogStatusEvent{}.Fields()
 	_ = backlogstatuseventFields
 	// backlogstatuseventDescTriggeredBy is the schema descriptor for triggered_by field.

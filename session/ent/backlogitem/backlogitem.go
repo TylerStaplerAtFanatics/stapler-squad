@@ -65,6 +65,8 @@ const (
 	EdgeStatusEvents = "status_events"
 	// EdgeStuckStates holds the string denoting the stuck_states edge name in mutations.
 	EdgeStuckStates = "stuck_states"
+	// EdgeProgressNotes holds the string denoting the progress_notes edge name in mutations.
+	EdgeProgressNotes = "progress_notes"
 	// EdgeSource holds the string denoting the source edge name in mutations.
 	EdgeSource = "source"
 	// Table holds the table name of the backlogitem in the database.
@@ -95,6 +97,13 @@ const (
 	StuckStatesInverseTable = "backlog_stuck_states"
 	// StuckStatesColumn is the table column denoting the stuck_states relation/edge.
 	StuckStatesColumn = "item_id"
+	// ProgressNotesTable is the table that holds the progress_notes relation/edge.
+	ProgressNotesTable = "backlog_progress_notes"
+	// ProgressNotesInverseTable is the table name for the BacklogProgressNote entity.
+	// It exists in this package in order to avoid circular dependency with the "backlogprogressnote" package.
+	ProgressNotesInverseTable = "backlog_progress_notes"
+	// ProgressNotesColumn is the table column denoting the progress_notes relation/edge.
+	ProgressNotesColumn = "item_id"
 	// SourceTable is the table that holds the source relation/edge.
 	SourceTable = "backlog_items"
 	// SourceInverseTable is the table name for the ItemSource entity.
@@ -355,6 +364,20 @@ func ByStuckStates(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByProgressNotesCount orders the results by progress_notes count.
+func ByProgressNotesCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newProgressNotesStep(), opts...)
+	}
+}
+
+// ByProgressNotes orders the results by progress_notes terms.
+func ByProgressNotes(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newProgressNotesStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // BySourceField orders the results by source field.
 func BySourceField(field string, opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -387,6 +410,13 @@ func newStuckStatesStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(StuckStatesInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, StuckStatesTable, StuckStatesColumn),
+	)
+}
+func newProgressNotesStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(ProgressNotesInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, ProgressNotesTable, ProgressNotesColumn),
 	)
 }
 func newSourceStep() *sqlgraph.Step {

@@ -718,7 +718,12 @@ func TestReconcileStuckReviewItems_NotifiesOncePerItem(t *testing.T) {
 	backdateStuckFirstDetected(t, er, item.ID, "abandoned_review", time.Now().Add(-20*time.Minute))
 
 	listener.reconcileStuckReviewItems(ctx, er)
-	assert.Equal(t, []string{"Review item needs attention"}, notifier.calls)
+	assert.Equal(t, []string{"Review item needs attention"}, notifier.titles())
+	require.Len(t, notifier.calls, 1)
+	// The message body must interpolate the item's title, not just fire a generic
+	// notification — this is the actionable content an operator needs to triage
+	// the stuck item without digging further.
+	assert.Contains(t, notifier.calls[0].Message, "Stuck review test item")
 
 	// Third tick must not re-notify for the same item.
 	listener.reconcileStuckReviewItems(ctx, er)
@@ -1022,13 +1027,31 @@ func (f *fakePRCreator) CreatePR(title, body string) (string, int, error) {
 }
 func (f *fakePRCreator) EnablePRAutoMerge(prNumber int) error { return f.autoMergeErr }
 
+// fakeNotifierCall records a single Notify invocation's title and message body, so
+// tests can assert on interpolated message content (e.g. that a verdict/outcome
+// actually reached the message), not just which notification fired.
+type fakeNotifierCall struct {
+	Title   string
+	Message string
+}
+
 // fakeNotifier is a test double implementing Notifier, recording every call.
 type fakeNotifier struct {
-	calls []string // title of each Notify call, in order
+	calls []fakeNotifierCall // one per Notify call, in order
 }
 
 func (f *fakeNotifier) Notify(itemID, title, message string, notificationType, priority int32) {
-	f.calls = append(f.calls, title)
+	f.calls = append(f.calls, fakeNotifierCall{Title: title, Message: message})
+}
+
+// titles returns just the Title of every recorded call, in order — for tests (the
+// majority) that only care which notification fired, not its message body.
+func (f *fakeNotifier) titles() []string {
+	titles := make([]string, len(f.calls))
+	for i, c := range f.calls {
+		titles[i] = c.Title
+	}
+	return titles
 }
 
 // newPushAndCreatePRTestFixture creates a review-status BacklogItem with a linked
@@ -1092,7 +1115,7 @@ func TestPushAndCreatePR_PushFails_LeavesItemInReview_AndNotifies(t *testing.T) 
 	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
 	require.NoError(t, err)
 	assert.Equal(t, string(BacklogStatusReview), fetched.Status, "item must stay in review, not silently become done")
-	assert.Contains(t, notifier.calls, "PR creation failed")
+	assert.Contains(t, notifier.titles(), "PR creation failed")
 }
 
 // TestPushAndCreatePR_CreatePRFails_LeavesItemInReview_AndNotifies verifies that a
@@ -1120,7 +1143,7 @@ func TestPushAndCreatePR_CreatePRFails_LeavesItemInReview_AndNotifies(t *testing
 	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
 	require.NoError(t, err)
 	assert.Equal(t, string(BacklogStatusReview), fetched.Status, "item must stay in review, not silently become done")
-	assert.Contains(t, notifier.calls, "PR creation failed")
+	assert.Contains(t, notifier.titles(), "PR creation failed")
 }
 
 // TestPushAndCreatePR_AutoMergeFails_StillTransitionsButNotifies verifies the fix for
@@ -1152,7 +1175,7 @@ func TestPushAndCreatePR_AutoMergeFails_StillTransitionsButNotifies(t *testing.T
 	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
 	require.NoError(t, err)
 	assert.Equal(t, string(BacklogStatusPRPending), fetched.Status, "the PR was created successfully — the item must still advance to pr_pending")
-	assert.Contains(t, notifier.calls, "Auto-merge not enabled", "operator must be told the PR needs a manual merge, not just a log line")
+	assert.Contains(t, notifier.titles(), "Auto-merge not enabled", "operator must be told the PR needs a manual merge, not just a log line")
 }
 
 // TestPushAndCreatePR_ReusesExistingPR_WhenAlreadySet verifies the "PR already
