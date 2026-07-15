@@ -284,21 +284,30 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 					case session.SessionRoleWork:
 						toStatus = session.BacklogStatusReview
 						expectedStatus = string(session.BacklogStatusInProgress)
-					default:
-						// SessionRoleReview and unknown roles: no transition from AutonomousDriver.
-						// Review outcomes are managed by submit_review_verdict.
+					case session.SessionRoleReview:
+						// Review outcomes are managed by submit_review_verdict — no transition,
+						// and no generic notification (that would duplicate the review-specific one).
 						log.Info("[AutonomousDriver] skipping status transition for role", "role", is.Role, "item", item.ID)
 						return
+					default:
+						// Unrecognized role — a new pipeline stage was likely added elsewhere
+						// without updating this switch. Previously this fell into the same silent
+						// return as SessionRoleReview, leaving the operator with zero signal. Log
+						// at Warn (diagnosable) and fall through to the generic done/stuck
+						// notification below instead of returning early.
+						log.Warn("[AutonomousDriver] onAutonomousDriverComplete: unrecognized session role, skipping status transition", "role", is.Role, "item", item.ID)
 					}
-					precondition := &session.BacklogItemPrecondition{ExpectedStatus: expectedStatus}
-					if _, transErr := concreteStorage.TransitionBacklogItemStatus(ctx, item.ID, toStatus, precondition); transErr != nil {
-						statusTransitionErr = transErr
-						log.Warn("[AutonomousDriver] failed to transition backlog item", "item", item.ID, "to", toStatus, "err", transErr)
-					} else {
-						log.Info("[AutonomousDriver] backlog item transitioned", "item", item.ID, "to", toStatus, "done", outcome.Done)
-						// Immediately kick off headless review for completed work sessions.
-						if toStatus == session.BacklogStatusReview && a.reviewGateTrigger != nil {
-							a.reviewGateTrigger.TriggerReviewForSession(sessionUUID)
+					if toStatus != "" {
+						precondition := &session.BacklogItemPrecondition{ExpectedStatus: expectedStatus}
+						if _, transErr := concreteStorage.TransitionBacklogItemStatus(ctx, item.ID, toStatus, precondition); transErr != nil {
+							statusTransitionErr = transErr
+							log.Warn("[AutonomousDriver] failed to transition backlog item", "item", item.ID, "to", toStatus, "err", transErr)
+						} else {
+							log.Info("[AutonomousDriver] backlog item transitioned", "item", item.ID, "to", toStatus, "done", outcome.Done)
+							// Immediately kick off headless review for completed work sessions.
+							if toStatus == session.BacklogStatusReview && a.reviewGateTrigger != nil {
+								a.reviewGateTrigger.TriggerReviewForSession(sessionUUID)
+							}
 						}
 					}
 				}
