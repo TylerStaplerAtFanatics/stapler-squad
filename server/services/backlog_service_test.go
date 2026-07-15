@@ -893,6 +893,89 @@ func TestSpawnSessionFromItem_WIPLimit_AllowsReopenAtCap(t *testing.T) {
 	assert.Len(t, creator.calls, maxConcurrentBacklogWorkItems+1)
 }
 
+// TestSpawnSessionFromItem_TombstonesDeadWorkSession_AllowsRespawn is the regression
+// test for a live production bug: a work session that never reached its normal
+// completion path (crash, kill, server restart) left an open (EndedAt nil) work-role
+// ItemSession behind. Every subsequent spawn attempt (e.g. AutoReopenForPRFix retrying
+// every ~60s) was rejected by hasActiveWorkSession's guard forever, since nothing ever
+// checked whether that session was actually still alive — the item bounced
+// in_progress<->pr_pending indefinitely with zero progress. tombstoneOrphanWorkSessions
+// must clear a confirmed-dead session so a fresh spawn succeeds.
+func TestSpawnSessionFromItem_TombstonesDeadWorkSession_AllowsRespawn(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{}} // nothing is live
+	svc.SetSessionStopper(stopper)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	itemID := createReadyItemForSpawn(t, svc, repoPath, "item with dead work session")
+
+	// Simulate a work session that died without ever calling UpdateItemSessionEnded —
+	// same shape as the live bug (created hours ago, EndedAt still nil).
+	_, err := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: "dead-work-session-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	// TransitionBacklogItemStatus above already moved the item to "ready"; put it back
+	// to "in_progress" the way a real reopen scenario would leave it (dead session, but
+	// item still shows as actively worked).
+	_, err = storage.TransitionBacklogItemStatus(t.Context(), itemID, session.BacklogStatusInProgress, nil)
+	require.NoError(t, err)
+
+	// Before the fix, this would fail with CodeAlreadyExists forever.
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err, "a dead work session must not permanently block respawning")
+	assert.Len(t, creator.calls, 1)
+
+	sessions, err := storage.ListItemSessions(t.Context(), itemID)
+	require.NoError(t, err)
+	var deadEnded, newOpen bool
+	for _, is := range sessions {
+		if is.SessionUUID == "dead-work-session-uuid" {
+			deadEnded = is.EndedAt != nil
+		} else if is.Role == string(session.SessionRoleWork) {
+			newOpen = is.EndedAt == nil
+		}
+	}
+	assert.True(t, deadEnded, "the dead session must be tombstoned (EndedAt set)")
+	assert.True(t, newOpen, "the newly-spawned work session must be open")
+}
+
+// TestSpawnSessionFromItem_LiveWorkSession_StillBlocksSpawn verifies
+// tombstoneOrphanWorkSessions does NOT reap a work session that IsSessionLive
+// confirms is genuinely still running — the fix must not weaken the duplicate-spawn
+// guard for the common case.
+func TestSpawnSessionFromItem_LiveWorkSession_StillBlocksSpawn(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{"live-work-session-uuid": true}}
+	svc.SetSessionStopper(stopper)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	itemID := createReadyItemForSpawn(t, svc, repoPath, "item with live work session")
+	_, err := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: "live-work-session-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	_, err = storage.TransitionBacklogItemStatus(t.Context(), itemID, session.BacklogStatusInProgress, nil)
+	require.NoError(t, err)
+
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.Error(t, err, "a genuinely live work session must still block a duplicate spawn")
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+	assert.Empty(t, creator.calls)
+}
+
 // ─── AttachSessionToItem ──────────────────────────────────────────────────────
 
 // TestAttachSessionToItem_WritesContextFileWithPlanArtifactsAndPriorSessions is a
