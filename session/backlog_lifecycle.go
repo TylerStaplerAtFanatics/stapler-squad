@@ -410,9 +410,7 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 	// definition now. Resolve immediately rather than waiting for the
 	// self-heal sweep's next tick (Task 2.1.5a).
 	if er, ok := l.storage.repo.(*EntRepository); ok {
-		if _, resolveErr := er.ResolveStuck(ctx, item.ID, domain.StuckReasonStaleWork); resolveErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] onSessionExited ResolveStuck(stale_work) item=%s: %v", item.ID, resolveErr)
-		}
+		l.resolveStuckLogged(ctx, er, item.ID, domain.StuckReasonStaleWork, "onSessionExited")
 	}
 
 	log.InfoLog.Printf("[BacklogLifecycle] item %s transitioned to %s (session %s exited)", item.ID, toStatus, sessionUUID)
@@ -853,9 +851,7 @@ func (l *BacklogLifecycleListener) reconcileStuckReviewItems(ctx context.Context
 		if seen[row.ItemID] {
 			continue // still abandoned this tick
 		}
-		if _, resolveErr := er.ResolveStuck(ctx, row.ItemID, domain.StuckReasonAbandonedReview); resolveErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] reconcileStuckReviewItems ResolveStuck item=%s: %v", row.ItemID, resolveErr)
-		}
+		l.resolveStuckLogged(ctx, er, row.ItemID, domain.StuckReasonAbandonedReview, "reconcileStuckReviewItems")
 	}
 }
 
@@ -910,6 +906,19 @@ func (l *BacklogLifecycleListener) markAbandonedReview(ctx context.Context, er *
 	)
 	if _, notifyErr := er.MarkStuckNotified(ctx, itemID, domain.StuckReasonAbandonedReview); notifyErr != nil {
 		log.WarningLog.Printf("[BacklogLifecycle] markAbandonedReview MarkStuckNotified item=%s: %v", itemID, notifyErr)
+	}
+}
+
+// resolveStuckLogged resolves an open BacklogStuckState row for (itemID, reason),
+// logging (not returning) any error. Centralizes the resolve-and-log idiom that was
+// previously repeated verbatim across every detector's resolve path (10 call sites —
+// backlog-feature-improvement audit finding). caller identifies the calling
+// function/branch for the log line; reason is included automatically, so callers no
+// longer need to encode it in caller too (except to distinguish multiple resolve call
+// sites for the same reason within one function, e.g. "ReconcilePRPending/closed").
+func (l *BacklogLifecycleListener) resolveStuckLogged(ctx context.Context, er *EntRepository, itemID string, reason domain.StuckReason, caller string) {
+	if _, err := er.ResolveStuck(ctx, itemID, reason); err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] %s ResolveStuck(%s) item=%s: %v", caller, reason, itemID, err)
 	}
 }
 
@@ -1019,9 +1028,7 @@ func (l *BacklogLifecycleListener) reconcileStaleWorkSessions(ctx context.Contex
 		if stillStale[row.ItemID] {
 			continue // still stale this tick
 		}
-		if _, resolveErr := er.ResolveStuck(ctx, row.ItemID, domain.StuckReasonStaleWork); resolveErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] reconcileStaleWorkSessions ResolveStuck item=%s: %v", row.ItemID, resolveErr)
-		}
+		l.resolveStuckLogged(ctx, er, row.ItemID, domain.StuckReasonStaleWork, "reconcileStaleWorkSessions")
 	}
 }
 
@@ -1205,9 +1212,7 @@ func (l *BacklogLifecycleListener) selfHealStuck(ctx context.Context, er *EntRep
 		if !resolve {
 			continue
 		}
-		if _, resolveErr := er.ResolveStuck(ctx, row.ItemID, row.Reason); resolveErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] selfHealStuck ResolveStuck item=%s reason=%s: %v", row.ItemID, row.Reason, resolveErr)
-		}
+		l.resolveStuckLogged(ctx, er, row.ItemID, row.Reason, "selfHealStuck")
 	}
 }
 
@@ -1322,10 +1327,20 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *Ba
 	}
 
 	// Enable GitHub auto-merge so the PR merges automatically once CI passes.
-	// Best-effort: repos without branch protection or auto-merge enabled will fail here,
-	// and ReconcilePRPending will detect the merge via polling instead.
+	// Best-effort: repos without branch protection or auto-merge enabled will fail here.
+	// ReconcilePRPending still polls and will detect the merge if one happens some other
+	// way, but nothing will ever *initiate* the merge for this PR without auto-merge — the
+	// operator must merge it manually, so this needs a notification, not just a log line
+	// (same silent-failure pattern found and fixed elsewhere in this codebase — see
+	// docs/tasks/backlog-feature-improvement.md).
 	if autoErr := g.EnablePRAutoMerge(prNumber); autoErr != nil {
 		log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR auto-merge item=%s pr=%d: %v", item.ID, prNumber, autoErr)
+		l.notify(item.ID,
+			"Auto-merge not enabled",
+			fmt.Sprintf("%s — PR #%d could not be set to auto-merge (%v). It will need to be merged manually once checks pass.", item.Title, prNumber, autoErr),
+			8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
+			2, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
+		)
 	} else {
 		log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s PR #%d auto-merge enabled", item.ID, prNumber)
 	}
@@ -1343,12 +1358,8 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *Ba
 	// or abandoned_review rows immediately rather than waiting for the
 	// self-heal sweep's next tick (Task 2.1.5a).
 	if er, ok := l.storage.repo.(*EntRepository); ok {
-		if _, resolveErr := er.ResolveStuck(ctx, item.ID, domain.StuckReasonPushFailed); resolveErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR ResolveStuck(push_failed) item=%s: %v", item.ID, resolveErr)
-		}
-		if _, resolveErr := er.ResolveStuck(ctx, item.ID, domain.StuckReasonAbandonedReview); resolveErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR ResolveStuck(abandoned_review) item=%s: %v", item.ID, resolveErr)
-		}
+		l.resolveStuckLogged(ctx, er, item.ID, domain.StuckReasonPushFailed, "pushAndCreatePR")
+		l.resolveStuckLogged(ctx, er, item.ID, domain.StuckReasonAbandonedReview, "pushAndCreatePR")
 	}
 }
 
@@ -1386,9 +1397,7 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 				// The item just reached done — resolve pr_ready_unmerged
 				// immediately (Task 2.1.5a) rather than waiting for the
 				// self-heal sweep's next tick.
-				if _, resolveErr := er.ResolveStuck(ctx, item.ID.String(), domain.StuckReasonPRReadyUnmerged); resolveErr != nil {
-					log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending ResolveStuck(pr_ready_unmerged) item=%s: %v", item.ID, resolveErr)
-				}
+				l.resolveStuckLogged(ctx, er, item.ID.String(), domain.StuckReasonPRReadyUnmerged, "ReconcilePRPending")
 			}
 			continue
 		}
@@ -1420,9 +1429,7 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 			// under this pr_number; resolve immediately (self-heal would also
 			// catch this once/if the status moves off pr_pending, but that may
 			// not happen if no PRFixSpawner is configured below).
-			if _, resolveErr := er.ResolveStuck(ctx, item.ID.String(), domain.StuckReasonPRReadyUnmerged); resolveErr != nil {
-				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending ResolveStuck(pr_ready_unmerged, closed) item=%s: %v", item.ID, resolveErr)
-			}
+			l.resolveStuckLogged(ctx, er, item.ID.String(), domain.StuckReasonPRReadyUnmerged, "ReconcilePRPending/closed")
 			if fixSpawner == nil {
 				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s: PR #%d closed without merging but no PRFixSpawner configured", item.ID, closedPrNum)
 				continue
@@ -1457,8 +1464,8 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 
 			if prReadyToMergeSolo(info) {
 				l.markPRReadyUnmerged(ctx, er, item.ID.String(), item.Title)
-			} else if _, resolveErr := er.ResolveStuck(ctx, item.ID.String(), domain.StuckReasonPRReadyUnmerged); resolveErr != nil {
-				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending ResolveStuck(pr_ready_unmerged) item=%s: %v", item.ID, resolveErr)
+			} else {
+				l.resolveStuckLogged(ctx, er, item.ID.String(), domain.StuckReasonPRReadyUnmerged, "ReconcilePRPending")
 			}
 			continue
 		}
@@ -1467,9 +1474,7 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 		// became CI-failing/blocked/conflicting while the item is still
 		// pr_pending — a same-status clear the status-anchored self-heal
 		// sweep structurally cannot see.
-		if _, resolveErr := er.ResolveStuck(ctx, item.ID.String(), domain.StuckReasonPRReadyUnmerged); resolveErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending ResolveStuck(pr_ready_unmerged, unhealthy) item=%s: %v", item.ID, resolveErr)
-		}
+		l.resolveStuckLogged(ctx, er, item.ID.String(), domain.StuckReasonPRReadyUnmerged, "ReconcilePRPending/unhealthy")
 
 		// 3. CI failure, review changes requested, or merge conflict → spawn fix session.
 		if fixSpawner == nil {
