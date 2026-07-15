@@ -242,6 +242,14 @@ func (s *BacklogService) SpawnSessionFromItem(
 		priorSessions = nil
 	}
 
+	// 8a. Tombstone any work session that never reached its normal completion path
+	// (crash, kill, server restart mid-session) before checking 8b below — otherwise a
+	// single dead session blocks every future spawn attempt for this item forever. Found
+	// live: AutoReopenForPRFix retried every ~60s against the same dead session for
+	// hours, bouncing the item in_progress<->pr_pending with no progress (see
+	// docs/tasks/backlog-feature-improvement.md).
+	s.tombstoneOrphanWorkSessions(ctx, item.ID, priorSessions)
+
 	// 8b. Guard against spawning a duplicate work session when one is already active.
 	if hasActiveWorkSession(priorSessions) {
 		return nil, connect.NewError(connect.CodeAlreadyExists,
@@ -1047,6 +1055,37 @@ Do not modify the code. Only write the review verdict.
 	return connect.NewResponse(&sessionv1.TriggerReReviewResponse{
 		ItemSession: itemSessionToProto(is, s.buildCostLookup()),
 	}), nil
+}
+
+// tombstoneOrphanWorkSessions marks any open (not-yet-ended) work-role ItemSession as
+// ended if it is confirmed dead (no live tracked session). Called before
+// hasActiveWorkSession's guard in SpawnSessionFromItem so a work session that never
+// reached its normal completion path (crash, kill, server restart mid-session) doesn't
+// block every future spawn attempt for the item forever — the same class of gap as
+// tombstoneOrphanTriageSessions below, but for work sessions. Conservative: if
+// sessionStopper isn't wired, liveness is unknown, so nothing is tombstoned (same "assume
+// alive" policy as reconcileStuckReviewItems' zombie-session check). Mutates sessions'
+// EndedAt in place so callers checking the same slice immediately after see the tombstone.
+func (s *BacklogService) tombstoneOrphanWorkSessions(ctx context.Context, itemID string, sessions []session.ItemSessionSummary) {
+	if s.sessionStopper == nil {
+		return
+	}
+	for i := range sessions {
+		is := &sessions[i]
+		if is.Role != string(session.SessionRoleWork) || is.EndedAt != nil {
+			continue
+		}
+		if s.sessionStopper.IsSessionLive(is.SessionUUID) {
+			continue // genuinely still running
+		}
+		now := time.Now()
+		if err := s.storage.UpdateItemSessionEnded(ctx, is.ID, now); err != nil {
+			log.WarningLog.Printf("[tombstoneOrphanWorkSessions] item=%s session=%s: %v", itemID, is.ID, err)
+			continue
+		}
+		log.InfoLog.Printf("[tombstoneOrphanWorkSessions] item=%s tombstoned dead work session=%s (created %s)", itemID, is.ID, is.CreatedAt)
+		is.EndedAt = &now
+	}
 }
 
 // tombstoneOrphanTriageSessions marks any open triage ItemSessions that are no longer
