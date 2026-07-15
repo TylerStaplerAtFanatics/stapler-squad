@@ -60,6 +60,29 @@ func (s *BacklogService) notifyReworkCapHit(ctx context.Context, itemID, itemTit
 	))
 }
 
+// notifyTriagePersistFailure publishes an operator-facing notification when one or more of
+// the post-triage persistence steps (saving the triage result, saving the plan artifacts
+// path, or transitioning the item to Ready) fails. These failures previously only reached
+// the log file — never the operator — so an item could complete triage successfully and
+// still sit stuck at 'idea' forever with no signal. No-op if no event bus is wired.
+func (s *BacklogService) notifyTriagePersistFailure(ctx context.Context, itemID, itemTitle string, failures []string, statusAdvanced bool) {
+	if s.eventBus == nil {
+		return
+	}
+	title := "Triage completed but a save step failed"
+	body := fmt.Sprintf("%s — triage ran successfully, but failed: %s.", itemTitle, strings.Join(failures, "; "))
+	if !statusAdvanced {
+		body += " The item is still at 'idea' — retry manually or re-trigger triage."
+	}
+	s.eventBus.Publish(events.NewNotificationEvent(
+		"", "", uuid.New().String(),
+		int32(sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING),
+		int32(sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM),
+		title, body,
+		map[string]string{"item_id": itemID},
+	))
+}
+
 // headlessTriageUUIDPrefix is prepended to all synthetic ItemSession UUIDs created by the
 // headless triage path. The orphan guard uses this prefix to identify sessions that have no
 // live tmux process and can be safely tombstoned on re-trigger.
@@ -745,8 +768,15 @@ func (s *BacklogService) TriggerTriage(
 			_ = s.storage.UpdateItemSessionEnded(cleanupCtx, isID, time.Now())
 			return
 		}
+		// persistFailures accumulates which of the post-triage persistence steps below
+		// failed. Each step already logs its own error to the log file (operator-invisible
+		// in real time); if any step fails, notifyTriagePersistFailure below additionally
+		// surfaces a single operator-facing notification so a failure here is never silent.
+		var persistFailures []string
+
 		if updateErr := s.storage.UpdateItemSessionTriageResult(cleanupCtx, isID, string(payloadJSON)); updateErr != nil {
 			log.ErrorLog.Printf("[TriggerTriage] persist triage result item=%s: %v", itemID, updateErr)
+			persistFailures = append(persistFailures, "saving the triage result")
 		}
 
 		pap := artifactAbsPath
@@ -754,12 +784,20 @@ func (s *BacklogService) TriggerTriage(
 		applyTriageACToUpdate(&result, &update)
 		if _, updateErr := s.storage.UpdateBacklogItem(cleanupCtx, itemID, update, nil); updateErr != nil {
 			log.ErrorLog.Printf("[TriggerTriage] update plan_artifacts_path item=%s: %v", itemID, updateErr)
+			persistFailures = append(persistFailures, "saving the plan artifacts path")
 		}
 
 		precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusIdea)}
+		statusAdvanced := true
 		if _, transErr := s.storage.TransitionBacklogItemStatus(cleanupCtx, itemID,
 			session.BacklogStatusReady, precondition); transErr != nil {
 			log.ErrorLog.Printf("[TriggerTriage] status transition idea→ready item=%s: %v", itemID, transErr)
+			persistFailures = append(persistFailures, "advancing the item to Ready")
+			statusAdvanced = false
+		}
+
+		if len(persistFailures) > 0 {
+			s.notifyTriagePersistFailure(cleanupCtx, itemID, item.Title, persistFailures, statusAdvanced)
 		}
 
 		_ = s.storage.UpdateItemSessionEnded(cleanupCtx, isID, time.Now())
