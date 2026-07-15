@@ -61,6 +61,7 @@ const baseItem: BacklogItem = {
   repoPath: "/tmp/repo",
   skipPlanning: false,
   skipReviewGate: false,
+  autoSpawnSession: false,
   planApproved: false,
   // triageStatus "running" is what enables the 5s background poll.
   triageStatus: "running",

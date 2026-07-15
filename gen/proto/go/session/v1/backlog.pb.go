@@ -801,6 +801,7 @@ type BacklogItem struct {
 	TotalEstimatedCostUsd float64                `protobuf:"fixed64,21,opt,name=total_estimated_cost_usd,json=totalEstimatedCostUsd,proto3" json:"total_estimated_cost_usd,omitempty"`
 	PrUrl                 string                 `protobuf:"bytes,22,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
 	PrNumber              int32                  `protobuf:"varint,23,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
+	AutoSpawnSession      bool                   `protobuf:"varint,24,opt,name=auto_spawn_session,json=autoSpawnSession,proto3" json:"auto_spawn_session,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -994,6 +995,13 @@ func (x *BacklogItem) GetPrNumber() int32 {
 		return x.PrNumber
 	}
 	return 0
+}
+
+func (x *BacklogItem) GetAutoSpawnSession() bool {
+	if x != nil {
+		return x.AutoSpawnSession
+	}
+	return false
 }
 
 // ItemSource represents an external plugin source that syncs items into the
@@ -1210,6 +1218,7 @@ type CreateBacklogItemRequest struct {
 	RepoPath           string                 `protobuf:"bytes,7,opt,name=repo_path,json=repoPath,proto3" json:"repo_path,omitempty"`
 	Notes              string                 `protobuf:"bytes,8,opt,name=notes,proto3" json:"notes,omitempty"`
 	SkipTriage         bool                   `protobuf:"varint,9,opt,name=skip_triage,json=skipTriage,proto3" json:"skip_triage,omitempty"`
+	AutoSpawnSession   bool                   `protobuf:"varint,10,opt,name=auto_spawn_session,json=autoSpawnSession,proto3" json:"auto_spawn_session,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1303,6 +1312,13 @@ func (x *CreateBacklogItemRequest) GetNotes() string {
 func (x *CreateBacklogItemRequest) GetSkipTriage() bool {
 	if x != nil {
 		return x.SkipTriage
+	}
+	return false
+}
+
+func (x *CreateBacklogItemRequest) GetAutoSpawnSession() bool {
+	if x != nil {
+		return x.AutoSpawnSession
 	}
 	return false
 }
@@ -1572,6 +1588,7 @@ type UpdateBacklogItemRequest struct {
 	Notes              string                 `protobuf:"bytes,9,opt,name=notes,proto3" json:"notes,omitempty"`
 	ExpectedStatus     string                 `protobuf:"bytes,10,opt,name=expected_status,json=expectedStatus,proto3" json:"expected_status,omitempty"`
 	ExpectedUpdatedAt  *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=expected_updated_at,json=expectedUpdatedAt,proto3" json:"expected_updated_at,omitempty"`
+	AutoSpawnSession   bool                   `protobuf:"varint,12,opt,name=auto_spawn_session,json=autoSpawnSession,proto3" json:"auto_spawn_session,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1681,6 +1698,13 @@ func (x *UpdateBacklogItemRequest) GetExpectedUpdatedAt() *timestamppb.Timestamp
 		return x.ExpectedUpdatedAt
 	}
 	return nil
+}
+
+func (x *UpdateBacklogItemRequest) GetAutoSpawnSession() bool {
+	if x != nil {
+		return x.AutoSpawnSession
+	}
+	return false
 }
 
 type UpdateBacklogItemResponse struct {
@@ -4801,7 +4825,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\tto_status\x18\x03 \x01(\tR\btoStatus\x12!\n" +
 	"\ftriggered_by\x18\x04 \x01(\tR\vtriggeredBy\x129\n" +
 	"\n" +
-	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xd1\a\n" +
+	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xff\a\n" +
 	"\vBacklogItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -4830,7 +4854,8 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\rstatus_events\x18\x14 \x03(\v2\x1e.session.v1.BacklogStatusEventR\fstatusEvents\x127\n" +
 	"\x18total_estimated_cost_usd\x18\x15 \x01(\x01R\x15totalEstimatedCostUsd\x12\x15\n" +
 	"\x06pr_url\x18\x16 \x01(\tR\x05prUrl\x12\x1b\n" +
-	"\tpr_number\x18\x17 \x01(\x05R\bprNumber\"\xd9\x02\n" +
+	"\tpr_number\x18\x17 \x01(\x05R\bprNumber\x12,\n" +
+	"\x12auto_spawn_session\x18\x18 \x01(\bR\x10autoSpawnSession\"\xd9\x02\n" +
 	"\n" +
 	"ItemSource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
@@ -4853,7 +4878,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\ritems_updated\x18\x05 \x01(\x05R\fitemsUpdated\x12#\n" +
 	"\ritems_skipped\x18\x06 \x01(\x05R\fitemsSkipped\x12#\n" +
 	"\ritems_errored\x18\a \x01(\x05R\fitemsErrored\x12#\n" +
-	"\rerror_message\x18\b \x01(\tR\ferrorMessage\"\xdb\x02\n" +
+	"\rerror_message\x18\b \x01(\tR\ferrorMessage\"\x89\x03\n" +
 	"\x18CreateBacklogItemRequest\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12H\n" +
@@ -4864,7 +4889,9 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\trepo_path\x18\a \x01(\tR\brepoPath\x12\x14\n" +
 	"\x05notes\x18\b \x01(\tR\x05notes\x12\x1f\n" +
 	"\vskip_triage\x18\t \x01(\bR\n" +
-	"skipTriage\"s\n" +
+	"skipTriage\x12,\n" +
+	"\x12auto_spawn_session\x18\n" +
+	" \x01(\bR\x10autoSpawnSession\"s\n" +
 	"\x19CreateBacklogItemResponse\x12+\n" +
 	"\x04item\x18\x01 \x01(\v2\x17.session.v1.BacklogItemR\x04item\x12)\n" +
 	"\x10triage_triggered\x18\x02 \x01(\bR\x0ftriageTriggered\"0\n" +
@@ -4878,7 +4905,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\asort_by\x18\x03 \x01(\tR\x06sortBy\x12)\n" +
 	"\x10include_terminal\x18\x04 \x01(\bR\x0fincludeTerminal\"I\n" +
 	"\x18ListBacklogItemsResponse\x12-\n" +
-	"\x05items\x18\x01 \x03(\v2\x17.session.v1.BacklogItemR\x05items\"\xc8\x03\n" +
+	"\x05items\x18\x01 \x03(\v2\x17.session.v1.BacklogItemR\x05items\"\xf6\x03\n" +
 	"\x18UpdateBacklogItemRequest\x12\x17\n" +
 	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -4891,7 +4918,8 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x05notes\x18\t \x01(\tR\x05notes\x12'\n" +
 	"\x0fexpected_status\x18\n" +
 	" \x01(\tR\x0eexpectedStatus\x12J\n" +
-	"\x13expected_updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\x11expectedUpdatedAt\"H\n" +
+	"\x13expected_updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\x11expectedUpdatedAt\x12,\n" +
+	"\x12auto_spawn_session\x18\f \x01(\bR\x10autoSpawnSession\"H\n" +
 	"\x19UpdateBacklogItemResponse\x12+\n" +
 	"\x04item\x18\x01 \x01(\v2\x17.session.v1.BacklogItemR\x04item\"4\n" +
 	"\x19ArchiveBacklogItemRequest\x12\x17\n" +

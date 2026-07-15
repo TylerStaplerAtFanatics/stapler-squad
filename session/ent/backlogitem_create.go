@@ -133,6 +133,20 @@ func (_c *BacklogItemCreate) SetNillableSkipPlanning(v *bool) *BacklogItemCreate
 	return _c
 }
 
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (_c *BacklogItemCreate) SetAutoSpawnSession(v bool) *BacklogItemCreate {
+	_c.mutation.SetAutoSpawnSession(v)
+	return _c
+}
+
+// SetNillableAutoSpawnSession sets the "auto_spawn_session" field if the given value is not nil.
+func (_c *BacklogItemCreate) SetNillableAutoSpawnSession(v *bool) *BacklogItemCreate {
+	if v != nil {
+		_c.SetAutoSpawnSession(*v)
+	}
+	return _c
+}
+
 // SetPlanApproved sets the "plan_approved" field.
 func (_c *BacklogItemCreate) SetPlanApproved(v bool) *BacklogItemCreate {
 	_c.mutation.SetPlanApproved(v)
@@ -445,6 +459,10 @@ func (_c *BacklogItemCreate) defaults() {
 		v := backlogitem.DefaultSkipPlanning
 		_c.mutation.SetSkipPlanning(v)
 	}
+	if _, ok := _c.mutation.AutoSpawnSession(); !ok {
+		v := backlogitem.DefaultAutoSpawnSession
+		_c.mutation.SetAutoSpawnSession(v)
+	}
 	if _, ok := _c.mutation.PlanApproved(); !ok {
 		v := backlogitem.DefaultPlanApproved
 		_c.mutation.SetPlanApproved(v)
@@ -493,6 +511,9 @@ func (_c *BacklogItemCreate) check() error {
 	}
 	if _, ok := _c.mutation.SkipPlanning(); !ok {
 		return &ValidationError{Name: "skip_planning", err: errors.New(`ent: missing required field "BacklogItem.skip_planning"`)}
+	}
+	if _, ok := _c.mutation.AutoSpawnSession(); !ok {
+		return &ValidationError{Name: "auto_spawn_session", err: errors.New(`ent: missing required field "BacklogItem.auto_spawn_session"`)}
 	}
 	if _, ok := _c.mutation.PlanApproved(); !ok {
 		return &ValidationError{Name: "plan_approved", err: errors.New(`ent: missing required field "BacklogItem.plan_approved"`)}
@@ -570,6 +591,10 @@ func (_c *BacklogItemCreate) createSpec() (*BacklogItem, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.SkipPlanning(); ok {
 		_spec.SetField(backlogitem.FieldSkipPlanning, field.TypeBool, value)
 		_node.SkipPlanning = value
+	}
+	if value, ok := _c.mutation.AutoSpawnSession(); ok {
+		_spec.SetField(backlogitem.FieldAutoSpawnSession, field.TypeBool, value)
+		_node.AutoSpawnSession = value
 	}
 	if value, ok := _c.mutation.PlanApproved(); ok {
 		_spec.SetField(backlogitem.FieldPlanApproved, field.TypeBool, value)
@@ -869,6 +894,18 @@ func (u *BacklogItemUpsert) SetSkipPlanning(v bool) *BacklogItemUpsert {
 // UpdateSkipPlanning sets the "skip_planning" field to the value that was provided on create.
 func (u *BacklogItemUpsert) UpdateSkipPlanning() *BacklogItemUpsert {
 	u.SetExcluded(backlogitem.FieldSkipPlanning)
+	return u
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (u *BacklogItemUpsert) SetAutoSpawnSession(v bool) *BacklogItemUpsert {
+	u.Set(backlogitem.FieldAutoSpawnSession, v)
+	return u
+}
+
+// UpdateAutoSpawnSession sets the "auto_spawn_session" field to the value that was provided on create.
+func (u *BacklogItemUpsert) UpdateAutoSpawnSession() *BacklogItemUpsert {
+	u.SetExcluded(backlogitem.FieldAutoSpawnSession)
 	return u
 }
 
@@ -1252,6 +1289,20 @@ func (u *BacklogItemUpsertOne) SetSkipPlanning(v bool) *BacklogItemUpsertOne {
 func (u *BacklogItemUpsertOne) UpdateSkipPlanning() *BacklogItemUpsertOne {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.UpdateSkipPlanning()
+	})
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (u *BacklogItemUpsertOne) SetAutoSpawnSession(v bool) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetAutoSpawnSession(v)
+	})
+}
+
+// UpdateAutoSpawnSession sets the "auto_spawn_session" field to the value that was provided on create.
+func (u *BacklogItemUpsertOne) UpdateAutoSpawnSession() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdateAutoSpawnSession()
 	})
 }
 
@@ -1834,6 +1885,20 @@ func (u *BacklogItemUpsertBulk) SetSkipPlanning(v bool) *BacklogItemUpsertBulk {
 func (u *BacklogItemUpsertBulk) UpdateSkipPlanning() *BacklogItemUpsertBulk {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.UpdateSkipPlanning()
+	})
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (u *BacklogItemUpsertBulk) SetAutoSpawnSession(v bool) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetAutoSpawnSession(v)
+	})
+}
+
+// UpdateAutoSpawnSession sets the "auto_spawn_session" field to the value that was provided on create.
+func (u *BacklogItemUpsertBulk) UpdateAutoSpawnSession() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdateAutoSpawnSession()
 	})
 }
 

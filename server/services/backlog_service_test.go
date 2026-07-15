@@ -1514,6 +1514,80 @@ func TestTriggerTriage_Success(t *testing.T) {
 	assert.NotNil(t, sessions[0].EndedAt, "triage item session should be marked ended on success")
 }
 
+// TestTriggerTriage_AutoSpawnSession_SpawnsWorkSessionWithoutManualClick verifies the
+// opt-in auto-spawn-session toggle: when AutoSpawnSession is true, TriggerTriage's
+// completion goroutine spawns a work session automatically (Autonomous: true, bypassing
+// the planning-approval gate) once the item reaches ready — no manual "Spawn Session"
+// click required.
+func TestTriggerTriage_AutoSpawnSession_SpawnsWorkSessionWithoutManualClick(t *testing.T) {
+	storage := createTestStorage(t)
+	pool := &fakeHeadlessPool{response: validTriageJSON()}
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+	svc.SetHeadlessPool(pool)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:            "auto-spawn triage item",
+		Status:           string(session.BacklogStatusIdea),
+		Priority:         3,
+		RepoPath:         repoPath,
+		AutoSpawnSession: true,
+	})
+	require.NoError(t, err)
+
+	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId: item.ID,
+	}))
+	require.NoError(t, trigErr)
+
+	// Poll for the final state directly (in_progress), not just the spawn call — the
+	// creator call and the subsequent in_progress transition both happen inside the same
+	// synchronous SpawnSessionFromItem call, but from a different goroutine than this
+	// test, so checking creator.calls alone races with the transition that follows it.
+	require.Eventually(t, func() bool {
+		updated, loadErr := storage.GetBacklogItem(t.Context(), item.ID)
+		return loadErr == nil && updated.Status == string(session.BacklogStatusInProgress)
+	}, 5*time.Second, 50*time.Millisecond, "auto-spawn must carry the item all the way to in_progress, not leave it sitting at ready")
+
+	assert.Len(t, creator.calls, 1, "a work session should be auto-spawned once triage completes")
+}
+
+// TestTriggerTriage_AutoSpawnSessionFalse_LeavesItemAtReadyForManualSpawn is the
+// default-behavior guard: with AutoSpawnSession left false (the default), the existing
+// manual-click flow must be completely unchanged.
+func TestTriggerTriage_AutoSpawnSessionFalse_LeavesItemAtReadyForManualSpawn(t *testing.T) {
+	storage := createTestStorage(t)
+	pool := &fakeHeadlessPool{response: validTriageJSON()}
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+	svc.SetHeadlessPool(pool)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:    "manual-spawn triage item",
+		Status:   string(session.BacklogStatusIdea),
+		Priority: 3,
+		RepoPath: repoPath,
+		// AutoSpawnSession left at its zero value (false).
+	})
+	require.NoError(t, err)
+
+	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId: item.ID,
+	}))
+	require.NoError(t, trigErr)
+
+	require.Eventually(t, func() bool {
+		updated, loadErr := storage.GetBacklogItem(t.Context(), item.ID)
+		return loadErr == nil && updated.Status == string(session.BacklogStatusReady)
+	}, 5*time.Second, 50*time.Millisecond)
+
+	assert.Empty(t, creator.calls, "no session should be spawned without the opt-in toggle")
+}
+
 // TestTriggerTriage_PersistFailurePublishesNotification verifies the fix for the
 // swallowed-persistence-error bug: when the final idea->ready status transition fails
 // after a successful triage (e.g. a concurrent status change broke its precondition), the

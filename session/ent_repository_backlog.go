@@ -129,6 +129,7 @@ func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 		RepoPath:           item.RepoPath,
 		SkipReviewGate:     item.SkipReviewGate,
 		SkipPlanning:       item.SkipPlanning,
+		AutoSpawnSession:   item.AutoSpawnSession,
 		PlanApproved:       item.PlanApproved,
 		PlanApprovedAt:     item.PlanApprovedAt,
 		PlanArtifactsPath:  item.PlanArtifactsPath,
@@ -192,6 +193,7 @@ func (r *EntRepository) CreateBacklogItem(ctx context.Context, data BacklogItemD
 		SetNillableRepoPath(&data.RepoPath).
 		SetSkipReviewGate(data.SkipReviewGate).
 		SetSkipPlanning(data.SkipPlanning).
+		SetAutoSpawnSession(data.AutoSpawnSession).
 		SetPlanApproved(data.PlanApproved).
 		SetNillablePlanApprovedAt(data.PlanApprovedAt).
 		SetNillablePlanArtifactsPath(&data.PlanArtifactsPath).
@@ -422,6 +424,9 @@ func (r *EntRepository) UpdateBacklogItem(ctx context.Context, id string, update
 	}
 	if update.SkipPlanning != nil {
 		u.SetSkipPlanning(*update.SkipPlanning)
+	}
+	if update.AutoSpawnSession != nil {
+		u.SetAutoSpawnSession(*update.AutoSpawnSession)
 	}
 	if update.Notes != nil {
 		u.SetNotes(*update.Notes)

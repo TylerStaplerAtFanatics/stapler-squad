@@ -40,6 +40,9 @@ func (BacklogItem) Fields() []ent.Field {
 			Default(false),
 		field.Bool("skip_planning").
 			Default(false),
+		field.Bool("auto_spawn_session").
+			Default(false).
+			Comment("When true, a work session is spawned automatically once the item reaches ready — no manual 'Spawn Session' click required."),
 		field.Bool("plan_approved").
 			Default(false),
 		field.Time("plan_approved_at").

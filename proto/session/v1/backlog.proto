@@ -114,6 +114,7 @@ message BacklogItem {
   double total_estimated_cost_usd = 21;
   string pr_url = 22;
   int32 pr_number = 23;
+  bool auto_spawn_session = 24;
 }
 
 // ItemSource represents an external plugin source that syncs items into the
@@ -153,6 +154,7 @@ message CreateBacklogItemRequest {
   string repo_path = 7;
   string notes = 8;
   bool skip_triage = 9;
+  bool auto_spawn_session = 10;
 }
 
 message CreateBacklogItemResponse {
@@ -191,6 +193,7 @@ message UpdateBacklogItemRequest {
   string notes = 9;
   string expected_status = 10;
   google.protobuf.Timestamp expected_updated_at = 11;
+  bool auto_spawn_session = 12;
 }
 
 message UpdateBacklogItemResponse {

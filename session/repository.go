@@ -337,6 +337,7 @@ type BacklogItemData struct {
 	RepoPath           string
 	SkipReviewGate     bool
 	SkipPlanning       bool
+	AutoSpawnSession   bool
 	PlanApproved       bool
 	PlanApprovedAt     *time.Time
 	PlanArtifactsPath  string
@@ -411,6 +412,7 @@ type BacklogItemUpdate struct {
 	RepoPath           *string
 	SkipReviewGate     *bool
 	SkipPlanning       *bool
+	AutoSpawnSession   *bool
 	Notes              *string
 	PlanApproved       *bool
 	PlanApprovedAt     *time.Time

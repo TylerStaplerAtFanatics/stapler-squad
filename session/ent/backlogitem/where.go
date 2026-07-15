@@ -96,6 +96,11 @@ func SkipPlanning(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldEQ(FieldSkipPlanning, v))
 }
 
+// AutoSpawnSession applies equality check predicate on the "auto_spawn_session" field. It's identical to AutoSpawnSessionEQ.
+func AutoSpawnSession(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldAutoSpawnSession, v))
+}
+
 // PlanApproved applies equality check predicate on the "plan_approved" field. It's identical to PlanApprovedEQ.
 func PlanApproved(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldEQ(FieldPlanApproved, v))
@@ -569,6 +574,16 @@ func SkipPlanningEQ(v bool) predicate.BacklogItem {
 // SkipPlanningNEQ applies the NEQ predicate on the "skip_planning" field.
 func SkipPlanningNEQ(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldNEQ(FieldSkipPlanning, v))
+}
+
+// AutoSpawnSessionEQ applies the EQ predicate on the "auto_spawn_session" field.
+func AutoSpawnSessionEQ(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldAutoSpawnSession, v))
+}
+
+// AutoSpawnSessionNEQ applies the NEQ predicate on the "auto_spawn_session" field.
+func AutoSpawnSessionNEQ(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNEQ(FieldAutoSpawnSession, v))
 }
 
 // PlanApprovedEQ applies the EQ predicate on the "plan_approved" field.

@@ -155,20 +155,24 @@ func init() {
 	backlogitemDescSkipPlanning := backlogitemFields[8].Descriptor()
 	// backlogitem.DefaultSkipPlanning holds the default value on creation for the skip_planning field.
 	backlogitem.DefaultSkipPlanning = backlogitemDescSkipPlanning.Default.(bool)
+	// backlogitemDescAutoSpawnSession is the schema descriptor for auto_spawn_session field.
+	backlogitemDescAutoSpawnSession := backlogitemFields[9].Descriptor()
+	// backlogitem.DefaultAutoSpawnSession holds the default value on creation for the auto_spawn_session field.
+	backlogitem.DefaultAutoSpawnSession = backlogitemDescAutoSpawnSession.Default.(bool)
 	// backlogitemDescPlanApproved is the schema descriptor for plan_approved field.
-	backlogitemDescPlanApproved := backlogitemFields[9].Descriptor()
+	backlogitemDescPlanApproved := backlogitemFields[10].Descriptor()
 	// backlogitem.DefaultPlanApproved holds the default value on creation for the plan_approved field.
 	backlogitem.DefaultPlanApproved = backlogitemDescPlanApproved.Default.(bool)
 	// backlogitemDescPrNumber is the schema descriptor for pr_number field.
-	backlogitemDescPrNumber := backlogitemFields[18].Descriptor()
+	backlogitemDescPrNumber := backlogitemFields[19].Descriptor()
 	// backlogitem.DefaultPrNumber holds the default value on creation for the pr_number field.
 	backlogitem.DefaultPrNumber = backlogitemDescPrNumber.Default.(int)
 	// backlogitemDescCreatedAt is the schema descriptor for created_at field.
-	backlogitemDescCreatedAt := backlogitemFields[19].Descriptor()
+	backlogitemDescCreatedAt := backlogitemFields[20].Descriptor()
 	// backlogitem.DefaultCreatedAt holds the default value on creation for the created_at field.
 	backlogitem.DefaultCreatedAt = backlogitemDescCreatedAt.Default.(func() time.Time)
 	// backlogitemDescUpdatedAt is the schema descriptor for updated_at field.
-	backlogitemDescUpdatedAt := backlogitemFields[20].Descriptor()
+	backlogitemDescUpdatedAt := backlogitemFields[21].Descriptor()
 	// backlogitem.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	backlogitem.DefaultUpdatedAt = backlogitemDescUpdatedAt.Default.(func() time.Time)
 	// backlogitem.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
