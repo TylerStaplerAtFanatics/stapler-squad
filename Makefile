@@ -227,12 +227,9 @@ install-mux: ensure-tools ## Build and install claude-mux to ~/.local/bin
 	@./scripts/install-mux.sh
 
 # ── Pinned tmux binary (for test isolation) ────────────────────────────────
-# Builds tmux 3.4 from the third_party/tmux git submodule.
+# Builds tmux 3.4 from the third_party/tmux git submodule via scripts/build-tmux.sh.
 # Tests use TMUX_BIN=bin/tmux to run against the pinned binary instead of the
 # system tmux, ensuring reproducible results across developer machines and CI.
-#
-# Bazel caches the C build artifacts — subsequent runs are instant.
-# Without Bazel, falls back to make (full recompile each clean build).
 
 BIN_TMUX        := bin/tmux
 TMUX_BUILD_STAMP := .tmux-build.stamp
@@ -241,7 +238,11 @@ TMUX_BUILD_STAMP := .tmux-build.stamp
 $(BIN_TMUX): $(TMUX_BUILD_STAMP)
 	@true
 
-$(TMUX_BUILD_STAMP): third_party/tmux/configure.ac
+# order-only prerequisite on the submodule dir (not configure.ac): a fresh
+# worktree/clone has an empty, uninitialized submodule directory, so a hard
+# prerequisite on configure.ac would fail before build-tmux.sh's own
+# gitlink-detection + init/clone-fallback logic ever runs.
+$(TMUX_BUILD_STAMP): | third_party/tmux
 	@$(MAKE) build-tmux
 	@touch $(TMUX_BUILD_STAMP)
 
@@ -249,30 +250,7 @@ init-submodules: ## Initialize git submodules (required once after clone)
 	git submodule update --init --recursive
 
 build-tmux: ## Build pinned tmux 3.4 binary from third_party/tmux submodule
-	@echo "Building pinned tmux binary..."
-	@if command -v bazel >/dev/null 2>&1 && [ -f third_party/tmux/configure.ac ]; then \
-		echo "Using Bazel (artifacts cached)..."; \
-		$(MAKE) ensure-tmux-configure; \
-		bazel build //third_party/tmux:tmux && \
-		mkdir -p bin && \
-		cp "$$(bazel info bazel-bin)/third_party/tmux/tmux" $(BIN_TMUX) && \
-		chmod +x $(BIN_TMUX) && \
-		echo "✅ tmux built via Bazel at $(BIN_TMUX)"; \
-	else \
-		./scripts/build-tmux.sh; \
-	fi
-
-ensure-tmux-configure: ## Ensure third_party/tmux/configure exists (downloads from release tarball if missing)
-	@if [ ! -f third_party/tmux/configure ]; then \
-		echo "Downloading tmux configure from release tarball..."; \
-		TMPTAR=$$(mktemp /tmp/tmux-XXXXXX.tar.gz); \
-		curl -fsSL -o "$$TMPTAR" "https://github.com/tmux/tmux/releases/download/3.4/tmux-3.4.tar.gz" && \
-		tar xzf "$$TMPTAR" -C /tmp tmux-3.4/configure && \
-		cp /tmp/tmux-3.4/configure third_party/tmux/configure && \
-		chmod +x third_party/tmux/configure && \
-		rm -f "$$TMPTAR" && \
-		echo "✅ configure downloaded"; \
-	fi
+	@./scripts/build-tmux.sh
 
 build-tmux-embed: build-tmux ## Copy built tmux into the embed dir for go build -tags embed_tmux
 	@mkdir -p session/tmux/embed
