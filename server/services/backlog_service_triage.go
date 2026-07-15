@@ -534,6 +534,23 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 	if sessErr != nil {
 		return fmt.Errorf("list sessions for cap check: %w", sessErr)
 	}
+
+	// Tombstone any work session confirmed dead (crashed/killed without reaching its
+	// completion path), then check for one still genuinely active. Skip entirely — no
+	// status transition at all — if a fix is already in flight: previously this
+	// transitioned pr_pending->in_progress unconditionally every tick, discovered the
+	// spawn was blocked by an active session, and rolled back to pr_pending, churning
+	// two BacklogStatusEvent rows every ~60s indefinitely even while a legitimate
+	// multi-hour autonomous session was still working on the fix. Found live: an item's
+	// activity history showed continuous pr_pending<->in_progress cycling with no
+	// progress while its 4-hour-old autonomous work session was, in fact, still active
+	// (see docs/tasks/backlog-feature-improvement.md).
+	s.tombstoneOrphanWorkSessions(ctx, itemID, sessions)
+	if hasActiveWorkSession(sessions) {
+		log.InfoLog.Printf("[AutoReopenForPRFix] item %s already has an active work session; leaving pr_pending alone", itemID)
+		return nil
+	}
+
 	workCount := 0
 	for _, is := range sessions {
 		if is.Role == session.SessionRoleWork {

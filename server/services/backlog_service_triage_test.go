@@ -105,3 +105,89 @@ func TestNotifyReworkCapHit_should_persistRowSurvivingRestart_When_CapHit(t *tes
 	assert.Equal(t, itemID, open[0].ItemID)
 	assert.Equal(t, domain.StuckReasonReworkCap, open[0].Reason)
 }
+
+// --- AutoReopenForPRFix: live-bug regression (ReconcilePRPending churn) ---
+
+// TestAutoReopenForPRFix_ActiveWorkSession_SkipsWithoutStatusChurn is the regression
+// test for a live production incident: ReconcilePRPending calls AutoReopenForPRFix on
+// every ~60s tick for any pr_pending item with failing CI, with no check for whether a
+// fix is already in flight. When a work session was still genuinely active (a real
+// multi-hour autonomous session, not dead), the old code transitioned pr_pending->
+// in_progress, discovered SpawnSessionFromItem was blocked by that same active session,
+// and rolled back to pr_pending — writing two BacklogStatusEvent rows every tick,
+// forever, with zero progress. AutoReopenForPRFix must now check for an active work
+// session FIRST and return early with no status transition at all.
+func TestAutoReopenForPRFix_ActiveWorkSession_SkipsWithoutStatusChurn(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{"active-work-uuid": true}}
+	svc.SetSessionStopper(stopper)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	item, err := storage.CreateBacklogItem(context.Background(), session.BacklogItemData{
+		Title:    "PR-pending item with an active fix session",
+		RepoPath: repoPath,
+		Status:   string(session.BacklogStatusPRPending),
+		PrNumber: 42,
+		PrURL:    "https://github.com/example/repo/pull/42",
+	})
+	require.NoError(t, err)
+	_, err = storage.CreateItemSession(context.Background(), session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "active-work-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	reopenErr := svc.AutoReopenForPRFix(context.Background(), item.ID, "CI failing: tests broke")
+	require.NoError(t, reopenErr, "must not error — this is the expected 'already in flight' outcome, not a failure")
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusPRPending), fetched.Status, "status must never churn while a fix session is already active")
+	assert.Empty(t, creator.calls, "no new session should be spawned while one is already active")
+}
+
+// TestAutoReopenForPRFix_DeadWorkSession_TombstonesThenReopens verifies the other half:
+// a work session that IS confirmed dead (not live) must be tombstoned automatically so
+// the reopen can proceed normally, rather than blocking forever like the bug above.
+func TestAutoReopenForPRFix_DeadWorkSession_TombstonesThenReopens(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil)
+	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{}} // nothing is live
+	svc.SetSessionStopper(stopper)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	item, err := storage.CreateBacklogItem(context.Background(), session.BacklogItemData{
+		Title:    "PR-pending item with a dead prior session",
+		RepoPath: repoPath,
+		Status:   string(session.BacklogStatusPRPending),
+		PrNumber: 43,
+		PrURL:    "https://github.com/example/repo/pull/43",
+	})
+	require.NoError(t, err)
+	deadIS, err := storage.CreateItemSession(context.Background(), session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "dead-work-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	reopenErr := svc.AutoReopenForPRFix(context.Background(), item.ID, "CI failing: tests broke")
+	require.NoError(t, reopenErr)
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusInProgress), fetched.Status, "reopen must proceed once the dead session is cleared")
+	assert.Len(t, creator.calls, 1, "a new fix session must be spawned")
+
+	deadFetched, err := storage.GetItemSession(context.Background(), deadIS.ID)
+	require.NoError(t, err)
+	assert.NotNil(t, deadFetched.EndedAt, "the dead session must be tombstoned")
+}
