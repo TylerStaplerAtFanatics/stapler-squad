@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -240,9 +241,20 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 		concreteStorage := a.storageGetter()
 		if concreteStorage != nil {
 			is, err := concreteStorage.GetItemSessionBySessionUUID(ctx, sessionUUID)
-			if err == nil {
+			if err != nil {
+				if errors.Is(err, session.ErrNotFound) {
+					// Expected: most autonomous sessions are not backlog-linked.
+					log.Debug("[AutonomousDriver] onAutonomousDriverComplete: no linked backlog item session", "session", instanceName)
+				} else {
+					// A real lookup failure would otherwise take the identical silent path as
+					// "not backlog-linked" above, making it undiagnosable in production.
+					log.Warn("[AutonomousDriver] onAutonomousDriverComplete: item session lookup failed", "session", instanceName, "err", err)
+				}
+			} else {
 				item, itemErr := concreteStorage.GetBacklogItem(ctx, is.BacklogItemID)
-				if itemErr == nil && item != nil {
+				if itemErr != nil || item == nil {
+					log.Warn("[AutonomousDriver] onAutonomousDriverComplete: failed to load linked backlog item", "itemSession", is.ID, "item", is.BacklogItemID, "err", itemErr)
+				} else {
 					var toStatus session.BacklogStatus
 					var expectedStatus string
 					switch is.Role {
