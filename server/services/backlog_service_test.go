@@ -1231,6 +1231,51 @@ func TestTriggerReReview_HappyPath_NoSessionCreator_ReturnsPlaceholder(t *testin
 	assert.Equal(t, "re-review-triggered", resp.Msg.ItemSession.SessionRole)
 }
 
+// TestTriggerReReview_HeadlessPassAutoTransitionsToDone verifies that a PASS
+// verdict from the headless re-review path moves the item straight to "done"
+// without requiring a manual "Approve — Mark Done" click — matching the
+// behavior of the tmux-driven submit_review_verdict MCP tool and
+// SubmitManualReview, which already auto-transition on PASS.
+func TestTriggerReReview_HeadlessPassAutoTransitionsToDone(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"looks good","verdicts":[{"criterion_index":0,"outcome":"PASS","evidence":"verified"}]}`}
+	svc.SetHeadlessPool(pool)
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    "test item",
+		RepoPath: "/tmp/test-repo",
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	for _, status := range []string{
+		string(session.BacklogStatusReady),
+		string(session.BacklogStatusInProgress),
+		string(session.BacklogStatusReview),
+	} {
+		_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+			ItemId:       itemID,
+			TargetStatus: status,
+		}))
+		require.NoError(t, err)
+	}
+
+	_, err = svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{
+		ItemId: itemID,
+	}))
+	require.NoError(t, err)
+
+	updated, err := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusDone), updated.Msg.Item.Status,
+		"PASS verdict from headless re-review should auto-transition item to done")
+}
+
 // TestTriggerReReview_SetsBacklogCategory verifies that TriggerReReview with a
 // SessionCreator wired spawns the re-review session with Category == "Backlog"
 // so it groups correctly in the session list UI.
