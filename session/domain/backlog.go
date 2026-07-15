@@ -53,6 +53,12 @@ const (
 	// StuckReasonPushFailed: pushAndCreatePR failed (push rejected / gh pr
 	// create errored) leaving a post-review item with no pr_number.
 	StuckReasonPushFailed StuckReason = "push_failed"
+	// StuckReasonOrphanedTriage: an idea-status item's triage session ended
+	// (crashed, was killed, or the process exited) without ever transitioning
+	// the item to ready — previously only surfaced when a human manually
+	// re-triggered triage (tombstoneOrphanTriageSessions); this reason lets the
+	// periodic stuck sweep catch it without a manual retry.
+	StuckReasonOrphanedTriage StuckReason = "orphaned_triage"
 )
 
 // AllStuckReasons lists every valid StuckReason constant.
@@ -63,13 +69,14 @@ var AllStuckReasons = []StuckReason{
 	StuckReasonStaleWork,
 	StuckReasonBouncing,
 	StuckReasonPushFailed,
+	StuckReasonOrphanedTriage,
 }
 
 // IsValid reports whether r is a known stuck reason value.
 func (r StuckReason) IsValid() bool {
 	switch r {
 	case StuckReasonPRReadyUnmerged, StuckReasonReworkCap, StuckReasonAbandonedReview,
-		StuckReasonStaleWork, StuckReasonBouncing, StuckReasonPushFailed:
+		StuckReasonStaleWork, StuckReasonBouncing, StuckReasonPushFailed, StuckReasonOrphanedTriage:
 		return true
 	}
 	return false

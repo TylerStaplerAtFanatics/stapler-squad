@@ -66,6 +66,37 @@ func newStaleWorkTestItem(t *testing.T, storage *Storage, er *EntRepository) *Ba
 	return item
 }
 
+// newOrphanedTriageTestItem creates an idea-status BacklogItem with a single open
+// (EndedAt nil) triage-role ItemSession whose created_at is backdated by ageAgo,
+// matching the shape reconcileOrphanedTriageItems looks for.
+func newOrphanedTriageTestItem(t *testing.T, storage *Storage, er *EntRepository, ageAgo time.Duration) *BacklogItemData {
+	t.Helper()
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Orphaned triage test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusIdea),
+	})
+	require.NoError(t, err)
+
+	// created_at is Immutable() in the ent schema (no Update-builder setter), so
+	// the backdated value must be set at Create time via the raw ent client
+	// rather than storage.CreateItemSession (which always uses time.Now()).
+	parsedItemID, err := uuid.Parse(item.ID)
+	require.NoError(t, err)
+	_, err = er.client.ItemSession.Create().
+		SetSessionUUID("headless-triage-" + uuid.New().String()).
+		SetSessionRole(string(SessionRoleTriage)).
+		SetBacklogItemID(parsedItemID).
+		SetCreatedAt(time.Now().Add(-ageAgo)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	return item
+}
+
 // TestBackfillStuckStates_should_seedDBDerivableRowsWithNotifiedAt_When_ItemsParked
 // verifies that BackfillStuckStates seeds an open, notified stuck row for each
 // currently-stuck item it can detect from existing DB-derivable queries.
@@ -438,6 +469,76 @@ func TestReconcileStaleWorkSessions_should_resolveStaleWorkRow_When_SessionResum
 	open, err = er.FindOpenStuckStates(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, open, "row must resolve immediately once progress resumes, even though status is still in_progress")
+}
+
+// --- orphaned_triage: standing detector for tombstoneOrphanTriageSessions'
+// manual-re-trigger-only blind spot (backlog-feature-improvement audit finding #8) ---
+
+func TestReconcileOrphanedTriageItems_should_writeDurableRowNotifyOnce_When_TriageSessionStale(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item := newOrphanedTriageTestItem(t, storage, er, 3*time.Hour) // beyond maxWorkSessionStaleness (2h)
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcileOrphanedTriageItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, item.ID, open[0].ItemID)
+	assert.Equal(t, domain.StuckReasonOrphanedTriage, open[0].Reason)
+	assert.Equal(t, []string{"Triage may be stuck"}, notifier.calls)
+
+	// Repeat tick must not re-notify (DB-backed notify-once dedup).
+	listener.reconcileOrphanedTriageItems(ctx, er)
+	assert.Len(t, notifier.calls, 1)
+}
+
+func TestReconcileOrphanedTriageItems_should_notFlag_When_TriageSessionRecent(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	// A triage session that just started (well within maxWorkSessionStaleness)
+	// must not be flagged — it is plausibly still running.
+	newOrphanedTriageTestItem(t, storage, er, 5*time.Minute)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.reconcileOrphanedTriageItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "a recently-started triage session must not be flagged as orphaned")
+}
+
+func TestSelfHealSweep_should_resolveOrphanedTriageRow_When_ItemLeavesIdea(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:  "Orphaned triage item that got re-triggered",
+		Status: string(BacklogStatusReady),
+	})
+	require.NoError(t, err)
+	applied, err := er.MarkStuck(ctx, item.ID, domain.StuckReasonOrphanedTriage, BacklogStatusReady, "stale triage session")
+	require.NoError(t, err)
+	require.True(t, applied)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.selfHealStuck(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "orphaned_triage row must resolve once the item leaves idea (re-triggered triage succeeded)")
 }
 
 // --- Story 2.1.4: bouncing ---

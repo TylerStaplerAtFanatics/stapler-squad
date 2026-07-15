@@ -756,6 +756,14 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 		l.reconcileBouncingItems(ctx, er)
 	})
 
+	// Flag idea-status items whose triage session crashed, was killed, or never
+	// reached the completion goroutine (e.g. a server restart mid-triage) —
+	// previously only caught on a manual re-trigger (tombstoneOrphanTriageSessions),
+	// now a standing detector so it doesn't require a human to notice and retry.
+	l.runStuckDetector("orphaned_triage", &okNames, &panickedNames, func() {
+		l.reconcileOrphanedTriageItems(ctx, er)
+	})
+
 	// Self-heal sweep: resolve any open stuck row whose reason's expected
 	// status no longer matches the item's current status (Task 2.1.5d).
 	l.runStuckDetector("self_heal", &okNames, &panickedNames, func() {
@@ -1017,6 +1025,76 @@ func (l *BacklogLifecycleListener) reconcileStaleWorkSessions(ctx context.Contex
 	}
 }
 
+// reconcileOrphanedTriageItems flags idea-status items whose most recent triage-role
+// ItemSession never ended and has gone stale — the triage process crashed, was killed,
+// or a server restart happened mid-triage before the completion goroutine ever ran.
+// Previously this class of failure was only caught by tombstoneOrphanTriageSessions
+// (same package, server/services/backlog_service_triage.go), and only when a human
+// manually re-triggered triage on the item; this is the standing-sweep equivalent.
+// Pure staleness gate — no liveness checker — matching reconcileStaleWorkSessions'
+// established pattern for the closest analogous detector in this file: a headless
+// triage call routinely runs 7-15 minutes, so per-tick liveness signals are noisy
+// here; maxWorkSessionStaleness (2h) alone is the reliable signal. Best-effort:
+// query/notify failures are logged, never returned.
+func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Context, er *EntRepository) {
+	items, err := l.storage.ListBacklogItems(ctx, BacklogItemFilter{
+		Statuses: []string{string(BacklogStatusIdea)},
+	})
+	if err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems list error: %v", err)
+		return
+	}
+
+	for _, item := range items {
+		sessions, sessErr := l.storage.ListItemSessions(ctx, item.ID)
+		if sessErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems ListItemSessions item=%s: %v", item.ID, sessErr)
+			continue
+		}
+		var latestTriage *ItemSessionSummary
+		for i := range sessions {
+			if sessions[i].Role == SessionRoleTriage && sessions[i].EndedAt == nil {
+				latestTriage = &sessions[i]
+			}
+		}
+		if latestTriage == nil || time.Since(latestTriage.CreatedAt) <= maxWorkSessionStaleness {
+			continue // no open triage session, or still plausibly running
+		}
+
+		applied, markErr := er.MarkStuck(ctx, item.ID, domain.StuckReasonOrphanedTriage, BacklogStatusIdea,
+			fmt.Sprintf("triage session %s still open after %s", latestTriage.SessionUUID, maxWorkSessionStaleness))
+		if markErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems MarkStuck item=%s: %v", item.ID, markErr)
+			continue
+		}
+		if !applied {
+			continue
+		}
+		rows, findErr := er.FindOpenStuckStates(ctx)
+		if findErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems FindOpenStuckStates item=%s: %v", item.ID, findErr)
+			continue
+		}
+		row, ok := findOpenStuckStateFor(rows, item.ID, domain.StuckReasonOrphanedTriage)
+		if !ok || row.NotifiedAt != nil {
+			continue
+		}
+
+		log.WarningLog.Printf("[BacklogLifecycle] item %s triage session %s orphaned (stale)", item.ID, latestTriage.SessionUUID)
+		l.notify(item.ID,
+			"Triage may be stuck",
+			fmt.Sprintf("%s — its triage session ended without finishing and nothing is running. Re-trigger triage or investigate.", item.Title),
+			8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
+			2, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
+		)
+		if _, notifyErr := er.MarkStuckNotified(ctx, item.ID, domain.StuckReasonOrphanedTriage); notifyErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems MarkStuckNotified item=%s: %v", item.ID, notifyErr)
+		}
+	}
+	// No resolve pass needed here: selfHealStuck (status-anchored) clears this
+	// reason once the item leaves 'idea' — i.e. once triage is re-triggered and succeeds.
+}
+
 // reconcileBouncingItems flags items that have crossed in_progress->review
 // >= bounceThreshold times within bounceLookback with no recorded PASS
 // verdict — a non-converging rework cycle that never hits the rework cap
@@ -1117,6 +1195,8 @@ func (l *BacklogLifecycleListener) selfHealStuck(ctx context.Context, er *EntRep
 			resolve = row.ItemStatus != BacklogStatusInProgress
 		case domain.StuckReasonBouncing:
 			resolve = row.ItemStatus != BacklogStatusInProgress && row.ItemStatus != BacklogStatusReview
+		case domain.StuckReasonOrphanedTriage:
+			resolve = row.ItemStatus != BacklogStatusIdea
 		case domain.StuckReasonReworkCap, domain.StuckReasonPushFailed:
 			continue // event-shaped: resolved only at their explicit call sites
 		default:

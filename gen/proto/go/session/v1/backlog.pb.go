@@ -36,6 +36,7 @@ const (
 	StuckReason_STUCK_REASON_STALE_WORK        StuckReason = 4
 	StuckReason_STUCK_REASON_BOUNCING          StuckReason = 5
 	StuckReason_STUCK_REASON_PUSH_FAILED       StuckReason = 6
+	StuckReason_STUCK_REASON_ORPHANED_TRIAGE   StuckReason = 7
 )
 
 // Enum value maps for StuckReason.
@@ -48,6 +49,7 @@ var (
 		4: "STUCK_REASON_STALE_WORK",
 		5: "STUCK_REASON_BOUNCING",
 		6: "STUCK_REASON_PUSH_FAILED",
+		7: "STUCK_REASON_ORPHANED_TRIAGE",
 	}
 	StuckReason_value = map[string]int32{
 		"STUCK_REASON_UNSPECIFIED":       0,
@@ -57,6 +59,7 @@ var (
 		"STUCK_REASON_STALE_WORK":        4,
 		"STUCK_REASON_BOUNCING":          5,
 		"STUCK_REASON_PUSH_FAILED":       6,
+		"STUCK_REASON_ORPHANED_TRIAGE":   7,
 	}
 )
 
@@ -5073,7 +5076,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x06reason\x18\x02 \x01(\x0e2\x17.session.v1.StuckReasonR\x06reason\x120\n" +
 	"\x05until\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x05until\"3\n" +
 	"\x17SnoozeStuckItemResponse\x12\x18\n" +
-	"\aapplied\x18\x01 \x01(\bR\aapplied*\xe5\x01\n" +
+	"\aapplied\x18\x01 \x01(\bR\aapplied*\x87\x02\n" +
 	"\vStuckReason\x12\x1c\n" +
 	"\x18STUCK_REASON_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSTUCK_REASON_PR_READY_UNMERGED\x10\x01\x12\x1b\n" +
@@ -5081,7 +5084,8 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x1dSTUCK_REASON_ABANDONED_REVIEW\x10\x03\x12\x1b\n" +
 	"\x17STUCK_REASON_STALE_WORK\x10\x04\x12\x19\n" +
 	"\x15STUCK_REASON_BOUNCING\x10\x05\x12\x1c\n" +
-	"\x18STUCK_REASON_PUSH_FAILED\x10\x062\x9f\x17\n" +
+	"\x18STUCK_REASON_PUSH_FAILED\x10\x06\x12 \n" +
+	"\x1cSTUCK_REASON_ORPHANED_TRIAGE\x10\a2\x9f\x17\n" +
 	"\x0eBacklogService\x12b\n" +
 	"\x11CreateBacklogItem\x12$.session.v1.CreateBacklogItemRequest\x1a%.session.v1.CreateBacklogItemResponse\"\x00\x12Y\n" +
 	"\x0eGetBacklogItem\x12!.session.v1.GetBacklogItemRequest\x1a\".session.v1.GetBacklogItemResponse\"\x00\x12_\n" +

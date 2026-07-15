@@ -37,6 +37,8 @@ func toProtoStuckReason(reason domain.StuckReason) sessionv1.StuckReason {
 		return sessionv1.StuckReason_STUCK_REASON_BOUNCING
 	case domain.StuckReasonPushFailed:
 		return sessionv1.StuckReason_STUCK_REASON_PUSH_FAILED
+	case domain.StuckReasonOrphanedTriage:
+		return sessionv1.StuckReason_STUCK_REASON_ORPHANED_TRIAGE
 	default:
 		return sessionv1.StuckReason_STUCK_REASON_UNSPECIFIED
 	}
@@ -60,6 +62,8 @@ func fromProtoStuckReason(reason sessionv1.StuckReason) domain.StuckReason {
 		return domain.StuckReasonBouncing
 	case sessionv1.StuckReason_STUCK_REASON_PUSH_FAILED:
 		return domain.StuckReasonPushFailed
+	case sessionv1.StuckReason_STUCK_REASON_ORPHANED_TRIAGE:
+		return domain.StuckReasonOrphanedTriage
 	default:
 		return ""
 	}
