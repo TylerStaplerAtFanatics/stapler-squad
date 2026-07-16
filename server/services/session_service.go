@@ -719,6 +719,14 @@ func (s *SessionService) SetBacklogLifecycleListener(l *session.BacklogLifecycle
 	s.backlogLifecycleListener = l
 }
 
+// GetBacklogLifecycleListener returns the wired BacklogLifecycleListener (nil if
+// SetBacklogLifecycleListener was never called). Exported for the pointer-equality
+// integration test proving BacklogService and BacklogLifecycleListener share a single
+// PipelineEngine instance (Story 1.5.1) — see server/dependencies_test.go.
+func (s *SessionService) GetBacklogLifecycleListener() *session.BacklogLifecycleListener {
+	return s.backlogLifecycleListener
+}
+
 // SetReviewGateTrigger wires the review gate trigger into the autonomous orchestration
 // service so that completed work sessions immediately kick off headless review.
 func (s *SessionService) SetReviewGateTrigger(t ReviewGateTrigger) {

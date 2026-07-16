@@ -58,18 +58,27 @@ type ReviewGateRunner struct {
 	// transcript is enrichment, never a hard requirement for a review to proceed.
 	// Guarded by scrollbackMu — see its doc comment.
 	scrollbackManager *scrollback.ScrollbackManager
+
+	// pipelineEngine resolves the review prompt content via PipelineEngine.ReviewPromptFor
+	// (Epic 1.5, Story 1.5.4). Optional — nil (the default, used by most existing tests) falls
+	// back to calling BuildHeadlessReviewPrompt directly, matching CachingPipelineEngine's own
+	// default-mode behavior. Set once at construction; never mutated afterward, so no mutex is
+	// needed (unlike the Set*-after-construction fields above).
+	pipelineEngine PipelineEngine
 }
 
 // NewReviewGateRunner constructs a ReviewGateRunner.
 // getPool, getAutoReopener, and getNotifier are getter functions (typically method
 // values from BacklogLifecycleListener) so the runner sees the latest values when
-// dynamic setters are called after construction.
+// dynamic setters are called after construction. pipelineEngine may be nil — see the
+// field's doc comment for the fallback behavior.
 func NewReviewGateRunner(
 	storage *Storage,
 	getPool func() *headless.Pool,
 	getAutoReopener func() AutoReopenSpawner,
 	getNotifier func() Notifier,
 	sessionCreator ReviewGateSpawner,
+	pipelineEngine PipelineEngine,
 ) *ReviewGateRunner {
 	return &ReviewGateRunner{
 		storage:         storage,
@@ -78,7 +87,19 @@ func NewReviewGateRunner(
 		getNotifier:     getNotifier,
 		sessionCreator:  sessionCreator,
 		capabilityCheck: headless.DefaultCapabilitySelfCheck,
+		pipelineEngine:  pipelineEngine,
 	}
+}
+
+// reviewPromptFor returns r.pipelineEngine.ReviewPromptFor(...) when pipelineEngine is
+// wired, or the default BuildHeadlessReviewPrompt otherwise — mirrors
+// CachingPipelineEngine's own default-mode fallback for the nil-engine case (most
+// existing tests construct a ReviewGateRunner without one).
+func (r *ReviewGateRunner) reviewPromptFor(item *BacklogItemData, acSnapshot []AcCriterion, diff string, diffTruncated bool, verificationNotes string, extras ReviewContextExtras) string {
+	if r.pipelineEngine == nil {
+		return BuildHeadlessReviewPrompt(item, acSnapshot, diff, diffTruncated, verificationNotes, extras)
+	}
+	return r.pipelineEngine.ReviewPromptFor(item, acSnapshot, diff, diffTruncated, verificationNotes, extras)
 }
 
 // SetCapabilityCheck overrides the codebase-read capability self-check instance.
@@ -127,6 +148,8 @@ func (r *ReviewGateRunner) Run(
 		log.ErrorLog.Printf("[BacklogLifecycle] spawnReviewGate item=%s has no repo path set; skipping review gate", item.ID)
 		return
 	}
+
+	log.InfoLog.Printf("[PipelineEngine] item=%s stage=review mode=%q", item.ID, ResolvedModeLabel(item.PipelineMode))
 
 	// Get the committed diff from the session's dedicated worktree (preferred)
 	// or fall back to the item's repo path (directory-mode / worktree gone).
@@ -424,7 +447,7 @@ func (r *ReviewGateRunner) Run(
 			}
 		}
 
-		headlessPrompt := BuildHeadlessReviewPrompt(item, acSnapshot, diff, truncated, is.VerificationNotes, extras)
+		headlessPrompt := r.reviewPromptFor(item, acSnapshot, diff, truncated, is.VerificationNotes, extras)
 		reviewResult, callCostUSD, callErr := pool.CallBlocking(reviewCtx, headless.FeatureKeyReview, systemPrompt, headlessPrompt, callOpts)
 
 		// Explicit, immediate cleanup of the transcript file as soon as it is no

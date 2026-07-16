@@ -46,7 +46,7 @@ import (
 // behind an httptest.Server. Returns a typed client and the service itself.
 func setupTriageHarness(t *testing.T, pool headless.PoolClient) (sessionv1connect.BacklogServiceClient, *BacklogService) {
 	t.Helper()
-	svc := NewBacklogService(createTestStorage(t), nil, nil, nil)
+	svc := NewBacklogService(createTestStorage(t), nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 	t.Cleanup(svc.Shutdown)
 

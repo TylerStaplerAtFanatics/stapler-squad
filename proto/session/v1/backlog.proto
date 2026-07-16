@@ -78,6 +78,8 @@ message ItemSession {
   double estimated_cost_usd = 13;
   string worktree_branch = 14;
   string worktree_path = 15;
+  string pipeline_mode_snapshot = 16;
+  string pipeline_mode_snapshot_hash = 17;
 }
 
 // BacklogStatusEvent records a single status transition for a backlog item.
@@ -115,6 +117,7 @@ message BacklogItem {
   string pr_url = 22;
   int32 pr_number = 23;
   bool auto_spawn_session = 24;
+  optional string pipeline_mode = 25;
 }
 
 // ItemSource represents an external plugin source that syncs items into the
@@ -155,6 +158,7 @@ message CreateBacklogItemRequest {
   string notes = 8;
   bool skip_triage = 9;
   bool auto_spawn_session = 10;
+  optional string pipeline_mode = 11;
 }
 
 message CreateBacklogItemResponse {
@@ -194,6 +198,7 @@ message UpdateBacklogItemRequest {
   string expected_status = 10;
   google.protobuf.Timestamp expected_updated_at = 11;
   bool auto_spawn_session = 12;
+  optional string pipeline_mode = 13;
 }
 
 message UpdateBacklogItemResponse {

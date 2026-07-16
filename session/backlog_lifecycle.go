@@ -140,7 +140,20 @@ type BacklogLifecycleListener struct {
 	// runner encapsulates the spawnReviewGate logic so it can be tested independently.
 	runner *ReviewGateRunner
 
+	// pipelineEngine resolves mode-specific slash-command sets and prompts (Epic 1.5).
+	// Optional — nil (the default for every constructor except NewBacklogLifecycleListenerWithPool,
+	// which is production's only caller) falls back to the built-in default pipeline. Set once at
+	// construction and forwarded unchanged into runner — never mutated afterward.
+	pipelineEngine PipelineEngine
+
 	enabled atomic.Bool
+}
+
+// PipelineEngine returns the PipelineEngine injected at construction (nil if none was
+// wired). Exported for the pointer-equality integration test proving BacklogService and
+// BacklogLifecycleListener share a single PipelineEngine instance (Story 1.5.1).
+func (l *BacklogLifecycleListener) PipelineEngine() PipelineEngine {
+	return l.pipelineEngine
 }
 
 // SetEnabled toggles whether this listener processes lifecycle events.
@@ -283,39 +296,44 @@ func (l *BacklogLifecycleListener) Shutdown() {
 }
 
 // newListenerBase initialises fields common to all BacklogLifecycleListener constructors.
-func newListenerBase(storage *Storage) *BacklogLifecycleListener {
+// pipelineEngine may be nil — see the field's doc comment for the fallback behavior.
+func newListenerBase(storage *Storage, pipelineEngine PipelineEngine) *BacklogLifecycleListener {
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &BacklogLifecycleListener{
 		storage:                 storage,
+		pipelineEngine:          pipelineEngine,
 		reviewSem:               make(chan struct{}, maxConcurrentReviewGates),
 		shutdownCtx:             ctx,
 		shutdownCancel:          cancel,
 		prPendingCheckerFactory: defaultPRPendingCheckerFactory,
 		prCreatorFactory:        defaultPRCreatorFactory,
 	}
-	l.runner = NewReviewGateRunner(storage, l.getHeadlessPool, l.getAutoReopener, l.getNotifier, nil)
+	l.runner = NewReviewGateRunner(storage, l.getHeadlessPool, l.getAutoReopener, l.getNotifier, nil, pipelineEngine)
 	return l
 }
 
 // NewBacklogLifecycleListener creates a listener backed by the given storage.
-// The review gate is disabled (sessionCreator=nil, headlessPool=nil).
+// The review gate is disabled (sessionCreator=nil, headlessPool=nil). No PipelineEngine
+// is wired (nil) — callers needing one should use NewBacklogLifecycleListenerWithPool.
 func NewBacklogLifecycleListener(storage *Storage) *BacklogLifecycleListener {
-	return newListenerBase(storage)
+	return newListenerBase(storage, nil)
 }
 
 // NewBacklogLifecycleListenerWithSpawner creates a listener that will spawn a
 // review gate session when a work session exits and SkipReviewGate is false.
 func NewBacklogLifecycleListenerWithSpawner(storage *Storage, spawner ReviewGateSpawner) *BacklogLifecycleListener {
-	l := newListenerBase(storage)
+	l := newListenerBase(storage, nil)
 	l.sessionCreator = spawner
 	l.runner.sessionCreator = spawner
 	return l
 }
 
 // NewBacklogLifecycleListenerWithPool creates a listener that uses a headless.Pool
-// for review gate calls instead of spawning a tmux session.
-func NewBacklogLifecycleListenerWithPool(storage *Storage, pool *headless.Pool) *BacklogLifecycleListener {
-	l := newListenerBase(storage)
+// for review gate calls instead of spawning a tmux session. pipelineEngine is the
+// shared PipelineEngine instance (Epic 1.5, Story 1.5.1) — pass nil to fall back to
+// the built-in default pipeline for every item.
+func NewBacklogLifecycleListenerWithPool(storage *Storage, pool *headless.Pool, pipelineEngine PipelineEngine) *BacklogLifecycleListener {
+	l := newListenerBase(storage, pipelineEngine)
 	l.headlessPool = pool
 	return l
 }

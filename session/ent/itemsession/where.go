@@ -81,6 +81,16 @@ func AcSnapshot(v string) predicate.ItemSession {
 	return predicate.ItemSession(sql.FieldEQ(FieldAcSnapshot, v))
 }
 
+// PipelineModeSnapshot applies equality check predicate on the "pipeline_mode_snapshot" field. It's identical to PipelineModeSnapshotEQ.
+func PipelineModeSnapshot(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldEQ(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotHash applies equality check predicate on the "pipeline_mode_snapshot_hash" field. It's identical to PipelineModeSnapshotHashEQ.
+func PipelineModeSnapshotHash(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldEQ(FieldPipelineModeSnapshotHash, v))
+}
+
 // TriageResult applies equality check predicate on the "triage_result" field. It's identical to TriageResultEQ.
 func TriageResult(v string) predicate.ItemSession {
 	return predicate.ItemSession(sql.FieldEQ(FieldTriageResult, v))
@@ -434,6 +444,136 @@ func AcSnapshotEqualFold(v string) predicate.ItemSession {
 // AcSnapshotContainsFold applies the ContainsFold predicate on the "ac_snapshot" field.
 func AcSnapshotContainsFold(v string) predicate.ItemSession {
 	return predicate.ItemSession(sql.FieldContainsFold(FieldAcSnapshot, v))
+}
+
+// PipelineModeSnapshotEQ applies the EQ predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotEQ(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldEQ(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotNEQ applies the NEQ predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotNEQ(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldNEQ(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotIn applies the In predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotIn(vs ...string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldIn(FieldPipelineModeSnapshot, vs...))
+}
+
+// PipelineModeSnapshotNotIn applies the NotIn predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotNotIn(vs ...string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldNotIn(FieldPipelineModeSnapshot, vs...))
+}
+
+// PipelineModeSnapshotGT applies the GT predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotGT(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldGT(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotGTE applies the GTE predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotGTE(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldGTE(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotLT applies the LT predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotLT(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldLT(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotLTE applies the LTE predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotLTE(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldLTE(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotContains applies the Contains predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotContains(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldContains(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotHasPrefix applies the HasPrefix predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotHasPrefix(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldHasPrefix(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotHasSuffix applies the HasSuffix predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotHasSuffix(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldHasSuffix(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotEqualFold applies the EqualFold predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotEqualFold(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldEqualFold(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotContainsFold applies the ContainsFold predicate on the "pipeline_mode_snapshot" field.
+func PipelineModeSnapshotContainsFold(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldContainsFold(FieldPipelineModeSnapshot, v))
+}
+
+// PipelineModeSnapshotHashEQ applies the EQ predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashEQ(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldEQ(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashNEQ applies the NEQ predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashNEQ(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldNEQ(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashIn applies the In predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashIn(vs ...string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldIn(FieldPipelineModeSnapshotHash, vs...))
+}
+
+// PipelineModeSnapshotHashNotIn applies the NotIn predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashNotIn(vs ...string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldNotIn(FieldPipelineModeSnapshotHash, vs...))
+}
+
+// PipelineModeSnapshotHashGT applies the GT predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashGT(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldGT(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashGTE applies the GTE predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashGTE(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldGTE(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashLT applies the LT predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashLT(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldLT(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashLTE applies the LTE predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashLTE(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldLTE(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashContains applies the Contains predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashContains(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldContains(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashHasPrefix applies the HasPrefix predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashHasPrefix(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldHasPrefix(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashHasSuffix applies the HasSuffix predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashHasSuffix(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldHasSuffix(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashEqualFold applies the EqualFold predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashEqualFold(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldEqualFold(FieldPipelineModeSnapshotHash, v))
+}
+
+// PipelineModeSnapshotHashContainsFold applies the ContainsFold predicate on the "pipeline_mode_snapshot_hash" field.
+func PipelineModeSnapshotHashContainsFold(v string) predicate.ItemSession {
+	return predicate.ItemSession(sql.FieldContainsFold(FieldPipelineModeSnapshotHash, v))
 }
 
 // TriageResultEQ applies the EQ predicate on the "triage_result" field.

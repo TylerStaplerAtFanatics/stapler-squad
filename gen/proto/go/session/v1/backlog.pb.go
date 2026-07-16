@@ -543,24 +543,26 @@ func (x *TriageResult) GetFeedback() string {
 
 // ItemSession records a session that was spawned or attached to a backlog item.
 type ItemSession struct {
-	state                 protoimpl.MessageState `protogen:"open.v1"`
-	Id                    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	SessionUuid           string                 `protobuf:"bytes,2,opt,name=session_uuid,json=sessionUuid,proto3" json:"session_uuid,omitempty"`
-	SessionRole           string                 `protobuf:"bytes,3,opt,name=session_role,json=sessionRole,proto3" json:"session_role,omitempty"`
-	StartedAt             *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	EndedAt               *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
-	LastCommitMessage     string                 `protobuf:"bytes,6,opt,name=last_commit_message,json=lastCommitMessage,proto3" json:"last_commit_message,omitempty"`
-	LastCommitAt          *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=last_commit_at,json=lastCommitAt,proto3" json:"last_commit_at,omitempty"`
-	CommitCountSinceSpawn int32                  `protobuf:"varint,8,opt,name=commit_count_since_spawn,json=commitCountSinceSpawn,proto3" json:"commit_count_since_spawn,omitempty"`
-	LastFileTouchAt       *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=last_file_touch_at,json=lastFileTouchAt,proto3" json:"last_file_touch_at,omitempty"`
-	CreatedAt             *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	ReviewVerdict         *ReviewVerdict         `protobuf:"bytes,11,opt,name=review_verdict,json=reviewVerdict,proto3" json:"review_verdict,omitempty"`
-	TriageResult          *TriageResult          `protobuf:"bytes,12,opt,name=triage_result,json=triageResult,proto3" json:"triage_result,omitempty"`
-	EstimatedCostUsd      float64                `protobuf:"fixed64,13,opt,name=estimated_cost_usd,json=estimatedCostUsd,proto3" json:"estimated_cost_usd,omitempty"`
-	WorktreeBranch        string                 `protobuf:"bytes,14,opt,name=worktree_branch,json=worktreeBranch,proto3" json:"worktree_branch,omitempty"`
-	WorktreePath          string                 `protobuf:"bytes,15,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	Id                       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	SessionUuid              string                 `protobuf:"bytes,2,opt,name=session_uuid,json=sessionUuid,proto3" json:"session_uuid,omitempty"`
+	SessionRole              string                 `protobuf:"bytes,3,opt,name=session_role,json=sessionRole,proto3" json:"session_role,omitempty"`
+	StartedAt                *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	EndedAt                  *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	LastCommitMessage        string                 `protobuf:"bytes,6,opt,name=last_commit_message,json=lastCommitMessage,proto3" json:"last_commit_message,omitempty"`
+	LastCommitAt             *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=last_commit_at,json=lastCommitAt,proto3" json:"last_commit_at,omitempty"`
+	CommitCountSinceSpawn    int32                  `protobuf:"varint,8,opt,name=commit_count_since_spawn,json=commitCountSinceSpawn,proto3" json:"commit_count_since_spawn,omitempty"`
+	LastFileTouchAt          *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=last_file_touch_at,json=lastFileTouchAt,proto3" json:"last_file_touch_at,omitempty"`
+	CreatedAt                *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	ReviewVerdict            *ReviewVerdict         `protobuf:"bytes,11,opt,name=review_verdict,json=reviewVerdict,proto3" json:"review_verdict,omitempty"`
+	TriageResult             *TriageResult          `protobuf:"bytes,12,opt,name=triage_result,json=triageResult,proto3" json:"triage_result,omitempty"`
+	EstimatedCostUsd         float64                `protobuf:"fixed64,13,opt,name=estimated_cost_usd,json=estimatedCostUsd,proto3" json:"estimated_cost_usd,omitempty"`
+	WorktreeBranch           string                 `protobuf:"bytes,14,opt,name=worktree_branch,json=worktreeBranch,proto3" json:"worktree_branch,omitempty"`
+	WorktreePath             string                 `protobuf:"bytes,15,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`
+	PipelineModeSnapshot     string                 `protobuf:"bytes,16,opt,name=pipeline_mode_snapshot,json=pipelineModeSnapshot,proto3" json:"pipeline_mode_snapshot,omitempty"`
+	PipelineModeSnapshotHash string                 `protobuf:"bytes,17,opt,name=pipeline_mode_snapshot_hash,json=pipelineModeSnapshotHash,proto3" json:"pipeline_mode_snapshot_hash,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *ItemSession) Reset() {
@@ -698,6 +700,20 @@ func (x *ItemSession) GetWorktreePath() string {
 	return ""
 }
 
+func (x *ItemSession) GetPipelineModeSnapshot() string {
+	if x != nil {
+		return x.PipelineModeSnapshot
+	}
+	return ""
+}
+
+func (x *ItemSession) GetPipelineModeSnapshotHash() string {
+	if x != nil {
+		return x.PipelineModeSnapshotHash
+	}
+	return ""
+}
+
 // BacklogStatusEvent records a single status transition for a backlog item.
 type BacklogStatusEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -802,6 +818,7 @@ type BacklogItem struct {
 	PrUrl                 string                 `protobuf:"bytes,22,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
 	PrNumber              int32                  `protobuf:"varint,23,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
 	AutoSpawnSession      bool                   `protobuf:"varint,24,opt,name=auto_spawn_session,json=autoSpawnSession,proto3" json:"auto_spawn_session,omitempty"`
+	PipelineMode          *string                `protobuf:"bytes,25,opt,name=pipeline_mode,json=pipelineMode,proto3,oneof" json:"pipeline_mode,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -1002,6 +1019,13 @@ func (x *BacklogItem) GetAutoSpawnSession() bool {
 		return x.AutoSpawnSession
 	}
 	return false
+}
+
+func (x *BacklogItem) GetPipelineMode() string {
+	if x != nil && x.PipelineMode != nil {
+		return *x.PipelineMode
+	}
+	return ""
 }
 
 // ItemSource represents an external plugin source that syncs items into the
@@ -1219,6 +1243,7 @@ type CreateBacklogItemRequest struct {
 	Notes              string                 `protobuf:"bytes,8,opt,name=notes,proto3" json:"notes,omitempty"`
 	SkipTriage         bool                   `protobuf:"varint,9,opt,name=skip_triage,json=skipTriage,proto3" json:"skip_triage,omitempty"`
 	AutoSpawnSession   bool                   `protobuf:"varint,10,opt,name=auto_spawn_session,json=autoSpawnSession,proto3" json:"auto_spawn_session,omitempty"`
+	PipelineMode       *string                `protobuf:"bytes,11,opt,name=pipeline_mode,json=pipelineMode,proto3,oneof" json:"pipeline_mode,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1321,6 +1346,13 @@ func (x *CreateBacklogItemRequest) GetAutoSpawnSession() bool {
 		return x.AutoSpawnSession
 	}
 	return false
+}
+
+func (x *CreateBacklogItemRequest) GetPipelineMode() string {
+	if x != nil && x.PipelineMode != nil {
+		return *x.PipelineMode
+	}
+	return ""
 }
 
 type CreateBacklogItemResponse struct {
@@ -1589,6 +1621,7 @@ type UpdateBacklogItemRequest struct {
 	ExpectedStatus     string                 `protobuf:"bytes,10,opt,name=expected_status,json=expectedStatus,proto3" json:"expected_status,omitempty"`
 	ExpectedUpdatedAt  *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=expected_updated_at,json=expectedUpdatedAt,proto3" json:"expected_updated_at,omitempty"`
 	AutoSpawnSession   bool                   `protobuf:"varint,12,opt,name=auto_spawn_session,json=autoSpawnSession,proto3" json:"auto_spawn_session,omitempty"`
+	PipelineMode       *string                `protobuf:"bytes,13,opt,name=pipeline_mode,json=pipelineMode,proto3,oneof" json:"pipeline_mode,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1705,6 +1738,13 @@ func (x *UpdateBacklogItemRequest) GetAutoSpawnSession() bool {
 		return x.AutoSpawnSession
 	}
 	return false
+}
+
+func (x *UpdateBacklogItemRequest) GetPipelineMode() string {
+	if x != nil && x.PipelineMode != nil {
+		return *x.PipelineMode
+	}
+	return ""
 }
 
 type UpdateBacklogItemResponse struct {
@@ -4798,7 +4838,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x14clarifying_questions\x18\x03 \x03(\tR\x13clarifyingQuestions\x12,\n" +
 	"\x05tasks\x18\x04 \x03(\v2\x16.session.v1.TriageTaskR\x05tasks\x12\x1c\n" +
 	"\titeration\x18\x05 \x01(\x05R\titeration\x12\x1a\n" +
-	"\bfeedback\x18\x06 \x01(\tR\bfeedback\"\x81\x06\n" +
+	"\bfeedback\x18\x06 \x01(\tR\bfeedback\"\xf6\x06\n" +
 	"\vItemSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fsession_uuid\x18\x02 \x01(\tR\vsessionUuid\x12!\n" +
@@ -4817,7 +4857,9 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\rtriage_result\x18\f \x01(\v2\x18.session.v1.TriageResultR\ftriageResult\x12,\n" +
 	"\x12estimated_cost_usd\x18\r \x01(\x01R\x10estimatedCostUsd\x12'\n" +
 	"\x0fworktree_branch\x18\x0e \x01(\tR\x0eworktreeBranch\x12#\n" +
-	"\rworktree_path\x18\x0f \x01(\tR\fworktreePath\"\xc0\x01\n" +
+	"\rworktree_path\x18\x0f \x01(\tR\fworktreePath\x124\n" +
+	"\x16pipeline_mode_snapshot\x18\x10 \x01(\tR\x14pipelineModeSnapshot\x12=\n" +
+	"\x1bpipeline_mode_snapshot_hash\x18\x11 \x01(\tR\x18pipelineModeSnapshotHash\"\xc0\x01\n" +
 	"\x12BacklogStatusEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vfrom_status\x18\x02 \x01(\tR\n" +
@@ -4825,7 +4867,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\tto_status\x18\x03 \x01(\tR\btoStatus\x12!\n" +
 	"\ftriggered_by\x18\x04 \x01(\tR\vtriggeredBy\x129\n" +
 	"\n" +
-	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xff\a\n" +
+	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\xbb\b\n" +
 	"\vBacklogItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -4855,7 +4897,9 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x18total_estimated_cost_usd\x18\x15 \x01(\x01R\x15totalEstimatedCostUsd\x12\x15\n" +
 	"\x06pr_url\x18\x16 \x01(\tR\x05prUrl\x12\x1b\n" +
 	"\tpr_number\x18\x17 \x01(\x05R\bprNumber\x12,\n" +
-	"\x12auto_spawn_session\x18\x18 \x01(\bR\x10autoSpawnSession\"\xd9\x02\n" +
+	"\x12auto_spawn_session\x18\x18 \x01(\bR\x10autoSpawnSession\x12(\n" +
+	"\rpipeline_mode\x18\x19 \x01(\tH\x00R\fpipelineMode\x88\x01\x01B\x10\n" +
+	"\x0e_pipeline_mode\"\xd9\x02\n" +
 	"\n" +
 	"ItemSource\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
@@ -4878,7 +4922,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\ritems_updated\x18\x05 \x01(\x05R\fitemsUpdated\x12#\n" +
 	"\ritems_skipped\x18\x06 \x01(\x05R\fitemsSkipped\x12#\n" +
 	"\ritems_errored\x18\a \x01(\x05R\fitemsErrored\x12#\n" +
-	"\rerror_message\x18\b \x01(\tR\ferrorMessage\"\x89\x03\n" +
+	"\rerror_message\x18\b \x01(\tR\ferrorMessage\"\xc5\x03\n" +
 	"\x18CreateBacklogItemRequest\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12H\n" +
@@ -4891,7 +4935,9 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\vskip_triage\x18\t \x01(\bR\n" +
 	"skipTriage\x12,\n" +
 	"\x12auto_spawn_session\x18\n" +
-	" \x01(\bR\x10autoSpawnSession\"s\n" +
+	" \x01(\bR\x10autoSpawnSession\x12(\n" +
+	"\rpipeline_mode\x18\v \x01(\tH\x00R\fpipelineMode\x88\x01\x01B\x10\n" +
+	"\x0e_pipeline_mode\"s\n" +
 	"\x19CreateBacklogItemResponse\x12+\n" +
 	"\x04item\x18\x01 \x01(\v2\x17.session.v1.BacklogItemR\x04item\x12)\n" +
 	"\x10triage_triggered\x18\x02 \x01(\bR\x0ftriageTriggered\"0\n" +
@@ -4905,7 +4951,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\asort_by\x18\x03 \x01(\tR\x06sortBy\x12)\n" +
 	"\x10include_terminal\x18\x04 \x01(\bR\x0fincludeTerminal\"I\n" +
 	"\x18ListBacklogItemsResponse\x12-\n" +
-	"\x05items\x18\x01 \x03(\v2\x17.session.v1.BacklogItemR\x05items\"\xf6\x03\n" +
+	"\x05items\x18\x01 \x03(\v2\x17.session.v1.BacklogItemR\x05items\"\xb2\x04\n" +
 	"\x18UpdateBacklogItemRequest\x12\x17\n" +
 	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
@@ -4919,7 +4965,9 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x0fexpected_status\x18\n" +
 	" \x01(\tR\x0eexpectedStatus\x12J\n" +
 	"\x13expected_updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\x11expectedUpdatedAt\x12,\n" +
-	"\x12auto_spawn_session\x18\f \x01(\bR\x10autoSpawnSession\"H\n" +
+	"\x12auto_spawn_session\x18\f \x01(\bR\x10autoSpawnSession\x12(\n" +
+	"\rpipeline_mode\x18\r \x01(\tH\x00R\fpipelineMode\x88\x01\x01B\x10\n" +
+	"\x0e_pipeline_mode\"H\n" +
 	"\x19UpdateBacklogItemResponse\x12+\n" +
 	"\x04item\x18\x01 \x01(\v2\x17.session.v1.BacklogItemR\x04item\"4\n" +
 	"\x19ArchiveBacklogItemRequest\x12\x17\n" +
@@ -5379,6 +5427,9 @@ func file_session_v1_backlog_proto_init() {
 	if File_session_v1_backlog_proto != nil {
 		return
 	}
+	file_session_v1_backlog_proto_msgTypes[8].OneofWrappers = []any{}
+	file_session_v1_backlog_proto_msgTypes[11].OneofWrappers = []any{}
+	file_session_v1_backlog_proto_msgTypes[17].OneofWrappers = []any{}
 	file_session_v1_backlog_proto_msgTypes[71].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

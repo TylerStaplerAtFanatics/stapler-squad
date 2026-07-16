@@ -247,11 +247,11 @@ func (m *mockSessionCreator) CreateWorktreeSession(_ context.Context, title, _, 
 
 func newBacklogService(t *testing.T) *BacklogService {
 	t.Helper()
-	return NewBacklogService(createTestStorage(t), nil, nil, nil)
+	return NewBacklogService(createTestStorage(t), nil, nil, nil, nil)
 }
 
 func newBacklogServiceNilStorage() *BacklogService {
-	return NewBacklogService(nil, nil, nil, nil)
+	return NewBacklogService(nil, nil, nil, nil, nil)
 }
 
 // ─── CreateBacklogItem ────────────────────────────────────────────────────────
@@ -526,6 +526,24 @@ func TestListBacklogItems_DoneStatusIsTerminal(t *testing.T) {
 	assert.Contains(t, allTitles, "done item", "done items must appear when includeTerminal=true")
 }
 
+// ─── backlogItemToProto ───────────────────────────────────────────────────────
+
+// TestBacklogItemToProto_should_IncludePipelineMode_When_ItemHasNonDefaultMode
+// verifies backlogItemToProto maps a non-default PipelineMode onto the proto
+// BacklogItem's optional pipeline_mode field (Story 1.4.5).
+func TestBacklogItemToProto_should_IncludePipelineMode_When_ItemHasNonDefaultMode(t *testing.T) {
+	item := &session.BacklogItemData{
+		ID:           "item-1",
+		Title:        "item using quick mode",
+		PipelineMode: "quick",
+	}
+
+	p := backlogItemToProto(item, nil)
+
+	require.NotNil(t, p.PipelineMode)
+	assert.Equal(t, "quick", *p.PipelineMode)
+}
+
 // ─── ApprovePlan ──────────────────────────────────────────────────────────────
 
 // UT-032a: ApprovePlan when plan_artifacts_path is empty → CodeFailedPrecondition
@@ -551,7 +569,7 @@ func TestApprovePlan_MissingPlanArtifactsPath_ReturnsFailedPrecondition(t *testi
 // UT-032b: ApprovePlan happy path — sets plan_approved=true and plan_approved_at
 func TestApprovePlan_HappyPath_SetsPlanApprovedAndTimestamp(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	// Create item.
 	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
@@ -622,7 +640,7 @@ func TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent(t *te
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{response: validTriageJSON()}
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 	starter := &fakeAutonomousDriverStarter{}
 	svc.SetAutonomousDriverStarter(starter)
@@ -723,7 +741,7 @@ func TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent(t *te
 func TestSpawnSessionFromItem_AutonomousBypassesPlanningGate(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 	starter := &fakeAutonomousDriverStarter{}
 	svc.SetAutonomousDriverStarter(starter)
 
@@ -777,7 +795,7 @@ func TestSpawnSessionFromItem_AutonomousBypassesPlanningGate(t *testing.T) {
 func TestSpawnSessionFromItem_Reopen_SetsBacklogCategory(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 
 	repoPath := t.TempDir()
 	initGitRepoWithCommit(t, repoPath)
@@ -850,7 +868,7 @@ func createReadyItemForSpawn(t *testing.T, svc *BacklogService, repoPath, title 
 func TestSpawnSessionFromItem_WIPLimit_BlocksSpawnAtCap(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 
 	repoPath := t.TempDir()
 	initGitRepoWithCommit(t, repoPath)
@@ -882,7 +900,7 @@ func TestSpawnSessionFromItem_WIPLimit_BlocksSpawnAtCap(t *testing.T) {
 func TestSpawnSessionFromItem_WIPLimit_AllowsReopenAtCap(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 
 	repoPath := t.TempDir()
 	initGitRepoWithCommit(t, repoPath)
@@ -921,7 +939,7 @@ func TestSpawnSessionFromItem_WIPLimit_AllowsReopenAtCap(t *testing.T) {
 func TestSpawnSessionFromItem_TombstonesDeadWorkSession_AllowsRespawn(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{}} // nothing is live
 	svc.SetSessionStopper(stopper)
 
@@ -970,7 +988,7 @@ func TestSpawnSessionFromItem_TombstonesDeadWorkSession_AllowsRespawn(t *testing
 func TestSpawnSessionFromItem_LiveWorkSession_StillBlocksSpawn(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{"live-work-session-uuid": true}}
 	svc.SetSessionStopper(stopper)
 
@@ -1004,7 +1022,7 @@ func TestSpawnSessionFromItem_LiveWorkSession_StillBlocksSpawn(t *testing.T) {
 // SpawnSessionFromItem.
 func TestAttachSessionToItem_WritesContextFileWithPlanArtifactsAndPriorSessions(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoPath := t.TempDir()
 	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
@@ -1094,7 +1112,7 @@ func TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext(t *testing.T) {
 	// wrong: a cleanupCtx created before this delay would already be expired by
 	// the time it's used afterward.
 	pool := &fakeHeadlessPool{response: validTriageJSON(), delay: 3 * time.Second}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 	// Reduced but kept generous enough (2s) that the real SQLite writes below
 	// can't flake under CI load or a busy test machine — the bug being tested
@@ -1159,7 +1177,7 @@ func TestTriggerReReview_NotInReviewStatus_ReturnsFailedPrecondition(t *testing.
 // UT-040b: TriggerReReview on item with no repo_path → CodeFailedPrecondition
 func TestTriggerReReview_MissingRepoPath_ReturnsFailedPrecondition(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	// Create item with AC so it can transition to ready.
 	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
@@ -1255,7 +1273,7 @@ func TestTriggerReReview_HappyPath_NoSessionCreator_ReturnsPlaceholder(t *testin
 // SubmitManualReview, which already auto-transition on PASS.
 func TestTriggerReReview_HeadlessPassAutoTransitionsToDone(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	// No work session/diff exists in this fixture, so TriggerReReview's review call
 	// takes the "codebase-read" (empty-diff) path and DegradeIfUnverified requires
 	// tool_reads evidence pointing at a real, existing file under RepoPath, or it
@@ -1306,7 +1324,7 @@ func TestTriggerReReview_HeadlessPassAutoTransitionsToDone(t *testing.T) {
 func TestTriggerReReview_SetsBacklogCategory(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 
 	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
 		Title:    "test item",
@@ -1390,7 +1408,7 @@ func setupItemInReview(t *testing.T, svc *BacklogService, repoPath string) strin
 // tool_reads evidence) is persisted as-is.
 func TestTriggerReReview_EmptyDiff_UsesWorkDirAndCodebaseAccessPrompt(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("x"), 0o644))
@@ -1425,7 +1443,7 @@ func TestTriggerReReview_EmptyDiff_UsesWorkDirAndCodebaseAccessPrompt(t *testing
 // and that all of this reaches the actual prompt text sent to the pool.
 func TestTriggerReReview_EmptyDiff_ContextExtrasReachPrompt(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("x"), 0o644))
@@ -1479,7 +1497,7 @@ func TestTriggerReReview_EmptyDiff_ContextExtrasReachPrompt(t *testing.T) {
 // ReviewGateRunner.Run behavior — previously the cost was discarded via `_`.
 func TestTriggerReReview_HappyPath_ThreadsCallCostIntoItemSession(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("x"), 0o644))
@@ -1506,7 +1524,7 @@ func TestTriggerReReview_HappyPath_ThreadsCallCostIntoItemSession(t *testing.T) 
 // headless.DefaultCallTimeout (900s).
 func TestTriggerReReview_EmptyDiff_UsesShorterCodebaseReadTimeout(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoDir := t.TempDir()
 	itemID := setupItemInReview(t, svc, repoDir)
@@ -1533,7 +1551,7 @@ func TestTriggerReReview_EmptyDiff_UsesShorterCodebaseReadTimeout(t *testing.T) 
 // Repair Pass Addendum.
 func TestTriggerReReview_CodebaseReadTimeout_RecordsUnverifiableNotFail(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoDir := t.TempDir()
 	itemID := setupItemInReview(t, svc, repoDir)
@@ -1564,7 +1582,7 @@ func TestTriggerReReview_CodebaseReadTimeout_RecordsUnverifiableNotFail(t *testi
 // is downgraded to UNVERIFIABLE before being persisted.
 func TestTriggerReReview_CodebaseReadEmptyToolReads_DowngradesPassToUnverifiable(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoDir := t.TempDir()
 	itemID := setupItemInReview(t, svc, repoDir)
@@ -1587,7 +1605,7 @@ func TestTriggerReReview_CodebaseReadEmptyToolReads_DowngradesPassToUnverifiable
 // under the codebase work dir is downgraded to UNVERIFIABLE.
 func TestTriggerReReview_CodebaseReadFabricatedToolReadsPath_DowngradesPassToUnverifiable(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoDir := t.TempDir() // deliberately empty — no files created here
 	itemID := setupItemInReview(t, svc, repoDir)
@@ -1613,7 +1631,7 @@ func TestTriggerReReview_CodebaseReadFabricatedToolReadsPath_DowngradesPassToUnv
 // 2.2.6c: a failure discovered via either call site short-circuits the other).
 func TestTriggerReReview_CapabilitySelfCheckFails_RecordsUnverifiableWithoutAttemptingCodebaseReadCall(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	repoDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "marker.txt"), []byte("x"), 0o644))
@@ -1670,7 +1688,7 @@ func TestResolveACSnapshot_NoWorkSession_ReturnsLiveAC(t *testing.T) {
 // no CreateDirectorySession call.
 func TestCreateBacklogItem_SkipsTriageWhenSkipTriageTrue(t *testing.T) {
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil, nil)
 
 	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
 		Title:      "item with repo",
@@ -1685,7 +1703,7 @@ func TestCreateBacklogItem_SkipsTriageWhenSkipTriageTrue(t *testing.T) {
 // TestCreateBacklogItem_SkipsTriageWhenRepoPathEmpty: no repo_path → triage_triggered=false.
 func TestCreateBacklogItem_SkipsTriageWhenRepoPathEmpty(t *testing.T) {
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil, nil)
 
 	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
 		Title:    "item without repo",
@@ -1702,7 +1720,7 @@ func TestTriggerTriage_DoubleTriggerGuard(t *testing.T) {
 	storage := createTestStorage(t)
 	const liveUUID = "00000000-0000-0000-0000-000000000001"
 	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{liveUUID: true}}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetSessionStopper(stopper)
 
 	// Create an item with a repo path so TriggerTriage can reach the guard.
@@ -1826,7 +1844,7 @@ func (e *errSessionCreator) CreateWorktreeSession(_ context.Context, _, _, _, _ 
 // (default in newBacklogService), the guard skips auto-triage gracefully.
 func TestCreateBacklogItem_AutoTriggersTriageWhenRepoPathSet(t *testing.T) {
 	creator := &errSessionCreator{err: errors.New("no tmux in tests")}
-	svc := NewBacklogService(createTestStorage(t), creator, nil, nil)
+	svc := NewBacklogService(createTestStorage(t), creator, nil, nil, nil)
 	// headlessPool is nil → auto-trigger guard skips triage; triage_triggered must be false.
 	resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
 		Title:    "item triggers triage",
@@ -1842,7 +1860,7 @@ func TestCreateBacklogItem_AutoTriggersTriageWhenRepoPathSet(t *testing.T) {
 // TestTriggerTriage_NilPool: returns CodeUnimplemented when no headless pool is wired.
 func TestTriggerTriage_NilPool(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
 		Title:    "triage test",
@@ -1865,7 +1883,7 @@ func TestTriggerTriage_NilPool(t *testing.T) {
 func TestTriggerTriage_Success(t *testing.T) {
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{response: validTriageJSON()}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	repoPath := t.TempDir()
@@ -1910,7 +1928,7 @@ func TestTriggerTriage_AutoSpawnSession_SpawnsWorkSessionWithoutManualClick(t *t
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{response: validTriageJSON()}
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	repoPath := t.TempDir()
@@ -1948,7 +1966,7 @@ func TestTriggerTriage_AutoSpawnSessionFalse_LeavesItemAtReadyForManualSpawn(t *
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{response: validTriageJSON()}
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	repoPath := t.TempDir()
@@ -1985,7 +2003,7 @@ func TestTriggerTriage_PersistFailurePublishesNotification(t *testing.T) {
 	// Delay the fake LLM call so the test can race a status change in underneath it,
 	// deterministically forcing the final TransitionBacklogItemStatus precondition to fail.
 	pool := &fakeHeadlessPool{response: validTriageJSON(), delay: 200 * time.Millisecond}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 	eventBus := events.NewEventBus(4)
 	svc.SetEventBus(eventBus)
@@ -2042,7 +2060,7 @@ func TestTriggerTriage_RefineWithFeedback(t *testing.T) {
 	storage := createTestStorage(t)
 	secondResponse := `{"summary":"revised summary","suggestions":[],"tasks":[{"text":"revised task","estimate":"3h","category":"backend"}]}`
 	pool := &fakeHeadlessPool{responses: []string{validTriageJSON(), secondResponse}}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
@@ -2095,7 +2113,7 @@ func TestTriggerTriage_RefineWithFeedback(t *testing.T) {
 func TestTriggerTriage_RefineWithFeedback_RequiresPriorResult(t *testing.T) {
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{response: validTriageJSON()}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
@@ -2119,7 +2137,7 @@ func TestTriggerTriage_RefineWithFeedback_RequiresPriorResult(t *testing.T) {
 func TestTriggerTriage_HeadlessPoolError(t *testing.T) {
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{err: errors.New("claude binary not found")}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
@@ -2152,7 +2170,7 @@ func TestTriggerTriage_AlreadyExists_LiveSession(t *testing.T) {
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{response: validTriageJSON()}
 	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{"live-triage-uuid": true}}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 	svc.SetSessionStopper(stopper)
 
@@ -2185,7 +2203,7 @@ func TestTriggerTriage_AlreadyExists_LiveSession(t *testing.T) {
 func TestTriggerTriage_OrphanedHeadlessSession(t *testing.T) {
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{response: validTriageJSON()}
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
@@ -2271,7 +2289,7 @@ func TestTriggerSync_ReturnsFailedPreconditionWhenFeatureDisabled(t *testing.T) 
 
 func TestTriggerSync_SucceedsWhenFeatureEnabledCheckReturnsTrue(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	registry := session.NewPluginRegistry()
 	plugin := &fakeSourcePlugin{items: []session.ExternalItem{{ExternalID: "e1", Title: "Item"}}}
 	registry.Register(plugin)
@@ -2331,7 +2349,7 @@ func TestTriggerSync_ReturnsInvalidArgumentForMalformedSourceID(t *testing.T) {
 
 func TestTriggerSync_SucceedsAndCreatesItems(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	registry := session.NewPluginRegistry()
 	plugin := &fakeSourcePlugin{items: []session.ExternalItem{{ExternalID: "e1", Title: "Synced Item"}}}
 	registry.Register(plugin)
@@ -2360,7 +2378,7 @@ func TestTriggerSync_SucceedsAndCreatesItems(t *testing.T) {
 // (wrong key func, or the branch removed) wouldn't be caught without this.
 func TestTriggerSync_DecryptsTokenThroughServiceLayer(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	registry := session.NewPluginRegistry()
 	plugin := &fakeSourcePlugin{}
 	registry.Register(plugin)
@@ -2389,7 +2407,7 @@ func TestTriggerSync_DecryptsTokenThroughServiceLayer(t *testing.T) {
 
 func TestTriggerSync_PropagatesFetchError(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	registry := session.NewPluginRegistry()
 	plugin := &fakeSourcePlugin{fetchErr: errors.New("upstream boom")}
 	registry.Register(plugin)
@@ -2432,7 +2450,7 @@ func TestGetSyncHistory_ReturnsInvalidArgumentForMalformedSourceID(t *testing.T)
 
 func TestGetSyncHistory_ReturnsEmptyForSourceWithNoSyncRuns(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	src, err := storage.CreateItemSource(t.Context(), session.ItemSourceData{
 		PluginID:    "fake_source",
@@ -2452,7 +2470,7 @@ func TestGetSyncHistory_ReturnsEmptyForSourceWithNoSyncRuns(t *testing.T) {
 // fully shown" indicator instead of silently capping at 200 with no explanation.
 func TestGetSyncHistory_SetsTruncatedWhenHistoryExceedsCap(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	src, err := storage.CreateItemSource(t.Context(), session.ItemSourceData{
 		PluginID:    "fake_source",
@@ -2485,7 +2503,7 @@ func TestGetSyncHistory_SetsTruncatedWhenHistoryExceedsCap(t *testing.T) {
 // is guarded by scrollbackMu.
 func TestBacklogService_ScrollbackManager_ConcurrentSetAndGet_NoRace(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 
 	sm1 := scrollback.NewScrollbackManager(scrollback.DefaultScrollbackConfig())
 	sm2 := scrollback.NewScrollbackManager(scrollback.DefaultScrollbackConfig())
