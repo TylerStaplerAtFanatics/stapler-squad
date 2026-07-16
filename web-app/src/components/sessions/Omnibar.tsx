@@ -256,8 +256,22 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
     detection?.type === InputType.LocalPath ||
     detection?.type === InputType.PathWithBranch;
 
-  // Use the detected local path (strips branch suffix for PathWithBranch).
-  const completionPrefix = isPathInput ? detection?.localPath ?? input : "";
+  // `>shell <dir>` is still typing its directory argument when no `-- command`
+  // has been typed yet — offer the same directory completions as a normal path input.
+  const shellMetadata = detection?.type === InputType.SpawnShell
+    ? (detection.metadata as { shellDir?: string; shellCommand?: string } | undefined)
+    : undefined;
+  const isShellDirInput = Boolean(shellMetadata && !shellMetadata.shellCommand);
+
+  // Use the detected local path (strips branch suffix for PathWithBranch), or the
+  // in-progress `>shell` directory argument.
+  const completionPrefix = isPathInput
+    ? detection?.localPath ?? input
+    : isShellDirInput
+    ? shellMetadata?.shellDir ?? ""
+    : "";
+
+  const isPathCompletionActive = (isPathInput || isShellDirInput) && completionPrefix.length > 0;
 
   const {
     entries: completionEntries,
@@ -266,7 +280,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
     isLoading: isCompletionLoading,
     error: completionError,
   } = usePathCompletions(completionPrefix, {
-    enabled: isPathInput,
+    enabled: isPathCompletionActive,
     directoriesOnly: true,
   });
 
@@ -321,7 +335,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
   const historyCount = historyMatches.length;
 
   const isDropdownVisible =
-    isPathInput && mergedEntries.length > 0 && !dropdownDismissed;
+    isPathCompletionActive && mergedEntries.length > 0 && !dropdownDismissed;
 
   // Discovery mode derived from modeState
   const isDiscoveryMode = modeState.type === "discovery";
@@ -392,13 +406,14 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
   // Accept a completion entry: fill the input and continue for further completion.
   const handleCompletionSelect = useCallback(
     (entry: CompletionEntry) => {
-      const newInput = entry.isDirectory ? entry.path + "/" : entry.path;
+      const newPath = entry.isDirectory ? entry.path + "/" : entry.path;
+      const newInput = isShellDirInput ? `>shell ${newPath}` : newPath;
       setInput(newInput);
       setDropdownIndex(-1);
       setDropdownDismissed(false);
       inputRef.current?.focus();
     },
-    [setDropdownIndex, setDropdownDismissed]
+    [isShellDirInput, setDropdownIndex, setDropdownDismissed]
   );
 
   // Detect input type with debouncing
@@ -770,7 +785,8 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
             }, liveEntries[0].name);
             if (lcp) {
               const sep = completionBaseDir.endsWith("/") ? "" : "/";
-              setInput(completionBaseDir + sep + lcp);
+              const newPath = completionBaseDir + sep + lcp;
+              setInput(isShellDirInput ? `>shell ${newPath}` : newPath);
               setDropdownDismissed(false);
             }
           }
@@ -831,6 +847,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       mergedEntries,
       liveEntries,
       completionBaseDir,
+      isShellDirInput,
       dropdownIndex,
       handleCompletionSelect,
       onClose,
@@ -1335,6 +1352,16 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
             </>
           );
         })()}
+        {isShellDirInput && isDropdownVisible && (
+          <PathCompletionDropdown
+            id="shell-dir-completion-listbox"
+            entries={mergedEntries}
+            historyCount={historyCount}
+            selectedIndex={dropdownIndex}
+            onSelect={handleCompletionSelect}
+            isLoading={isCompletionLoading}
+          />
+        )}
 
         {/* Discovery mode: session results + recent repos */}
         {isDiscoveryMode && !isAtDropdownVisible && (
