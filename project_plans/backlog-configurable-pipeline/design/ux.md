@@ -115,6 +115,16 @@ the only change is visual grouping (`<fieldset><legend>`) and label. No new erro
 these fields' existing validation/behavior is unchanged (per plan.md, "no change to the
 checkboxes' own state/logic, purely visual regrouping").
 
+**Clarification on the compose-not-subsume boundary**: a pipeline mode's own content-template
+fields never programmatically read or set the 3 `Skip*`/`AutoSpawnSession` checkboxes' values, and
+the checkboxes never programmatically read or set the mode's content, per plan.md's "compose, don't
+subsume" Pattern Decision — the two are fully independent axes of configuration, always. The only
+place a mode author can note an intended pairing (e.g. "this mode is meant to be used with Skip
+Review Gate checked") is the mode's own free-text `description` field, shown as a human-readable
+hint to whoever selects the mode — there is no enforced or automatic link between the two, and none
+should be built. Implementers and future designers should not try to secretly wire the mode
+selection and the Overrides checkboxes together.
+
 ---
 
 ## C. Pipeline-modes management — list view (`/settings/pipeline-modes`)
@@ -212,8 +222,22 @@ substitutions" design.
    after creation per plan.md Story 3.3.2).
 2. Submit → `CreatePipelineMode` or `UpdatePipelineMode`. On success: list view (surface C)
    refreshes without a full page reload/navigation; a brief success toast confirms.
-3. Any content-template field left blank is valid (renders to an empty command/prompt) — no
-   required-field validation on the 9 template fields, only on `slug`/`name`.
+3. Any content-template field left blank is valid — no required-field validation on the 9
+   template fields, only on `slug`/`name`. **Blank-field semantics (previously undefined,
+   specified here explicitly)**: an empty content-template field means "this mode does not
+   write/override this particular slash-command file or prompt at all — for this ONE field, the
+   item falls back to the built-in default content," not "write an empty file" or "produce an
+   empty prompt." Each of the 9 fields resolves independently: a mode can leave `ship.md content`
+   blank (falls back to the default `ship.md`) while overriding all 8 other fields, and vice
+   versa. This mirrors `plan.md`'s `CachingPipelineEngine`'s per-call, per-field fail-closed-to-
+   default resolution, applied at field granularity within a single resolved mode rather than only
+   at the whole-mode level.
+
+**Deferred, out of scope for this phase**: live preview of rendered content (showing what a
+template will actually produce for a sample item before saving) and duplicate-existing-mode (a
+"start from an existing mode's content" create shortcut) are both reasonable future enhancements,
+not required now — noted here so they aren't silently forgotten, but neither blocks this phase's
+acceptance criteria.
 
 ### Error / edge-case handling
 
@@ -309,6 +333,21 @@ one item-level value.)
 2. No user interaction beyond viewing — this is `role="group"`, not interactive controls.
 3. If session data is still loading, render a skeleton/placeholder row, not a blank gap (avoids a
    flash of "no pipeline info" that could be misread as "this session had no mode").
+
+### Visual treatment for the "(content since changed)" drift annotation
+
+`plan.md`'s Story 3.4.1 adds a `" (content since changed)"` suffix when a session's
+`pipelineModeSnapshotHash` no longer matches its mode's live `content_hash` (mode content edited
+since the session ran). This is informational, not blocking, so it must NOT use a full alert box —
+reuse this codebase's existing warning-tier visual language instead of inventing a new one: the
+same treatment as `web-app/src/components/backlog-stuck/stuckReason.ts`'s `chipOrphanedTriage`
+warning-tier chip class (yellow/amber, paired with a text label, never color-only — matching this
+file's own "never the sole signal" convention for `STUCK_REASON_ICONS`), or equivalently
+`GateVerdictBox.tsx`'s partial/unverifiable warning-tier styling (`skipGateWarning`-class region).
+Concretely: render `"(content since changed)"` as a small inline warning-colored badge or text span
+immediately after the mode name inside the `role="group"` "Pipeline" block — not a separate
+`role="alert"` box, since nothing here requires the user's immediate attention or blocks any
+action, unlike G-1's prerequisite warning.
 
 ### Error / edge-case handling
 
@@ -440,6 +479,14 @@ does not include either as an in-scope story. Recommendation for each, made conc
 ### (a) Compact pipeline-mode badge on the backlog **list** view (`BacklogBoard.tsx` cards)
 
 **Recommendation: pull this into Phase 3 as a small additional story (Epic 3.5).**
+
+**Superseded note (Product Triad Review repair round)**: `plan.md`'s Out of Scope section
+overrides this recommendation — Epic 3.5 is explicitly NOT added in this plan, deferred until both
+the Phase-0 adoption spike and Phase 4's real-usage proof succeed. The reasoning below (data
+already loaded, pure rendering addition, small scope) is still accurate and remains the reason
+Epic 3.5 is cheap to pick up later — but "cheap and valuable" was judged insufficient justification
+to add net-new UI scope before this plan's adoption premise is validated. See `plan.md`'s Risk
+Control and Out of Scope sections for the current, authoritative decision.
 
 Reasoning:
 - The data is already resolved and loaded — `BacklogItemData.PipelineMode` is a plain string field

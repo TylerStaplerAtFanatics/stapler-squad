@@ -210,7 +210,11 @@ before cutting the caching design or the security/structure guarantees above.
   new RPCs for CRUD on pipeline-mode definitions themselves (mirroring `WorkflowRepository`'s
   Create/Update/Delete/GetBySlug/ListAll/ListEnabled surface).
 - A `PipelineEngine`-shaped seam (interface defined in the consuming package, narrow,
-  1-3 methods) that `WriteSlashCommands`, the triage prompt builder, and the review-gate runner
+  ~~1-3 methods~~ **RESOLVED — 5 methods (`SlashCommandSet`, `TriagePromptFor`, `ReviewPromptFor`,
+  `InitialPromptFor`, `ContentHashFor`), see plan.md Pattern Decisions** — 1-3 was the
+  planning-time guess; Phase 3 planning found `InitialPromptFor` (autonomous-mode prompt content)
+  and `ContentHashFor` (content-drift protection for session snapshots) both necessary to avoid the
+  seam being cosmetic or losing history-integrity, not optional extensions) that `WriteSlashCommands`, the triage prompt builder, and the review-gate runner
   consult instead of hardcoding behavior — start with a `DefaultPipelineEngine`/default mode row
   that reproduces today's fixed behavior exactly (zero regression), backed by the new DB-persisted
   registry with an explicit cache (see NFR above), then let a user define one or two real
