@@ -1,6 +1,9 @@
 # ADR-001: PipelineMode is DB-Persisted and User-Definable at Runtime
 
-**Status**: Accepted
+**Status**: Accepted, contingent on the Phase 0 spike (see `implementation/plan.md`'s Risk Control
+section) — this decision proceeds to Phase 1 implementation only if the pre-Phase-1 hand-authored
+spike shows meaningfully lower friction than editing Go source directly. If the spike fails its
+binary gate, this ADR's decision is reversed and the DB-persisted approach is not built.
 **Date**: 2026-07-15
 **Deciders**: repo owner (single-operator tool), recorded via `backlog-configurable-pipeline` SDD project
 
