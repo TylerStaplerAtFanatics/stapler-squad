@@ -37,6 +37,7 @@ import {
 import { AliasPalette } from "@/components/ui/AliasPalette";
 import { useAliasSuggestions } from "@/lib/hooks/useAliasSuggestions";
 import { useAliases } from "@/lib/hooks/useAliases";
+import { addRecentShellCommand, getRecentShellCommands } from "@/lib/omnibar/recentShellCommands";
 
 interface OmnibarProps {
   isOpen: boolean;
@@ -44,7 +45,6 @@ interface OmnibarProps {
   onCreateSession: (data: OmnibarSessionData) => Promise<void>;
   onNavigateToSession: (sessionId: string) => void;
   onNavigateToSessionInNewPane?: (sessionId: string) => void;
-  onSpawnShell?: (sessionId?: string, workingDir?: string, shellCommand?: string) => void;
   onRunWorkflow?: (slug: string, arg: string) => Promise<void>;
   initialMode?: "discovery" | "creation";
   initialInput?: string;
@@ -153,7 +153,7 @@ function protoSessionTypeToFormString(st: SessionType): OmnibarFormState["sessio
   }
 }
 
-export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession, onNavigateToSessionInNewPane, onSpawnShell, onRunWorkflow, initialMode, initialInput, initialTitle, workflows = [] }: OmnibarProps) {
+export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession, onNavigateToSessionInNewPane, onRunWorkflow, initialMode, initialInput, initialTitle, workflows = [] }: OmnibarProps) {
   const router = useRouter();
   const { setTheme } = useTheme();
 
@@ -949,11 +949,32 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
       return;
     }
 
-    // Spawn shell command (>shell [optional command]) — fire-and-forget, no session-creation flow.
+    // Spawn shell command (>shell [dir] [-- command]) — creates a real terminal session
+    // via the standard session-creation flow, rooted at `shellDir` (if given) and running
+    // `shellCommand` as the session program (defaults to an interactive shell).
     if (detection?.type === InputType.SpawnShell && detection.confidence === 1.0) {
-      const { commandArg } = (detection.metadata ?? {}) as { commandArg?: string };
-      onSpawnShell?.(undefined, "", commandArg);
-      onClose();
+      const { shellDir, shellCommand } = (detection.metadata ?? {}) as {
+        shellDir?: string;
+        shellCommand?: string;
+      };
+      const sessionData: OmnibarSessionData = {
+        title: shellCommand ? shellCommand : shellDir ? `Terminal: ${shellDir}` : "Terminal",
+        path: shellDir ?? "",
+        program: shellCommand ?? "bash",
+        sessionType: shellDir ? "directory" : "one_off",
+        createIfMissing: Boolean(shellDir),
+        autoYes: false,
+      };
+      setIsSubmitting(true);
+      setError(null);
+      try {
+        await onCreateSession(sessionData);
+        if (shellCommand) addRecentShellCommand(shellCommand);
+        onClose();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to create session");
+        setIsSubmitting(false);
+      }
       return;
     }
 
@@ -1120,7 +1141,6 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
     saveHistory,
     onCreateSession,
     onClose,
-    onSpawnShell,
     onRunWorkflow,
     formState.firstPrompt,
     router,
@@ -1281,6 +1301,38 @@ export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession,
             <div role="alert" aria-live="assertive" data-testid="alias-not-found">
               No alias &apos;@{String(m?.slug)}&apos;
             </div>
+          );
+        })()}
+        {detection?.type === InputType.SpawnShell && (() => {
+          const { shellDir, shellCommand } = (detection.metadata ?? {}) as {
+            shellDir?: string;
+            shellCommand?: string;
+          };
+          const recentCommands = getRecentShellCommands();
+          return (
+            <>
+              <div role="status" aria-live="polite" data-testid="spawn-shell-chip">
+                <span>{shellCommand ? `Run "${shellCommand}"` : "Open terminal"}</span>
+                {shellDir ? <span> in {shellDir}</span> : null}
+              </div>
+              {!shellCommand && !shellDir && recentCommands.length > 0 && (
+                <div data-testid="spawn-shell-recent-commands">
+                  {recentCommands.map((cmd) => (
+                    <button
+                      key={cmd}
+                      type="button"
+                      data-testid="spawn-shell-recent-command"
+                      onClick={() => {
+                        setInput(`>shell -- ${cmd}`);
+                        inputRef.current?.focus();
+                      }}
+                    >
+                      {cmd}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
           );
         })()}
 
