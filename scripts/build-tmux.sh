@@ -55,10 +55,9 @@ if [[ ! -f "$SUBMODULE_DIR/configure.ac" ]]; then
     (cd "$ROOT" && git submodule update --init third_party/tmux)
   else
     log "Cloning tmux 3.4 into third_party/tmux (gitlink not registered; run 'git submodule add' to fix)..."
-    # Clone into a temp dir then merge so we preserve any existing files (e.g. BUILD.bazel).
     TMUX_TMP="$(mktemp -d)"
     git clone --depth 1 --branch 3.4 https://github.com/tmux/tmux.git "$TMUX_TMP"
-    cp -rn "$TMUX_TMP"/. "$SUBMODULE_DIR/"   # -n = no-clobber, keeps our BUILD.bazel
+    cp -rn "$TMUX_TMP"/. "$SUBMODULE_DIR/"
     rm -rf "$TMUX_TMP"
   fi
 fi

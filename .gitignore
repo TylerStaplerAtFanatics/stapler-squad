@@ -71,10 +71,8 @@ benchmark_results.txt
 # Build artifacts
 build/
 
-# Pinned tmux submodule source — cloned by scripts/build-tmux.sh at build time.
-# Only BUILD.bazel is tracked; the rest is fetched on demand.
-third_party/tmux/*
-!third_party/tmux/BUILD.bazel
+# Pinned tmux build stamp (third_party/tmux itself is a real git submodule now,
+# so its contents don't need ignore rules).
 .tmux-build.stamp
 
 # Scanner build artifacts
