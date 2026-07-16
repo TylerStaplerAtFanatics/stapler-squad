@@ -426,15 +426,55 @@ func TestBacklogLifecycleListener_NewBacklogLifecycleListenerWithSpawner(t *test
 }
 
 // mockReviewGateSpawner is a mock implementation of ReviewGateSpawner for testing.
+// Guarded by mu since SpawnReviewSession can be invoked from a goroutine (e.g. via
+// onSessionExited's bounded-semaphore fan-out).
 type mockReviewGateSpawner struct {
-	spawnCalled bool
-	lastItem    *BacklogItemData
+	mu              sync.Mutex
+	spawnCalled     bool
+	callCount       int
+	lastItem        *BacklogItemData
+	lastItemSession string
+	lastPrompt      string
+
+	// err, when non-nil, is returned by SpawnReviewSession instead of a synthesized
+	// Instance — used to test the spawner-error path.
+	err error
+	// instance, when non-nil, is returned by SpawnReviewSession on success instead of
+	// a synthesized one with a random UUID — used to assert the returned Instance's
+	// UUID is exactly what gets linked into the resulting ItemSession.
+	instance *Instance
 }
 
 func (m *mockReviewGateSpawner) SpawnReviewSession(ctx context.Context, item *BacklogItemData, itemSessionID string, prompt string) (*Instance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.spawnCalled = true
+	m.callCount++
 	m.lastItem = item
-	return &Instance{}, nil
+	m.lastItemSession = itemSessionID
+	m.lastPrompt = prompt
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.instance != nil {
+		return m.instance, nil
+	}
+	return &Instance{UUID: uuid.New().String()}, nil
+}
+
+// getCallCount returns the number of times SpawnReviewSession has been called, under
+// the mock's own lock — safe to read concurrently with in-flight calls.
+func (m *mockReviewGateSpawner) getCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
+
+// getLastPrompt returns the prompt passed to the most recent SpawnReviewSession call.
+func (m *mockReviewGateSpawner) getLastPrompt() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastPrompt
 }
 
 // fakePRPendingChecker is a test double implementing prPendingChecker, used to
@@ -1233,4 +1273,268 @@ func TestPushAndCreatePR_NoWorktree_FallsBackToDone(t *testing.T) {
 	fetched, err := storage.GetBacklogItem(ctx, item.ID)
 	require.NoError(t, err)
 	assert.Equal(t, string(BacklogStatusDone), fetched.Status)
+}
+
+// ─── handleReviewSessionExited ────────────────────────────────────────────────
+//
+// Review now always happens in a real, hidden session.Instance rather than a
+// synchronous in-process headless LLM call (see ReviewGateRunner.Run and
+// server/services/session_service.go's SpawnReviewSession). The verdict — if
+// any — is submitted via the submit_review_verdict MCP tool while that session
+// runs, and handleReviewSessionExited is what processes it once the review
+// session exits.
+
+// newHandleReviewSessionExitedFixture creates a BacklogItem in "review" status
+// with an ended work ItemSession (recorded via SaveInstances so it has a real
+// worktree pushAndCreatePR can push) and a review ItemSession linking
+// reviewSessionUUID to the item. If verdict is non-nil, it is saved onto the
+// review ItemSession via SaveReviewVerdict before returning.
+func newHandleReviewSessionExitedFixture(t *testing.T, storage *Storage, verdict *ReviewVerdictData) (item *BacklogItemData, reviewIS ItemSessionSummary, workSessionName string) {
+	t.Helper()
+	ctx := context.Background()
+
+	createdItem, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Handle review session exited test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusReview),
+		RepoPath:           "/tmp/fake-repo",
+	})
+	require.NoError(t, err)
+
+	workSessionUUID := uuid.New().String()
+	workSessionName = "handle-review-exited-work"
+	_, err = storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      createdItem.ID,
+		SessionUUID: workSessionUUID,
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	inst := newTestInstance(workSessionName)
+	inst.UUID = workSessionUUID
+	inst.gitManager.worktree = git.NewGitWorktreeFromStorage(
+		"/tmp/fake-repo", "/tmp/fake-repo/../worktrees/"+workSessionName, workSessionName, "backlog/"+workSessionName, "abc123")
+	require.NoError(t, storage.SaveInstances([]*Instance{inst}))
+
+	reviewSessionUUID := uuid.New().String()
+	createdReviewIS, err := storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      createdItem.ID,
+		SessionUUID: reviewSessionUUID,
+		SessionRole: SessionRoleReview,
+	})
+	require.NoError(t, err)
+
+	if verdict != nil {
+		require.NoError(t, storage.SaveReviewVerdict(ctx, createdReviewIS.ID, *verdict))
+	}
+
+	reviewIS = ItemSessionSummary{
+		ID:            createdReviewIS.ID,
+		BacklogItemID: createdItem.ID,
+		SessionUUID:   reviewSessionUUID,
+		Role:          SessionRoleReview,
+	}
+	return createdItem, reviewIS, workSessionName
+}
+
+// TestHandleReviewSessionExited_Pass_InvokesPushAndCreatePR verifies that a PASS
+// verdict drives pushAndCreatePR using the correct (most recent) work
+// ItemSessionSummary — proven here by asserting the PR-creator factory is
+// invoked with that work session's sessionName, and that the item ends up in
+// pr_pending.
+func TestHandleReviewSessionExited_Pass_InvokesPushAndCreatePR(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	item, reviewIS, workSessionName := newHandleReviewSessionExitedFixture(t, storage, &ReviewVerdictData{
+		OverallOutcome: ReviewVerdictPass,
+		PerCriterion:   `[]`,
+		Summary:        "all good",
+	})
+
+	listener := NewBacklogLifecycleListener(storage)
+	var capturedSessionName string
+	fakeCreator := &fakePRCreator{createURL: "https://github.com/tstapler/stapler-squad/pull/9", createNumber: 9}
+	listener.SetPRCreatorFactory(func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator {
+		capturedSessionName = sessionName
+		return fakeCreator
+	})
+
+	listener.handleReviewSessionExited(ctx, reviewIS)
+
+	assert.True(t, fakeCreator.pushCalled, "PASS verdict must drive a push via pushAndCreatePR")
+	assert.Equal(t, workSessionName, capturedSessionName, "pushAndCreatePR must be invoked with the work session's own worktree, not some other session's")
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusPRPending), fetched.Status)
+}
+
+// TestHandleReviewSessionExited_Fail_InvokesAutoReopener verifies that a FAIL
+// verdict (and, identically, PARTIAL/UNVERIFIABLE) triggers the auto-reopener
+// instead of pushAndCreatePR.
+func TestHandleReviewSessionExited_Fail_InvokesAutoReopener(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	item, reviewIS, _ := newHandleReviewSessionExitedFixture(t, storage, &ReviewVerdictData{
+		OverallOutcome: ReviewVerdictFail,
+		PerCriterion:   `[]`,
+		Summary:        "criteria not met",
+	})
+
+	listener := NewBacklogLifecycleListener(storage)
+	reopener := newFakeAutoReopenSpawner()
+	listener.SetAutoReopener(reopener)
+	fakeCreator := &fakePRCreator{}
+	listener.SetPRCreatorFactory(func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator {
+		return fakeCreator
+	})
+
+	listener.handleReviewSessionExited(ctx, reviewIS)
+
+	select {
+	case gotItemID := <-reopener.called:
+		assert.Equal(t, item.ID, gotItemID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for AutoReopenAfterFailedReview to be called")
+	}
+	assert.False(t, fakeCreator.pushCalled, "a FAIL verdict must never push/create a PR")
+}
+
+// TestHandleReviewSessionExited_NoVerdict_NotifiesAndInvokesAutoReopener verifies
+// that a review session which exited without ever calling submit_review_verdict
+// (crash, kill, ran out of turns) is treated like a failed review: the operator
+// is notified and the auto-reopener is invoked.
+func TestHandleReviewSessionExited_NoVerdict_NotifiesAndInvokesAutoReopener(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, reviewIS, _ := newHandleReviewSessionExitedFixture(t, storage, nil)
+
+	listener := NewBacklogLifecycleListener(storage)
+	reopener := newFakeAutoReopenSpawner()
+	listener.SetAutoReopener(reopener)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.handleReviewSessionExited(ctx, reviewIS)
+
+	select {
+	case <-reopener.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for AutoReopenAfterFailedReview to be called")
+	}
+	assert.Contains(t, notifier.titles(), "Review session ended without a verdict")
+}
+
+// TestBacklogLifecycleListener_OnSessionExited_ReviewSession_RoutesToHandleReviewSessionExited
+// verifies that onSessionExited dispatches Role==SessionRoleReview to
+// handleReviewSessionExited (proven by observing its FAIL-verdict side effect —
+// the auto-reopener firing) rather than falling through to the work-session
+// in_progress→review/done transition logic.
+func TestBacklogLifecycleListener_OnSessionExited_ReviewSession_RoutesToHandleReviewSessionExited(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	_, reviewIS, _ := newHandleReviewSessionExitedFixture(t, storage, &ReviewVerdictData{
+		OverallOutcome: ReviewVerdictFail,
+		PerCriterion:   `[]`,
+		Summary:        "criteria not met",
+	})
+
+	listener := NewBacklogLifecycleListener(storage)
+	reopener := newFakeAutoReopenSpawner()
+	listener.SetAutoReopener(reopener)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		listener.onSessionExited(reviewIS.SessionUUID)
+	}()
+	waitWithTimeout(t, done)
+
+	select {
+	case gotItemID := <-reopener.called:
+		assert.Equal(t, reviewIS.BacklogItemID, gotItemID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for AutoReopenAfterFailedReview to be called via onSessionExited routing")
+	}
+}
+
+// ─── SetSessionCreator / getSessionCreator wiring ─────────────────────────────
+
+// TestBacklogLifecycleListener_SetSessionCreator_WiresPostConstruction verifies
+// that SetSessionCreator can wire (or rewire) the review-gate spawner after
+// construction, and that getSessionCreator observes the latest value — needed
+// because production wiring (server/dependencies.go) constructs this listener
+// before SessionService exists.
+func TestBacklogLifecycleListener_SetSessionCreator_WiresPostConstruction(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	listener := NewBacklogLifecycleListener(storage)
+	require.Nil(t, listener.getSessionCreator())
+
+	spawner := &mockReviewGateSpawner{}
+	listener.SetSessionCreator(spawner)
+	assert.Equal(t, ReviewGateSpawner(spawner), listener.getSessionCreator())
+}
+
+// TestBacklogLifecycleListener_HeadlessPoolAlone_NoLongerTriggersReviewGateSpawn
+// verifies that a headless pool configured with no session creator does NOT
+// cause onSessionExited to spawn a review gate anymore — review-gate spawning
+// now keys exclusively off getSessionCreator(), since the headless in-process
+// review path has been removed in favor of always spawning a real session.
+func TestBacklogLifecycleListener_HeadlessPoolAlone_NoLongerTriggersReviewGateSpawn(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	createdItem, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Headless pool alone test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusInProgress),
+		RepoPath:           "/tmp/fake-repo",
+	})
+	require.NoError(t, err)
+
+	sessionUUID := uuid.New().String()
+	_, err = storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      createdItem.ID,
+		SessionUUID: sessionUUID,
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	// NewBacklogLifecycleListenerWithPool wires a headless pool but no session
+	// creator — the pool is still used elsewhere (PR description drafting), but
+	// must no longer be treated as "a review mechanism is configured".
+	listener := NewBacklogLifecycleListenerWithPool(storage, nil, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		listener.onSessionExited(sessionUUID)
+	}()
+	waitWithTimeout(t, done)
+
+	// The item still transitions to review (that part of onSessionExited is
+	// unconditional), but no review ItemSession should ever be created since the
+	// gate never spawns.
+	require.Eventually(t, func() bool {
+		fetched, ferr := storage.GetBacklogItem(ctx, createdItem.ID)
+		return ferr == nil && fetched.Status == string(BacklogStatusReview)
+	}, 2*time.Second, 20*time.Millisecond)
+
+	sessions, err := storage.ListItemSessions(ctx, createdItem.ID)
+	require.NoError(t, err)
+	for _, s := range sessions {
+		assert.NotEqual(t, SessionRoleReview, s.Role, "no review ItemSession should be created when only a headless pool (no session creator) is configured")
+	}
 }
