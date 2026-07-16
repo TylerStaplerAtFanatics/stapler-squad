@@ -32,7 +32,7 @@ func TestNotifyReworkCapHit_should_markStuckReworkCapImmediately_When_CapHit(t *
 	})
 	require.NoError(t, err)
 
-	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
 	svc.notifyReworkCapHit(ctx, item.ID, item.Title, session.BacklogStatusReview, "after a failed review verdict")
 
 	open, err := storage.FindOpenStuckStates(ctx)
@@ -53,7 +53,7 @@ func TestNotifyReworkCapHit_should_stillPublishNotification_When_MarkStuckReturn
 	storage := createTestStorage(t)
 	ctx := context.Background()
 
-	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
 	bus := events.NewEventBus(4)
 	svc.SetEventBus(bus)
 
@@ -94,7 +94,7 @@ func TestNotifyReworkCapHit_should_persistRowSurvivingRestart_When_CapHit(t *tes
 		require.NoError(t, err)
 		itemID = item.ID
 
-		svc := NewBacklogService(storage, nil, nil, nil, nil)
+		svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
 		svc.notifyReworkCapHit(context.Background(), itemID, item.Title, session.BacklogStatusPRPending, "while fixing PR #7")
 	}()
 
@@ -123,7 +123,7 @@ func TestNotifyReworkCapHit_should_persistRowSurvivingRestart_When_CapHit(t *tes
 func TestAutoReopenForPRFix_ActiveWorkSession_SkipsWithoutStatusChurn(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
 	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{"active-work-uuid": true}}
 	svc.SetSessionStopper(stopper)
 
@@ -160,7 +160,7 @@ func TestAutoReopenForPRFix_ActiveWorkSession_SkipsWithoutStatusChurn(t *testing
 func TestAutoReopenForPRFix_DeadWorkSession_TombstonesThenReopens(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
 	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{}} // nothing is live
 	svc.SetSessionStopper(stopper)
 
@@ -208,7 +208,7 @@ func TestAutoReopenForPRFix_DeadWorkSession_TombstonesThenReopens(t *testing.T) 
 func TestSpawnSessionFromItem_should_SnapshotResolvedModeSlugAndContentHash_When_SessionFirstStarts(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
 	ctx := t.Context()
 
 	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
@@ -268,7 +268,7 @@ func TestSpawnSessionFromItem_should_SnapshotResolvedModeSlugAndContentHash_When
 func TestSpawnSessionFromItem_should_SnapshotEmptyHash_When_PipelineModeIsDefaultOrUnresolved(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
 	ctx := t.Context()
 
 	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
@@ -354,7 +354,7 @@ func readCommandFiles(t *testing.T, worktreePath string) map[string]string {
 func TestSpawnAndAttachSessionFromItem_should_ProduceIdenticalCommandFiles_When_SameItemAndModeUsedByBothCallers(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
 	ctx := t.Context()
 
 	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
@@ -440,7 +440,7 @@ func TestSpawnAndAttachSessionFromItem_should_ProduceIdenticalCommandFiles_When_
 func TestTriggerTriage_should_UseModeSpecificTriagePrompt_When_ItemHasNonDefaultPipelineModeAndFirstTriageBranch(t *testing.T) {
 	storage := createTestStorage(t)
 	pool := &fakeHeadlessPool{response: validTriageJSON()}
-	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
@@ -491,7 +491,7 @@ func TestTriggerTriage_should_UseUnmodifiedRetriagePrompt_When_RetriagingRegardl
 	storage := createTestStorage(t)
 	secondResponse := `{"summary":"revised summary","suggestions":[],"tasks":[{"text":"revised task","estimate":"3h","category":"backend"}]}`
 	pool := &fakeHeadlessPool{responses: []string{validTriageJSON(), secondResponse}}
-	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
 	svc.SetHeadlessPool(pool)
 
 	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
@@ -549,7 +549,7 @@ func TestTriggerTriage_should_UseUnmodifiedRetriagePrompt_When_RetriagingRegardl
 func TestSpawnSessionFromItem_should_UseModeSpecificInitialPrompt_When_AutoSpawnSessionAndNonDefaultPipelineMode(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
 	ctx := t.Context()
 
 	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
@@ -604,7 +604,7 @@ func TestSpawnSessionFromItem_should_UseModeSpecificInitialPrompt_When_AutoSpawn
 func TestSpawnSessionFromItem_should_UseDefaultInitialPrompt_When_PipelineModeIsDefault(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
 	ctx := t.Context()
 
 	repoPath := t.TempDir()

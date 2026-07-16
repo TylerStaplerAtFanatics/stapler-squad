@@ -106,7 +106,7 @@ type resolvedPipelineMode struct {
 
 	// ContentHash is computed once at load time: SHA-256, hex, truncated to
 	// 16 characters, over the 9 content-template fields above concatenated in
-	// the fixed declaration order shown here (see computeContentHash).
+	// the fixed declaration order shown here (see ComputeContentHash).
 	ContentHash string
 }
 
@@ -172,7 +172,7 @@ func (c *pipelineModeCache) refresh(ctx context.Context, repo PipelineModeReposi
 			TriagePromptTemplate:  m.TriagePromptTemplate,
 			ReviewPromptTemplate:  m.ReviewPromptTemplate,
 			InitialPromptTemplate: m.InitialPromptTemplate,
-			ContentHash: computeContentHash(
+			ContentHash: ComputeContentHash(
 				m.StatusCommandTemplate,
 				m.DoneCommandTemplate,
 				m.FailCommandTemplate,
@@ -205,13 +205,19 @@ func (c *pipelineModeCache) Get(slug string) (resolvedPipelineMode, bool) {
 	return rm, ok
 }
 
-// computeContentHash returns a SHA-256 hex digest, truncated to 16
+// ComputeContentHash returns a SHA-256 hex digest, truncated to 16
 // characters, over fields concatenated in the order given by the caller. Used
 // to detect when a PipelineMode's persisted content has changed since a
 // session snapshotted it (see plan.md's ItemSessionSummary.PipelineModeSnapshotHash
 // entry, Epic 1.6). Callers must always pass the 9 content-template fields in
 // the same fixed declaration order so hashes are comparable across loads.
-func computeContentHash(fields ...string) string {
+//
+// Exported (Epic 2.2) so server/services can compute content_hash for
+// CreatePipelineMode/UpdatePipelineMode/GetPipelineMode/ListPipelineModes RPC
+// responses directly from a row's current field values — including rows for
+// disabled modes, which never enter pipelineModeCache (only ListEnabled-backed
+// modes do) and therefore have no resolvedPipelineMode.ContentHash to reuse.
+func ComputeContentHash(fields ...string) string {
 	h := sha256.New()
 	for _, f := range fields {
 		h.Write([]byte(f))

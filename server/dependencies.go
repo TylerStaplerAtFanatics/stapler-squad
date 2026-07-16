@@ -472,9 +472,14 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// (not a typed-nil *CachingPipelineEngine, which would break every
 	// `s.pipelineEngine != nil` guard downstream) and every call site falls back to
 	// the built-in default pipeline for all items.
+	// pipelineModeRepo is lifted to this outer scope (rather than staying local to
+	// the entClient-available branch below) because services.NewBacklogService
+	// (Epic 2.2) needs the same repository instance to back its PipelineMode CRUD
+	// RPCs, independent of whether pipelineEngine construction itself succeeded.
 	var pipelineEngine session.PipelineEngine
+	var pipelineModeRepo session.PipelineModeRepository
 	if entClient := storage.GetEntClient(); entClient != nil {
-		pipelineModeRepo := session.NewEntPipelineModeRepository(entClient)
+		pipelineModeRepo = session.NewEntPipelineModeRepository(entClient)
 		if cachingPipelineEngine, err := session.NewPipelineEngine(pipelineModeRepo); err != nil {
 			log.Warn("pipelineEngine construction failed; continuing with the default pipeline for all backlog items", "err", err)
 		} else {
@@ -894,7 +899,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Info("backlog feature disabled (toggle via Settings → Features)")
 	}
 
-	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine, pipelineEngine)
+	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine, pipelineEngine, pipelineModeRepo)
 	backlogSvc.SetEventBus(eventBus)
 	backlogSvc.SetSessionStopper(sessionService)
 	backlogSvc.SetAutonomousDriverStarter(sessionService)

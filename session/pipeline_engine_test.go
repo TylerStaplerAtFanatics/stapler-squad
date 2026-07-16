@@ -248,7 +248,7 @@ func TestPipelineModeCache_Load_should_ComputeContentHash_When_BuildingResolvedP
 		t.Fatalf("expected quick to be present")
 	}
 
-	wantHash := computeContentHash(
+	wantHash := ComputeContentHash(
 		mode.StatusCommandTemplate, mode.DoneCommandTemplate, mode.FailCommandTemplate,
 		mode.ReviewCommandTemplate, mode.ShipCommandTemplate, mode.HelpCommandTemplate,
 		mode.TriagePromptTemplate, mode.ReviewPromptTemplate, mode.InitialPromptTemplate,

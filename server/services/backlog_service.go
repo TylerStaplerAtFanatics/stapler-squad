@@ -151,6 +151,14 @@ type BacklogService struct {
 	// SpawnSessionFromItem/TriggerTriage's nil-guarded ContentHashFor reads
 	// in backlog_service_triage.go.
 	pipelineEngine session.PipelineEngine
+
+	// pipelineModeRepo backs the PipelineMode CRUD RPCs (Epic 2.2):
+	// CreatePipelineMode/UpdatePipelineMode/DeletePipelineMode/
+	// GetPipelineMode/ListPipelineModes. Wired by NewBacklogService's
+	// constructor from the same repository instance server/dependencies.go
+	// uses to construct pipelineEngine (Epic 1.5.1a). May be nil in tests
+	// that don't pass one; handlers nil-check and return CodeUnavailable.
+	pipelineModeRepo session.PipelineModeRepository
 }
 
 // PipelineEngine returns the PipelineEngine injected at construction (nil if none was
@@ -172,7 +180,7 @@ func (s *BacklogService) SetEventBus(b *events.EventBus) {
 // Degradation contract: If creator is nil, RPCs that spawn sessions will return
 // CodeUnimplemented. This is expected in test environments where a real session
 // manager is unavailable.
-func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *config.Config, engine session.WorkflowEngine, pipelineEngine session.PipelineEngine) *BacklogService {
+func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *config.Config, engine session.WorkflowEngine, pipelineEngine session.PipelineEngine, pipelineModeRepo session.PipelineModeRepository) *BacklogService {
 	if engine == nil {
 		engine = session.NewDefaultWorkflowEngine()
 	}
@@ -184,6 +192,7 @@ func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *co
 		cfg:                  cfg,
 		engine:               engine,
 		pipelineEngine:       pipelineEngine,
+		pipelineModeRepo:     pipelineModeRepo,
 		shutdownCtx:          ctx,
 		shutdownCancel:       cancel,
 		triageSem:            make(chan struct{}, 8),
