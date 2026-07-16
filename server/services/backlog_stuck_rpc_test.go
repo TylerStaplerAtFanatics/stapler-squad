@@ -84,7 +84,7 @@ func seedOpenStuckRow(t *testing.T, storage *session.Storage, itemID string, rea
 // context, and duration.
 func TestListStuckBacklogItems_should_returnMappedItems_When_OpenRowsExist(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
 	ctx := t.Context()
 
 	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
@@ -125,7 +125,7 @@ func TestListStuckBacklogItems_should_returnMappedItems_When_OpenRowsExist(t *te
 // that the next ListStuckBacklogItems call omits it.
 func TestSnoozeStuckItem_should_setSnoozedUntilAndOmitFromList_When_Called(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
 	ctx := t.Context()
 
 	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
@@ -159,7 +159,7 @@ func TestSnoozeStuckItem_should_setSnoozedUntilAndOmitFromList_When_Called(t *te
 // covers the handler's input validation guards.
 func TestSnoozeStuckItem_should_rejectInvalidArguments_When_ReasonOrItemMissing(t *testing.T) {
 	storage := createTestStorage(t)
-	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
 	ctx := t.Context()
 
 	_, err := svc.SnoozeStuckItem(ctx, connect.NewRequest(&sessionv1.SnoozeStuckItemRequest{

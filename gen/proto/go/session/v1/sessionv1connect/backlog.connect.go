@@ -96,6 +96,21 @@ const (
 	// BacklogServiceGetSyncHistoryProcedure is the fully-qualified name of the BacklogService's
 	// GetSyncHistory RPC.
 	BacklogServiceGetSyncHistoryProcedure = "/session.v1.BacklogService/GetSyncHistory"
+	// BacklogServiceCreatePipelineModeProcedure is the fully-qualified name of the BacklogService's
+	// CreatePipelineMode RPC.
+	BacklogServiceCreatePipelineModeProcedure = "/session.v1.BacklogService/CreatePipelineMode"
+	// BacklogServiceUpdatePipelineModeProcedure is the fully-qualified name of the BacklogService's
+	// UpdatePipelineMode RPC.
+	BacklogServiceUpdatePipelineModeProcedure = "/session.v1.BacklogService/UpdatePipelineMode"
+	// BacklogServiceDeletePipelineModeProcedure is the fully-qualified name of the BacklogService's
+	// DeletePipelineMode RPC.
+	BacklogServiceDeletePipelineModeProcedure = "/session.v1.BacklogService/DeletePipelineMode"
+	// BacklogServiceGetPipelineModeProcedure is the fully-qualified name of the BacklogService's
+	// GetPipelineMode RPC.
+	BacklogServiceGetPipelineModeProcedure = "/session.v1.BacklogService/GetPipelineMode"
+	// BacklogServiceListPipelineModesProcedure is the fully-qualified name of the BacklogService's
+	// ListPipelineModes RPC.
+	BacklogServiceListPipelineModesProcedure = "/session.v1.BacklogService/ListPipelineModes"
 	// BacklogServiceImportGitHubIssueProcedure is the fully-qualified name of the BacklogService's
 	// ImportGitHubIssue RPC.
 	BacklogServiceImportGitHubIssueProcedure = "/session.v1.BacklogService/ImportGitHubIssue"
@@ -169,6 +184,16 @@ type BacklogServiceClient interface {
 	DeleteItemSource(context.Context, *connect.Request[v1.DeleteItemSourceRequest]) (*connect.Response[v1.DeleteItemSourceResponse], error)
 	// GetSyncHistory returns the sync event history for an item source.
 	GetSyncHistory(context.Context, *connect.Request[v1.GetSyncHistoryRequest]) (*connect.Response[v1.GetSyncHistoryResponse], error)
+	// CreatePipelineMode registers a new runtime-definable pipeline mode.
+	CreatePipelineMode(context.Context, *connect.Request[v1.CreatePipelineModeRequest]) (*connect.Response[v1.CreatePipelineModeResponse], error)
+	// UpdatePipelineMode modifies an existing pipeline mode's fields.
+	UpdatePipelineMode(context.Context, *connect.Request[v1.UpdatePipelineModeRequest]) (*connect.Response[v1.UpdatePipelineModeResponse], error)
+	// DeletePipelineMode removes a pipeline mode definition.
+	DeletePipelineMode(context.Context, *connect.Request[v1.DeletePipelineModeRequest]) (*connect.Response[v1.DeletePipelineModeResponse], error)
+	// GetPipelineMode retrieves a single pipeline mode by slug.
+	GetPipelineMode(context.Context, *connect.Request[v1.GetPipelineModeRequest]) (*connect.Response[v1.GetPipelineModeResponse], error)
+	// ListPipelineModes returns all pipeline modes, including disabled ones.
+	ListPipelineModes(context.Context, *connect.Request[v1.ListPipelineModesRequest]) (*connect.Response[v1.ListPipelineModesResponse], error)
 	// ImportGitHubIssue creates a backlog item pre-populated from a GitHub issue.
 	ImportGitHubIssue(context.Context, *connect.Request[v1.ImportGitHubIssueRequest]) (*connect.Response[v1.ImportGitHubIssueResponse], error)
 	// SearchGitHubRepos returns GitHub repos accessible to the authenticated user.
@@ -332,6 +357,36 @@ func NewBacklogServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(backlogServiceMethods.ByName("GetSyncHistory")),
 			connect.WithClientOptions(opts...),
 		),
+		createPipelineMode: connect.NewClient[v1.CreatePipelineModeRequest, v1.CreatePipelineModeResponse](
+			httpClient,
+			baseURL+BacklogServiceCreatePipelineModeProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("CreatePipelineMode")),
+			connect.WithClientOptions(opts...),
+		),
+		updatePipelineMode: connect.NewClient[v1.UpdatePipelineModeRequest, v1.UpdatePipelineModeResponse](
+			httpClient,
+			baseURL+BacklogServiceUpdatePipelineModeProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("UpdatePipelineMode")),
+			connect.WithClientOptions(opts...),
+		),
+		deletePipelineMode: connect.NewClient[v1.DeletePipelineModeRequest, v1.DeletePipelineModeResponse](
+			httpClient,
+			baseURL+BacklogServiceDeletePipelineModeProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("DeletePipelineMode")),
+			connect.WithClientOptions(opts...),
+		),
+		getPipelineMode: connect.NewClient[v1.GetPipelineModeRequest, v1.GetPipelineModeResponse](
+			httpClient,
+			baseURL+BacklogServiceGetPipelineModeProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("GetPipelineMode")),
+			connect.WithClientOptions(opts...),
+		),
+		listPipelineModes: connect.NewClient[v1.ListPipelineModesRequest, v1.ListPipelineModesResponse](
+			httpClient,
+			baseURL+BacklogServiceListPipelineModesProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("ListPipelineModes")),
+			connect.WithClientOptions(opts...),
+		),
 		importGitHubIssue: connect.NewClient[v1.ImportGitHubIssueRequest, v1.ImportGitHubIssueResponse](
 			httpClient,
 			baseURL+BacklogServiceImportGitHubIssueProcedure,
@@ -412,6 +467,11 @@ type backlogServiceClient struct {
 	updateItemSource            *connect.Client[v1.UpdateItemSourceRequest, v1.UpdateItemSourceResponse]
 	deleteItemSource            *connect.Client[v1.DeleteItemSourceRequest, v1.DeleteItemSourceResponse]
 	getSyncHistory              *connect.Client[v1.GetSyncHistoryRequest, v1.GetSyncHistoryResponse]
+	createPipelineMode          *connect.Client[v1.CreatePipelineModeRequest, v1.CreatePipelineModeResponse]
+	updatePipelineMode          *connect.Client[v1.UpdatePipelineModeRequest, v1.UpdatePipelineModeResponse]
+	deletePipelineMode          *connect.Client[v1.DeletePipelineModeRequest, v1.DeletePipelineModeResponse]
+	getPipelineMode             *connect.Client[v1.GetPipelineModeRequest, v1.GetPipelineModeResponse]
+	listPipelineModes           *connect.Client[v1.ListPipelineModesRequest, v1.ListPipelineModesResponse]
 	importGitHubIssue           *connect.Client[v1.ImportGitHubIssueRequest, v1.ImportGitHubIssueResponse]
 	searchGitHubRepos           *connect.Client[v1.SearchGitHubReposRequest, v1.SearchGitHubReposResponse]
 	listGitHubIssues            *connect.Client[v1.ListGitHubIssuesRequest, v1.ListGitHubIssuesResponse]
@@ -528,6 +588,31 @@ func (c *backlogServiceClient) GetSyncHistory(ctx context.Context, req *connect.
 	return c.getSyncHistory.CallUnary(ctx, req)
 }
 
+// CreatePipelineMode calls session.v1.BacklogService.CreatePipelineMode.
+func (c *backlogServiceClient) CreatePipelineMode(ctx context.Context, req *connect.Request[v1.CreatePipelineModeRequest]) (*connect.Response[v1.CreatePipelineModeResponse], error) {
+	return c.createPipelineMode.CallUnary(ctx, req)
+}
+
+// UpdatePipelineMode calls session.v1.BacklogService.UpdatePipelineMode.
+func (c *backlogServiceClient) UpdatePipelineMode(ctx context.Context, req *connect.Request[v1.UpdatePipelineModeRequest]) (*connect.Response[v1.UpdatePipelineModeResponse], error) {
+	return c.updatePipelineMode.CallUnary(ctx, req)
+}
+
+// DeletePipelineMode calls session.v1.BacklogService.DeletePipelineMode.
+func (c *backlogServiceClient) DeletePipelineMode(ctx context.Context, req *connect.Request[v1.DeletePipelineModeRequest]) (*connect.Response[v1.DeletePipelineModeResponse], error) {
+	return c.deletePipelineMode.CallUnary(ctx, req)
+}
+
+// GetPipelineMode calls session.v1.BacklogService.GetPipelineMode.
+func (c *backlogServiceClient) GetPipelineMode(ctx context.Context, req *connect.Request[v1.GetPipelineModeRequest]) (*connect.Response[v1.GetPipelineModeResponse], error) {
+	return c.getPipelineMode.CallUnary(ctx, req)
+}
+
+// ListPipelineModes calls session.v1.BacklogService.ListPipelineModes.
+func (c *backlogServiceClient) ListPipelineModes(ctx context.Context, req *connect.Request[v1.ListPipelineModesRequest]) (*connect.Response[v1.ListPipelineModesResponse], error) {
+	return c.listPipelineModes.CallUnary(ctx, req)
+}
+
 // ImportGitHubIssue calls session.v1.BacklogService.ImportGitHubIssue.
 func (c *backlogServiceClient) ImportGitHubIssue(ctx context.Context, req *connect.Request[v1.ImportGitHubIssueRequest]) (*connect.Response[v1.ImportGitHubIssueResponse], error) {
 	return c.importGitHubIssue.CallUnary(ctx, req)
@@ -617,6 +702,16 @@ type BacklogServiceHandler interface {
 	DeleteItemSource(context.Context, *connect.Request[v1.DeleteItemSourceRequest]) (*connect.Response[v1.DeleteItemSourceResponse], error)
 	// GetSyncHistory returns the sync event history for an item source.
 	GetSyncHistory(context.Context, *connect.Request[v1.GetSyncHistoryRequest]) (*connect.Response[v1.GetSyncHistoryResponse], error)
+	// CreatePipelineMode registers a new runtime-definable pipeline mode.
+	CreatePipelineMode(context.Context, *connect.Request[v1.CreatePipelineModeRequest]) (*connect.Response[v1.CreatePipelineModeResponse], error)
+	// UpdatePipelineMode modifies an existing pipeline mode's fields.
+	UpdatePipelineMode(context.Context, *connect.Request[v1.UpdatePipelineModeRequest]) (*connect.Response[v1.UpdatePipelineModeResponse], error)
+	// DeletePipelineMode removes a pipeline mode definition.
+	DeletePipelineMode(context.Context, *connect.Request[v1.DeletePipelineModeRequest]) (*connect.Response[v1.DeletePipelineModeResponse], error)
+	// GetPipelineMode retrieves a single pipeline mode by slug.
+	GetPipelineMode(context.Context, *connect.Request[v1.GetPipelineModeRequest]) (*connect.Response[v1.GetPipelineModeResponse], error)
+	// ListPipelineModes returns all pipeline modes, including disabled ones.
+	ListPipelineModes(context.Context, *connect.Request[v1.ListPipelineModesRequest]) (*connect.Response[v1.ListPipelineModesResponse], error)
 	// ImportGitHubIssue creates a backlog item pre-populated from a GitHub issue.
 	ImportGitHubIssue(context.Context, *connect.Request[v1.ImportGitHubIssueRequest]) (*connect.Response[v1.ImportGitHubIssueResponse], error)
 	// SearchGitHubRepos returns GitHub repos accessible to the authenticated user.
@@ -776,6 +871,36 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 		connect.WithSchema(backlogServiceMethods.ByName("GetSyncHistory")),
 		connect.WithHandlerOptions(opts...),
 	)
+	backlogServiceCreatePipelineModeHandler := connect.NewUnaryHandler(
+		BacklogServiceCreatePipelineModeProcedure,
+		svc.CreatePipelineMode,
+		connect.WithSchema(backlogServiceMethods.ByName("CreatePipelineMode")),
+		connect.WithHandlerOptions(opts...),
+	)
+	backlogServiceUpdatePipelineModeHandler := connect.NewUnaryHandler(
+		BacklogServiceUpdatePipelineModeProcedure,
+		svc.UpdatePipelineMode,
+		connect.WithSchema(backlogServiceMethods.ByName("UpdatePipelineMode")),
+		connect.WithHandlerOptions(opts...),
+	)
+	backlogServiceDeletePipelineModeHandler := connect.NewUnaryHandler(
+		BacklogServiceDeletePipelineModeProcedure,
+		svc.DeletePipelineMode,
+		connect.WithSchema(backlogServiceMethods.ByName("DeletePipelineMode")),
+		connect.WithHandlerOptions(opts...),
+	)
+	backlogServiceGetPipelineModeHandler := connect.NewUnaryHandler(
+		BacklogServiceGetPipelineModeProcedure,
+		svc.GetPipelineMode,
+		connect.WithSchema(backlogServiceMethods.ByName("GetPipelineMode")),
+		connect.WithHandlerOptions(opts...),
+	)
+	backlogServiceListPipelineModesHandler := connect.NewUnaryHandler(
+		BacklogServiceListPipelineModesProcedure,
+		svc.ListPipelineModes,
+		connect.WithSchema(backlogServiceMethods.ByName("ListPipelineModes")),
+		connect.WithHandlerOptions(opts...),
+	)
 	backlogServiceImportGitHubIssueHandler := connect.NewUnaryHandler(
 		BacklogServiceImportGitHubIssueProcedure,
 		svc.ImportGitHubIssue,
@@ -874,6 +999,16 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 			backlogServiceDeleteItemSourceHandler.ServeHTTP(w, r)
 		case BacklogServiceGetSyncHistoryProcedure:
 			backlogServiceGetSyncHistoryHandler.ServeHTTP(w, r)
+		case BacklogServiceCreatePipelineModeProcedure:
+			backlogServiceCreatePipelineModeHandler.ServeHTTP(w, r)
+		case BacklogServiceUpdatePipelineModeProcedure:
+			backlogServiceUpdatePipelineModeHandler.ServeHTTP(w, r)
+		case BacklogServiceDeletePipelineModeProcedure:
+			backlogServiceDeletePipelineModeHandler.ServeHTTP(w, r)
+		case BacklogServiceGetPipelineModeProcedure:
+			backlogServiceGetPipelineModeHandler.ServeHTTP(w, r)
+		case BacklogServiceListPipelineModesProcedure:
+			backlogServiceListPipelineModesHandler.ServeHTTP(w, r)
 		case BacklogServiceImportGitHubIssueProcedure:
 			backlogServiceImportGitHubIssueHandler.ServeHTTP(w, r)
 		case BacklogServiceSearchGitHubReposProcedure:
@@ -983,6 +1118,26 @@ func (UnimplementedBacklogServiceHandler) DeleteItemSource(context.Context, *con
 
 func (UnimplementedBacklogServiceHandler) GetSyncHistory(context.Context, *connect.Request[v1.GetSyncHistoryRequest]) (*connect.Response[v1.GetSyncHistoryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.GetSyncHistory is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) CreatePipelineMode(context.Context, *connect.Request[v1.CreatePipelineModeRequest]) (*connect.Response[v1.CreatePipelineModeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.CreatePipelineMode is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) UpdatePipelineMode(context.Context, *connect.Request[v1.UpdatePipelineModeRequest]) (*connect.Response[v1.UpdatePipelineModeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.UpdatePipelineMode is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) DeletePipelineMode(context.Context, *connect.Request[v1.DeletePipelineModeRequest]) (*connect.Response[v1.DeletePipelineModeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.DeletePipelineMode is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) GetPipelineMode(context.Context, *connect.Request[v1.GetPipelineModeRequest]) (*connect.Response[v1.GetPipelineModeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.GetPipelineMode is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) ListPipelineModes(context.Context, *connect.Request[v1.ListPipelineModesRequest]) (*connect.Response[v1.ListPipelineModesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.ListPipelineModes is not implemented"))
 }
 
 func (UnimplementedBacklogServiceHandler) ImportGitHubIssue(context.Context, *connect.Request[v1.ImportGitHubIssueRequest]) (*connect.Response[v1.ImportGitHubIssueResponse], error) {
