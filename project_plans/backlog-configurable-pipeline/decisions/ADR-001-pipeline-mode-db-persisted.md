@@ -88,7 +88,25 @@ alternative):
    `ReviewGateRunner.Run`) are hot paths. This ADR requires an explicit in-process cache
    (`session/pipeline_engine.go`, `pipelineModeCache`, an `atomic.Pointer[map[string]...]`
    copy-on-write structure) invalidated on every write RPC, rather than a query-per-call pattern.
+   Reads (`Get`) stay fully lock-free via the atomic pointer load. Writes (`Invalidate`) are
+   additionally serialized behind a `sync.Mutex` guarding only the DB-read + pointer-swap sequence
+   — added during Phase 3 planning's adversarial review after it found that two concurrent
+   `Invalidate` calls (e.g. a double-submitted edit) could otherwise race such that a slower/older
+   read's `Store` lands after a faster/newer one, leaving the cache stuck on stale data (a
+   lost-update, not a torn read — `atomic.Pointer` alone does not prevent it). See
+   `implementation/plan.md`'s Pattern Decisions table and Story 1.3.2/Task 1.3.2b/1.3.2d.
 3. A CRUD management UI surface (`/settings/pipeline-modes`) beyond the item-level selector alone.
+
+**Tripwire on the relaxed threat model**: the "no untrusted third party" premise above holds only
+while stapler-squad is a single-operator instance. If this tool is ever deployed for concurrent
+multi-user access (not just multi-repo/multi-remote for one operator — this repo already has a
+dual-remote setup per `CLAUDE.md`, which is a different thing), `PipelineMode` CRUD must gain
+per-user ownership/authorization before that deployment — one user's mode content currently drives
+another user's triage/review LLM calls and file writes with no access control and no audit trail
+beyond a Warn-level log line. Re-evaluate this ADR's threat model explicitly at that point; do not
+carry the relaxed assumption forward silently. (Flagged by Phase 4's pre-mortem, P3 — unlikely
+under current usage, catastrophic if it silently applies to a context it was never evaluated
+against.)
 
 **Mitigation for the self-inflicted-breakage risk accepted above**: an item whose stored
 `pipeline_mode` slug fails to resolve (deleted mode, or a slug that was never valid) falls back to
