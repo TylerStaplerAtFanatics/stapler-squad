@@ -84,19 +84,23 @@ log "Building tmux from $SUBMODULE_DIR..."
 cd "$SUBMODULE_DIR"
 
 if [[ ! -f "./configure" ]]; then
-  # Prefer downloading configure from the release tarball — faster and avoids the
-  # macOS autotools hang (autogen.sh → 'automake --add-missing' triggers network
+  # Prefer downloading the release tarball — faster and avoids the macOS
+  # autotools hang (autogen.sh → 'automake --add-missing' triggers network
   # fetches; libtoolize can block scanning the locate database for minutes).
+  # The tarball ships more than just `configure` — aclocal.m4, Makefile.in,
+  # and etc/{install-sh,config.guess,...} are also autotools-generated and
+  # absent from a plain git checkout, so extract the whole tarball and layer
+  # it over the submodule source with no-clobber (keeps our git-tracked files).
   TMUX_VERSION="3.4"
   TARBALL_URL="https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz"
   TMPTAR="$(mktemp /tmp/tmux-XXXXXX.tar.gz)"
-  log "Downloading configure from release tarball (${TARBALL_URL})..."
+  log "Downloading generated build files from release tarball (${TARBALL_URL})..."
   if curl -fsSL -o "$TMPTAR" "$TARBALL_URL" 2>/dev/null && \
-     tar xzf "$TMPTAR" -C /tmp "tmux-${TMUX_VERSION}/configure" 2>/dev/null; then
-    cp "/tmp/tmux-${TMUX_VERSION}/configure" ./configure
+     tar xzf "$TMPTAR" -C /tmp "tmux-${TMUX_VERSION}" 2>/dev/null; then
+    cp -rn "/tmp/tmux-${TMUX_VERSION}/." .
     chmod +x ./configure
-    rm -f "$TMPTAR"
-    log "configure extracted from release tarball"
+    rm -rf "$TMPTAR" "/tmp/tmux-${TMUX_VERSION}"
+    log "Generated build files extracted from release tarball"
   else
     rm -f "$TMPTAR"
     log "Tarball download failed; falling back to autoreconf -fi..."
