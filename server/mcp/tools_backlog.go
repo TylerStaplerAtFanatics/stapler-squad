@@ -439,14 +439,14 @@ func (h *backlogHandlers) submitReviewVerdict(ctx context.Context, req mcpgo.Cal
 		return errResult(ErrInternalError, fmt.Sprintf("save review verdict: %v", saveErr), ""), nil
 	}
 
-	// If PASS, transition item to done (only from review status).
-	if overallOutcome == session.ReviewVerdictPass {
-		precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
-		if _, transErr := h.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusDone, precondition); transErr != nil {
-			log.InfoLog.Printf("[mcp:submit_review_verdict] PASS but transition to done failed: %v", transErr)
-			// Non-fatal — verdict is saved, status transition is best-effort.
-		}
-	}
+	// Deliberately no status transition here: BacklogLifecycleListener.
+	// handleReviewSessionExited (session/backlog_lifecycle.go) is the sole place
+	// that decides what happens next once this review session exits — on PASS it
+	// pushes the branch, creates a PR, and transitions to pr_pending
+	// (pushAndCreatePR); on FAIL/PARTIAL/UNVERIFIABLE it triggers auto-reopen.
+	// Transitioning straight to done here would race that handler: its own
+	// precondition (ExpectedStatus: review) would then fail once the session
+	// actually exits, silently skipping PR creation.
 
 	// Stop the AutonomousDriver for this review session (belt-and-suspenders).
 	// The verdict is already persisted; a subsequent Stuck fireCompletion is harmless
