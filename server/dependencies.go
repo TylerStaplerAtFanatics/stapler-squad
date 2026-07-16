@@ -482,6 +482,12 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// SetHeadlessPool was called hundreds of lines after instance wiring.
 	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithPool(storage, headlessPool)
 	backlogLifecycleListener.SetNotifier(&services.EventBusNotifier{Bus: eventBus})
+	// Review now always spawns a real, hidden session.Instance (via
+	// SessionService.SpawnReviewSession) instead of an in-process headless LLM
+	// call, so review-queue visibility (idle/error/approval detection) works the
+	// same as for every other automated session. sessionService already
+	// satisfies session.ReviewGateSpawner.
+	backlogLifecycleListener.SetSessionCreator(sessionService)
 
 	// Step 5 (continued): wire dependencies to each instance
 	// inst.SetReviewQueue and inst.SetStatusManager are called per-instance in a loop;
@@ -672,11 +678,6 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	scrollbackConfig.StoragePath = scrollbackPath
 	scrollbackManager := scrollback.NewScrollbackManager(scrollbackConfig)
 	log.Info("initialized ScrollbackManager", "path", scrollbackPath, "compression", scrollbackConfig.StoragePath, "maxLines", scrollbackConfig.MaxLines)
-	// backlogLifecycleListener was constructed earlier (Step 5, before ScrollbackManager
-	// existed) — wire it in now so the codebase-read review path can render a searchable
-	// "## Session Transcript" prompt section. Optional enrichment: nil until this point,
-	// and review calls that ran before this line simply omit the section.
-	backlogLifecycleListener.SetScrollbackManager(scrollbackManager)
 
 	// Step 10: TmuxStreamerManager (independent)
 	tmuxStreamerManager := session.NewExternalTmuxStreamerManager()

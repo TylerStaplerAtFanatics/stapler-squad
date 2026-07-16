@@ -11,7 +11,6 @@ import (
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
-	"github.com/tstapler/stapler-squad/session/scrollback"
 )
 
 // Notifier publishes an operator-facing notification. Implemented outside this
@@ -90,8 +89,15 @@ const maxConcurrentReviewGates = 8
 // OnLifecycleEvent is non-blocking; all DB work is dispatched to a goroutine.
 // Call SetEnabled(false) to make all callbacks no-ops without unwiring.
 type BacklogLifecycleListener struct {
-	storage        *Storage
-	sessionCreator ReviewGateSpawner
+	storage *Storage
+
+	// sessionCreatorMu guards sessionCreator for concurrent Set/get access, same
+	// pattern as autoReopener/notifier/prFixSpawner below. Needed because
+	// production wiring (server/dependencies.go) constructs this listener before
+	// SessionService exists, so the spawner is wired post-construction via
+	// SetSessionCreator.
+	sessionCreatorMu sync.RWMutex
+	sessionCreator   ReviewGateSpawner
 
 	// poolMu guards headlessPool for concurrent Set/get access.
 	poolMu       sync.RWMutex
@@ -167,12 +173,21 @@ func (l *BacklogLifecycleListener) SetAutoReopener(r AutoReopenSpawner) {
 	l.autoReopener = r
 }
 
-// SetScrollbackManager wires in the scrollback manager used to write a searchable
-// session transcript file on the empty-diff codebase-read review path. Delegates to
-// the underlying ReviewGateRunner, which owns the field. Optional — nil (the default)
-// simply omits the "## Session Transcript" prompt section.
-func (l *BacklogLifecycleListener) SetScrollbackManager(sm *scrollback.ScrollbackManager) {
-	l.runner.SetScrollbackManager(sm)
+// SetSessionCreator wires in the spawner used to create review-gate sessions
+// after construction. Needed because production wiring
+// (server/dependencies.go) constructs this listener before SessionService
+// exists.
+func (l *BacklogLifecycleListener) SetSessionCreator(s ReviewGateSpawner) {
+	l.sessionCreatorMu.Lock()
+	defer l.sessionCreatorMu.Unlock()
+	l.sessionCreator = s
+}
+
+// getSessionCreator returns the current review-gate session spawner under a read lock.
+func (l *BacklogLifecycleListener) getSessionCreator() ReviewGateSpawner {
+	l.sessionCreatorMu.RLock()
+	defer l.sessionCreatorMu.RUnlock()
+	return l.sessionCreator
 }
 
 // getAutoReopener returns the current auto-reopener under a read lock.
@@ -280,7 +295,7 @@ func newListenerBase(storage *Storage) *BacklogLifecycleListener {
 		staleWorkNotified:       make(map[string]bool),
 		stuckReviewNotified:     make(map[string]bool),
 	}
-	l.runner = NewReviewGateRunner(storage, l.getHeadlessPool, l.getAutoReopener, l.getNotifier, nil)
+	l.runner = NewReviewGateRunner(storage, l.getAutoReopener, l.getNotifier, l.getSessionCreator)
 	return l
 }
 
@@ -294,8 +309,7 @@ func NewBacklogLifecycleListener(storage *Storage) *BacklogLifecycleListener {
 // review gate session when a work session exits and SkipReviewGate is false.
 func NewBacklogLifecycleListenerWithSpawner(storage *Storage, spawner ReviewGateSpawner) *BacklogLifecycleListener {
 	l := newListenerBase(storage)
-	l.sessionCreator = spawner
-	l.runner.sessionCreator = spawner
+	l.SetSessionCreator(spawner)
 	return l
 }
 
@@ -370,8 +384,17 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 		log.ErrorLog.Printf("[BacklogLifecycle] UpdateItemSessionEnded(%s) error: %v", is.ID, err)
 	}
 
-	// Only drive in_progress→review/done transitions for work sessions.
-	if is.Role != SessionRoleWork {
+	// Review sessions are handled by a dedicated post-verdict path: they don't
+	// drive an in_progress→review/done transition themselves, they process the
+	// verdict submitted (or not) by the review session that just exited. Other
+	// non-work roles (e.g. triage) have nothing further to do here.
+	switch is.Role {
+	case SessionRoleReview:
+		l.handleReviewSessionExited(ctx, is)
+		return
+	case SessionRoleWork:
+		// fall through to the in_progress→review/done logic below.
+	default:
 		return
 	}
 
@@ -405,7 +428,7 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 	log.InfoLog.Printf("[BacklogLifecycle] item %s transitioned to %s (session %s exited)", item.ID, toStatus, sessionUUID)
 
 	// Spawn review gate if the item moved to review and a review mechanism is configured.
-	if toStatus == BacklogStatusReview && !item.SkipReviewGate && (l.getHeadlessPool() != nil || l.sessionCreator != nil) {
+	if toStatus == BacklogStatusReview && !item.SkipReviewGate && l.getSessionCreator() != nil {
 		go func() {
 			// Acquire the bounded semaphore to prevent unbounded goroutine fan-out
 			// when many sessions exit simultaneously.
@@ -420,6 +443,95 @@ func (l *BacklogLifecycleListener) onSessionExited(sessionUUID string) {
 	}
 }
 
+// handleReviewSessionExited processes the outcome of a review session (Role ==
+// SessionRoleReview) that has just exited. Review now always happens in a real,
+// hidden session.Instance (see ReviewGateRunner.Run / SpawnReviewSession)
+// instead of a synchronous in-process headless LLM call, so the verdict — if
+// any — was submitted via the submit_review_verdict MCP tool while the review
+// session was running (see server/mcp/tools_backlog.go) and is read back here
+// from storage rather than computed inline.
+func (l *BacklogLifecycleListener) handleReviewSessionExited(ctx context.Context, reviewIS ItemSessionSummary) {
+	item, err := l.storage.GetBacklogItem(ctx, reviewIS.BacklogItemID)
+	if err != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] handleReviewSessionExited GetBacklogItem item=%s: %v", reviewIS.BacklogItemID, err)
+		return
+	}
+
+	// ListItemSessions (unlike GetItemSessionBySessionUUID, used by the caller)
+	// eagerly loads the ReviewVerdict edge, which is what we need here.
+	sessions, err := l.storage.ListItemSessions(ctx, item.ID)
+	if err != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] handleReviewSessionExited ListItemSessions item=%s: %v", item.ID, err)
+		return
+	}
+
+	// Scan oldest-first: find the review ItemSession matching this exited
+	// session, and keep overwriting workEntry so it ends up as the most recent
+	// work session — the one whose worktree needs to be pushed on a PASS verdict.
+	var reviewEntry *ItemSessionSummary
+	var workEntry *ItemSessionSummary
+	for i := range sessions {
+		s := &sessions[i]
+		if s.SessionUUID == reviewIS.SessionUUID && s.Role == SessionRoleReview {
+			reviewEntry = s
+		}
+		if s.Role == SessionRoleWork {
+			workEntry = s
+		}
+	}
+
+	if reviewEntry == nil || reviewEntry.ReviewVerdict == nil {
+		// The review session exited without ever calling submit_review_verdict —
+		// crashed, killed, ran out of turns, etc. Treat it like a failed review so
+		// the item doesn't sit stuck in "review" forever.
+		log.WarningLog.Printf("[BacklogLifecycle] handleReviewSessionExited item=%s review session %s exited without a verdict", item.ID, reviewIS.SessionUUID)
+		l.notify(item.ID,
+			"Review session ended without a verdict",
+			fmt.Sprintf("%s — the review session exited without calling submit_review_verdict. Treating as a failed review.", item.Title),
+			7, // sessionv1.NotificationType_NOTIFICATION_TYPE_ERROR
+			3, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH
+		)
+		if reopener := l.getAutoReopener(); reopener != nil {
+			go func() {
+				if err := reopener.AutoReopenAfterFailedReview(ctx, item.ID); err != nil {
+					log.ErrorLog.Printf("[BacklogLifecycle] handleReviewSessionExited AutoReopenAfterFailedReview (no verdict) item=%s: %v", item.ID, err)
+				}
+			}()
+		}
+		return
+	}
+
+	verdict := reviewEntry.ReviewVerdict
+	overall := ReviewOutcome(verdict.OverallOutcome)
+	perCriterion, parseErr := parsePerCriterionVerdicts(verdict.PerCriterion)
+	if parseErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] handleReviewSessionExited parsePerCriterionVerdicts item=%s: %v", item.ID, parseErr)
+	}
+	acSnapshot, _ := ParseAcCriteria(reviewIS.AcSnapshot)
+	applyVerdictsToACs(ctx, l.storage, item, acSnapshot, perCriterion)
+
+	log.InfoLog.Printf("[BacklogLifecycle] handleReviewSessionExited item=%s outcome=%s (review session %s)", item.ID, overall, reviewIS.SessionUUID)
+
+	switch overall {
+	case ReviewVerdictFail, ReviewVerdictPartial, ReviewVerdictUnverifiable:
+		if reopener := l.getAutoReopener(); reopener != nil {
+			go func() {
+				if err := reopener.AutoReopenAfterFailedReview(ctx, item.ID); err != nil {
+					log.ErrorLog.Printf("[BacklogLifecycle] handleReviewSessionExited AutoReopenAfterFailedReview item=%s: %v", item.ID, err)
+				}
+			}()
+		}
+	case ReviewVerdictPass:
+		// Push the branch, create a PR, and move to pr_pending. Falls back to a
+		// direct done transition when there's no worktree — see pushAndCreatePR.
+		if workEntry == nil {
+			log.ErrorLog.Printf("[BacklogLifecycle] handleReviewSessionExited item=%s: PASS verdict but no work session found — cannot push", item.ID)
+			return
+		}
+		l.pushAndCreatePR(ctx, item, *workEntry)
+	}
+}
+
 // TriggerReviewForSession immediately spawns a review gate for the work session
 // identified by workSessionUUID. Used by the autonomous driver to trigger review
 // as soon as the driver signals DONE, rather than waiting for ReconcileStuck.
@@ -428,7 +540,7 @@ func (l *BacklogLifecycleListener) TriggerReviewForSession(workSessionUUID strin
 	if !l.enabled.Load() {
 		return
 	}
-	if l.getHeadlessPool() == nil && l.sessionCreator == nil {
+	if l.getSessionCreator() == nil {
 		return
 	}
 	go func() {
@@ -548,7 +660,7 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 	// Occurs when the headless pool was unavailable at the time of the work session exit.
 	// Scoped to this block only (not an early return) — PR-pending polling and staleness
 	// detection below must still run even when no review mechanism is configured.
-	if l.getHeadlessPool() != nil || l.sessionCreator != nil {
+	if l.getSessionCreator() != nil {
 		items, gateErr := er.FindReviewItemsWithoutGate(ctx)
 		if gateErr != nil {
 			log.ErrorLog.Printf("[BacklogLifecycle] FindReviewItemsWithoutGate error: %v", gateErr)
