@@ -309,13 +309,49 @@ export const sessionList = style({
 
 export const sessionRow = style({
   display: "flex",
-  alignItems: "center",
-  gap: vars.space["3"],
+  flexDirection: "column",
+  gap: vars.space["1"],
   padding: `${vars.space["2"]} ${vars.space["3"]}`,
   background: vars.color.cardBackground,
   border: `1px solid ${vars.color.borderColor}`,
   borderRadius: vars.radii.sm,
   fontSize: vars.fontSize.sm,
+});
+
+export const sessionRowMain = style({
+  display: "flex",
+  alignItems: "center",
+  gap: vars.space["3"],
+});
+
+export const pipelineGroup = style({
+  display: "flex",
+  alignItems: "center",
+  gap: vars.space["2"],
+  fontSize: vars.fontSize.xs,
+  color: vars.color.textMuted,
+  paddingLeft: vars.space["1"],
+});
+
+export const pipelineLabel = style({
+  color: vars.color.textDisabled,
+});
+
+export const pipelineValue = style({
+  color: vars.color.textSecondary,
+});
+
+export const pipelineDriftBadge = style({
+  display: "inline-flex",
+  alignItems: "center",
+  padding: `1px ${vars.space["2"]}`,
+  borderRadius: vars.radii.sm,
+  background: vars.color.warningBg,
+  color: vars.color.warningText,
+  border: `1px solid ${vars.color.warning}`,
+  fontSize: vars.fontSize.xs,
+  fontWeight: vars.fontWeight.medium,
+  whiteSpace: "nowrap",
 });
 
 export const sessionLink = style({

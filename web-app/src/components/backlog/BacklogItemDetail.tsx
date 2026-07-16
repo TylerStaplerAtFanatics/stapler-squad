@@ -2,7 +2,7 @@
 // +feature: backlog:item-detail
 
 import { useState, useEffect, useCallback } from "react";
-import type { BacklogItem, AcCriterion, BacklogItemInput } from "@/lib/hooks/useBacklogService";
+import type { BacklogItem, AcCriterion, BacklogItemInput, LinkedSession, PipelineMode } from "@/lib/hooks/useBacklogService";
 import { useBacklogService } from "@/lib/hooks/useBacklogService";
 import { useSessionService } from "@/lib/hooks/useSessionService";
 import { useAnalytics } from "@/lib/analytics";
@@ -51,6 +51,43 @@ function formatDate(iso?: string): string {
   });
 }
 
+/**
+ * Epic 3.4 "what ran" surface — resolves an ItemSession's frozen
+ * pipelineModeSnapshot against the currently-fetched mode list, purely for
+ * display (looking up the human-readable name). The underlying stored
+ * value is never re-resolved live. Case priority (see plan.md Story 3.4.1):
+ *   1. Snapshot slug not found in the current mode list → "unrecognized"
+ *      (checked first — there's no live mode to compare a hash against).
+ *   2. Snapshot slug found, but its content hash has since changed →
+ *      "resolved" with drifted: true.
+ *   3. Snapshot slug found and unchanged (or snapshot hash is empty,
+ *      meaning default mode / a pre-feature session) → "resolved" with
+ *      drifted: false. Empty pipelineModeSnapshot always short-circuits to
+ *      the "default" case before any lookup is attempted.
+ */
+type PipelineModeDisplay =
+  | { kind: "resolved"; name: string; drifted: boolean }
+  | { kind: "unrecognized"; slug: string };
+
+function resolvePipelineModeDisplay(
+  session: LinkedSession,
+  modes: PipelineMode[]
+): PipelineModeDisplay {
+  const snapshot = session.pipelineModeSnapshot ?? "";
+  if (snapshot === "") {
+    return { kind: "resolved", name: "default", drifted: false };
+  }
+
+  const match = modes.find((m) => m.slug === snapshot);
+  if (!match) {
+    return { kind: "unrecognized", slug: snapshot };
+  }
+
+  const snapshotHash = session.pipelineModeSnapshotHash ?? "";
+  const drifted = snapshotHash !== "" && snapshotHash !== match.contentHash;
+  return { kind: "resolved", name: match.name, drifted };
+}
+
 export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   const { track } = useAnalytics();
   const {
@@ -66,6 +103,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     archiveBacklogItem,
     deleteBacklogItem,
     updateBacklogItem,
+    listPipelineModes,
     lastError,
   } = useBacklogService();
   const { deleteSession } = useSessionService();
@@ -75,6 +113,13 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   const [actionLoading, setActionLoading] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+
+  // Epic 3.4 "what ran" surface: the currently-fetched mode list, used only
+  // to resolve a session's frozen pipelineModeSnapshot slug to a
+  // human-readable name (and to detect content drift). Fetch failure
+  // degrades every session's "Pipeline" group to the unrecognized-mode
+  // fallback rather than blocking the rest of the item detail view.
+  const [pipelineModes, setPipelineModes] = useState<PipelineMode[]>([]);
 
   // Review changes modal
   const [showChangesModal, setShowChangesModal] = useState(false);
@@ -130,6 +175,24 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Epic 3.4: fetch the current mode list once, for resolving each linked
+  // session's frozen pipelineModeSnapshot to a name/drift state. Not
+  // filtered by `enabled` — a since-disabled (but not deleted) mode is
+  // still a "found" match, not "unrecognized".
+  useEffect(() => {
+    let cancelled = false;
+    listPipelineModes()
+      .then((modes) => {
+        if (!cancelled) setPipelineModes(modes);
+      })
+      .catch((e) => {
+        console.warn("[BacklogItemDetail] listPipelineModes failed", e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [listPipelineModes]);
 
   // Poll for updated item data while triage is running or while in review (waiting for gate verdict).
   // Suspend polling while the edit form is open so a background refresh can't clobber unsaved edits.
@@ -1093,12 +1156,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   review: "review",
                 };
                 const isOrphan = !s.endedAt && s.role !== statusToRole[item.status];
+                const pipelineDisplay = resolvePipelineModeDisplay(s, pipelineModes);
                 return (
                   <div
                     key={s.entityId ?? s.sessionId}
                     className={styles.sessionRow}
                     role="listitem"
                   >
+                    <div className={styles.sessionRowMain}>
                     {s.role === "triage" || s.sessionId.startsWith("headless-") || s.sessionId.startsWith("review-blocked-") ? (
                       <span className={styles.sessionLink}>
                         <span className={styles.sessionId} title={s.sessionId}>
@@ -1165,6 +1230,25 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                     >
                       {deletingSessionId === s.sessionId ? "…" : "Delete"}
                     </button>
+                  </div>
+                  <div className={styles.pipelineGroup} role="group" aria-label="Pipeline">
+                    <span className={styles.pipelineLabel}>Pipeline:</span>{" "}
+                    {pipelineDisplay.kind === "unrecognized" ? (
+                      <span className={styles.pipelineValue}>
+                        {`custom (unrecognized mode: '${pipelineDisplay.slug}')`}
+                      </span>
+                    ) : (
+                      <>
+                        <span className={styles.pipelineValue}>{pipelineDisplay.name}</span>
+                        {pipelineDisplay.drifted && (
+                          <>
+                            {" "}
+                            <span className={styles.pipelineDriftBadge}>(content since changed)</span>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
                   </div>
                 );
               })}

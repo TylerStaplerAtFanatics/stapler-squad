@@ -17,6 +17,7 @@ import {
 } from "./Omnibar.css";
 import * as styles from "./OmnibarCreationPanel.css";
 import { FileChipList, type AttachedFile } from "./FileChipList";
+import { RadioGroup } from "@/components/ui/RadioGroup";
 import { SlashCommandDropdown } from "@/components/ui/SlashCommandDropdown";
 import { useSlashCommands } from "@/lib/hooks/useSlashCommands";
 import { useSlashCommandSuggestions } from "@/lib/hooks/useSlashCommandSuggestions";
@@ -84,70 +85,28 @@ function SessionTypeRadioGroup({ value, onChange }: SessionTypeRadioGroupProps) 
   const [advancedOpen, setAdvancedOpen] = useState(() => ADVANCED_VALUES.has(value));
 
   const visibleTypes = advancedOpen ? [...PRIMARY_TYPES, ...ADVANCED_TYPES] : PRIMARY_TYPES;
-  const currentIndex = visibleTypes.findIndex((t) => t.value === value);
-  const hasSelection = currentIndex !== -1;
-
-  function handleKeyDown(e: KeyboardEvent) {
-    const fromIndex = hasSelection ? currentIndex : 0;
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-      e.preventDefault();
-      const next = (fromIndex + 1) % visibleTypes.length;
-      onChange(visibleTypes[next].value);
-    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-      e.preventDefault();
-      const prev = (fromIndex - 1 + visibleTypes.length) % visibleTypes.length;
-      onChange(visibleTypes[prev].value);
-    }
-  }
 
   return (
-    <div
-      role="radiogroup"
-      aria-label="Session type"
-      className={styles.radioGroup}
-      onKeyDown={handleKeyDown}
-    >
-      {PRIMARY_TYPES.map((type, idx) => (
+    <RadioGroup
+      options={visibleTypes}
+      value={value}
+      onChange={onChange}
+      groupLabel="Session Type"
+      groupLabelId="omnibar-session-type-label"
+      hintForValue={(v) => SESSION_TYPES.find((t) => t.value === v)?.description}
+      trailingContent={
         <button
-          key={type.value}
-          role="radio"
-          aria-checked={value === type.value}
-          tabIndex={value === type.value ? 0 : (!hasSelection && idx === 0 ? 0 : -1)}
           type="button"
-          onClick={() => onChange(type.value)}
-          className={[styles.radioBtn, value === type.value ? styles.radioBtnActive : ""]
-            .filter(Boolean)
-            .join(" ")}
+          tabIndex={-1}
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((o) => !o)}
+          className={styles.radioBtn}
+          style={{ opacity: 0.65, fontSize: "0.75em" }}
         >
-          {type.label}
+          {advancedOpen ? "▴ Less" : "▾ More"}
         </button>
-      ))}
-      <button
-        type="button"
-        tabIndex={-1}
-        aria-expanded={advancedOpen}
-        onClick={() => setAdvancedOpen((o) => !o)}
-        className={styles.radioBtn}
-        style={{ opacity: 0.65, fontSize: "0.75em" }}
-      >
-        {advancedOpen ? "▴ Less" : "▾ More"}
-      </button>
-      {advancedOpen && ADVANCED_TYPES.map((type) => (
-        <button
-          key={type.value}
-          role="radio"
-          aria-checked={value === type.value}
-          tabIndex={value === type.value ? 0 : -1}
-          type="button"
-          onClick={() => onChange(type.value)}
-          className={[styles.radioBtn, value === type.value ? styles.radioBtnActive : ""]
-            .filter(Boolean)
-            .join(" ")}
-        >
-          {type.label}
-        </button>
-      ))}
-    </div>
+      }
+    />
   );
 }
 
@@ -490,16 +449,10 @@ export function OmnibarCreationPanel({
 
         {/* Session Type — ARIA radio group (ADR-003: arrow keys cycle) */}
         <div className={field}>
-          <label className={labelClass} id="omnibar-session-type-label">
-            Session Type
-          </label>
           <SessionTypeRadioGroup
             value={sessionType}
             onChange={(v) => setFormField("sessionType", v)}
           />
-          <span className={hint} data-testid="omnibar-session-hint">
-            {SESSION_TYPES.find((t) => t.value === sessionType)?.description}
-          </span>
         </div>
 
         {/* Autonomous mode — an orthogonal flag, not a session type: it composes with
