@@ -29,6 +29,7 @@ PROTO_FILES := $(shell find proto -name "*.proto" 2>/dev/null)
 PROTO_STAMP := .proto-gen.stamp
 PROTO_OUT_DIRS := gen/proto/go web-app/src/gen
 ASDF_STAMP := .asdf-install.stamp
+ENT_STAMP := .ent-gen.stamp
 
 .PHONY: ensure-tools
 # ensure-tools runs asdf install only when .tool-versions changes
@@ -56,7 +57,7 @@ endif
 		touch $(ASDF_STAMP); \
 	fi
 
-.PHONY: help build test benchmark install-tools lint lint-custom actor-lint analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service rollback backup-binary uninstall-service setup-codesign _codesign-binary verify-codesign tcc-reset preview dev-stack coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules test-with-pinned-tmux test-trace test-profile vet-architecture vet-rpc-markers coverage-integration actor-field-guard checklocks
+.PHONY: help build test benchmark install-tools lint lint-custom actor-lint analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build ent-gen web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service rollback backup-binary uninstall-service setup-codesign _codesign-binary verify-codesign tcc-reset preview dev-stack coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules test-with-pinned-tmux test-trace test-profile vet-architecture vet-rpc-markers coverage-integration actor-field-guard checklocks
 
 # Default target
 help: ## Show this help message
@@ -128,7 +129,7 @@ e2e-lighthouse: ## Run Lighthouse CI performance audit
 # Build targets
 build: stapler-squad ## Build the Go application
 
-stapler-squad: ensure-tools proto-gen server/web/dist $(GO_FILES) ## Build the Go binary
+stapler-squad: ensure-tools proto-gen ent-gen server/web/dist $(GO_FILES) ## Build the Go binary
 	@echo "Building Go application..."
 ifeq ($(UNAME_S),Darwin)
 	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/macos/Info.plist" \
@@ -403,6 +404,17 @@ proto-gen: ensure-tools web-app/node_modules/.modules.yaml ## Generate Go and Ty
 		touch $(PROTO_STAMP); \
 	else \
 		echo "✅ Proto files unchanged, skipping generation"; \
+	fi
+
+ent-gen: ensure-tools ## Generate ent ORM code from session/ent/schema
+	@if [ ! -f $(ENT_STAMP) ] \
+	   || [ "$$(find session/ent/schema -name '*.go' -newer $(ENT_STAMP) -print -quit)" ]; then \
+		echo "Generating ent ORM code..."; \
+		go run -mod=mod entgo.io/ent/cmd/ent generate --feature sql/upsert ./session/ent/schema; \
+		touch $(ENT_STAMP); \
+		echo "✅ ent ORM code generated"; \
+	else \
+		echo "✅ ent schema unchanged, skipping generation"; \
 	fi
 
 proto-lint: ensure-tools ## Lint protocol buffer files
