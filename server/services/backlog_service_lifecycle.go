@@ -158,6 +158,7 @@ func (s *BacklogService) CreateBacklogItem(
 		SkipReviewGate:     req.Msg.SkipReviewGate,
 		SkipPlanning:       req.Msg.SkipPlanning,
 		AutoSpawnSession:   req.Msg.AutoSpawnSession,
+		PipelineMode:       req.Msg.GetPipelineMode(),
 		Notes:              req.Msg.Notes,
 	}
 
@@ -234,6 +235,14 @@ func (s *BacklogService) UpdateBacklogItem(
 	update.SkipPlanning = &skipP
 	autoSpawn := req.Msg.AutoSpawnSession
 	update.AutoSpawnSession = &autoSpawn
+	// PipelineMode is presence-gated (optional string on the wire): only set
+	// update.PipelineMode when the field was explicitly present on the
+	// request, so an omitted pipeline_mode never clobbers the item's existing
+	// mode back to "". This is deliberately NOT an unconditional wrap like
+	// SkipReviewGate/SkipPlanning/AutoSpawnSession above — see Story 1.4.4.
+	if req.Msg.PipelineMode != nil {
+		update.PipelineMode = req.Msg.PipelineMode
+	}
 	if req.Msg.Notes != "" {
 		notes := req.Msg.Notes
 		update.Notes = &notes

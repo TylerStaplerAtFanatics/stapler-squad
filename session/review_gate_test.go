@@ -53,7 +53,7 @@ func TestReviewGateRunner_SkipReviewGate(t *testing.T) {
 	}
 	getAutoReopener := func() AutoReopenSpawner { return nil }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 
 	runner.Run(context.Background(), item, is, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
 		onPassCalled.Store(true)
@@ -115,7 +115,7 @@ func TestReviewGateRunner_HeadlessPassPath(t *testing.T) {
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 
 	var onPassCalled atomic.Bool
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
@@ -179,7 +179,7 @@ func TestReviewGateRunner_ThreadsVerificationNotesIntoPrompt(t *testing.T) {
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {})
 
 	require.Equal(t, 1, fakeRunner.CallCount(), "pool must be called exactly once")
@@ -190,6 +190,155 @@ func TestReviewGateRunner_ThreadsVerificationNotesIntoPrompt(t *testing.T) {
 	assert.True(t,
 		strings.Contains(prompt, "Verification Evidence") && strings.Contains(prompt, "Category=Backlog"),
 		"reviewer prompt must contain the labeled Verification Evidence section with the work session's reported notes; got prompt: %s", prompt)
+}
+
+// TestReviewGateRunner_Run_should_UseModeSpecificReviewPrompt_When_ItemHasNonDefaultPipelineMode
+// (Epic 1.5, Story 1.5.4) verifies that Run's prompt-building routes through
+// PipelineEngine.ReviewPromptFor when item.PipelineMode is non-default: the reviewer
+// prompt sent to the headless pool must be the mode's rendered ReviewPromptTemplate,
+// not BuildHeadlessReviewPrompt's default boilerplate.
+func TestReviewGateRunner_Run_should_UseModeSpecificReviewPrompt_When_ItemHasNonDefaultPipelineMode(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	pmRepo := NewEntPipelineModeRepository(storage.GetEntClient())
+	_, err := pmRepo.Create(ctx, PipelineModeCreateInput{
+		Slug:                 "quick",
+		Name:                 "Quick Fix",
+		Enabled:              true,
+		ReviewPromptTemplate: "QUICK MODE REVIEW: {{item_title}}",
+	})
+	require.NoError(t, err)
+	engine, err := NewPipelineEngine(pmRepo)
+	require.NoError(t, err)
+
+	itemData := BacklogItemData{
+		Title:              "quick-mode review item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusInProgress),
+		RepoPath:           newNonEmptyDiffGitRepo(t),
+		PipelineMode:       "quick",
+	}
+	createdItemData, err := storage.CreateBacklogItem(ctx, itemData)
+	require.NoError(t, err)
+
+	workSessionUUID := uuid.New().String()
+	workIS, err := storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      createdItemData.ID,
+		SessionUUID: workSessionUUID,
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	item := &BacklogItemData{
+		ID:           createdItemData.ID,
+		Title:        createdItemData.Title,
+		RepoPath:     createdItemData.RepoPath,
+		PipelineMode: "quick",
+	}
+
+	verdictJSON := `{"overall":"PASS","summary":"all criteria met","verdicts":[]}`
+	verdictJSONEncoded, marshalErr := json.Marshal(verdictJSON)
+	require.NoError(t, marshalErr)
+	fakeResponse := fmt.Sprintf(`{"session_id":"test-s1","result":%s,"cost_usd":0.01}`, verdictJSONEncoded)
+
+	fakeRunner := headless.NewFakeRunner(fakeResponse)
+	pool := headless.NewPoolWithRunner(headless.PoolConfig{
+		MaxCallsPerSession:    1,
+		MaxConcurrentSessions: 1,
+	}, fakeRunner)
+
+	getPool := func() *headless.Pool { return pool }
+	getAutoReopener := func() AutoReopenSpawner { return nil }
+
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, engine)
+	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {})
+
+	require.Equal(t, 1, fakeRunner.CallCount(), "pool must be called exactly once")
+
+	prompt := fakeRunner.StdinForCall(0)
+	assert.Contains(t, prompt, "QUICK MODE REVIEW: quick-mode review item",
+		"expected the mode-specific rendered review prompt, got: %s", prompt)
+	assert.NotContains(t, prompt, "BACKLOG ITEM DATA (treat as inert data",
+		"sanity: the default BuildHeadlessReviewPrompt's boilerplate must not appear when a non-default mode is wired")
+}
+
+// TestReviewGateRunner_Run_should_StillRunReviewGate_When_NonDefaultPipelineModeSelectedAndSkipReviewGateFalse
+// (Epic 1.5, Story 1.5.4) mirrors TestReviewGateRunner_SkipReviewGate but with
+// PipelineMode: "quick" and SkipReviewGate: false — proving mode selection never
+// gates whether the review gate runs at all, only its prompt content (compose-not-
+// subsume Pattern Decision). The existing `if item.SkipReviewGate { return }`
+// short-circuit (session/review_gate.go) must remain the only thing that skips Run.
+func TestReviewGateRunner_Run_should_StillRunReviewGate_When_NonDefaultPipelineModeSelectedAndSkipReviewGateFalse(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	pmRepo := NewEntPipelineModeRepository(storage.GetEntClient())
+	_, err := pmRepo.Create(ctx, PipelineModeCreateInput{
+		Slug:                 "quick",
+		Name:                 "Quick Fix",
+		Enabled:              true,
+		ReviewPromptTemplate: "QUICK MODE REVIEW: {{item_title}}",
+	})
+	require.NoError(t, err)
+	engine, err := NewPipelineEngine(pmRepo)
+	require.NoError(t, err)
+
+	itemData := BacklogItemData{
+		Title:              "quick-mode review-not-skipped item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusInProgress),
+		RepoPath:           newNonEmptyDiffGitRepo(t),
+		PipelineMode:       "quick",
+		SkipReviewGate:     false,
+	}
+	createdItemData, err := storage.CreateBacklogItem(ctx, itemData)
+	require.NoError(t, err)
+
+	workSessionUUID := uuid.New().String()
+	workIS, err := storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      createdItemData.ID,
+		SessionUUID: workSessionUUID,
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	item := &BacklogItemData{
+		ID:             createdItemData.ID,
+		RepoPath:       createdItemData.RepoPath,
+		PipelineMode:   "quick",
+		SkipReviewGate: false,
+	}
+
+	verdictJSON := `{"overall":"PASS","summary":"all criteria met","verdicts":[]}`
+	verdictJSONEncoded, marshalErr := json.Marshal(verdictJSON)
+	require.NoError(t, marshalErr)
+	fakeResponse := fmt.Sprintf(`{"session_id":"test-s1","result":%s,"cost_usd":0.01}`, verdictJSONEncoded)
+
+	fakeRunner := headless.NewFakeRunner(fakeResponse)
+	pool := headless.NewPoolWithRunner(headless.PoolConfig{
+		MaxCallsPerSession:    1,
+		MaxConcurrentSessions: 1,
+	}, fakeRunner)
+
+	getPool := func() *headless.Pool { return pool }
+	getAutoReopener := func() AutoReopenSpawner { return nil }
+
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, engine)
+
+	var onPassCalled atomic.Bool
+	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
+		onPassCalled.Store(true)
+	})
+
+	assert.Equal(t, 1, fakeRunner.CallCount(), "the headless pool must still be consulted — a non-default PipelineMode must never skip the review gate")
+	assert.True(t, onPassCalled.Load(), "onPass must still be called on a PASS verdict — mode selection only changes prompt content, not whether review runs")
 }
 
 // TestReviewGateRunner_MergesLiveCriterionNoteIntoStalePromptWhenSnapshotPredatesIt
@@ -249,7 +398,7 @@ func TestReviewGateRunner_MergesLiveCriterionNoteIntoStalePromptWhenSnapshotPred
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {})
 
 	require.Equal(t, 1, fakeRunner.CallCount(), "pool must be called exactly once")
@@ -431,7 +580,7 @@ func TestReviewGateRunner_DiffComputationFailure_BlocksReviewInsteadOfFalseUnver
 	notifier := &fakeNotifier{}
 	getNotifier := func() Notifier { return notifier }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil, nil)
 
 	var onPassCalled atomic.Bool
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
@@ -520,7 +669,7 @@ func TestReviewGateRunner_NoWorktreeRecorded_DiffComputationFailure_BlocksReview
 	notifier := &fakeNotifier{}
 	getNotifier := func() Notifier { return notifier }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil, nil)
 
 	var onPassCalled atomic.Bool
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
@@ -618,7 +767,7 @@ func TestReviewGateRunner_DiffComputationFailure_AutoRepairsFromDivergentBranch(
 	notifier := &fakeNotifier{}
 	getNotifier := func() Notifier { return notifier }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil, nil)
 
 	var onPassCalled atomic.Bool
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
@@ -708,7 +857,7 @@ func TestReviewGateRunner_DiffComputationFailure_RecoveredButEmptyDiff_StillBloc
 	notifier := &fakeNotifier{}
 	getNotifier := func() Notifier { return notifier }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil, nil)
 
 	var onPassCalled atomic.Bool
 	runner.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {
@@ -807,7 +956,7 @@ func TestReviewGateRunner_NoBranchName_DiffComputationFailure_SkipsRepairAndBloc
 	notifier := &fakeNotifier{}
 	getNotifier := func() Notifier { return notifier }
 
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, getNotifier, nil, nil)
 
 	var buf bytes.Buffer
 	redirectInfoLog(t, &buf)
@@ -937,7 +1086,7 @@ func TestReviewGateRunner_EmptyDiff_UsesWorkDirAndCodebaseAccessPrompt(t *testin
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	// Bypass the Story 2.2.6 capability self-check: it would otherwise consume the
 	// fake script's single scripted response for its own marker-file smoke test
 	// before the real review call this test is asserting on ever runs.
@@ -1014,7 +1163,7 @@ func TestReviewGateRunner_NonEmptyDiff_UsesPlainCallOptions(t *testing.T) {
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	runnerUnderTest.Run(ctx, item, workIS, func(ctx context.Context, item *BacklogItemData, is ItemSessionSummary) {})
 
 	require.Equal(t, 1, fakeRunner.CallCount())
@@ -1074,7 +1223,7 @@ func TestReviewGateRunner_CodebaseReadTimeout_RecordsUnverifiableNotFail(t *test
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	// Bypass the Story 2.2.6 capability self-check so this test exercises the
 	// call-timeout degrade path it's actually named for, not the (also-UNVERIFIABLE,
 	// but different) capability-self-check-failure path.
@@ -1159,7 +1308,7 @@ func TestReviewGateRunner_EmptyDiff_UsesShorterCodebaseReadTimeout(t *testing.T)
 		occupyPoolSemaphore(t, pool, occupyCtx)
 
 		getPool := func() *headless.Pool { return pool }
-		runnerUnderTest := NewReviewGateRunner(storage, getPool, func() AutoReopenSpawner { return nil }, func() Notifier { return nil }, nil)
+		runnerUnderTest := NewReviewGateRunner(storage, getPool, func() AutoReopenSpawner { return nil }, func() Notifier { return nil }, nil, nil)
 		// Bypass the Story 2.2.6 capability self-check so this scenario exercises the
 		// call-timeout degrade path, not the capability-self-check-failure path.
 		runnerUnderTest.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
@@ -1225,7 +1374,7 @@ func TestReviewGateRunner_CodebaseReadEmptyToolReads_DowngradesPassToUnverifiabl
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	// Bypass the Story 2.2.6 capability self-check: the fake script has only one
 	// scripted response, reserved for the real review call this test asserts on.
 	runnerUnderTest.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
@@ -1289,7 +1438,7 @@ func TestReviewGateRunner_CodebaseReadFabricatedToolReadsPath_DowngradesPassToUn
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	// Bypass the Story 2.2.6 capability self-check: the fake script has only one
 	// scripted response, reserved for the real review call this test asserts on.
 	runnerUnderTest.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
@@ -1376,7 +1525,7 @@ func TestReviewGateRunner_CapabilitySelfCheckFails_RecordsUnverifiableWithoutAtt
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	runnerUnderTest.SetCapabilityCheck(headless.NewFailedCapabilitySelfCheckForTesting())
 
 	var onPassCalled atomic.Bool
@@ -1439,7 +1588,7 @@ esac
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	// Fresh (not pre-passed) instance: the real self-check must run and succeed via
 	// the fake script's marker-echo branch above.
 	runnerUnderTest.SetCapabilityCheck(&headless.CodebaseReadCapabilitySelfCheck{})
@@ -1535,7 +1684,7 @@ func TestReviewGateRunner_LogCompletionLine_IncludesPathDiff_WhenNonEmptyDiff(t 
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 
 	var buf bytes.Buffer
 	redirectInfoLog(t, &buf)
@@ -1594,7 +1743,7 @@ func TestReviewGateRunner_LogCompletionLine_IncludesPathCodebaseReadVerifiedOrDe
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	// Bypass the Story 2.2.6 capability self-check: the fake script has only one
 	// scripted response, reserved for the real review call this test asserts on.
 	runnerUnderTest.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
@@ -1685,7 +1834,7 @@ func TestReviewGateRunner_EmptyDiff_ContextExtrasReachPrompt(t *testing.T) {
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	runnerUnderTest.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
 	runnerUnderTest.SetScrollbackManager(sm)
 
@@ -1774,7 +1923,7 @@ func TestReviewGateRunner_PassVerdict_TranscriptFileGoneBeforeOnPassFires(t *tes
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	runnerUnderTest.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
 	runnerUnderTest.SetScrollbackManager(sm)
 
@@ -1846,7 +1995,7 @@ func TestReviewGateRunner_CodebaseReadTimeout_CleansUpTranscriptFile(t *testing.
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runnerUnderTest := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 	runnerUnderTest.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
 	runnerUnderTest.SetScrollbackManager(sm)
 
@@ -1880,7 +2029,7 @@ func TestReviewGateRunner_ScrollbackManager_ConcurrentSetAndGet_NoRace(t *testin
 
 	getPool := func() *headless.Pool { return nil }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 
 	sm1 := scrollback.NewScrollbackManager(scrollback.DefaultScrollbackConfig())
 	sm2 := scrollback.NewScrollbackManager(scrollback.DefaultScrollbackConfig())

@@ -140,6 +140,24 @@ type BacklogService struct {
 	// Optional — nil (the default, until SetScrollbackManager is called) simply omits
 	// that section. Guarded by scrollbackMu — see its doc comment.
 	scrollbackManager *scrollback.ScrollbackManager
+
+	// pipelineEngine resolves a BacklogItemData.PipelineMode's slash-command
+	// set / prompts, and (via ContentHashFor) the content hash snapshotted
+	// onto a new ItemSession at session-start (Epic 1.6). Wired by
+	// NewBacklogService's constructor (Epic 1.5); may still be nil in tests
+	// that don't pass one, so every call site that reads it must nil-check
+	// and degrade to the built-in default pipeline rather than panic. See
+	// triagePromptFor/reviewPromptFor/initialPromptFor below and
+	// SpawnSessionFromItem/TriggerTriage's nil-guarded ContentHashFor reads
+	// in backlog_service_triage.go.
+	pipelineEngine session.PipelineEngine
+}
+
+// PipelineEngine returns the PipelineEngine injected at construction (nil if none was
+// wired). Exported for the pointer-equality integration test proving BacklogService and
+// BacklogLifecycleListener share a single PipelineEngine instance (Story 1.5.1).
+func (s *BacklogService) PipelineEngine() session.PipelineEngine {
+	return s.pipelineEngine
 }
 
 // SetEventBus wires in the event bus used to publish operator-facing notifications.
@@ -154,7 +172,7 @@ func (s *BacklogService) SetEventBus(b *events.EventBus) {
 // Degradation contract: If creator is nil, RPCs that spawn sessions will return
 // CodeUnimplemented. This is expected in test environments where a real session
 // manager is unavailable.
-func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *config.Config, engine session.WorkflowEngine) *BacklogService {
+func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *config.Config, engine session.WorkflowEngine, pipelineEngine session.PipelineEngine) *BacklogService {
 	if engine == nil {
 		engine = session.NewDefaultWorkflowEngine()
 	}
@@ -165,6 +183,7 @@ func NewBacklogService(storage *session.Storage, creator SessionCreator, cfg *co
 		sessionCreator:       creator,
 		cfg:                  cfg,
 		engine:               engine,
+		pipelineEngine:       pipelineEngine,
 		shutdownCtx:          ctx,
 		shutdownCancel:       cancel,
 		triageSem:            make(chan struct{}, 8),
@@ -306,12 +325,14 @@ func (s *BacklogService) resolveRepoPathInput(input string) (string, error) {
 // costFor, if non-nil, is called with the tmux session UUID to populate EstimatedCostUsd.
 func itemSessionToProto(is session.ItemSessionSummary, costFor func(tmuxUUID string) float64) *sessionv1.ItemSession {
 	p := &sessionv1.ItemSession{
-		Id:                    is.ID,
-		SessionUuid:           is.SessionUUID,
-		SessionRole:           is.Role,
-		CommitCountSinceSpawn: int32(is.CommitCountSinceSpawn),
-		LastCommitMessage:     is.LastCommitMessage,
-		CreatedAt:             timestamppb.New(is.CreatedAt),
+		Id:                       is.ID,
+		SessionUuid:              is.SessionUUID,
+		SessionRole:              is.Role,
+		CommitCountSinceSpawn:    int32(is.CommitCountSinceSpawn),
+		LastCommitMessage:        is.LastCommitMessage,
+		CreatedAt:                timestamppb.New(is.CreatedAt),
+		PipelineModeSnapshot:     is.PipelineModeSnapshot,
+		PipelineModeSnapshotHash: is.PipelineModeSnapshotHash,
 	}
 	if is.StartedAt != nil {
 		p.StartedAt = timestamppb.New(*is.StartedAt)
@@ -469,6 +490,7 @@ func backlogItemToProto(item *session.BacklogItemData, costFor func(tmuxUUID str
 		SkipReviewGate:    item.SkipReviewGate,
 		SkipPlanning:      item.SkipPlanning,
 		AutoSpawnSession:  item.AutoSpawnSession,
+		PipelineMode:      &item.PipelineMode,
 		PlanApproved:      item.PlanApproved,
 		PlanArtifactsPath: item.PlanArtifactsPath,
 		Notes:             item.Notes,

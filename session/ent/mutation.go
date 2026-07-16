@@ -26,6 +26,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/escapeevent"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
+	"github.com/tstapler/stapler-squad/session/ent/pipelinemode"
 	"github.com/tstapler/stapler-squad/session/ent/predicate"
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
@@ -61,6 +62,7 @@ const (
 	TypeEscapeEvent             = "EscapeEvent"
 	TypeItemSession             = "ItemSession"
 	TypeItemSource              = "ItemSource"
+	TypePipelineMode            = "PipelineMode"
 	TypeProject                 = "Project"
 	TypeReviewVerdict           = "ReviewVerdict"
 	TypeSession                 = "Session"
@@ -2991,6 +2993,7 @@ type BacklogItemMutation struct {
 	skip_review_gate        *bool
 	skip_planning           *bool
 	auto_spawn_session      *bool
+	pipeline_mode           *string
 	plan_approved           *bool
 	plan_approved_at        *time.Time
 	plan_artifacts_path     *string
@@ -3512,6 +3515,42 @@ func (m *BacklogItemMutation) OldAutoSpawnSession(ctx context.Context) (v bool, 
 // ResetAutoSpawnSession resets all changes to the "auto_spawn_session" field.
 func (m *BacklogItemMutation) ResetAutoSpawnSession() {
 	m.auto_spawn_session = nil
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (m *BacklogItemMutation) SetPipelineMode(s string) {
+	m.pipeline_mode = &s
+}
+
+// PipelineMode returns the value of the "pipeline_mode" field in the mutation.
+func (m *BacklogItemMutation) PipelineMode() (r string, exists bool) {
+	v := m.pipeline_mode
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPipelineMode returns the old "pipeline_mode" field's value of the BacklogItem entity.
+// If the BacklogItem object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogItemMutation) OldPipelineMode(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPipelineMode is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPipelineMode requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPipelineMode: %w", err)
+	}
+	return oldValue.PipelineMode, nil
+}
+
+// ResetPipelineMode resets all changes to the "pipeline_mode" field.
+func (m *BacklogItemMutation) ResetPipelineMode() {
+	m.pipeline_mode = nil
 }
 
 // SetPlanApproved sets the "plan_approved" field.
@@ -4427,7 +4466,7 @@ func (m *BacklogItemMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *BacklogItemMutation) Fields() []string {
-	fields := make([]string, 0, 21)
+	fields := make([]string, 0, 22)
 	if m.title != nil {
 		fields = append(fields, backlogitem.FieldTitle)
 	}
@@ -4454,6 +4493,9 @@ func (m *BacklogItemMutation) Fields() []string {
 	}
 	if m.auto_spawn_session != nil {
 		fields = append(fields, backlogitem.FieldAutoSpawnSession)
+	}
+	if m.pipeline_mode != nil {
+		fields = append(fields, backlogitem.FieldPipelineMode)
 	}
 	if m.plan_approved != nil {
 		fields = append(fields, backlogitem.FieldPlanApproved)
@@ -4517,6 +4559,8 @@ func (m *BacklogItemMutation) Field(name string) (ent.Value, bool) {
 		return m.SkipPlanning()
 	case backlogitem.FieldAutoSpawnSession:
 		return m.AutoSpawnSession()
+	case backlogitem.FieldPipelineMode:
+		return m.PipelineMode()
 	case backlogitem.FieldPlanApproved:
 		return m.PlanApproved()
 	case backlogitem.FieldPlanApprovedAt:
@@ -4568,6 +4612,8 @@ func (m *BacklogItemMutation) OldField(ctx context.Context, name string) (ent.Va
 		return m.OldSkipPlanning(ctx)
 	case backlogitem.FieldAutoSpawnSession:
 		return m.OldAutoSpawnSession(ctx)
+	case backlogitem.FieldPipelineMode:
+		return m.OldPipelineMode(ctx)
 	case backlogitem.FieldPlanApproved:
 		return m.OldPlanApproved(ctx)
 	case backlogitem.FieldPlanApprovedAt:
@@ -4663,6 +4709,13 @@ func (m *BacklogItemMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetAutoSpawnSession(v)
+		return nil
+	case backlogitem.FieldPipelineMode:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPipelineMode(v)
 		return nil
 	case backlogitem.FieldPlanApproved:
 		v, ok := value.(bool)
@@ -4925,6 +4978,9 @@ func (m *BacklogItemMutation) ResetField(name string) error {
 		return nil
 	case backlogitem.FieldAutoSpawnSession:
 		m.ResetAutoSpawnSession()
+		return nil
+	case backlogitem.FieldPipelineMode:
+		m.ResetPipelineMode()
 		return nil
 	case backlogitem.FieldPlanApproved:
 		m.ResetPlanApproved()
@@ -12865,6 +12921,8 @@ type ItemSessionMutation struct {
 	started_at                  *time.Time
 	ended_at                    *time.Time
 	ac_snapshot                 *string
+	pipeline_mode_snapshot      *string
+	pipeline_mode_snapshot_hash *string
 	triage_result               *string
 	verification_notes          *string
 	last_commit_sha             *string
@@ -13208,6 +13266,78 @@ func (m *ItemSessionMutation) AcSnapshotCleared() bool {
 func (m *ItemSessionMutation) ResetAcSnapshot() {
 	m.ac_snapshot = nil
 	delete(m.clearedFields, itemsession.FieldAcSnapshot)
+}
+
+// SetPipelineModeSnapshot sets the "pipeline_mode_snapshot" field.
+func (m *ItemSessionMutation) SetPipelineModeSnapshot(s string) {
+	m.pipeline_mode_snapshot = &s
+}
+
+// PipelineModeSnapshot returns the value of the "pipeline_mode_snapshot" field in the mutation.
+func (m *ItemSessionMutation) PipelineModeSnapshot() (r string, exists bool) {
+	v := m.pipeline_mode_snapshot
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPipelineModeSnapshot returns the old "pipeline_mode_snapshot" field's value of the ItemSession entity.
+// If the ItemSession object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ItemSessionMutation) OldPipelineModeSnapshot(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPipelineModeSnapshot is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPipelineModeSnapshot requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPipelineModeSnapshot: %w", err)
+	}
+	return oldValue.PipelineModeSnapshot, nil
+}
+
+// ResetPipelineModeSnapshot resets all changes to the "pipeline_mode_snapshot" field.
+func (m *ItemSessionMutation) ResetPipelineModeSnapshot() {
+	m.pipeline_mode_snapshot = nil
+}
+
+// SetPipelineModeSnapshotHash sets the "pipeline_mode_snapshot_hash" field.
+func (m *ItemSessionMutation) SetPipelineModeSnapshotHash(s string) {
+	m.pipeline_mode_snapshot_hash = &s
+}
+
+// PipelineModeSnapshotHash returns the value of the "pipeline_mode_snapshot_hash" field in the mutation.
+func (m *ItemSessionMutation) PipelineModeSnapshotHash() (r string, exists bool) {
+	v := m.pipeline_mode_snapshot_hash
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPipelineModeSnapshotHash returns the old "pipeline_mode_snapshot_hash" field's value of the ItemSession entity.
+// If the ItemSession object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *ItemSessionMutation) OldPipelineModeSnapshotHash(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPipelineModeSnapshotHash is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPipelineModeSnapshotHash requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPipelineModeSnapshotHash: %w", err)
+	}
+	return oldValue.PipelineModeSnapshotHash, nil
+}
+
+// ResetPipelineModeSnapshotHash resets all changes to the "pipeline_mode_snapshot_hash" field.
+func (m *ItemSessionMutation) ResetPipelineModeSnapshotHash() {
+	m.pipeline_mode_snapshot_hash = nil
 }
 
 // SetTriageResult sets the "triage_result" field.
@@ -13827,7 +13957,7 @@ func (m *ItemSessionMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *ItemSessionMutation) Fields() []string {
-	fields := make([]string, 0, 15)
+	fields := make([]string, 0, 17)
 	if m.session_uuid != nil {
 		fields = append(fields, itemsession.FieldSessionUUID)
 	}
@@ -13842,6 +13972,12 @@ func (m *ItemSessionMutation) Fields() []string {
 	}
 	if m.ac_snapshot != nil {
 		fields = append(fields, itemsession.FieldAcSnapshot)
+	}
+	if m.pipeline_mode_snapshot != nil {
+		fields = append(fields, itemsession.FieldPipelineModeSnapshot)
+	}
+	if m.pipeline_mode_snapshot_hash != nil {
+		fields = append(fields, itemsession.FieldPipelineModeSnapshotHash)
 	}
 	if m.triage_result != nil {
 		fields = append(fields, itemsession.FieldTriageResult)
@@ -13891,6 +14027,10 @@ func (m *ItemSessionMutation) Field(name string) (ent.Value, bool) {
 		return m.EndedAt()
 	case itemsession.FieldAcSnapshot:
 		return m.AcSnapshot()
+	case itemsession.FieldPipelineModeSnapshot:
+		return m.PipelineModeSnapshot()
+	case itemsession.FieldPipelineModeSnapshotHash:
+		return m.PipelineModeSnapshotHash()
 	case itemsession.FieldTriageResult:
 		return m.TriageResult()
 	case itemsession.FieldVerificationNotes:
@@ -13930,6 +14070,10 @@ func (m *ItemSessionMutation) OldField(ctx context.Context, name string) (ent.Va
 		return m.OldEndedAt(ctx)
 	case itemsession.FieldAcSnapshot:
 		return m.OldAcSnapshot(ctx)
+	case itemsession.FieldPipelineModeSnapshot:
+		return m.OldPipelineModeSnapshot(ctx)
+	case itemsession.FieldPipelineModeSnapshotHash:
+		return m.OldPipelineModeSnapshotHash(ctx)
 	case itemsession.FieldTriageResult:
 		return m.OldTriageResult(ctx)
 	case itemsession.FieldVerificationNotes:
@@ -13993,6 +14137,20 @@ func (m *ItemSessionMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetAcSnapshot(v)
+		return nil
+	case itemsession.FieldPipelineModeSnapshot:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPipelineModeSnapshot(v)
+		return nil
+	case itemsession.FieldPipelineModeSnapshotHash:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPipelineModeSnapshotHash(v)
 		return nil
 	case itemsession.FieldTriageResult:
 		v, ok := value.(string)
@@ -14223,6 +14381,12 @@ func (m *ItemSessionMutation) ResetField(name string) error {
 		return nil
 	case itemsession.FieldAcSnapshot:
 		m.ResetAcSnapshot()
+		return nil
+	case itemsession.FieldPipelineModeSnapshot:
+		m.ResetPipelineModeSnapshot()
+		return nil
+	case itemsession.FieldPipelineModeSnapshotHash:
+		m.ResetPipelineModeSnapshotHash()
 		return nil
 	case itemsession.FieldTriageResult:
 		m.ResetTriageResult()
@@ -15294,6 +15458,1116 @@ func (m *ItemSourceMutation) ResetEdge(name string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown ItemSource edge %s", name)
+}
+
+// PipelineModeMutation represents an operation that mutates the PipelineMode nodes in the graph.
+type PipelineModeMutation struct {
+	config
+	op                      Op
+	typ                     string
+	id                      *uuid.UUID
+	slug                    *string
+	name                    *string
+	description             *string
+	enabled                 *bool
+	status_command_template *string
+	done_command_template   *string
+	fail_command_template   *string
+	review_command_template *string
+	ship_command_template   *string
+	help_command_template   *string
+	triage_prompt_template  *string
+	review_prompt_template  *string
+	initial_prompt_template *string
+	created_at              *time.Time
+	updated_at              *time.Time
+	clearedFields           map[string]struct{}
+	done                    bool
+	oldValue                func(context.Context) (*PipelineMode, error)
+	predicates              []predicate.PipelineMode
+}
+
+var _ ent.Mutation = (*PipelineModeMutation)(nil)
+
+// pipelinemodeOption allows management of the mutation configuration using functional options.
+type pipelinemodeOption func(*PipelineModeMutation)
+
+// newPipelineModeMutation creates new mutation for the PipelineMode entity.
+func newPipelineModeMutation(c config, op Op, opts ...pipelinemodeOption) *PipelineModeMutation {
+	m := &PipelineModeMutation{
+		config:        c,
+		op:            op,
+		typ:           TypePipelineMode,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withPipelineModeID sets the ID field of the mutation.
+func withPipelineModeID(id uuid.UUID) pipelinemodeOption {
+	return func(m *PipelineModeMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *PipelineMode
+		)
+		m.oldValue = func(ctx context.Context) (*PipelineMode, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().PipelineMode.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withPipelineMode sets the old PipelineMode of the mutation.
+func withPipelineMode(node *PipelineMode) pipelinemodeOption {
+	return func(m *PipelineModeMutation) {
+		m.oldValue = func(context.Context) (*PipelineMode, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m PipelineModeMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m PipelineModeMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// SetID sets the value of the id field. Note that this
+// operation is only accepted on creation of PipelineMode entities.
+func (m *PipelineModeMutation) SetID(id uuid.UUID) {
+	m.id = &id
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *PipelineModeMutation) ID() (id uuid.UUID, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *PipelineModeMutation) IDs(ctx context.Context) ([]uuid.UUID, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []uuid.UUID{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().PipelineMode.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetSlug sets the "slug" field.
+func (m *PipelineModeMutation) SetSlug(s string) {
+	m.slug = &s
+}
+
+// Slug returns the value of the "slug" field in the mutation.
+func (m *PipelineModeMutation) Slug() (r string, exists bool) {
+	v := m.slug
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSlug returns the old "slug" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldSlug(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSlug is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSlug requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSlug: %w", err)
+	}
+	return oldValue.Slug, nil
+}
+
+// ResetSlug resets all changes to the "slug" field.
+func (m *PipelineModeMutation) ResetSlug() {
+	m.slug = nil
+}
+
+// SetName sets the "name" field.
+func (m *PipelineModeMutation) SetName(s string) {
+	m.name = &s
+}
+
+// Name returns the value of the "name" field in the mutation.
+func (m *PipelineModeMutation) Name() (r string, exists bool) {
+	v := m.name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldName returns the old "name" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldName: %w", err)
+	}
+	return oldValue.Name, nil
+}
+
+// ResetName resets all changes to the "name" field.
+func (m *PipelineModeMutation) ResetName() {
+	m.name = nil
+}
+
+// SetDescription sets the "description" field.
+func (m *PipelineModeMutation) SetDescription(s string) {
+	m.description = &s
+}
+
+// Description returns the value of the "description" field in the mutation.
+func (m *PipelineModeMutation) Description() (r string, exists bool) {
+	v := m.description
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDescription returns the old "description" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldDescription(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDescription is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDescription requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDescription: %w", err)
+	}
+	return oldValue.Description, nil
+}
+
+// ClearDescription clears the value of the "description" field.
+func (m *PipelineModeMutation) ClearDescription() {
+	m.description = nil
+	m.clearedFields[pipelinemode.FieldDescription] = struct{}{}
+}
+
+// DescriptionCleared returns if the "description" field was cleared in this mutation.
+func (m *PipelineModeMutation) DescriptionCleared() bool {
+	_, ok := m.clearedFields[pipelinemode.FieldDescription]
+	return ok
+}
+
+// ResetDescription resets all changes to the "description" field.
+func (m *PipelineModeMutation) ResetDescription() {
+	m.description = nil
+	delete(m.clearedFields, pipelinemode.FieldDescription)
+}
+
+// SetEnabled sets the "enabled" field.
+func (m *PipelineModeMutation) SetEnabled(b bool) {
+	m.enabled = &b
+}
+
+// Enabled returns the value of the "enabled" field in the mutation.
+func (m *PipelineModeMutation) Enabled() (r bool, exists bool) {
+	v := m.enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEnabled returns the old "enabled" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEnabled: %w", err)
+	}
+	return oldValue.Enabled, nil
+}
+
+// ResetEnabled resets all changes to the "enabled" field.
+func (m *PipelineModeMutation) ResetEnabled() {
+	m.enabled = nil
+}
+
+// SetStatusCommandTemplate sets the "status_command_template" field.
+func (m *PipelineModeMutation) SetStatusCommandTemplate(s string) {
+	m.status_command_template = &s
+}
+
+// StatusCommandTemplate returns the value of the "status_command_template" field in the mutation.
+func (m *PipelineModeMutation) StatusCommandTemplate() (r string, exists bool) {
+	v := m.status_command_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatusCommandTemplate returns the old "status_command_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldStatusCommandTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatusCommandTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatusCommandTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatusCommandTemplate: %w", err)
+	}
+	return oldValue.StatusCommandTemplate, nil
+}
+
+// ResetStatusCommandTemplate resets all changes to the "status_command_template" field.
+func (m *PipelineModeMutation) ResetStatusCommandTemplate() {
+	m.status_command_template = nil
+}
+
+// SetDoneCommandTemplate sets the "done_command_template" field.
+func (m *PipelineModeMutation) SetDoneCommandTemplate(s string) {
+	m.done_command_template = &s
+}
+
+// DoneCommandTemplate returns the value of the "done_command_template" field in the mutation.
+func (m *PipelineModeMutation) DoneCommandTemplate() (r string, exists bool) {
+	v := m.done_command_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDoneCommandTemplate returns the old "done_command_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldDoneCommandTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDoneCommandTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDoneCommandTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDoneCommandTemplate: %w", err)
+	}
+	return oldValue.DoneCommandTemplate, nil
+}
+
+// ResetDoneCommandTemplate resets all changes to the "done_command_template" field.
+func (m *PipelineModeMutation) ResetDoneCommandTemplate() {
+	m.done_command_template = nil
+}
+
+// SetFailCommandTemplate sets the "fail_command_template" field.
+func (m *PipelineModeMutation) SetFailCommandTemplate(s string) {
+	m.fail_command_template = &s
+}
+
+// FailCommandTemplate returns the value of the "fail_command_template" field in the mutation.
+func (m *PipelineModeMutation) FailCommandTemplate() (r string, exists bool) {
+	v := m.fail_command_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldFailCommandTemplate returns the old "fail_command_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldFailCommandTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldFailCommandTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldFailCommandTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldFailCommandTemplate: %w", err)
+	}
+	return oldValue.FailCommandTemplate, nil
+}
+
+// ResetFailCommandTemplate resets all changes to the "fail_command_template" field.
+func (m *PipelineModeMutation) ResetFailCommandTemplate() {
+	m.fail_command_template = nil
+}
+
+// SetReviewCommandTemplate sets the "review_command_template" field.
+func (m *PipelineModeMutation) SetReviewCommandTemplate(s string) {
+	m.review_command_template = &s
+}
+
+// ReviewCommandTemplate returns the value of the "review_command_template" field in the mutation.
+func (m *PipelineModeMutation) ReviewCommandTemplate() (r string, exists bool) {
+	v := m.review_command_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldReviewCommandTemplate returns the old "review_command_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldReviewCommandTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldReviewCommandTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldReviewCommandTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldReviewCommandTemplate: %w", err)
+	}
+	return oldValue.ReviewCommandTemplate, nil
+}
+
+// ResetReviewCommandTemplate resets all changes to the "review_command_template" field.
+func (m *PipelineModeMutation) ResetReviewCommandTemplate() {
+	m.review_command_template = nil
+}
+
+// SetShipCommandTemplate sets the "ship_command_template" field.
+func (m *PipelineModeMutation) SetShipCommandTemplate(s string) {
+	m.ship_command_template = &s
+}
+
+// ShipCommandTemplate returns the value of the "ship_command_template" field in the mutation.
+func (m *PipelineModeMutation) ShipCommandTemplate() (r string, exists bool) {
+	v := m.ship_command_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldShipCommandTemplate returns the old "ship_command_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldShipCommandTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldShipCommandTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldShipCommandTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldShipCommandTemplate: %w", err)
+	}
+	return oldValue.ShipCommandTemplate, nil
+}
+
+// ResetShipCommandTemplate resets all changes to the "ship_command_template" field.
+func (m *PipelineModeMutation) ResetShipCommandTemplate() {
+	m.ship_command_template = nil
+}
+
+// SetHelpCommandTemplate sets the "help_command_template" field.
+func (m *PipelineModeMutation) SetHelpCommandTemplate(s string) {
+	m.help_command_template = &s
+}
+
+// HelpCommandTemplate returns the value of the "help_command_template" field in the mutation.
+func (m *PipelineModeMutation) HelpCommandTemplate() (r string, exists bool) {
+	v := m.help_command_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldHelpCommandTemplate returns the old "help_command_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldHelpCommandTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldHelpCommandTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldHelpCommandTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldHelpCommandTemplate: %w", err)
+	}
+	return oldValue.HelpCommandTemplate, nil
+}
+
+// ResetHelpCommandTemplate resets all changes to the "help_command_template" field.
+func (m *PipelineModeMutation) ResetHelpCommandTemplate() {
+	m.help_command_template = nil
+}
+
+// SetTriagePromptTemplate sets the "triage_prompt_template" field.
+func (m *PipelineModeMutation) SetTriagePromptTemplate(s string) {
+	m.triage_prompt_template = &s
+}
+
+// TriagePromptTemplate returns the value of the "triage_prompt_template" field in the mutation.
+func (m *PipelineModeMutation) TriagePromptTemplate() (r string, exists bool) {
+	v := m.triage_prompt_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTriagePromptTemplate returns the old "triage_prompt_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldTriagePromptTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTriagePromptTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTriagePromptTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTriagePromptTemplate: %w", err)
+	}
+	return oldValue.TriagePromptTemplate, nil
+}
+
+// ResetTriagePromptTemplate resets all changes to the "triage_prompt_template" field.
+func (m *PipelineModeMutation) ResetTriagePromptTemplate() {
+	m.triage_prompt_template = nil
+}
+
+// SetReviewPromptTemplate sets the "review_prompt_template" field.
+func (m *PipelineModeMutation) SetReviewPromptTemplate(s string) {
+	m.review_prompt_template = &s
+}
+
+// ReviewPromptTemplate returns the value of the "review_prompt_template" field in the mutation.
+func (m *PipelineModeMutation) ReviewPromptTemplate() (r string, exists bool) {
+	v := m.review_prompt_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldReviewPromptTemplate returns the old "review_prompt_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldReviewPromptTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldReviewPromptTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldReviewPromptTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldReviewPromptTemplate: %w", err)
+	}
+	return oldValue.ReviewPromptTemplate, nil
+}
+
+// ResetReviewPromptTemplate resets all changes to the "review_prompt_template" field.
+func (m *PipelineModeMutation) ResetReviewPromptTemplate() {
+	m.review_prompt_template = nil
+}
+
+// SetInitialPromptTemplate sets the "initial_prompt_template" field.
+func (m *PipelineModeMutation) SetInitialPromptTemplate(s string) {
+	m.initial_prompt_template = &s
+}
+
+// InitialPromptTemplate returns the value of the "initial_prompt_template" field in the mutation.
+func (m *PipelineModeMutation) InitialPromptTemplate() (r string, exists bool) {
+	v := m.initial_prompt_template
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldInitialPromptTemplate returns the old "initial_prompt_template" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldInitialPromptTemplate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldInitialPromptTemplate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldInitialPromptTemplate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldInitialPromptTemplate: %w", err)
+	}
+	return oldValue.InitialPromptTemplate, nil
+}
+
+// ResetInitialPromptTemplate resets all changes to the "initial_prompt_template" field.
+func (m *PipelineModeMutation) ResetInitialPromptTemplate() {
+	m.initial_prompt_template = nil
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *PipelineModeMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *PipelineModeMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *PipelineModeMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *PipelineModeMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *PipelineModeMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the PipelineMode entity.
+// If the PipelineMode object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *PipelineModeMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *PipelineModeMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// Where appends a list predicates to the PipelineModeMutation builder.
+func (m *PipelineModeMutation) Where(ps ...predicate.PipelineMode) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the PipelineModeMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *PipelineModeMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.PipelineMode, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *PipelineModeMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *PipelineModeMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (PipelineMode).
+func (m *PipelineModeMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *PipelineModeMutation) Fields() []string {
+	fields := make([]string, 0, 15)
+	if m.slug != nil {
+		fields = append(fields, pipelinemode.FieldSlug)
+	}
+	if m.name != nil {
+		fields = append(fields, pipelinemode.FieldName)
+	}
+	if m.description != nil {
+		fields = append(fields, pipelinemode.FieldDescription)
+	}
+	if m.enabled != nil {
+		fields = append(fields, pipelinemode.FieldEnabled)
+	}
+	if m.status_command_template != nil {
+		fields = append(fields, pipelinemode.FieldStatusCommandTemplate)
+	}
+	if m.done_command_template != nil {
+		fields = append(fields, pipelinemode.FieldDoneCommandTemplate)
+	}
+	if m.fail_command_template != nil {
+		fields = append(fields, pipelinemode.FieldFailCommandTemplate)
+	}
+	if m.review_command_template != nil {
+		fields = append(fields, pipelinemode.FieldReviewCommandTemplate)
+	}
+	if m.ship_command_template != nil {
+		fields = append(fields, pipelinemode.FieldShipCommandTemplate)
+	}
+	if m.help_command_template != nil {
+		fields = append(fields, pipelinemode.FieldHelpCommandTemplate)
+	}
+	if m.triage_prompt_template != nil {
+		fields = append(fields, pipelinemode.FieldTriagePromptTemplate)
+	}
+	if m.review_prompt_template != nil {
+		fields = append(fields, pipelinemode.FieldReviewPromptTemplate)
+	}
+	if m.initial_prompt_template != nil {
+		fields = append(fields, pipelinemode.FieldInitialPromptTemplate)
+	}
+	if m.created_at != nil {
+		fields = append(fields, pipelinemode.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, pipelinemode.FieldUpdatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *PipelineModeMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case pipelinemode.FieldSlug:
+		return m.Slug()
+	case pipelinemode.FieldName:
+		return m.Name()
+	case pipelinemode.FieldDescription:
+		return m.Description()
+	case pipelinemode.FieldEnabled:
+		return m.Enabled()
+	case pipelinemode.FieldStatusCommandTemplate:
+		return m.StatusCommandTemplate()
+	case pipelinemode.FieldDoneCommandTemplate:
+		return m.DoneCommandTemplate()
+	case pipelinemode.FieldFailCommandTemplate:
+		return m.FailCommandTemplate()
+	case pipelinemode.FieldReviewCommandTemplate:
+		return m.ReviewCommandTemplate()
+	case pipelinemode.FieldShipCommandTemplate:
+		return m.ShipCommandTemplate()
+	case pipelinemode.FieldHelpCommandTemplate:
+		return m.HelpCommandTemplate()
+	case pipelinemode.FieldTriagePromptTemplate:
+		return m.TriagePromptTemplate()
+	case pipelinemode.FieldReviewPromptTemplate:
+		return m.ReviewPromptTemplate()
+	case pipelinemode.FieldInitialPromptTemplate:
+		return m.InitialPromptTemplate()
+	case pipelinemode.FieldCreatedAt:
+		return m.CreatedAt()
+	case pipelinemode.FieldUpdatedAt:
+		return m.UpdatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *PipelineModeMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case pipelinemode.FieldSlug:
+		return m.OldSlug(ctx)
+	case pipelinemode.FieldName:
+		return m.OldName(ctx)
+	case pipelinemode.FieldDescription:
+		return m.OldDescription(ctx)
+	case pipelinemode.FieldEnabled:
+		return m.OldEnabled(ctx)
+	case pipelinemode.FieldStatusCommandTemplate:
+		return m.OldStatusCommandTemplate(ctx)
+	case pipelinemode.FieldDoneCommandTemplate:
+		return m.OldDoneCommandTemplate(ctx)
+	case pipelinemode.FieldFailCommandTemplate:
+		return m.OldFailCommandTemplate(ctx)
+	case pipelinemode.FieldReviewCommandTemplate:
+		return m.OldReviewCommandTemplate(ctx)
+	case pipelinemode.FieldShipCommandTemplate:
+		return m.OldShipCommandTemplate(ctx)
+	case pipelinemode.FieldHelpCommandTemplate:
+		return m.OldHelpCommandTemplate(ctx)
+	case pipelinemode.FieldTriagePromptTemplate:
+		return m.OldTriagePromptTemplate(ctx)
+	case pipelinemode.FieldReviewPromptTemplate:
+		return m.OldReviewPromptTemplate(ctx)
+	case pipelinemode.FieldInitialPromptTemplate:
+		return m.OldInitialPromptTemplate(ctx)
+	case pipelinemode.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case pipelinemode.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown PipelineMode field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *PipelineModeMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case pipelinemode.FieldSlug:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSlug(v)
+		return nil
+	case pipelinemode.FieldName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetName(v)
+		return nil
+	case pipelinemode.FieldDescription:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDescription(v)
+		return nil
+	case pipelinemode.FieldEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEnabled(v)
+		return nil
+	case pipelinemode.FieldStatusCommandTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatusCommandTemplate(v)
+		return nil
+	case pipelinemode.FieldDoneCommandTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDoneCommandTemplate(v)
+		return nil
+	case pipelinemode.FieldFailCommandTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetFailCommandTemplate(v)
+		return nil
+	case pipelinemode.FieldReviewCommandTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetReviewCommandTemplate(v)
+		return nil
+	case pipelinemode.FieldShipCommandTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetShipCommandTemplate(v)
+		return nil
+	case pipelinemode.FieldHelpCommandTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetHelpCommandTemplate(v)
+		return nil
+	case pipelinemode.FieldTriagePromptTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTriagePromptTemplate(v)
+		return nil
+	case pipelinemode.FieldReviewPromptTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetReviewPromptTemplate(v)
+		return nil
+	case pipelinemode.FieldInitialPromptTemplate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetInitialPromptTemplate(v)
+		return nil
+	case pipelinemode.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case pipelinemode.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown PipelineMode field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *PipelineModeMutation) AddedFields() []string {
+	return nil
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *PipelineModeMutation) AddedField(name string) (ent.Value, bool) {
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *PipelineModeMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown PipelineMode numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *PipelineModeMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(pipelinemode.FieldDescription) {
+		fields = append(fields, pipelinemode.FieldDescription)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *PipelineModeMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *PipelineModeMutation) ClearField(name string) error {
+	switch name {
+	case pipelinemode.FieldDescription:
+		m.ClearDescription()
+		return nil
+	}
+	return fmt.Errorf("unknown PipelineMode nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *PipelineModeMutation) ResetField(name string) error {
+	switch name {
+	case pipelinemode.FieldSlug:
+		m.ResetSlug()
+		return nil
+	case pipelinemode.FieldName:
+		m.ResetName()
+		return nil
+	case pipelinemode.FieldDescription:
+		m.ResetDescription()
+		return nil
+	case pipelinemode.FieldEnabled:
+		m.ResetEnabled()
+		return nil
+	case pipelinemode.FieldStatusCommandTemplate:
+		m.ResetStatusCommandTemplate()
+		return nil
+	case pipelinemode.FieldDoneCommandTemplate:
+		m.ResetDoneCommandTemplate()
+		return nil
+	case pipelinemode.FieldFailCommandTemplate:
+		m.ResetFailCommandTemplate()
+		return nil
+	case pipelinemode.FieldReviewCommandTemplate:
+		m.ResetReviewCommandTemplate()
+		return nil
+	case pipelinemode.FieldShipCommandTemplate:
+		m.ResetShipCommandTemplate()
+		return nil
+	case pipelinemode.FieldHelpCommandTemplate:
+		m.ResetHelpCommandTemplate()
+		return nil
+	case pipelinemode.FieldTriagePromptTemplate:
+		m.ResetTriagePromptTemplate()
+		return nil
+	case pipelinemode.FieldReviewPromptTemplate:
+		m.ResetReviewPromptTemplate()
+		return nil
+	case pipelinemode.FieldInitialPromptTemplate:
+		m.ResetInitialPromptTemplate()
+		return nil
+	case pipelinemode.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case pipelinemode.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown PipelineMode field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *PipelineModeMutation) AddedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *PipelineModeMutation) AddedIDs(name string) []ent.Value {
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *PipelineModeMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *PipelineModeMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *PipelineModeMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 0)
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *PipelineModeMutation) EdgeCleared(name string) bool {
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *PipelineModeMutation) ClearEdge(name string) error {
+	return fmt.Errorf("unknown PipelineMode unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *PipelineModeMutation) ResetEdge(name string) error {
+	return fmt.Errorf("unknown PipelineMode edge %s", name)
 }
 
 // ProjectMutation represents an operation that mutates the Project nodes in the graph.

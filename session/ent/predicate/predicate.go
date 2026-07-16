@@ -48,6 +48,9 @@ type ItemSession func(*sql.Selector)
 // ItemSource is the predicate function for itemsource builders.
 type ItemSource func(*sql.Selector)
 
+// PipelineMode is the predicate function for pipelinemode builders.
+type PipelineMode func(*sql.Selector)
+
 // Project is the predicate function for project builders.
 type Project func(*sql.Selector)
 

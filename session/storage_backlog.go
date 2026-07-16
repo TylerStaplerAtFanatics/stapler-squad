@@ -19,13 +19,18 @@ import (
 
 // ItemSessionData is the input data for creating a new ItemSession.
 type ItemSessionData struct {
-	ItemID            string // BacklogItem UUID
-	SessionUUID       string
-	SessionRole       string
-	AcSnapshot        AcCriteriaJSON
-	TriageResult      string
-	VerificationNotes string  // Freeform verification evidence reported via request_review
-	EstimatedCostUsd  float64 // Only set for headless sessions where cost is known at creation time
+	ItemID      string // BacklogItem UUID
+	SessionUUID string
+	SessionRole string
+	AcSnapshot  AcCriteriaJSON
+	// PipelineModeSnapshot/PipelineModeSnapshotHash freeze the resolved
+	// PipelineMode slug and its content hash at the moment this session
+	// first starts — see ItemSessionSummary.PipelineModeSnapshot(Hash).
+	PipelineModeSnapshot     string
+	PipelineModeSnapshotHash string
+	TriageResult             string
+	VerificationNotes        string  // Freeform verification evidence reported via request_review
+	EstimatedCostUsd         float64 // Only set for headless sessions where cost is known at creation time
 }
 
 // ReviewVerdictData is the input data for saving a ReviewVerdict.
@@ -57,6 +62,8 @@ func (r *EntRepository) CreateItemSession(ctx context.Context, data ItemSessionD
 		SetSessionRole(data.SessionRole).
 		SetBacklogItemID(parsedItemID).
 		SetNillableAcSnapshot(nilIfEmpty(string(data.AcSnapshot))).
+		SetPipelineModeSnapshot(data.PipelineModeSnapshot).
+		SetPipelineModeSnapshotHash(data.PipelineModeSnapshotHash).
 		SetNillableTriageResult(nilIfEmpty(data.TriageResult)).
 		SetNillableVerificationNotes(nilIfEmpty(data.VerificationNotes))
 	if data.EstimatedCostUsd > 0 {
@@ -388,6 +395,8 @@ func (r *EntRepository) CreateItemSessionWithVerdict(ctx context.Context, isData
 		SetSessionRole(isData.SessionRole).
 		SetBacklogItemID(parsedItemID).
 		SetNillableAcSnapshot(nilIfEmptyJSON(isData.AcSnapshot)).
+		SetPipelineModeSnapshot(isData.PipelineModeSnapshot).
+		SetPipelineModeSnapshotHash(isData.PipelineModeSnapshotHash).
 		SetNillableTriageResult(nilIfEmpty(isData.TriageResult))
 	if isData.EstimatedCostUsd > 0 {
 		isq = isq.SetEstimatedCostUsd(isData.EstimatedCostUsd)

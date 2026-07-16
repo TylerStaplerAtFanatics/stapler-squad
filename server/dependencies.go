@@ -458,6 +458,32 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// by the service layer.
 	workflowEngine := session.NewDefaultWorkflowEngine()
 
+	// PipelineEngine resolves a backlog item's slash-command set / prompts (Epic 1.5).
+	// Constructed here — before NewBacklogLifecycleListenerWithPool and
+	// services.NewBacklogService below — so both share the exact same
+	// *session.CachingPipelineEngine instance (Story 1.5.1's pointer-equality
+	// requirement; see server/dependencies_test.go). storage.GetEntClient() is
+	// already available this early (aliased above, and used successfully even
+	// earlier by BuildCoreDepsWithOptions for NewErrorRegistry), so there is no
+	// bootstrap-ordering obstacle to constructing it now rather than deferring via
+	// a Set*-style setter. Degrades gracefully — never aborts boot — if the ent
+	// client is unavailable (non-ent-backed storage, e.g. some test configurations)
+	// or construction otherwise fails: pipelineEngine stays a true nil interface
+	// (not a typed-nil *CachingPipelineEngine, which would break every
+	// `s.pipelineEngine != nil` guard downstream) and every call site falls back to
+	// the built-in default pipeline for all items.
+	var pipelineEngine session.PipelineEngine
+	if entClient := storage.GetEntClient(); entClient != nil {
+		pipelineModeRepo := session.NewEntPipelineModeRepository(entClient)
+		if cachingPipelineEngine, err := session.NewPipelineEngine(pipelineModeRepo); err != nil {
+			log.Warn("pipelineEngine construction failed; continuing with the default pipeline for all backlog items", "err", err)
+		} else {
+			pipelineEngine = cachingPipelineEngine
+		}
+	} else {
+		log.Warn("pipelineEngine unavailable: storage is not ent-backed; continuing with the default pipeline for all backlog items")
+	}
+
 	// Construct the headless LLM pool early so the lifecycle listener can receive it
 	// via constructor (eliminating the post-construction wiring race). Non-fatal if
 	// the claude binary is not found.
@@ -480,7 +506,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// Backlog lifecycle listener — always created, enabled state set from config below.
 	// The pool is passed at construction time to close the race window that existed when
 	// SetHeadlessPool was called hundreds of lines after instance wiring.
-	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithPool(storage, headlessPool)
+	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithPool(storage, headlessPool, pipelineEngine)
 	backlogLifecycleListener.SetNotifier(&services.EventBusNotifier{Bus: eventBus})
 
 	// Step 5 (continued): wire dependencies to each instance
@@ -868,7 +894,7 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Info("backlog feature disabled (toggle via Settings → Features)")
 	}
 
-	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine)
+	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine, pipelineEngine)
 	backlogSvc.SetEventBus(eventBus)
 	backlogSvc.SetSessionStopper(sessionService)
 	backlogSvc.SetAutonomousDriverStarter(sessionService)

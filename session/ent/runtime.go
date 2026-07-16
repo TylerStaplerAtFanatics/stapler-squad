@@ -20,6 +20,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/escapeevent"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
+	"github.com/tstapler/stapler-squad/session/ent/pipelinemode"
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
 	"github.com/tstapler/stapler-squad/session/ent/schema"
@@ -160,20 +161,24 @@ func init() {
 	backlogitemDescAutoSpawnSession := backlogitemFields[9].Descriptor()
 	// backlogitem.DefaultAutoSpawnSession holds the default value on creation for the auto_spawn_session field.
 	backlogitem.DefaultAutoSpawnSession = backlogitemDescAutoSpawnSession.Default.(bool)
+	// backlogitemDescPipelineMode is the schema descriptor for pipeline_mode field.
+	backlogitemDescPipelineMode := backlogitemFields[10].Descriptor()
+	// backlogitem.DefaultPipelineMode holds the default value on creation for the pipeline_mode field.
+	backlogitem.DefaultPipelineMode = backlogitemDescPipelineMode.Default.(string)
 	// backlogitemDescPlanApproved is the schema descriptor for plan_approved field.
-	backlogitemDescPlanApproved := backlogitemFields[10].Descriptor()
+	backlogitemDescPlanApproved := backlogitemFields[11].Descriptor()
 	// backlogitem.DefaultPlanApproved holds the default value on creation for the plan_approved field.
 	backlogitem.DefaultPlanApproved = backlogitemDescPlanApproved.Default.(bool)
 	// backlogitemDescPrNumber is the schema descriptor for pr_number field.
-	backlogitemDescPrNumber := backlogitemFields[19].Descriptor()
+	backlogitemDescPrNumber := backlogitemFields[20].Descriptor()
 	// backlogitem.DefaultPrNumber holds the default value on creation for the pr_number field.
 	backlogitem.DefaultPrNumber = backlogitemDescPrNumber.Default.(int)
 	// backlogitemDescCreatedAt is the schema descriptor for created_at field.
-	backlogitemDescCreatedAt := backlogitemFields[20].Descriptor()
+	backlogitemDescCreatedAt := backlogitemFields[21].Descriptor()
 	// backlogitem.DefaultCreatedAt holds the default value on creation for the created_at field.
 	backlogitem.DefaultCreatedAt = backlogitemDescCreatedAt.Default.(func() time.Time)
 	// backlogitemDescUpdatedAt is the schema descriptor for updated_at field.
-	backlogitemDescUpdatedAt := backlogitemFields[21].Descriptor()
+	backlogitemDescUpdatedAt := backlogitemFields[22].Descriptor()
 	// backlogitem.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	backlogitem.DefaultUpdatedAt = backlogitemDescUpdatedAt.Default.(func() time.Time)
 	// backlogitem.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
@@ -330,16 +335,24 @@ func init() {
 	escapeevent.IDValidator = escapeeventDescID.Validators[0].(func(string) error)
 	itemsessionFields := schema.ItemSession{}.Fields()
 	_ = itemsessionFields
+	// itemsessionDescPipelineModeSnapshot is the schema descriptor for pipeline_mode_snapshot field.
+	itemsessionDescPipelineModeSnapshot := itemsessionFields[6].Descriptor()
+	// itemsession.DefaultPipelineModeSnapshot holds the default value on creation for the pipeline_mode_snapshot field.
+	itemsession.DefaultPipelineModeSnapshot = itemsessionDescPipelineModeSnapshot.Default.(string)
+	// itemsessionDescPipelineModeSnapshotHash is the schema descriptor for pipeline_mode_snapshot_hash field.
+	itemsessionDescPipelineModeSnapshotHash := itemsessionFields[7].Descriptor()
+	// itemsession.DefaultPipelineModeSnapshotHash holds the default value on creation for the pipeline_mode_snapshot_hash field.
+	itemsession.DefaultPipelineModeSnapshotHash = itemsessionDescPipelineModeSnapshotHash.Default.(string)
 	// itemsessionDescCommitCountSinceSpawn is the schema descriptor for commit_count_since_spawn field.
-	itemsessionDescCommitCountSinceSpawn := itemsessionFields[11].Descriptor()
+	itemsessionDescCommitCountSinceSpawn := itemsessionFields[13].Descriptor()
 	// itemsession.DefaultCommitCountSinceSpawn holds the default value on creation for the commit_count_since_spawn field.
 	itemsession.DefaultCommitCountSinceSpawn = itemsessionDescCommitCountSinceSpawn.Default.(int)
 	// itemsessionDescCreatedAt is the schema descriptor for created_at field.
-	itemsessionDescCreatedAt := itemsessionFields[14].Descriptor()
+	itemsessionDescCreatedAt := itemsessionFields[16].Descriptor()
 	// itemsession.DefaultCreatedAt holds the default value on creation for the created_at field.
 	itemsession.DefaultCreatedAt = itemsessionDescCreatedAt.Default.(func() time.Time)
 	// itemsessionDescEstimatedCostUsd is the schema descriptor for estimated_cost_usd field.
-	itemsessionDescEstimatedCostUsd := itemsessionFields[15].Descriptor()
+	itemsessionDescEstimatedCostUsd := itemsessionFields[17].Descriptor()
 	// itemsession.DefaultEstimatedCostUsd holds the default value on creation for the estimated_cost_usd field.
 	itemsession.DefaultEstimatedCostUsd = itemsessionDescEstimatedCostUsd.Default.(float64)
 	// itemsessionDescID is the schema descriptor for id field.
@@ -366,6 +379,34 @@ func init() {
 	itemsourceDescID := itemsourceFields[0].Descriptor()
 	// itemsource.DefaultID holds the default value on creation for the id field.
 	itemsource.DefaultID = itemsourceDescID.Default.(func() uuid.UUID)
+	pipelinemodeFields := schema.PipelineMode{}.Fields()
+	_ = pipelinemodeFields
+	// pipelinemodeDescSlug is the schema descriptor for slug field.
+	pipelinemodeDescSlug := pipelinemodeFields[1].Descriptor()
+	// pipelinemode.SlugValidator is a validator for the "slug" field. It is called by the builders before save.
+	pipelinemode.SlugValidator = pipelinemodeDescSlug.Validators[0].(func(string) error)
+	// pipelinemodeDescName is the schema descriptor for name field.
+	pipelinemodeDescName := pipelinemodeFields[2].Descriptor()
+	// pipelinemode.NameValidator is a validator for the "name" field. It is called by the builders before save.
+	pipelinemode.NameValidator = pipelinemodeDescName.Validators[0].(func(string) error)
+	// pipelinemodeDescEnabled is the schema descriptor for enabled field.
+	pipelinemodeDescEnabled := pipelinemodeFields[4].Descriptor()
+	// pipelinemode.DefaultEnabled holds the default value on creation for the enabled field.
+	pipelinemode.DefaultEnabled = pipelinemodeDescEnabled.Default.(bool)
+	// pipelinemodeDescCreatedAt is the schema descriptor for created_at field.
+	pipelinemodeDescCreatedAt := pipelinemodeFields[14].Descriptor()
+	// pipelinemode.DefaultCreatedAt holds the default value on creation for the created_at field.
+	pipelinemode.DefaultCreatedAt = pipelinemodeDescCreatedAt.Default.(func() time.Time)
+	// pipelinemodeDescUpdatedAt is the schema descriptor for updated_at field.
+	pipelinemodeDescUpdatedAt := pipelinemodeFields[15].Descriptor()
+	// pipelinemode.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	pipelinemode.DefaultUpdatedAt = pipelinemodeDescUpdatedAt.Default.(func() time.Time)
+	// pipelinemode.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	pipelinemode.UpdateDefaultUpdatedAt = pipelinemodeDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// pipelinemodeDescID is the schema descriptor for id field.
+	pipelinemodeDescID := pipelinemodeFields[0].Descriptor()
+	// pipelinemode.DefaultID holds the default value on creation for the id field.
+	pipelinemode.DefaultID = pipelinemodeDescID.Default.(func() uuid.UUID)
 	projectFields := schema.Project{}.Fields()
 	_ = projectFields
 	// projectDescName is the schema descriptor for name field.

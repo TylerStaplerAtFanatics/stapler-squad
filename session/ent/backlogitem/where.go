@@ -101,6 +101,11 @@ func AutoSpawnSession(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldEQ(FieldAutoSpawnSession, v))
 }
 
+// PipelineMode applies equality check predicate on the "pipeline_mode" field. It's identical to PipelineModeEQ.
+func PipelineMode(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldPipelineMode, v))
+}
+
 // PlanApproved applies equality check predicate on the "plan_approved" field. It's identical to PlanApprovedEQ.
 func PlanApproved(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldEQ(FieldPlanApproved, v))
@@ -584,6 +589,71 @@ func AutoSpawnSessionEQ(v bool) predicate.BacklogItem {
 // AutoSpawnSessionNEQ applies the NEQ predicate on the "auto_spawn_session" field.
 func AutoSpawnSessionNEQ(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldNEQ(FieldAutoSpawnSession, v))
+}
+
+// PipelineModeEQ applies the EQ predicate on the "pipeline_mode" field.
+func PipelineModeEQ(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldPipelineMode, v))
+}
+
+// PipelineModeNEQ applies the NEQ predicate on the "pipeline_mode" field.
+func PipelineModeNEQ(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNEQ(FieldPipelineMode, v))
+}
+
+// PipelineModeIn applies the In predicate on the "pipeline_mode" field.
+func PipelineModeIn(vs ...string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldIn(FieldPipelineMode, vs...))
+}
+
+// PipelineModeNotIn applies the NotIn predicate on the "pipeline_mode" field.
+func PipelineModeNotIn(vs ...string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNotIn(FieldPipelineMode, vs...))
+}
+
+// PipelineModeGT applies the GT predicate on the "pipeline_mode" field.
+func PipelineModeGT(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldGT(FieldPipelineMode, v))
+}
+
+// PipelineModeGTE applies the GTE predicate on the "pipeline_mode" field.
+func PipelineModeGTE(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldGTE(FieldPipelineMode, v))
+}
+
+// PipelineModeLT applies the LT predicate on the "pipeline_mode" field.
+func PipelineModeLT(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldLT(FieldPipelineMode, v))
+}
+
+// PipelineModeLTE applies the LTE predicate on the "pipeline_mode" field.
+func PipelineModeLTE(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldLTE(FieldPipelineMode, v))
+}
+
+// PipelineModeContains applies the Contains predicate on the "pipeline_mode" field.
+func PipelineModeContains(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldContains(FieldPipelineMode, v))
+}
+
+// PipelineModeHasPrefix applies the HasPrefix predicate on the "pipeline_mode" field.
+func PipelineModeHasPrefix(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldHasPrefix(FieldPipelineMode, v))
+}
+
+// PipelineModeHasSuffix applies the HasSuffix predicate on the "pipeline_mode" field.
+func PipelineModeHasSuffix(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldHasSuffix(FieldPipelineMode, v))
+}
+
+// PipelineModeEqualFold applies the EqualFold predicate on the "pipeline_mode" field.
+func PipelineModeEqualFold(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEqualFold(FieldPipelineMode, v))
+}
+
+// PipelineModeContainsFold applies the ContainsFold predicate on the "pipeline_mode" field.
+func PipelineModeContainsFold(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldContainsFold(FieldPipelineMode, v))
 }
 
 // PlanApprovedEQ applies the EQ predicate on the "plan_approved" field.

@@ -69,26 +69,28 @@ func itemSessionToSummary(is *ent.ItemSession) ItemSessionSummary {
 	}
 
 	return ItemSessionSummary{
-		ID:                    is.ID.String(),
-		BacklogItemID:         backlogItemID,
-		SessionUUID:           is.SessionUUID,
-		Role:                  is.SessionRole,
-		AcSnapshot:            AcCriteriaJSON(is.AcSnapshot),
-		LastCommitSha:         is.LastCommitSha,
-		LastCommitMessage:     is.LastCommitMessage,
-		CommitCountSinceSpawn: is.CommitCountSinceSpawn,
-		StartedAt:             is.StartedAt,
-		EndedAt:               is.EndedAt,
-		LastCommitAt:          is.LastCommitAt,
-		LastFileTouchAt:       is.LastFileTouchAt,
-		LastProgressAt:        is.LastProgressAt,
-		CreatedAt:             is.CreatedAt,
-		EstimatedCostUsd:      is.EstimatedCostUsd,
-		TriageResult:          is.TriageResult,
-		TriageResultSummary:   triageResultSummary,
-		VerificationNotes:     is.VerificationNotes,
-		OverallOutcome:        overallOutcome,
-		ReviewVerdict:         reviewVerdictToSummary(is.Edges.ReviewVerdict),
+		ID:                       is.ID.String(),
+		BacklogItemID:            backlogItemID,
+		SessionUUID:              is.SessionUUID,
+		Role:                     is.SessionRole,
+		AcSnapshot:               AcCriteriaJSON(is.AcSnapshot),
+		PipelineModeSnapshot:     is.PipelineModeSnapshot,
+		PipelineModeSnapshotHash: is.PipelineModeSnapshotHash,
+		LastCommitSha:            is.LastCommitSha,
+		LastCommitMessage:        is.LastCommitMessage,
+		CommitCountSinceSpawn:    is.CommitCountSinceSpawn,
+		StartedAt:                is.StartedAt,
+		EndedAt:                  is.EndedAt,
+		LastCommitAt:             is.LastCommitAt,
+		LastFileTouchAt:          is.LastFileTouchAt,
+		LastProgressAt:           is.LastProgressAt,
+		CreatedAt:                is.CreatedAt,
+		EstimatedCostUsd:         is.EstimatedCostUsd,
+		TriageResult:             is.TriageResult,
+		TriageResultSummary:      triageResultSummary,
+		VerificationNotes:        is.VerificationNotes,
+		OverallOutcome:           overallOutcome,
+		ReviewVerdict:            reviewVerdictToSummary(is.Edges.ReviewVerdict),
 	}
 }
 
@@ -141,6 +143,7 @@ func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 		SkipReviewGate:     item.SkipReviewGate,
 		SkipPlanning:       item.SkipPlanning,
 		AutoSpawnSession:   item.AutoSpawnSession,
+		PipelineMode:       item.PipelineMode,
 		PlanApproved:       item.PlanApproved,
 		PlanApprovedAt:     item.PlanApprovedAt,
 		PlanArtifactsPath:  item.PlanArtifactsPath,
@@ -205,6 +208,7 @@ func (r *EntRepository) CreateBacklogItem(ctx context.Context, data BacklogItemD
 		SetSkipReviewGate(data.SkipReviewGate).
 		SetSkipPlanning(data.SkipPlanning).
 		SetAutoSpawnSession(data.AutoSpawnSession).
+		SetPipelineMode(data.PipelineMode).
 		SetPlanApproved(data.PlanApproved).
 		SetNillablePlanApprovedAt(data.PlanApprovedAt).
 		SetNillablePlanArtifactsPath(&data.PlanArtifactsPath).
@@ -438,6 +442,9 @@ func (r *EntRepository) UpdateBacklogItem(ctx context.Context, id string, update
 	}
 	if update.AutoSpawnSession != nil {
 		u.SetAutoSpawnSession(*update.AutoSpawnSession)
+	}
+	if update.PipelineMode != nil {
+		u.SetPipelineMode(*update.PipelineMode)
 	}
 	if update.Notes != nil {
 		u.SetNotes(*update.Notes)

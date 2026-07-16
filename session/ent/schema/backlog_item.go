@@ -43,6 +43,9 @@ func (BacklogItem) Fields() []ent.Field {
 		field.Bool("auto_spawn_session").
 			Default(false).
 			Comment("When true, a work session is spawned automatically once the item reaches ready — no manual 'Spawn Session' click required."),
+		field.String("pipeline_mode").
+			Default("").
+			Comment("Slug of the PipelineMode this item uses to drive triage/work/review content. Empty string means the built-in default (today's fixed hardcoded pipeline)."),
 		field.Bool("plan_approved").
 			Default(false),
 		field.Time("plan_approved_at").

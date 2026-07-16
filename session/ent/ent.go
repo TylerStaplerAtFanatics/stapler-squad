@@ -26,6 +26,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/escapeevent"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
+	"github.com/tstapler/stapler-squad/session/ent/pipelinemode"
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
 	"github.com/tstapler/stapler-squad/session/ent/session"
@@ -109,6 +110,7 @@ func checkColumn(t, c string) error {
 			escapeevent.Table:             escapeevent.ValidColumn,
 			itemsession.Table:             itemsession.ValidColumn,
 			itemsource.Table:              itemsource.ValidColumn,
+			pipelinemode.Table:            pipelinemode.ValidColumn,
 			project.Table:                 project.ValidColumn,
 			reviewverdict.Table:           reviewverdict.ValidColumn,
 			session.Table:                 session.ValidColumn,

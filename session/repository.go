@@ -281,26 +281,28 @@ type ReviewVerdictSummary struct {
 //   - OverallOutcome: from the review_verdicts table (populated via ReviewVerdict edge)
 //   - ReviewVerdict: eagerly loaded when the query uses WithReviewVerdict()
 type ItemSessionSummary struct {
-	ID                    string
-	BacklogItemID         string
-	SessionUUID           string
-	Role                  string
-	AcSnapshot            AcCriteriaJSON
-	LastCommitSha         string
-	LastCommitMessage     string
-	CommitCountSinceSpawn int
-	StartedAt             *time.Time
-	EndedAt               *time.Time
-	LastCommitAt          *time.Time
-	LastFileTouchAt       *time.Time
-	LastProgressAt        *time.Time
-	CreatedAt             time.Time
-	EstimatedCostUsd      float64
-	TriageResult          string // raw JSON stored in triage_result column
-	TriageResultSummary   string // summary field parsed from TriageResult
-	VerificationNotes     string // freeform verification evidence reported via request_review
-	OverallOutcome        string // from linked review_verdict (empty if none)
-	ReviewVerdict         *ReviewVerdictSummary
+	ID                       string
+	BacklogItemID            string
+	SessionUUID              string
+	Role                     string
+	AcSnapshot               AcCriteriaJSON
+	PipelineModeSnapshot     string
+	PipelineModeSnapshotHash string
+	LastCommitSha            string
+	LastCommitMessage        string
+	CommitCountSinceSpawn    int
+	StartedAt                *time.Time
+	EndedAt                  *time.Time
+	LastCommitAt             *time.Time
+	LastFileTouchAt          *time.Time
+	LastProgressAt           *time.Time
+	CreatedAt                time.Time
+	EstimatedCostUsd         float64
+	TriageResult             string // raw JSON stored in triage_result column
+	TriageResultSummary      string // summary field parsed from TriageResult
+	VerificationNotes        string // freeform verification evidence reported via request_review
+	OverallOutcome           string // from linked review_verdict (empty if none)
+	ReviewVerdict            *ReviewVerdictSummary
 }
 
 // BacklogStatusEventData is the domain DTO replacing *ent.BacklogStatusEvent in Storage returns.
@@ -348,17 +350,30 @@ type BacklogItemData struct {
 	SkipReviewGate     bool
 	SkipPlanning       bool
 	AutoSpawnSession   bool
-	PlanApproved       bool
-	PlanApprovedAt     *time.Time
-	PlanArtifactsPath  string
-	Notes              string
-	ExternalID         string
-	ArchivedAt         *time.Time
-	SourceID           string
-	PrURL              string
-	PrNumber           int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// PipelineMode is the slug of the PipelineMode this item uses to drive
+	// triage/work/review content (see session/pipeline_engine.go). Empty
+	// string (PipelineModeDefault) means the built-in, hardcoded pipeline.
+	//
+	// Scope note: this field is introduced in Epic 1.3 (backlog-configurable-
+	// pipeline) solely so PipelineEngine's mode-resolution/fail-closed
+	// behavior is exercisable against this struct per Story 1.3.3's own
+	// acceptance criteria. It is NOT yet wired to ent/proto/the repository
+	// persistence layer or any RPC handler — every BacklogItemData produced
+	// by the current storage layer has PipelineMode == "" today. That full
+	// wiring (ent schema field, proto optional field, repository Create/
+	// Update mapping, RPC handler presence-gating) is Epic 1.4's scope.
+	PipelineMode      string
+	PlanApproved      bool
+	PlanApprovedAt    *time.Time
+	PlanArtifactsPath string
+	Notes             string
+	ExternalID        string
+	ArchivedAt        *time.Time
+	SourceID          string
+	PrURL             string
+	PrNumber          int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 	// ItemSessions holds the eagerly-loaded item sessions for this backlog item.
 	// Only populated when explicitly loaded by the caller (e.g. GetBacklogItem).
 	ItemSessions []ItemSessionSummary
@@ -423,12 +438,17 @@ type BacklogItemUpdate struct {
 	SkipReviewGate     *bool
 	SkipPlanning       *bool
 	AutoSpawnSession   *bool
-	Notes              *string
-	PlanApproved       *bool
-	PlanApprovedAt     *time.Time
-	PlanArtifactsPath  *string
-	PrURL              *string
-	PrNumber           *int
+	// PipelineMode is a pointer for partial-update presence: nil means "leave
+	// the item's stored pipeline_mode untouched", while a non-nil pointer
+	// (including one pointing at "") explicitly sets/resets it. See
+	// BacklogItemData.PipelineMode for the field's semantics.
+	PipelineMode      *string
+	Notes             *string
+	PlanApproved      *bool
+	PlanApprovedAt    *time.Time
+	PlanArtifactsPath *string
+	PrURL             *string
+	PrNumber          *int
 }
 
 // BacklogItemPrecondition is used for optimistic locking on update/transition.

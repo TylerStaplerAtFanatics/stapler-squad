@@ -197,7 +197,7 @@ func runRealReviewGate(t *testing.T, storage *Storage, item *BacklogItemData, wo
 
 	getPool := func() *headless.Pool { return pool }
 	getAutoReopener := func() AutoReopenSpawner { return nil }
-	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil)
+	runner := NewReviewGateRunner(storage, getPool, getAutoReopener, func() Notifier { return nil }, nil, nil)
 
 	// Capture both InfoLog and WarningLog: the normal completion line logs via
 	// InfoLog, but a degraded/self-check-failed outcome (also of interest here, since

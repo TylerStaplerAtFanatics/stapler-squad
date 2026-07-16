@@ -148,6 +148,20 @@ func (_c *BacklogItemCreate) SetNillableAutoSpawnSession(v *bool) *BacklogItemCr
 	return _c
 }
 
+// SetPipelineMode sets the "pipeline_mode" field.
+func (_c *BacklogItemCreate) SetPipelineMode(v string) *BacklogItemCreate {
+	_c.mutation.SetPipelineMode(v)
+	return _c
+}
+
+// SetNillablePipelineMode sets the "pipeline_mode" field if the given value is not nil.
+func (_c *BacklogItemCreate) SetNillablePipelineMode(v *string) *BacklogItemCreate {
+	if v != nil {
+		_c.SetPipelineMode(*v)
+	}
+	return _c
+}
+
 // SetPlanApproved sets the "plan_approved" field.
 func (_c *BacklogItemCreate) SetPlanApproved(v bool) *BacklogItemCreate {
 	_c.mutation.SetPlanApproved(v)
@@ -479,6 +493,10 @@ func (_c *BacklogItemCreate) defaults() {
 		v := backlogitem.DefaultAutoSpawnSession
 		_c.mutation.SetAutoSpawnSession(v)
 	}
+	if _, ok := _c.mutation.PipelineMode(); !ok {
+		v := backlogitem.DefaultPipelineMode
+		_c.mutation.SetPipelineMode(v)
+	}
 	if _, ok := _c.mutation.PlanApproved(); !ok {
 		v := backlogitem.DefaultPlanApproved
 		_c.mutation.SetPlanApproved(v)
@@ -530,6 +548,9 @@ func (_c *BacklogItemCreate) check() error {
 	}
 	if _, ok := _c.mutation.AutoSpawnSession(); !ok {
 		return &ValidationError{Name: "auto_spawn_session", err: errors.New(`ent: missing required field "BacklogItem.auto_spawn_session"`)}
+	}
+	if _, ok := _c.mutation.PipelineMode(); !ok {
+		return &ValidationError{Name: "pipeline_mode", err: errors.New(`ent: missing required field "BacklogItem.pipeline_mode"`)}
 	}
 	if _, ok := _c.mutation.PlanApproved(); !ok {
 		return &ValidationError{Name: "plan_approved", err: errors.New(`ent: missing required field "BacklogItem.plan_approved"`)}
@@ -611,6 +632,10 @@ func (_c *BacklogItemCreate) createSpec() (*BacklogItem, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.AutoSpawnSession(); ok {
 		_spec.SetField(backlogitem.FieldAutoSpawnSession, field.TypeBool, value)
 		_node.AutoSpawnSession = value
+	}
+	if value, ok := _c.mutation.PipelineMode(); ok {
+		_spec.SetField(backlogitem.FieldPipelineMode, field.TypeString, value)
+		_node.PipelineMode = value
 	}
 	if value, ok := _c.mutation.PlanApproved(); ok {
 		_spec.SetField(backlogitem.FieldPlanApproved, field.TypeBool, value)
@@ -938,6 +963,18 @@ func (u *BacklogItemUpsert) SetAutoSpawnSession(v bool) *BacklogItemUpsert {
 // UpdateAutoSpawnSession sets the "auto_spawn_session" field to the value that was provided on create.
 func (u *BacklogItemUpsert) UpdateAutoSpawnSession() *BacklogItemUpsert {
 	u.SetExcluded(backlogitem.FieldAutoSpawnSession)
+	return u
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (u *BacklogItemUpsert) SetPipelineMode(v string) *BacklogItemUpsert {
+	u.Set(backlogitem.FieldPipelineMode, v)
+	return u
+}
+
+// UpdatePipelineMode sets the "pipeline_mode" field to the value that was provided on create.
+func (u *BacklogItemUpsert) UpdatePipelineMode() *BacklogItemUpsert {
+	u.SetExcluded(backlogitem.FieldPipelineMode)
 	return u
 }
 
@@ -1335,6 +1372,20 @@ func (u *BacklogItemUpsertOne) SetAutoSpawnSession(v bool) *BacklogItemUpsertOne
 func (u *BacklogItemUpsertOne) UpdateAutoSpawnSession() *BacklogItemUpsertOne {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.UpdateAutoSpawnSession()
+	})
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (u *BacklogItemUpsertOne) SetPipelineMode(v string) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetPipelineMode(v)
+	})
+}
+
+// UpdatePipelineMode sets the "pipeline_mode" field to the value that was provided on create.
+func (u *BacklogItemUpsertOne) UpdatePipelineMode() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdatePipelineMode()
 	})
 }
 
@@ -1931,6 +1982,20 @@ func (u *BacklogItemUpsertBulk) SetAutoSpawnSession(v bool) *BacklogItemUpsertBu
 func (u *BacklogItemUpsertBulk) UpdateAutoSpawnSession() *BacklogItemUpsertBulk {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.UpdateAutoSpawnSession()
+	})
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (u *BacklogItemUpsertBulk) SetPipelineMode(v string) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetPipelineMode(v)
+	})
+}
+
+// UpdatePipelineMode sets the "pipeline_mode" field to the value that was provided on create.
+func (u *BacklogItemUpsertBulk) UpdatePipelineMode() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdatePipelineMode()
 	})
 }
 

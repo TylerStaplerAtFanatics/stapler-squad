@@ -2,12 +2,15 @@ package services
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/domain"
@@ -29,7 +32,7 @@ func TestNotifyReworkCapHit_should_markStuckReworkCapImmediately_When_CapHit(t *
 	})
 	require.NoError(t, err)
 
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	svc.notifyReworkCapHit(ctx, item.ID, item.Title, session.BacklogStatusReview, "after a failed review verdict")
 
 	open, err := storage.FindOpenStuckStates(ctx)
@@ -50,7 +53,7 @@ func TestNotifyReworkCapHit_should_stillPublishNotification_When_MarkStuckReturn
 	storage := createTestStorage(t)
 	ctx := context.Background()
 
-	svc := NewBacklogService(storage, nil, nil, nil)
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
 	bus := events.NewEventBus(4)
 	svc.SetEventBus(bus)
 
@@ -91,7 +94,7 @@ func TestNotifyReworkCapHit_should_persistRowSurvivingRestart_When_CapHit(t *tes
 		require.NoError(t, err)
 		itemID = item.ID
 
-		svc := NewBacklogService(storage, nil, nil, nil)
+		svc := NewBacklogService(storage, nil, nil, nil, nil)
 		svc.notifyReworkCapHit(context.Background(), itemID, item.Title, session.BacklogStatusPRPending, "while fixing PR #7")
 	}()
 
@@ -120,7 +123,7 @@ func TestNotifyReworkCapHit_should_persistRowSurvivingRestart_When_CapHit(t *tes
 func TestAutoReopenForPRFix_ActiveWorkSession_SkipsWithoutStatusChurn(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{"active-work-uuid": true}}
 	svc.SetSessionStopper(stopper)
 
@@ -157,7 +160,7 @@ func TestAutoReopenForPRFix_ActiveWorkSession_SkipsWithoutStatusChurn(t *testing
 func TestAutoReopenForPRFix_DeadWorkSession_TombstonesThenReopens(t *testing.T) {
 	storage := createTestStorage(t)
 	creator := &mockSessionCreator{}
-	svc := NewBacklogService(storage, creator, nil, nil)
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
 	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{}} // nothing is live
 	svc.SetSessionStopper(stopper)
 
@@ -190,4 +193,454 @@ func TestAutoReopenForPRFix_DeadWorkSession_TombstonesThenReopens(t *testing.T) 
 	deadFetched, err := storage.GetItemSession(context.Background(), deadIS.ID)
 	require.NoError(t, err)
 	assert.NotNil(t, deadFetched.EndedAt, "the dead session must be tombstoned")
+}
+
+// --- Epic 1.6: ItemSessionSummary.PipelineModeSnapshot/SnapshotHash ---
+
+// TestSpawnSessionFromItem_should_SnapshotResolvedModeSlugAndContentHash_When_SessionFirstStarts
+// verifies that spawning a work session for an item with a non-default PipelineMode
+// records BOTH the resolved mode slug and its content hash (as computed by
+// PipelineEngine.ContentHashFor at that moment) onto the new ItemSession row — Story
+// 1.6.2's core acceptance criterion. NOTE: svc.pipelineEngine is wired directly here
+// (this package's test can reach the unexported field) since NewBacklogService's
+// constructor does not yet accept a PipelineEngine parameter — that wiring is Epic
+// 1.5's job. See the field's doc comment on BacklogService for the full rationale.
+func TestSpawnSessionFromItem_should_SnapshotResolvedModeSlugAndContentHash_When_SessionFirstStarts(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	ctx := t.Context()
+
+	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
+	_, err := pmRepo.Create(ctx, session.PipelineModeCreateInput{
+		Slug:                 "quick",
+		Name:                 "Quick Fix",
+		Enabled:              true,
+		TriagePromptTemplate: "quick-mode triage prompt",
+	})
+	require.NoError(t, err)
+
+	engine, err := session.NewPipelineEngine(pmRepo)
+	require.NoError(t, err)
+	svc.pipelineEngine = engine
+
+	wantHash, ok := engine.ContentHashFor(session.PipelineMode("quick"))
+	require.True(t, ok, "setup: 'quick' must resolve to a content hash")
+	require.NotEmpty(t, wantHash)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	createResp, err := svc.CreateBacklogItem(ctx, connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:        "quick-mode item",
+		RepoPath:     repoPath,
+		PipelineMode: strPtr("quick"),
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipTriage:   true,
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	_, err = svc.TransitionBacklogItemStatus(ctx, connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: "ready",
+	}))
+	require.NoError(t, err)
+
+	_, err = svc.SpawnSessionFromItem(ctx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+
+	sessions, err := storage.ListItemSessions(ctx, itemID)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	assert.Equal(t, "quick", sessions[0].PipelineModeSnapshot)
+	assert.Equal(t, wantHash, sessions[0].PipelineModeSnapshotHash)
+}
+
+// TestSpawnSessionFromItem_should_SnapshotEmptyHash_When_PipelineModeIsDefaultOrUnresolved
+// covers both zero-hash edge cases from Story 1.6.2's acceptance criteria: the default
+// mode ("") short-circuits ContentHashFor without touching the cache, and an unresolved
+// slug (absent from the cache) falls back via ContentHashFor's ok=false path — both
+// must produce PipelineModeSnapshotHash == "", ignoring the ok bool per spec.
+func TestSpawnSessionFromItem_should_SnapshotEmptyHash_When_PipelineModeIsDefaultOrUnresolved(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	ctx := t.Context()
+
+	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
+	_, err := pmRepo.Create(ctx, session.PipelineModeCreateInput{
+		Slug:                 "quick",
+		Name:                 "Quick Fix",
+		Enabled:              true,
+		TriagePromptTemplate: "quick-mode triage prompt",
+	})
+	require.NoError(t, err)
+
+	engine, err := session.NewPipelineEngine(pmRepo)
+	require.NoError(t, err)
+	svc.pipelineEngine = engine
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	testCases := []struct {
+		name         string
+		pipelineMode *string // nil == omitted (default mode)
+	}{
+		{name: "default mode omitted", pipelineMode: nil},
+		{name: "unresolved slug", pipelineMode: strPtr("missing-mode")},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			createResp, err := svc.CreateBacklogItem(ctx, connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+				Title:        "item: " + tc.name,
+				RepoPath:     repoPath,
+				PipelineMode: tc.pipelineMode,
+				AcceptanceCriteria: []*sessionv1.AcCriterion{
+					{Index: 0, Text: "test", Status: "pending"},
+				},
+				SkipTriage:   true,
+				SkipPlanning: true,
+			}))
+			require.NoError(t, err)
+			itemID := createResp.Msg.Item.Id
+
+			_, err = svc.TransitionBacklogItemStatus(ctx, connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+				ItemId:       itemID,
+				TargetStatus: "ready",
+			}))
+			require.NoError(t, err)
+
+			_, err = svc.SpawnSessionFromItem(ctx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+			require.NoError(t, err)
+
+			sessions, err := storage.ListItemSessions(ctx, itemID)
+			require.NoError(t, err)
+			require.Len(t, sessions, 1)
+			assert.Empty(t, sessions[0].PipelineModeSnapshotHash)
+		})
+	}
+}
+
+// --- Epic 1.5: PipelineEngine wired into the 4 call sites ---
+
+// readCommandFiles reads every file under worktreePath/.claude/commands/backlog/ into
+// a name->content map, for comparing two independently-written slash-command sets.
+func readCommandFiles(t *testing.T, worktreePath string) map[string]string {
+	t.Helper()
+	dir := filepath.Join(worktreePath, ".claude", "commands", "backlog")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	files := make(map[string]string, len(entries))
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		require.NoError(t, err)
+		files[e.Name()] = string(data)
+	}
+	return files
+}
+
+// TestSpawnAndAttachSessionFromItem_should_ProduceIdenticalCommandFiles_When_SameItemAndModeUsedByBothCallers
+// (Story 1.5.2) is the direct regression test for "2 independent WriteSlashCommands
+// callers must not drift" (research/pitfalls.md §5 point 1): SpawnSessionFromItem and
+// AttachSessionToItem both write .claude/commands/backlog/*.md for the same item, and
+// both must go through the SAME shared PipelineEngine so a non-default PipelineMode's
+// rendered content is identical regardless of which caller wrote it.
+func TestSpawnAndAttachSessionFromItem_should_ProduceIdenticalCommandFiles_When_SameItemAndModeUsedByBothCallers(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	ctx := t.Context()
+
+	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
+	_, err := pmRepo.Create(ctx, session.PipelineModeCreateInput{
+		Slug:                  "quick",
+		Name:                  "Quick Fix",
+		Enabled:               true,
+		StatusCommandTemplate: "status for {{item_title}} ({{item_id}})",
+		DoneCommandTemplate:   "done {{criteria_index}}: {{criteria_text}}",
+		FailCommandTemplate:   "fail {{criteria_index}}: {{criteria_text}}",
+		ReviewCommandTemplate: "review {{item_title}}",
+		ShipCommandTemplate:   "ship {{item_title}}",
+		HelpCommandTemplate:   "help {{item_title}}",
+	})
+	require.NoError(t, err)
+
+	engine, err := session.NewPipelineEngine(pmRepo)
+	require.NoError(t, err)
+	svc.pipelineEngine = engine
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	createResp, err := svc.CreateBacklogItem(ctx, connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:        "quick-mode parity item",
+		RepoPath:     repoPath,
+		PipelineMode: strPtr("quick"),
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipTriage:   true,
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	_, err = svc.TransitionBacklogItemStatus(ctx, connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: "ready",
+	}))
+	require.NoError(t, err)
+
+	// Caller 1: SpawnSessionFromItem writes into the worktree the mock creator reports.
+	_, err = svc.SpawnSessionFromItem(ctx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 1)
+	spawnPath := creator.calls[0].path
+
+	// Caller 2: AttachSessionToItem writes into a second, independent directory.
+	attachPath := t.TempDir()
+	const attachUUID = "attach-parity-uuid"
+	require.NoError(t, storage.AddInstance(&session.Instance{
+		Title: "attach-target",
+		UUID:  attachUUID,
+		Path:  attachPath,
+		// Paused (not Active) so LoadInstances doesn't attempt a real cold-restore
+		// tmux/claude process start — see the identical comment in
+		// TestAttachSessionToItem_WritesContextFileWithPlanArtifactsAndPriorSessions
+		// (backlog_service_test.go).
+		Status:    session.Paused,
+		Program:   "claude",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}))
+	_, err = svc.AttachSessionToItem(ctx, connect.NewRequest(&sessionv1.AttachSessionToItemRequest{
+		ItemId:      itemID,
+		SessionUuid: attachUUID,
+	}))
+	require.NoError(t, err)
+
+	spawnFiles := readCommandFiles(t, spawnPath)
+	attachFiles := readCommandFiles(t, attachPath)
+	assert.Equal(t, spawnFiles, attachFiles,
+		"SpawnSessionFromItem and AttachSessionToItem must write byte-identical slash-command file sets for the same item+mode")
+	// Sanity: the mode-specific content actually rendered (not the default set).
+	assert.Contains(t, spawnFiles["status.md"], "status for quick-mode parity item")
+}
+
+// TestTriggerTriage_should_UseModeSpecificTriagePrompt_When_ItemHasNonDefaultPipelineModeAndFirstTriageBranch
+// (Story 1.5.3) verifies the FIRST-triage (non-retriage) branch routes through
+// PipelineEngine.TriagePromptFor: the LLM call receives the mode's rendered
+// TriagePromptTemplate, not BuildHeadlessTriagePrompt's default boilerplate.
+func TestTriggerTriage_should_UseModeSpecificTriagePrompt_When_ItemHasNonDefaultPipelineModeAndFirstTriageBranch(t *testing.T) {
+	storage := createTestStorage(t)
+	pool := &fakeHeadlessPool{response: validTriageJSON()}
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc.SetHeadlessPool(pool)
+
+	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
+	_, err := pmRepo.Create(t.Context(), session.PipelineModeCreateInput{
+		Slug:                 "quick",
+		Name:                 "Quick Fix",
+		Enabled:              true,
+		TriagePromptTemplate: "QUICK MODE TRIAGE: {{item_title}}",
+	})
+	require.NoError(t, err)
+	engine, err := session.NewPipelineEngine(pmRepo)
+	require.NoError(t, err)
+	svc.pipelineEngine = engine
+
+	repoPath := t.TempDir()
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:        "quick-mode triage item",
+		Status:       string(session.BacklogStatusIdea),
+		Priority:     3,
+		RepoPath:     repoPath,
+		PipelineMode: "quick",
+	})
+	require.NoError(t, err)
+
+	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId: item.ID,
+	}))
+	require.NoError(t, trigErr)
+
+	require.Eventually(t, func() bool {
+		return pool.callCount() == 1
+	}, 5*time.Second, 50*time.Millisecond, "expected exactly one headless triage call")
+
+	gotPrompt := pool.firstCall().userPrompt
+	assert.Contains(t, gotPrompt, "QUICK MODE TRIAGE: quick-mode triage item",
+		"expected the mode-specific rendered triage prompt, got: %s", gotPrompt)
+	assert.NotContains(t, gotPrompt, "Perform pre-implementation triage",
+		"sanity: the default BuildHeadlessTriagePrompt's boilerplate must not appear when a non-default mode is wired")
+}
+
+// TestTriggerTriage_should_UseUnmodifiedRetriagePrompt_When_RetriagingRegardlessOfPipelineMode
+// (Story 1.5.3) proves the retriage (feedback-driven refine) branch stays on
+// BuildHeadlessRetriagePrompt directly, even when item.PipelineMode is non-default with a
+// custom TriagePromptTemplate — "refine the existing plan" is mode-independent
+// (research/architecture.md §3), and this seam must not have accidentally routed it
+// through PipelineEngine too.
+func TestTriggerTriage_should_UseUnmodifiedRetriagePrompt_When_RetriagingRegardlessOfPipelineMode(t *testing.T) {
+	storage := createTestStorage(t)
+	secondResponse := `{"summary":"revised summary","suggestions":[],"tasks":[{"text":"revised task","estimate":"3h","category":"backend"}]}`
+	pool := &fakeHeadlessPool{responses: []string{validTriageJSON(), secondResponse}}
+	svc := NewBacklogService(storage, nil, nil, nil, nil)
+	svc.SetHeadlessPool(pool)
+
+	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
+	_, err := pmRepo.Create(t.Context(), session.PipelineModeCreateInput{
+		Slug:                 "quick",
+		Name:                 "Quick Fix",
+		Enabled:              true,
+		TriagePromptTemplate: "QUICK MODE TRIAGE: {{item_title}}",
+	})
+	require.NoError(t, err)
+	engine, err := session.NewPipelineEngine(pmRepo)
+	require.NoError(t, err)
+	svc.pipelineEngine = engine
+
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:        "quick-mode refine item",
+		Status:       string(session.BacklogStatusIdea),
+		Priority:     3,
+		RepoPath:     t.TempDir(),
+		PipelineMode: "quick",
+	})
+	require.NoError(t, err)
+
+	// Initial (first-triage) call — mode-specific, per the companion test above.
+	_, trigErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId: item.ID,
+	}))
+	require.NoError(t, trigErr)
+	require.Eventually(t, func() bool {
+		updated, loadErr := storage.GetBacklogItem(t.Context(), item.ID)
+		return loadErr == nil && updated.Status == string(session.BacklogStatusReady)
+	}, 5*time.Second, 50*time.Millisecond, "initial triage should mark item ready")
+
+	// Refine with feedback — the retriage branch under test.
+	_, refineErr := svc.TriggerTriage(t.Context(), connect.NewRequest(&sessionv1.TriggerTriageRequest{
+		ItemId:   item.ID,
+		Feedback: "This missed the mobile case entirely.",
+	}))
+	require.NoError(t, refineErr)
+	require.Eventually(t, func() bool {
+		return pool.callCount() == 2
+	}, 5*time.Second, 50*time.Millisecond, "refine should make a second headless call")
+
+	retriagePrompt := pool.callAt(1).userPrompt
+	assert.Contains(t, retriagePrompt, "## Prior triage result",
+		"expected the default BuildHeadlessRetriagePrompt output, got: %s", retriagePrompt)
+	assert.NotContains(t, retriagePrompt, "QUICK MODE TRIAGE:",
+		"the retriage branch must NOT be routed through PipelineEngine even when PipelineMode is non-default")
+}
+
+// TestSpawnSessionFromItem_should_UseModeSpecificInitialPrompt_When_AutoSpawnSessionAndNonDefaultPipelineMode
+// (Story 1.5.5) verifies inst.Prompt (and therefore NewAutonomousDriver's goal) contains
+// the mode's rendered InitialPromptTemplate, not BuildTokenBudgetedPrompt's default
+// output — proving this seam is not cosmetic for autonomous-mode sessions.
+func TestSpawnSessionFromItem_should_UseModeSpecificInitialPrompt_When_AutoSpawnSessionAndNonDefaultPipelineMode(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	ctx := t.Context()
+
+	pmRepo := session.NewEntPipelineModeRepository(storage.GetEntClient())
+	_, err := pmRepo.Create(ctx, session.PipelineModeCreateInput{
+		Slug:                  "quick",
+		Name:                  "Quick Fix",
+		Enabled:               true,
+		InitialPromptTemplate: "QUICK MODE INITIAL PROMPT: {{item_title}}",
+	})
+	require.NoError(t, err)
+	engine, err := session.NewPipelineEngine(pmRepo)
+	require.NoError(t, err)
+	svc.pipelineEngine = engine
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	createResp, err := svc.CreateBacklogItem(ctx, connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:        "quick-mode autonomous item",
+		RepoPath:     repoPath,
+		PipelineMode: strPtr("quick"),
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipTriage:   true,
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	_, err = svc.TransitionBacklogItemStatus(ctx, connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: "ready",
+	}))
+	require.NoError(t, err)
+
+	_, err = svc.SpawnSessionFromItem(ctx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId:     itemID,
+		Autonomous: true,
+	}))
+	require.NoError(t, err)
+
+	require.Len(t, creator.calls, 1)
+	gotPrompt := creator.calls[0].prompt
+	assert.Contains(t, gotPrompt, "QUICK MODE INITIAL PROMPT: quick-mode autonomous item",
+		"expected the mode-specific rendered initial prompt, got: %s", gotPrompt)
+}
+
+// TestSpawnSessionFromItem_should_UseDefaultInitialPrompt_When_PipelineModeIsDefault
+// (Story 1.5.5) is the zero-regression companion: default mode still produces
+// BuildTokenBudgetedPrompt's unmodified output.
+func TestSpawnSessionFromItem_should_UseDefaultInitialPrompt_When_PipelineModeIsDefault(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil)
+	ctx := t.Context()
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	createResp, err := svc.CreateBacklogItem(ctx, connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    "default-mode item",
+		RepoPath: repoPath,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipTriage:   true,
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	_, err = svc.TransitionBacklogItemStatus(ctx, connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: "ready",
+	}))
+	require.NoError(t, err)
+
+	// Snapshot the item's pre-spawn state (status "ready") — SpawnSessionFromItem
+	// transitions it to "in_progress" as its LAST step, after the prompt has already
+	// been built, so re-fetching AFTER the call would reconstruct a different
+	// (post-transition) BuildTokenBudgetedPrompt rendering than what was actually sent.
+	preSpawn, err := storage.GetBacklogItem(ctx, itemID)
+	require.NoError(t, err)
+
+	_, err = svc.SpawnSessionFromItem(ctx, connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+
+	require.Len(t, creator.calls, 1)
+
+	wantPrompt := session.BuildTokenBudgetedPrompt(preSpawn, nil)
+	assert.Equal(t, wantPrompt, creator.calls[0].prompt,
+		"default PipelineMode must still produce BuildTokenBudgetedPrompt's unmodified output")
 }

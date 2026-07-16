@@ -24,6 +24,44 @@ import (
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
+// initialPromptFor returns s.pipelineEngine.InitialPromptFor(...) when pipelineEngine
+// is wired, or the default session.BuildTokenBudgetedPrompt otherwise — mirrors
+// session.CachingPipelineEngine's own default-mode fallback for the nil-engine case
+// (many tests construct a BacklogService without one). Used by SpawnSessionFromItem
+// (Epic 1.5, Story 1.5.5) to build the prompt handed to inst.Prompt / AutonomousDriver.
+func (s *BacklogService) initialPromptFor(item *session.BacklogItemData, priorSessions []session.ItemSessionSummary) string {
+	if s.pipelineEngine == nil {
+		return session.BuildTokenBudgetedPrompt(item, priorSessions)
+	}
+	return s.pipelineEngine.InitialPromptFor(item, priorSessions)
+}
+
+// triagePromptFor returns s.pipelineEngine.TriagePromptFor(...) when pipelineEngine is
+// wired, or the default session.BuildHeadlessTriagePrompt otherwise — mirrors
+// session.CachingPipelineEngine's own default-mode fallback for the nil-engine case.
+// Used by TriggerTriage's FIRST-triage branch only (Epic 1.5, Story 1.5.3); the
+// retriage branch always calls session.BuildHeadlessRetriagePrompt directly and is
+// NOT routed through PipelineEngine — "refine the existing plan" is mode-independent
+// (research/architecture.md §3).
+func (s *BacklogService) triagePromptFor(item *session.BacklogItemData, artifactAbsPath string) string {
+	if s.pipelineEngine == nil {
+		return session.BuildHeadlessTriagePrompt(item, artifactAbsPath)
+	}
+	return s.pipelineEngine.TriagePromptFor(item, artifactAbsPath)
+}
+
+// reviewPromptFor returns s.pipelineEngine.ReviewPromptFor(...) when pipelineEngine is
+// wired, or the default session.BuildHeadlessReviewPrompt otherwise — mirrors
+// session.CachingPipelineEngine's own default-mode fallback for the nil-engine case.
+// Used by TriggerReReview (Epic 1.5, Story 1.5.4); the equivalent seam for
+// ReviewGateRunner.Run lives in session/review_gate.go's own reviewPromptFor method.
+func (s *BacklogService) reviewPromptFor(item *session.BacklogItemData, acSnapshot []session.AcCriterion, diff string, diffTruncated bool, verificationNotes string, extras session.ReviewContextExtras) string {
+	if s.pipelineEngine == nil {
+		return session.BuildHeadlessReviewPrompt(item, acSnapshot, diff, diffTruncated, verificationNotes, extras)
+	}
+	return s.pipelineEngine.ReviewPromptFor(item, acSnapshot, diff, diffTruncated, verificationNotes, extras)
+}
+
 // notifyReworkCapHit publishes an operator-facing notification when the auto-rework
 // loop (review→rework or PR-fix→rework) hits maxAutoReworkIterations and leaves an
 // item stranded for manual action. No-op if no event bus is wired.
@@ -256,8 +294,9 @@ func (s *BacklogService) SpawnSessionFromItem(
 			fmt.Errorf("a work session is already active for this item; wait for it to finish or kill it first"))
 	}
 
-	// 8. Build agent prompt.
-	prompt := session.BuildTokenBudgetedPrompt(item, priorSessions)
+	// 8. Build agent prompt. Routed through PipelineEngine (Epic 1.5, Story 1.5.5) so a
+	// non-default PipelineMode changes what inst.Prompt / AutonomousDriver's goal sees.
+	prompt := s.initialPromptFor(item, priorSessions)
 
 	// 9. Generate session title.
 	// On reopen, append a revision number (r2, r3…) based on how many work sessions
@@ -320,11 +359,21 @@ func (s *BacklogService) SpawnSessionFromItem(
 	}
 
 	// 12. Create ItemSession with the real session UUID (avoids "<pending>" orphan records on failure).
+	// Snapshot the resolved PipelineMode slug + content hash at the moment this session
+	// first starts (Epic 1.6) — see pipelineEngine's field doc comment on BacklogService
+	// for why the hash lookup is nil-guarded (Epic 1.5 has not yet wired a real engine
+	// into the constructor; item.PipelineMode itself is always recorded regardless).
+	var pipelineModeSnapshotHash string
+	if s.pipelineEngine != nil {
+		pipelineModeSnapshotHash, _ = s.pipelineEngine.ContentHashFor(session.PipelineMode(item.PipelineMode))
+	}
 	is, err := s.storage.CreateItemSession(ctx, session.ItemSessionData{
-		ItemID:      item.ID,
-		SessionUUID: inst.UUID,
-		SessionRole: session.SessionRoleWork,
-		AcSnapshot:  acSnapshot,
+		ItemID:                   item.ID,
+		SessionUUID:              inst.UUID,
+		SessionRole:              session.SessionRoleWork,
+		AcSnapshot:               acSnapshot,
+		PipelineModeSnapshot:     item.PipelineMode,
+		PipelineModeSnapshotHash: pipelineModeSnapshotHash,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create item session: %w", err))
@@ -433,7 +482,7 @@ func resolveSessionPath(repoPath, slug string) (worktreePath string, useWorktree
 func (s *BacklogService) writeSessionFiles(item *session.BacklogItemData, priorSessions []session.ItemSessionSummary, worktreePath string) error {
 	s.worktreeMu.Lock()
 	defer s.worktreeMu.Unlock()
-	if wErr := session.WriteSlashCommands(item, worktreePath); wErr != nil {
+	if wErr := session.WriteSlashCommands(s.pipelineEngine, item, worktreePath); wErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("WriteSlashCommands: %w", wErr))
 	}
 	if wErr := session.WriteBacklogContextFile(item, priorSessions, worktreePath); wErr != nil {
@@ -710,21 +759,35 @@ func (s *BacklogService) TriggerTriage(
 	}
 
 	// 7. Build triage prompt — a fresh triage, or a feedback-driven refine of the
-	// most recent completed result.
+	// most recent completed result. The retriage (feedback != "") branch deliberately
+	// stays on BuildHeadlessRetriagePrompt directly and is NOT routed through
+	// PipelineEngine — "refine the existing plan" is mode-independent
+	// (research/architecture.md §3). Only the first-triage branch is routed through
+	// the engine (Epic 1.5, Story 1.5.3).
 	var triagePrompt string
 	if feedback != "" {
 		triagePrompt = session.BuildHeadlessRetriagePrompt(item, artifactAbsPath, priorResult, feedback)
 	} else {
-		triagePrompt = session.BuildHeadlessTriagePrompt(item, artifactAbsPath)
+		triagePrompt = s.triagePromptFor(item, artifactAbsPath)
 	}
 
+	log.InfoLog.Printf("[PipelineEngine] item=%s stage=triage mode=%q", item.ID, session.ResolvedModeLabel(item.PipelineMode))
+
 	// 8. Create ItemSession synchronously before goroutine (prevents TOCTOU on orphan guard).
+	// Snapshot the resolved PipelineMode slug + content hash — see the comment on the
+	// equivalent SpawnSessionFromItem call site above for the nil-guard rationale.
 	triageSessionUUID := headlessTriageUUIDPrefix + uuid.New().String()
+	var triagePipelineModeSnapshotHash string
+	if s.pipelineEngine != nil {
+		triagePipelineModeSnapshotHash, _ = s.pipelineEngine.ContentHashFor(session.PipelineMode(item.PipelineMode))
+	}
 	is, err := s.storage.CreateItemSession(ctx, session.ItemSessionData{
-		ItemID:      item.ID,
-		SessionUUID: triageSessionUUID,
-		SessionRole: session.SessionRoleTriage,
-		AcSnapshot:  item.AcceptanceCriteria,
+		ItemID:                   item.ID,
+		SessionUUID:              triageSessionUUID,
+		SessionRole:              session.SessionRoleTriage,
+		AcSnapshot:               item.AcceptanceCriteria,
+		PipelineModeSnapshot:     item.PipelineMode,
+		PipelineModeSnapshotHash: triagePipelineModeSnapshotHash,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create triage item session: %w", err))
@@ -1028,7 +1091,7 @@ Do not modify the code. Only write the review verdict.
 			}
 		}
 
-		headlessPrompt := session.BuildHeadlessReviewPrompt(item, acSnapshot, workSessionDiff, false, verificationNotes, extras)
+		headlessPrompt := s.reviewPromptFor(item, acSnapshot, workSessionDiff, false, verificationNotes, extras)
 		systemPrompt, callOpts, callTimeout, reviewPath := session.BuildReviewCallOptions(workSessionDiff, codebaseWorkDir)
 		// callStart is recorded immediately before the headless call sequence
 		// (capability self-check, then CallBlocking) so Epic 2.5's duration_ms=

@@ -40,6 +40,8 @@ type Tx struct {
 	ItemSession *ItemSessionClient
 	// ItemSource is the client for interacting with the ItemSource builders.
 	ItemSource *ItemSourceClient
+	// PipelineMode is the client for interacting with the PipelineMode builders.
+	PipelineMode *PipelineModeClient
 	// Project is the client for interacting with the Project builders.
 	Project *ProjectClient
 	// ReviewVerdict is the client for interacting with the ReviewVerdict builders.
@@ -203,6 +205,7 @@ func (tx *Tx) init() {
 	tx.EscapeEvent = NewEscapeEventClient(tx.config)
 	tx.ItemSession = NewItemSessionClient(tx.config)
 	tx.ItemSource = NewItemSourceClient(tx.config)
+	tx.PipelineMode = NewPipelineModeClient(tx.config)
 	tx.Project = NewProjectClient(tx.config)
 	tx.ReviewVerdict = NewReviewVerdictClient(tx.config)
 	tx.Session = NewSessionClient(tx.config)
