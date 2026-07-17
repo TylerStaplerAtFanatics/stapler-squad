@@ -49,6 +49,18 @@ type PRFixSpawner interface {
 	AutoReopenForPRFix(ctx context.Context, itemID string, fixContext string) error
 }
 
+// TriageRespawner can automatically re-trigger triage for an idea-status backlog
+// item whose triage session crashed, was killed, or never reached the completion
+// goroutine (e.g. a server restart mid-triage) without ever finishing — the
+// StuckReasonOrphanedTriage condition (see reconcileOrphanedTriageItems). Before
+// this existed, such items were only detected and notified; nothing ever
+// re-triggered triage, so they sat at 'idea' forever until a human noticed and
+// manually re-triggered it (docs/tasks/backlog-feature-improvement.md, row 8 —
+// the original fix only added detection, not the self-heal its own note claimed).
+type TriageRespawner interface {
+	AutoRetriggerTriage(ctx context.Context, itemID string) error
+}
+
 // prPendingChecker is the subset of GitWorktree's PR-status behavior that
 // ReconcilePRPending depends on. Defined here (the consumer) rather than in
 // package git, scoped to exactly what's called.
@@ -112,6 +124,10 @@ type BacklogLifecycleListener struct {
 	// prFixMu guards prFixSpawner for concurrent Set/get access.
 	prFixMu      sync.RWMutex
 	prFixSpawner PRFixSpawner
+
+	// triageRespawnMu guards triageRespawner for concurrent Set/get access.
+	triageRespawnMu sync.RWMutex
+	triageRespawner TriageRespawner
 
 	// prPendingCheckerMu guards prPendingCheckerFactory for concurrent Set/get access.
 	prPendingCheckerMu      sync.RWMutex
@@ -220,6 +236,22 @@ func (l *BacklogLifecycleListener) getPRFixSpawner() PRFixSpawner {
 	l.prFixMu.RLock()
 	defer l.prFixMu.RUnlock()
 	return l.prFixSpawner
+}
+
+// SetTriageRespawner wires in the spawner used to automatically re-trigger
+// triage for idea-status items whose triage session died mid-run without
+// completing.
+func (l *BacklogLifecycleListener) SetTriageRespawner(r TriageRespawner) {
+	l.triageRespawnMu.Lock()
+	defer l.triageRespawnMu.Unlock()
+	l.triageRespawner = r
+}
+
+// getTriageRespawner returns the current triage respawner under a read lock.
+func (l *BacklogLifecycleListener) getTriageRespawner() TriageRespawner {
+	l.triageRespawnMu.RLock()
+	defer l.triageRespawnMu.RUnlock()
+	return l.triageRespawner
 }
 
 // SetPRPendingCheckerFactory overrides the factory used to construct the
@@ -1176,12 +1208,19 @@ func (l *BacklogLifecycleListener) reconcileStaleWorkSessions(ctx context.Contex
 // or a server restart happened mid-triage before the completion goroutine ever ran.
 // Previously this class of failure was only caught by tombstoneOrphanTriageSessions
 // (same package, server/services/backlog_service_triage.go), and only when a human
-// manually re-triggered triage on the item; this is the standing-sweep equivalent.
-// Pure staleness gate — no liveness checker — matching reconcileStaleWorkSessions'
-// established pattern for the closest analogous detector in this file: a headless
-// triage call routinely runs 7-15 minutes, so per-tick liveness signals are noisy
-// here; maxWorkSessionStaleness (2h) alone is the reliable signal. Best-effort:
-// query/notify failures are logged, never returned.
+// manually re-triggered triage on the item. This is the standing-sweep equivalent:
+// past the notify-once grace it now also auto-respawns triage via the injected
+// TriageRespawner (if wired) — a notification alone left affected items sitting at
+// idea forever with nothing to re-trigger triage (docs/tasks/backlog-feature-improvement.md,
+// row 8 — the original fix here only ever detected and notified, despite this
+// function's own prior doc comment claiming the item "self-heals once it leaves idea";
+// it never did, because nothing ever moved it out of idea). Respawn is nil-safe
+// (notification-only) when no TriageRespawner is configured, mirroring every other
+// injected spawner on this listener. Pure staleness gate — no liveness checker —
+// matching reconcileStaleWorkSessions' established pattern for the closest analogous
+// detector in this file: a headless triage call routinely runs 7-15 minutes, so
+// per-tick liveness signals are noisy here; maxWorkSessionStaleness (2h) alone is the
+// reliable signal. Best-effort: query/notify failures are logged, never returned.
 func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Context, er *EntRepository) {
 	items, err := l.storage.ListBacklogItems(ctx, BacklogItemFilter{
 		Statuses: []string{string(BacklogStatusIdea)},
@@ -1229,16 +1268,42 @@ func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Cont
 		log.WarningLog.Printf("[BacklogLifecycle] item %s triage session %s orphaned (stale)", item.ID, latestTriage.SessionUUID)
 		l.notify(item.ID,
 			"Triage may be stuck",
-			fmt.Sprintf("%s — its triage session ended without finishing and nothing is running. Re-trigger triage or investigate.", item.Title),
+			fmt.Sprintf("%s — its triage session ended without finishing. Re-triggering triage automatically.", item.Title),
 			8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
 			2, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
 		)
 		if _, notifyErr := er.MarkStuckNotified(ctx, item.ID, domain.StuckReasonOrphanedTriage); notifyErr != nil {
 			log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems MarkStuckNotified item=%s: %v", item.ID, notifyErr)
 		}
+
+		// Close the loop: a notification alone leaves the item stuck at 'idea'
+		// forever until a human notices — the exact gap this function's own prior
+		// doc comment misleadingly claimed was already handled. Dispatched async,
+		// bounded by reviewSem (the same fan-out limiter markAbandonedReview's
+		// sibling respawn path uses): TriggerTriage's own goroutine returns
+		// quickly (it just creates an ItemSession row and hands the actual
+		// headless LLM call to its own separate triageSem-bounded goroutine),
+		// but the dispatch still must not block this synchronous detector sweep.
+		respawner := l.getTriageRespawner()
+		if respawner == nil {
+			log.DebugLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems item=%s: no TriageRespawner configured, notification only", item.ID)
+			continue
+		}
+		go func(id string) {
+			select {
+			case l.reviewSem <- struct{}{}:
+			case <-l.shutdownCtx.Done():
+				return
+			}
+			defer func() { <-l.reviewSem }()
+			if respawnErr := respawner.AutoRetriggerTriage(l.shutdownCtx, id); respawnErr != nil {
+				log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems AutoRetriggerTriage item=%s: %v", id, respawnErr)
+			}
+		}(item.ID)
 	}
 	// No resolve pass needed here: selfHealStuck (status-anchored) clears this
-	// reason once the item leaves 'idea' — i.e. once triage is re-triggered and succeeds.
+	// reason once the item leaves 'idea' — i.e. once a respawned (or manually
+	// re-triggered) triage run succeeds and transitions the item to 'ready'.
 }
 
 // reconcileBouncingItems flags items that have crossed in_progress->review

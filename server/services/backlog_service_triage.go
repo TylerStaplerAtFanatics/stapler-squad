@@ -448,6 +448,25 @@ func hasActiveWorkSession(priorSessions []session.ItemSessionSummary) bool {
 	return false
 }
 
+// hasFreshTriageSession reports whether priorSessions contains an open (not yet
+// ended) triage-role session created within maxTriageSessionAge — i.e. one that
+// may genuinely still be in flight. Headless triage calls have no liveness
+// signal to check (unlike work/review sessions, which can be probed via
+// sessionStopper.IsSessionLive), so elapsed time since creation is the only
+// available "might this still be running" proxy — the same rationale
+// tombstoneOrphanTriageSessions' isStale check and
+// reconcileOrphanedTriageItems' staleness gate (session/backlog_lifecycle.go)
+// both already use. Used by AutoRetriggerTriage to avoid double-spawning a
+// triage run that is already running.
+func hasFreshTriageSession(priorSessions []session.ItemSessionSummary) bool {
+	for _, ps := range priorSessions {
+		if ps.Role == session.SessionRoleTriage && ps.EndedAt == nil && time.Since(ps.CreatedAt) <= maxTriageSessionAge {
+			return true
+		}
+	}
+	return false
+}
+
 // buildRevisionTitle returns the session title for a backlog work session. On reopen
 // (isReopen=true) it appends "-rN" where N is one past the existing work-session count.
 func buildRevisionTitle(baseTitle string, isReopen bool, priorSessions []session.ItemSessionSummary) string {
@@ -683,6 +702,78 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 	}
 
 	log.InfoLog.Printf("[AutoReopenForPRFix] item %s → in_progress for PR fix session", itemID)
+	return nil
+}
+
+// AutoRetriggerTriage implements session.TriageRespawner. It re-triggers triage for
+// an idea-status backlog item whose most recent triage session crashed, was killed,
+// or never reached the completion goroutine (e.g. a server restart mid-triage) —
+// closing the gap where StuckReasonOrphanedTriage was previously only detected and
+// notified, never acted on, which let idea-status items sit stuck forever until a
+// human noticed and manually re-triggered triage
+// (docs/tasks/backlog-feature-improvement.md, row 8). Mirrors the shape of
+// AutoReopenForPRFix/AutoReopenAfterFailedReview: load, guard on status/active
+// session/cap, then delegate to the existing manual entry point (TriggerTriage)
+// rather than duplicating its session-creation and goroutine-dispatch logic.
+//
+// Deliberately NOT gated by maxConcurrentBacklogWorkItems: that cap bounds
+// concurrent "in_progress" items with a live work session, and this path never
+// transitions the item out of 'idea' itself — TriggerTriage's own triageSem (max
+// 8 concurrent headless triage calls) is what actually bounds the expensive LLM
+// work, exactly as it already does for a manual re-trigger.
+func (s *BacklogService) AutoRetriggerTriage(ctx context.Context, itemID string) error {
+	if s.storage == nil {
+		return fmt.Errorf("storage not available")
+	}
+
+	item, err := s.storage.GetBacklogItem(ctx, itemID)
+	if err != nil {
+		return fmt.Errorf("load item: %w", err)
+	}
+	if session.BacklogStatus(item.Status) != session.BacklogStatusIdea {
+		// Already moved on by the time this async call runs (e.g. a human
+		// manually re-triggered triage, or a prior respawn already completed) —
+		// nothing to do.
+		return nil
+	}
+
+	sessions, sessErr := s.storage.ListItemSessions(ctx, item.ID)
+	if sessErr != nil {
+		return fmt.Errorf("list sessions for cap check: %w", sessErr)
+	}
+
+	// Re-check immediately before acting: the caller (reconcileOrphanedTriageItems)
+	// dispatches this asynchronously under a semaphore, so time may have passed
+	// since the detector query that found the item orphaned. See
+	// hasFreshTriageSession's doc comment for why elapsed-time is the only
+	// available liveness proxy for a headless triage session.
+	if hasFreshTriageSession(sessions) {
+		log.InfoLog.Printf("[AutoRetriggerTriage] item %s has a triage session younger than %s; skipping respawn", itemID, maxTriageSessionAge)
+		return nil
+	}
+
+	// Cap on triage-session count, mirroring AutoReopenForPRFix/
+	// AutoReopenAfterFailedReview's cap on work sessions: without one, an item
+	// whose triage keeps crashing before completion would re-trigger forever,
+	// once per orphaned_triage occurrence. Reuses the same threshold and
+	// notifyReworkCapHit pattern as the other rework loops for consistency
+	// rather than inventing a new constant.
+	triageCount := 0
+	for _, is := range sessions {
+		if is.Role == session.SessionRoleTriage {
+			triageCount++
+		}
+	}
+	if triageCount >= maxAutoReworkIterations {
+		log.InfoLog.Printf("[AutoRetriggerTriage] item %s has %d triage sessions (cap %d); leaving in idea for manual action", itemID, triageCount, maxAutoReworkIterations)
+		s.notifyReworkCapHit(ctx, itemID, item.Title, session.BacklogStatus(item.Status), "while orphaned in triage with no active session")
+		return nil
+	}
+
+	if _, triageErr := s.TriggerTriage(ctx, connect.NewRequest(&sessionv1.TriggerTriageRequest{ItemId: itemID})); triageErr != nil {
+		return fmt.Errorf("trigger triage: %w", triageErr)
+	}
+	log.InfoLog.Printf("[AutoRetriggerTriage] item %s triage re-triggered", itemID)
 	return nil
 }
 

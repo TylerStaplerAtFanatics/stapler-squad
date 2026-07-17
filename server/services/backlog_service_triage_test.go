@@ -901,6 +901,121 @@ func TestTriggerTriage_should_UseUnmodifiedRetriagePrompt_When_RetriagingRegardl
 		"the retriage branch must NOT be routed through PipelineEngine even when PipelineMode is non-default")
 }
 
+// --- AutoRetriggerTriage: closes the "detected/notified but never respawned" gap
+// for orphaned triage ---
+//
+// Before this, reconcileOrphanedTriageItems (session/backlog_lifecycle.go) only
+// wrote a stuck row and notified an operator — its own doc comment claimed the
+// item "self-heals once it leaves idea," but nothing ever moved it out of idea,
+// so real idea-status items sat stuck forever (docs/tasks/backlog-feature-improvement.md,
+// row 8). AutoRetriggerTriage implements session.TriageRespawner and is the
+// mechanism reconcileOrphanedTriageItems now dispatches into.
+
+// TestAutoRetriggerTriage_ReworkCapHit_LeavesInIdeaAndNotifies is the regression
+// test for the runaway-loop risk this fix introduces if left unbounded: an item
+// whose triage keeps crashing before completion would otherwise re-trigger
+// forever, once per orphaned_triage occurrence. This asserts the cap — reusing
+// the same maxAutoReworkIterations threshold and notifyReworkCapHit pattern as
+// the other rework loops (review, PR-fix) — actually stops it.
+func TestAutoRetriggerTriage_ReworkCapHit_LeavesInIdeaAndNotifies(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+
+	item, err := storage.CreateBacklogItem(context.Background(), session.BacklogItemData{
+		Title:    "Repeatedly-crashing triage item",
+		RepoPath: t.TempDir(),
+		Status:   string(session.BacklogStatusIdea),
+	})
+	require.NoError(t, err)
+
+	// Seed maxAutoReworkIterations (3) prior, already-ended triage sessions — the
+	// shape left behind by 3 prior orphaned_triage respawns that each crashed
+	// again without ever completing.
+	for i := 0; i < 3; i++ {
+		is, isErr := storage.CreateItemSession(context.Background(), session.ItemSessionData{
+			ItemID:      item.ID,
+			SessionUUID: "prior-triage-" + string(rune('a'+i)),
+			SessionRole: session.SessionRoleTriage,
+		})
+		require.NoError(t, isErr)
+		require.NoError(t, storage.UpdateItemSessionEnded(context.Background(), is.ID, time.Now()))
+	}
+
+	respawnErr := svc.AutoRetriggerTriage(context.Background(), item.ID)
+	require.NoError(t, respawnErr, "hitting the cap is an expected outcome, not a failure")
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusIdea), fetched.Status, "item must stay in idea, not spin")
+
+	open, err := storage.FindOpenStuckStates(context.Background())
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, domain.StuckReasonReworkCap, open[0].Reason, "cap hit must write the same durable rework_cap row the other rework loops use")
+}
+
+// TestAutoRetriggerTriage_FreshTriageSession_SkipsWithoutDoubleSpawn verifies
+// AutoRetriggerTriage does not spawn a second, concurrent triage run when one may
+// still genuinely be in flight — a headless triage call routinely runs 7-15
+// minutes and has no liveness signal to probe, so a session created well within
+// maxTriageSessionAge must be treated as possibly-still-running rather than
+// blindly re-triggered.
+func TestAutoRetriggerTriage_FreshTriageSession_SkipsWithoutDoubleSpawn(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+	// A headless pool being wired but never called proves no second attempt fired.
+	pool := &fakeHeadlessPool{response: validTriageJSON()}
+	svc.SetHeadlessPool(pool)
+
+	item, err := storage.CreateBacklogItem(context.Background(), session.BacklogItemData{
+		Title:    "Item with a triage run already in flight",
+		RepoPath: t.TempDir(),
+		Status:   string(session.BacklogStatusIdea),
+	})
+	require.NoError(t, err)
+	_, err = storage.CreateItemSession(context.Background(), session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "headless-triage-in-flight",
+		SessionRole: session.SessionRoleTriage,
+	})
+	require.NoError(t, err)
+
+	respawnErr := svc.AutoRetriggerTriage(context.Background(), item.ID)
+	require.NoError(t, respawnErr)
+	assert.Empty(t, pool.calls, "must not start a second headless triage call while one may already be active")
+}
+
+// TestAutoRetriggerTriage_NoActiveSession_TriggersTriage verifies the success
+// path: an orphaned idea-status item with no fresh triage session gets a new
+// triage run, and (mirroring the existing TriggerTriage happy-path tests) a
+// successful headless result carries the item all the way to ready — proving
+// the respawn is not just "detected," it actually unsticks the item.
+func TestAutoRetriggerTriage_NoActiveSession_TriggersTriage(t *testing.T) {
+	storage := createTestStorage(t)
+	pool := &fakeHeadlessPool{response: validTriageJSON()}
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+	svc.SetHeadlessPool(pool)
+
+	item, err := storage.CreateBacklogItem(context.Background(), session.BacklogItemData{
+		Title:    "Orphaned triage item with nothing in flight",
+		RepoPath: t.TempDir(),
+		Status:   string(session.BacklogStatusIdea),
+	})
+	require.NoError(t, err)
+
+	respawnErr := svc.AutoRetriggerTriage(context.Background(), item.ID)
+	require.NoError(t, respawnErr)
+
+	require.Eventually(t, func() bool {
+		return pool.callCount() == 1
+	}, 5*time.Second, 50*time.Millisecond, "expected exactly one headless triage call")
+
+	require.Eventually(t, func() bool {
+		updated, loadErr := storage.GetBacklogItem(context.Background(), item.ID)
+		return loadErr == nil && updated.Status == string(session.BacklogStatusReady)
+	}, 5*time.Second, 50*time.Millisecond, "respawned triage should carry the item to ready on success")
+}
+
 // TestSpawnSessionFromItem_should_UseModeSpecificInitialPrompt_When_AutoSpawnSessionAndNonDefaultPipelineMode
 // (Story 1.5.5) verifies inst.Prompt (and therefore NewAutonomousDriver's goal) contains
 // the mode's rendered InitialPromptTemplate, not BuildTokenBudgetedPrompt's default

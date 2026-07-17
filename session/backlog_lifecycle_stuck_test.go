@@ -518,6 +518,76 @@ func TestReconcileOrphanedTriageItems_should_notFlag_When_TriageSessionRecent(t 
 	assert.Empty(t, open, "a recently-started triage session must not be flagged as orphaned")
 }
 
+// TestReconcileOrphanedTriageItems_AutoRetriggersTriage_When_SessionStale is the
+// regression test for the "detected and notified, but nothing ever re-triggers
+// triage" gap: reconcileOrphanedTriageItems previously only wrote a stuck row and
+// notified an operator — its own doc comment claimed the item "self-heals once it
+// leaves idea," but nothing ever moved it out of idea, so it sat there forever
+// (docs/tasks/backlog-feature-improvement.md, row 8). AutoRetriggerTriage must fire
+// on the same tick the staleness threshold is first crossed — orphaned-triage has
+// no separate post-notify grace period the way abandoned-review does; the 2h
+// staleness check itself is the "don't act on first detection" gate, mirroring
+// reconcileStaleWorkSessions.
+func TestReconcileOrphanedTriageItems_AutoRetriggersTriage_When_SessionStale(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item := newOrphanedTriageTestItem(t, storage, er, 3*time.Hour) // beyond maxWorkSessionStaleness (2h)
+
+	listener := NewBacklogLifecycleListener(storage)
+	respawner := newFakeTriageRespawner()
+	listener.SetTriageRespawner(respawner)
+
+	listener.reconcileOrphanedTriageItems(ctx, er)
+
+	select {
+	case id := <-respawner.calls:
+		assert.Equal(t, item.ID, id)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for AutoRetriggerTriage to be dispatched")
+	}
+
+	// Detection-only for status: this reconciler must never mutate item status
+	// itself — only the respawned triage session (if any) may do that.
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusIdea), fetched.Status)
+
+	// Second tick must not dispatch a second time for the same stuck-row
+	// occurrence (the notify-once gate — row.NotifiedAt already set — blocks
+	// re-entry into the notify+respawn block).
+	listener.reconcileOrphanedTriageItems(ctx, er)
+	select {
+	case id := <-respawner.calls:
+		t.Fatalf("must not respawn a second time for the same occurrence, got call for item=%s", id)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestReconcileOrphanedTriageItems_NoRespawn_WhenNoTriageRespawnerConfigured
+// verifies reconcileOrphanedTriageItems degrades gracefully (notification only,
+// no panic) when no TriageRespawner has been wired — the same nil-safe default
+// every other injected spawner on this listener already follows.
+func TestReconcileOrphanedTriageItems_NoRespawn_WhenNoTriageRespawnerConfigured(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	newOrphanedTriageTestItem(t, storage, er, 3*time.Hour)
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+	// Deliberately not calling SetTriageRespawner.
+
+	listener.reconcileOrphanedTriageItems(ctx, er)
+
+	assert.Equal(t, []string{"Triage may be stuck"}, notifier.titles(), "notification must still fire with no respawner wired")
+}
+
 func TestSelfHealSweep_should_resolveOrphanedTriageRow_When_ItemLeavesIdea(t *testing.T) {
 	storage, cleanup := createTestStorage(t)
 	defer cleanup()

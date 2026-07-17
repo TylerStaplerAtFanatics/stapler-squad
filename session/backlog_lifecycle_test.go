@@ -509,6 +509,25 @@ func (f *fakePRFixSpawner) AutoReopenForPRFix(ctx context.Context, itemID string
 	return nil
 }
 
+// fakeTriageRespawner is a test double implementing TriageRespawner. Calls are
+// delivered on a buffered channel (not a plain bool/counter) because
+// reconcileOrphanedTriageItems dispatches AutoRetriggerTriage asynchronously
+// (bounded by reviewSem) — tests must synchronize on the channel rather than
+// racing a direct field read. Mirrors fakeReviewRespawner's shape for the
+// analogous abandoned-review respawn path.
+type fakeTriageRespawner struct {
+	calls chan string
+}
+
+func newFakeTriageRespawner() *fakeTriageRespawner {
+	return &fakeTriageRespawner{calls: make(chan string, 8)}
+}
+
+func (f *fakeTriageRespawner) AutoRetriggerTriage(ctx context.Context, itemID string) error {
+	f.calls <- itemID
+	return nil
+}
+
 // TestBacklogLifecycleListener_IgnoresEventsWhenDisabled verifies that when the listener
 // is disabled via SetEnabled(false), lifecycle events from an Instance are silently dropped
 // and no storage side effects occur.
