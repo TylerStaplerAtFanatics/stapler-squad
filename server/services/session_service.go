@@ -404,7 +404,7 @@ func (s *SessionService) loadInstancesWithWiring() ([]*session.Instance, error) 
 		// the Claude process restarts without a session UUID or MCP connection.
 		// Only applied in-memory; the DB value is updated lazily via SaveInstances.
 		if mcpURL := s.resolveMCPServerURL(); inst.MCPServerURL == "" && mcpURL != "" {
-			inst.MCPServerURL = mcpURL
+			inst.SetMCPServerURL(mcpURL)
 		}
 	}
 
