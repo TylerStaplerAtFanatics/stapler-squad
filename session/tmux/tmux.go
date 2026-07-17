@@ -29,7 +29,6 @@ import (
 
 const ProgramClaude = "claude"
 
-
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
 
