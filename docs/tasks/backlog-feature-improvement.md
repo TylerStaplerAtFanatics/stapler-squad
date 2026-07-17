@@ -115,6 +115,46 @@ re-audit fabricated a report claiming it had spawned two fix sessions (one mergi
 Discarded. Flagging in case the same fabrication pattern shows up in other
 automatically-generated status reports feeding into `ListStuckBacklogItems` or similar.
 
+## Update — 2026-07-17 (later still): CI-pending-treated-as-green bug + PR mergeability policy scoped
+
+Ran the `backlog-pr-mergeability-policy` SDD scoping pass (phases 1-4, planning only,
+artifacts at `project_plans/backlog-pr-mergeability-policy/` on worktree branch
+`worktree-agent-a17f6a3c8f4ac9297` — not yet merged to main, needs `git merge` of that
+worktree to land). Two rounds of adversarial review on the plan surfaced a real,
+currently-live bug, independently confirmed by direct code read (not just the plan's
+claim):
+
+**`GetPRStatus` never distinguishes "CI still running" from "CI passed."**
+`session/git/worktree_git.go:511-533` only sets `status.CIFailing = true` on an explicit
+`FAILURE`/`TIMED_OUT`/`CANCELLED`/`ERROR` check conclusion/state — a check that's merely
+`in_progress`/`queued` leaves `CIFailing` false. `ReconcilePRPending`'s healthy-PR branch
+(`session/backlog_lifecycle.go:1584`, `if !prStatus.CIFailing && !prStatus.HasBlockingReviews
+&& !prStatus.HasConflicts`) treats that identically to "CI passed," so
+`prReadyToMergeSolo`/`markPRReadyUnmerged` can fire the "ready to merge" operator
+notification while checks are still running — a false-positive readiness signal, directly
+contrary to the "notify only when truly ready" goal. Needs a tri-state CI signal
+(pending/passing/failing), not a bool — the scoped plan's `implementation/plan.md`
+already designs this fix as part of its Behavior 3 work; could also be pulled out and
+fixed standalone via `sdd:fix-bug` before the full policy feature is built, since it's a
+narrow, independently-shippable correctness fix.
+
+**Also surfaced by the plan's research phase** (independently converges with this doc's
+earlier finding): `pushAndCreatePR` is the *only* writer of `pr_pending` and only fires on
+a PASS gate verdict — a PR created out-of-band via `RunOneShot` (the Review Queue's manual
+path) never reaches `pr_pending`, making `ReconcilePRPending` structurally blind to it.
+**This is the same desync bug PR #160 already fixes** — the plan's Phase 0 precondition is
+already satisfied once #160 merges, no duplicate work needed.
+
+**Design tension to resolve before Phase 5 implementation**: the plan's ADR-024 frames
+today's unconditional `EnablePRAutoMerge` call (fires after every PR, regardless of any
+per-item policy) as the unsafe status quo, and designs the new auto-merge arm to be
+gated behind the per-item opt-in flag instead. This directly conflicts with this session's
+decision to enable `allow_auto_merge` at the GitHub repo-settings level for all PRs
+unconditionally (see the CI-mergeability update above). Needs an explicit choice when
+Phase 5 starts: keep repo-level auto-merge for everyone (simpler, already done) vs. gate
+it per-item as the plan designs (safer trust boundary, matches the plan's ADR reasoning,
+but requires reverting/narrowing today's repo-level change).
+
 ## Live State (as of this audit)
 
 6 backlog items currently stuck via `ListStuckBacklogItems`:
