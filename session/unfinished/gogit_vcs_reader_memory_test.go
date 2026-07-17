@@ -57,7 +57,7 @@ func TestEffectiveCacheMaxEntries_should_shrink_When_PressureIncreases(t *testin
 	withHeapInUse(t, severeMemoryPressureThreshold+1)
 	severe := effectiveCacheMaxEntries()
 
-	if !(normal > high && high > severe) {
+	if normal <= high || high <= severe {
 		t.Errorf("expected strictly decreasing caps under increasing pressure, got normal=%d high=%d severe=%d", normal, high, severe)
 	}
 	if severe < 1 {

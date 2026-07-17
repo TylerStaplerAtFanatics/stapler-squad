@@ -721,7 +721,7 @@ func TestFindStuckReviewItems_ReturnsAbandonedItem_ExcludesActiveAndGateless(t *
 	stuck, err := er.FindStuckReviewItems(ctx)
 	require.NoError(t, err)
 
-	var gotIDs []string
+	gotIDs := make([]string, 0, len(stuck))
 	for _, item := range stuck {
 		gotIDs = append(gotIDs, item.ID.String())
 	}

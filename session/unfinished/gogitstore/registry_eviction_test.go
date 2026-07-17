@@ -295,7 +295,7 @@ func TestRegistry_effectiveMaxEntries_should_shrink_When_PressureIncreases(t *te
 	withRegistryHeapPressure(t, registrySevereMemoryPressureThreshold+1)
 	severe := reg.effectiveMaxEntries()
 
-	if !(normal >= high && high > severe) {
+	if normal < high || high <= severe {
 		t.Errorf("expected non-increasing caps under increasing pressure, got normal=%d high=%d severe=%d", normal, high, severe)
 	}
 	if severe < 1 {
