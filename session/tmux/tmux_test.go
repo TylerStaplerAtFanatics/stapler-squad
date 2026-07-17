@@ -275,6 +275,27 @@ func TestEnsureServerRunning_StartsServer(t *testing.T) {
 		"should be able to create a session on the newly started server — server must be running")
 }
 
+// TestStartServerSucceededDespiteError covers the flaky-under-load scenario behind
+// TestEnsureServerRunning_NoOp's original failure mode: under heavy concurrent tmux
+// usage, checkServerNotRunning's list-sessions call can itself transiently report
+// "server exited unexpectedly" against a socket that actually has a live server,
+// which sends EnsureServerRunning down the start-server path even though a server
+// is already running -- and that start-server call then hits the same transient
+// failure. Rather than reproduce that real timing race (system-load dependent,
+// not deterministic), this tests the recovery decision in isolation via an
+// injected checker.
+func TestStartServerSucceededDespiteError(t *testing.T) {
+	t.Run("recovers when a recheck shows the server is actually running", func(t *testing.T) {
+		got := startServerSucceededDespiteError(func() bool { return false }) // false = is running
+		require.True(t, got, "a start-server error should be swallowed when the server is actually up")
+	})
+
+	t.Run("does not recover when the server genuinely is not running", func(t *testing.T) {
+		got := startServerSucceededDespiteError(func() bool { return true }) // true = not running
+		require.False(t, got, "a start-server error must still surface when the server really isn't running")
+	})
+}
+
 // TestCreateKeepaliveSession verifies that a keepalive session is created and
 // that calling it again is idempotent.
 func TestCreateKeepaliveSession(t *testing.T) {
