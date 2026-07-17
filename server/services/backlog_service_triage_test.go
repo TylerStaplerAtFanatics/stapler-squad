@@ -111,6 +111,109 @@ func TestNotifyReworkCapHit_should_persistRowSurvivingRestart_When_CapHit(t *tes
 	assert.Equal(t, domain.StuckReasonReworkCap, open[0].Reason)
 }
 
+// --- AutoReopenAfterFailedReview: bouncing escalation (2026-07-17 autonomy-gap audit) ---
+
+// TestAutoReopenAfterFailedReview_should_escalateToReworkCap_When_BouncingBelowWorkCountCap
+// is the regression test for the gap found in the 2026-07-17 autonomy-gap audit:
+// reconcileBouncingItems could flag an item "bouncing" (>= bounceThreshold
+// in_progress<->review round trips with no PASS verdict) but had no way to stop the
+// auto-reopen loop itself — it only sends a notification, so a bouncing item just kept
+// bouncing forever. This can happen even while workCount (the existing rework-cap
+// counter, which only counts actually-created SessionRoleWork ItemSessions) stays well
+// under maxAutoReworkIterations, e.g. because a prior spawn failure's rollback records an
+// extra in_progress->review status event without a new work session. AutoReopenAfterFailedReview
+// must now apply the same bounce test as reconcileBouncingItems and — when it trips —
+// escalate through notifyReworkCapHit's terminal "leave for manual review" treatment
+// (the same StuckReasonReworkCap row and notification shape rework_cap already uses)
+// rather than respawning yet again.
+func TestAutoReopenAfterFailedReview_should_escalateToReworkCap_When_BouncingBelowWorkCountCap(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Bouncing item under the rework-session cap",
+		Status: string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	// 3 in_progress->review round trips (bounceThreshold), ending in review — the
+	// state a failed review verdict leaves the item in. Only one work session is
+	// ever created below, deliberately under maxAutoReworkIterations (3), so the
+	// pre-existing workCount cap check alone would NOT catch this.
+	for i := 0; i < 2; i++ {
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusReview, nil)
+		require.NoError(t, err)
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusInProgress, nil)
+		require.NoError(t, err)
+	}
+	_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusReview, nil)
+	require.NoError(t, err)
+
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "work-1",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+
+	reopenErr := svc.AutoReopenAfterFailedReview(ctx, item.ID)
+	require.NoError(t, reopenErr, "escalating to manual review is the expected outcome, not an error")
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusReview), fetched.Status,
+		"a bouncing item must stay in review, not be silently respawned again")
+	assert.Empty(t, creator.calls, "a bouncing item must not spawn another work session once escalated")
+
+	open, err := storage.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, domain.StuckReasonReworkCap, open[0].Reason,
+		"bouncing must escalate to the SAME terminal state rework_cap uses, not a separate mechanism")
+	assert.Contains(t, open[0].Context, "bouncing")
+}
+
+// TestAutoReopenAfterFailedReview_should_reopenNormally_When_BelowBounceThreshold verifies
+// the escalation added above does not change behavior for the common case: an item with
+// fewer than bounceThreshold cycles and under the work-session cap must still reopen and
+// spawn a new work session exactly as before.
+func TestAutoReopenAfterFailedReview_should_reopenNormally_When_BelowBounceThreshold(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:    "Item reopening normally",
+		RepoPath: repoPath,
+		Status:   string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	// Only 1 round trip — well below bounceThreshold (3).
+	_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusReview, nil)
+	require.NoError(t, err)
+
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+
+	reopenErr := svc.AutoReopenAfterFailedReview(ctx, item.ID)
+	require.NoError(t, reopenErr)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusInProgress), fetched.Status)
+	assert.Len(t, creator.calls, 1, "a normal reopen must still spawn a new work session")
+
+	open, err := storage.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "a normal reopen must not be flagged stuck")
+}
+
 // --- AutoReopenForPRFix: live-bug regression (ReconcilePRPending churn) ---
 
 // TestAutoReopenForPRFix_ActiveWorkSession_SkipsWithoutStatusChurn is the regression

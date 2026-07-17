@@ -529,6 +529,44 @@ func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID
 		return nil
 	}
 
+	// Bounce check: workCount alone can under-count non-convergence. It only
+	// counts SessionRoleWork ItemSessions actually created, but the rollback
+	// path below (when a re-spawn fails after the review->in_progress
+	// transition) writes an in_progress->review status event WITHOUT a new
+	// work session, so the in_progress<->review cycle count can outpace
+	// workCount. That is the gap the 2026-07-17 autonomy-gap audit flagged:
+	// an item can bounce indefinitely — thrashing between in_progress and
+	// review with no PASS verdict — without ever tripping the workCount cap
+	// above, because reconcileBouncingItems (the periodic detector for this
+	// same condition) only notifies; it has no way to stop the auto-reopen
+	// loop itself. Apply the identical isBouncing test here, at the actual
+	// respawn choke point, and — if it trips — route through the SAME
+	// notifyReworkCapHit terminal treatment used above so the operator gets
+	// one consistent "needs manual attention" signal instead of two
+	// differently-shaped notifications for what is the same underlying
+	// non-converging-review problem.
+	since := time.Now().Add(-session.BounceLookback)
+	cycleCount, cycleErr := s.storage.CountReviewCyclesSince(ctx, itemID, since)
+	if cycleErr != nil {
+		// Best-effort, like reconcileBouncingItems' own error handling: the
+		// workCount cap above is still the authoritative safety net, so a
+		// failure to evaluate this supplementary check must not block a
+		// legitimate reopen.
+		log.WarningLog.Printf("[AutoReopenAfterFailedReview] CountReviewCyclesSince item=%s: %v", itemID, cycleErr)
+	} else {
+		outcome, verdictErr := s.storage.GetMostRecentReviewVerdictForItem(ctx, itemID)
+		if verdictErr != nil {
+			log.WarningLog.Printf("[AutoReopenAfterFailedReview] GetMostRecentReviewVerdictForItem item=%s: %v", itemID, verdictErr)
+		}
+		hasPass := outcome == session.ReviewOutcomePass
+		if session.IsBouncing(cycleCount, hasPass) {
+			log.InfoLog.Printf("[AutoReopenAfterFailedReview] item %s bounced %d times in %s with no PASS verdict; leaving for manual action", itemID, cycleCount, session.BounceLookback)
+			s.notifyReworkCapHit(ctx, itemID, item.Title, session.BacklogStatus(item.Status),
+				fmt.Sprintf("after bouncing %d times in %s with no PASS verdict", cycleCount, session.BounceLookback))
+			return nil
+		}
+	}
+
 	// Transition review → in_progress with a precondition to guard against races
 	// (e.g. concurrent manual reopen firing at the same time).
 	updatedAt := item.UpdatedAt

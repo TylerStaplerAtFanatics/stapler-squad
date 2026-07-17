@@ -62,6 +62,24 @@ func isBouncing(cycleCount int, hasPass bool) bool {
 	return cycleCount >= bounceThreshold && !hasPass
 }
 
+// BounceThreshold and BounceLookback are exported aliases of bounceThreshold and
+// bounceLookback so server/services can apply the identical non-converging-cycle
+// test AutoReopenAfterFailedReview uses to decide whether a bouncing item should
+// be escalated to the same terminal "leave for manual review" state
+// notifyReworkCapHit already uses for the rework-cap case, instead of respawning
+// indefinitely (2026-07-17 autonomy-gap audit: bouncing items had no escalation,
+// only a notification).
+const (
+	BounceThreshold = bounceThreshold
+	BounceLookback  = bounceLookback
+)
+
+// IsBouncing is an exported wrapper around isBouncing for cross-package reuse —
+// see BounceThreshold/BounceLookback above.
+func IsBouncing(cycleCount int, hasPass bool) bool {
+	return isBouncing(cycleCount, hasPass)
+}
+
 // prReadyToMergeSolo is the solo-operator PR readiness predicate (ADR-001
 // "Single-user readiness"). It applies every blocking-exclusion
 // github.DerivePRPriority uses (draft, changes-requested, CI-failure, not

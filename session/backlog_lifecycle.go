@@ -1243,9 +1243,20 @@ func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Cont
 
 // reconcileBouncingItems flags items that have crossed in_progress->review
 // >= bounceThreshold times within bounceLookback with no recorded PASS
-// verdict — a non-converging rework cycle that never hits the rework cap
-// (root cause #4). Best-effort: query/notify failures are logged, never
-// returned.
+// verdict — a non-converging rework cycle that can outpace the rework cap's
+// work-session count (root cause #4; see the isBouncing comment on
+// server/services/backlog_service_triage.go's AutoReopenAfterFailedReview,
+// which applies this same test synchronously at the respawn choke point and
+// escalates to notifyReworkCapHit's terminal state the moment a review
+// verdict lands). This periodic sweep is the backstop for that synchronous
+// check — e.g. a manual reopen that bypasses AutoReopenAfterFailedReview —
+// so an item can never bounce past the threshold without eventually being
+// escalated. When the synchronous check has already escalated the item (an
+// open rework_cap row already exists), this sweep skips its own notification
+// to avoid two differently-shaped "needs manual attention" signals for the
+// same underlying condition; it still marks bouncing notified so the row
+// stops being re-evaluated every tick. Best-effort: query/notify failures
+// are logged, never returned.
 func (l *BacklogLifecycleListener) reconcileBouncingItems(ctx context.Context, er *EntRepository) {
 	// Scan items in the two statuses a bouncing cycle spans; a converged item
 	// (done) is handled by the self-heal sweep, not re-flagged here.
@@ -1290,6 +1301,18 @@ func (l *BacklogLifecycleListener) reconcileBouncingItems(ctx context.Context, e
 		}
 		row, ok := findOpenStuckStateFor(rows, item.ID, domain.StuckReasonBouncing)
 		if !ok || row.NotifiedAt != nil {
+			continue
+		}
+		// Coordinate with the synchronous escalation in AutoReopenAfterFailedReview:
+		// if this same non-converging condition already tripped the terminal
+		// rework_cap treatment (an open row already exists), the operator has
+		// already received the one consistent "needs manual attention" signal —
+		// skip the differently-shaped "thrashing" notification, but still mark
+		// bouncing notified so this row isn't re-checked every tick.
+		if _, escalated := findOpenStuckStateFor(rows, item.ID, domain.StuckReasonReworkCap); escalated {
+			if _, notifyErr := er.MarkStuckNotified(ctx, item.ID, domain.StuckReasonBouncing); notifyErr != nil {
+				log.WarningLog.Printf("[BacklogLifecycle] reconcileBouncingItems MarkStuckNotified (already escalated) item=%s: %v", item.ID, notifyErr)
+			}
 			continue
 		}
 		log.WarningLog.Printf("[BacklogLifecycle] item %s bouncing (%d cycles in %s, no PASS)", item.ID, count, bounceLookback)

@@ -940,6 +940,20 @@ func (s *Storage) GetMostRecentReviewVerdictForItem(ctx context.Context, itemID 
 	return er.GetMostRecentReviewVerdictForItem(ctx, itemID)
 }
 
+// CountReviewCyclesSince counts in_progress->review BacklogStatusEvent transitions
+// for itemID since the given time — the same bounce-cycle count reconcileBouncingItems
+// uses. Exported (unlike the EntRepository method it wraps) so server/services can
+// apply the identical bounce check AutoReopenAfterFailedReview uses to decide whether
+// to escalate to the terminal rework-cap state. Returns 0, nil for unsupported storage
+// backends, consistent with GetMostRecentReviewVerdictForItem's fallback above.
+func (s *Storage) CountReviewCyclesSince(ctx context.Context, itemID string, since time.Time) (int, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return 0, nil
+	}
+	return er.CountReviewCyclesSince(ctx, itemID, since)
+}
+
 // SaveReviewVerdict upserts a ReviewVerdict for a given ItemSession UUID.
 func (s *Storage) SaveReviewVerdict(ctx context.Context, itemSessionID string, verdict ReviewVerdictData) error {
 	er, ok := s.repo.(*EntRepository)

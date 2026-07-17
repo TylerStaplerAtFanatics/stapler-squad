@@ -645,6 +645,56 @@ func TestReconcileBouncingItems_should_notFlag_When_BelowThresholdOrHasPass(t *t
 	assert.Empty(t, open, "an item with fewer than bounceThreshold cycles must not be flagged")
 }
 
+// TestReconcileBouncingItems_should_skipDuplicateNotify_When_AlreadyEscalatedToReworkCap
+// is the regression test for the two-notification-shapes gap flagged in the 2026-07-17
+// autonomy-gap audit: AutoReopenAfterFailedReview now applies this same bounce test
+// synchronously and escalates through notifyReworkCapHit (writing a StuckReasonReworkCap
+// row) the moment a review verdict lands. When this periodic sweep later observes the
+// same bouncing condition, it must not also fire its own differently-shaped "thrashing"
+// notification — the operator already has the one consistent "needs manual attention"
+// signal. The bouncing row must still be written (for UI visibility/history) and marked
+// notified (so it isn't re-evaluated every tick), just without a second toast.
+func TestReconcileBouncingItems_should_skipDuplicateNotify_When_AlreadyEscalatedToReworkCap(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:  "Already-escalated bouncing item",
+		Status: string(BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusReview, nil)
+		require.NoError(t, err)
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, nil)
+		require.NoError(t, err)
+	}
+
+	// Simulate the synchronous escalation (AutoReopenAfterFailedReview, in
+	// server/services) having already fired for this exact non-converging
+	// condition before this periodic sweep runs.
+	applied, err := er.MarkStuck(ctx, item.ID, domain.StuckReasonReworkCap, BacklogStatusInProgress,
+		"hit the 3-iteration rework cap after bouncing 3 times in 24h0m0s with no PASS verdict")
+	require.NoError(t, err)
+	require.True(t, applied)
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcileBouncingItems(ctx, er)
+
+	assert.Empty(t, notifier.titles(), "must not send a second, differently-shaped notification once already escalated to rework_cap")
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	bouncingRow, ok := findOpenStuckStateFor(open, item.ID, domain.StuckReasonBouncing)
+	require.True(t, ok, "the bouncing row must still be written for UI visibility")
+	assert.NotNil(t, bouncingRow.NotifiedAt, "must be marked notified so it is not re-evaluated every tick")
+}
+
 // --- Story 2.1.6: push_failed ---
 
 // TestStayInReviewAndNotify_should_markPushFailedRow_When_PushAndCreatePRFails
