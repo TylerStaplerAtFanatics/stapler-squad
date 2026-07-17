@@ -9,6 +9,39 @@ and four quality-skill passes (`quality:architecture-review`, `ux:review`, `code
 Findings are bucketed: **[1] reconciliation bugs**, **[2] manual gates that could be
 policy-driven**, **[3] hardcoded pipeline steps that need a configurability seam**.
 
+## Update — 2026-07-17 (evening): systematic autonomy-gap audit — remaining "babysitting" reasons
+
+Prompted by: "do we have any other babysitting gaps that would keep our backlog features
+from delivering fully fleshed out pull requests autonomously?" Went through every
+`StuckReason` and its detector to check notify-only vs. actually-auto-recovers.
+
+**Confirmed NOT a threat to autonomy** (re-verified, contrary to the 2026-07-14 finding):
+`mcp__stapler-squad__create_session`'s "skipping controller startup" issue is isolated to
+that MCP/external-tool code path. `SpawnSessionFromItem` → `CreateWorktreeSession`/
+`CreateDirectorySession` (`server/services/session_service.go:759,807`) call
+`instance.Start(true)` + `SetStatusManager()` + `StartController()` synchronously —
+backlog-spawned sessions are fully wired and drivable from creation, no human-opens-UI
+dependency. Safe to stop worrying about this one.
+
+**7 StuckReasons, only `pr_pending`'s handling (`ReconcilePRPending`/`AutoReopenForPRFix`)
+and `handleReviewSessionExited`'s no-verdict case actually auto-recover. Everything else is
+notify-only**:
+
+| Reason | Auto-recovery? | Verdict |
+|---|---|---|
+| `abandoned_review` | No (fix in flight, PR #168, not yet merged) | Real gap |
+| `orphaned_triage` | No — **and the code comment falsely claims it self-heals**; it only `MarkStuck`+notifies, never re-triggers triage | Real gap + misleading comment, fix next |
+| `bouncing` | No | Real gap — no escalation/different-approach retry once non-converging, just a notification |
+| `pr_ready_unmerged` | No | Gap — no direct-merge fallback if `EnablePRAutoMerge` silently doesn't take effect |
+| `stale_work` | No | Deliberate — "a slow-but-alive agent should not be force-stopped" |
+| `rework_cap` | No | Deliberate (human-judgment stopping point) |
+| `push_failed` | No | Mostly deliberate (preserves committed-but-unpushed work), but the transient-cause case (auth/network) is cheap to auto-retry and isn't |
+
+**Recommended fix order**: `orphaned_triage` (worst — misleading comment will fool the next
+reader too) → `bouncing` (thrashes indefinitely) → `pr_ready_unmerged` direct-merge fallback
+→ `push_failed` transient-retry (lowest priority, `rework_cap`/`stale_work` are working as
+designed).
+
 ## Update — 2026-07-17: Why nothing is reaching merge (root cause found)
 
 User's direct complaint this session: "I still don't see anything going through the PR
