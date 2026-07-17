@@ -1485,21 +1485,113 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *Ba
 	}
 
 	// Transition to pr_pending.
-	precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview)}
-	if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusPRPending, precondition); transErr != nil {
+	if transErr := l.resolveToPRPending(ctx, item.ID, "", "pushAndCreatePR"); transErr != nil {
 		log.ErrorLog.Printf("[BacklogLifecycle] pushAndCreatePR pr_pending transition item=%s: %v", item.ID, transErr)
 		return
 	}
 	log.InfoLog.Printf("[BacklogLifecycle] pushAndCreatePR item=%s → pr_pending (PR #%d %s)", item.ID, prNumber, prURL)
+}
 
-	// The push/PR-creation just succeeded (possibly after a prior failed
-	// attempt) and the item is leaving review — resolve any open push_failed
-	// or abandoned_review rows immediately rather than waiting for the
-	// self-heal sweep's next tick (Task 2.1.5a).
-	if er, ok := l.storage.repo.(*EntRepository); ok {
-		l.resolveStuckLogged(ctx, er, item.ID, domain.StuckReasonPushFailed, "pushAndCreatePR")
-		l.resolveStuckLogged(ctx, er, item.ID, domain.StuckReasonAbandonedReview, "pushAndCreatePR")
+// resolveToPRPending performs the transition+resolve tail shared by every
+// path that moves a backlog item from review to pr_pending because a PR now
+// exists: the status transition itself, then — on success — resolving any
+// open push_failed/abandoned_review rows immediately rather than waiting for
+// the self-heal sweep's next tick (Task 2.1.5a). note is attached to the
+// transition's audit event; caller identifies the log prefix used by the
+// (always best-effort) stuck-resolution calls. Returns the transition error,
+// if any, so callers can apply their own logging/fallback behavior.
+func (l *BacklogLifecycleListener) resolveToPRPending(ctx context.Context, itemID, note, caller string) error {
+	precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview), Note: note}
+	if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, itemID, BacklogStatusPRPending, precondition); transErr != nil {
+		return transErr
 	}
+	if er, ok := l.storage.repo.(*EntRepository); ok {
+		l.resolveStuckLogged(ctx, er, itemID, domain.StuckReasonPushFailed, caller)
+		l.resolveStuckLogged(ctx, er, itemID, domain.StuckReasonAbandonedReview, caller)
+	}
+	return nil
+}
+
+// RecordPRCreatedOutOfBand records a PR that was created for workSessionUUID
+// through a path other than pushAndCreatePR and transitions the linked
+// backlog item straight to pr_pending via the shared resolveToPRPending tail.
+// (Named "Record", not "Notify", to avoid confusion with l.notify — the
+// user-facing toast helper used elsewhere in this file; this method mutates
+// backlog-item state, it doesn't just surface a message.)
+//
+// Why this exists: pushAndCreatePR is the *only* place that ever writes
+// pr_pending, but it is reached exclusively via the automated
+// handleReviewSessionExited(PASS) → pushAndCreatePR call chain. The Review
+// Queue's manual "Create PR" button (web-app/src/components/sessions/
+// ReviewQueuePanel.tsx) drives a completely separate path —
+// SessionService.RunOneShot (server/services/session_service.go) — that runs
+// an ad hoc `claude -p <prompt>` in the worktree and only ever persists the
+// resulting PR URL onto the *session* record (inst.SetGitHubPR). It has no
+// knowledge of backlog items at all, so a backlog-linked item whose PR was
+// created this way never left "review" — ReconcilePRPending's FindPRPendingItems
+// query structurally cannot find it, since it only looks at items already in
+// pr_pending. Left in "review", the item instead accumulates
+// in_progress↔review bounce churn from unrelated reconciliation and eventually
+// reports stuck-reason BOUNCING instead of the correct pr_ready_unmerged. This
+// is the root cause traced in docs/tasks/backlog-feature-improvement.md's
+// "second, compounding root cause" note for PR #157.
+//
+// No-op if the listener is disabled, the caller has no PR info, the session
+// isn't backlog-linked, or the item isn't currently "review" (avoids
+// clobbering any other in-flight transition). That guard narrows, but does
+// not eliminate, a race with a concurrent pushAndCreatePR call on the same
+// item: TransitionBacklogItemStatus's precondition check is a read-then-write
+// (Get, check in memory, then Save) rather than a true atomic compare-and-
+// swap, so both calls can observe "review" and both succeed. That's harmless
+// here — both write the same target status and equivalent PR fields — but it
+// means two BacklogStatusEvent audit rows can be written instead of one, not
+// that exactly one call is guaranteed to win.
+//
+// Known limitation (not fixed here — see PR description): unlike
+// pushAndCreatePR, this does not attempt EnablePRAutoMerge, since it has no
+// worktree/git handle to call it with; a PR created via this path currently
+// requires a manual merge. extractPRURL's freeform-text parsing also means
+// prURL/prNumber are not independently verified against GitHub before being
+// persisted — acceptable for this single-operator tool's threat model, but
+// worth knowing if RunOneShot's trust boundary ever changes.
+func (l *BacklogLifecycleListener) RecordPRCreatedOutOfBand(ctx context.Context, workSessionUUID, prURL string, prNumber int) {
+	if !l.enabled.Load() || prURL == "" || prNumber <= 0 {
+		return
+	}
+	is, err := l.storage.GetItemSessionBySessionUUID(ctx, workSessionUUID)
+	if err != nil {
+		// Not backlog-linked (or lookup failed) — nothing to reconcile. Debug,
+		// not Error: the overwhelming majority of RunOneShot callers are
+		// non-backlog sessions, so this is the expected common case.
+		log.DebugLog.Printf("[BacklogLifecycle] RecordPRCreatedOutOfBand GetItemSessionBySessionUUID(%s): %v", workSessionUUID, err)
+		return
+	}
+	item, err := l.storage.GetBacklogItem(ctx, is.BacklogItemID)
+	if err != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] RecordPRCreatedOutOfBand GetBacklogItem session=%s item=%s: %v", workSessionUUID, is.BacklogItemID, err)
+		return
+	}
+	if item.Status != string(BacklogStatusReview) {
+		// Only review→pr_pending is a valid transition here. If the item is
+		// already pr_pending (e.g. pushAndCreatePR beat us to it) or anywhere
+		// else, leave it alone rather than fighting the item's real owner.
+		return
+	}
+
+	prURLCopy, prNumCopy := prURL, prNumber
+	if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{
+		PrURL:    &prURLCopy,
+		PrNumber: &prNumCopy,
+	}, nil); updateErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] RecordPRCreatedOutOfBand store PR fields item=%s: %v", item.ID, updateErr)
+	}
+
+	note := "PR created via manual Review Queue Create-PR flow (RunOneShot), not the automated pushAndCreatePR path"
+	if transErr := l.resolveToPRPending(ctx, item.ID, note, "RecordPRCreatedOutOfBand"); transErr != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] RecordPRCreatedOutOfBand pr_pending transition item=%s: %v", item.ID, transErr)
+		return
+	}
+	log.InfoLog.Printf("[BacklogLifecycle] RecordPRCreatedOutOfBand item=%s session=%s → pr_pending (PR #%d %s, via manual RunOneShot flow)", item.ID, workSessionUUID, prNumber, prURL)
 }
 
 // ReconcilePRPending polls items in pr_pending status. It transitions to done
