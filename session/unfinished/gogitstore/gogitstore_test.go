@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -34,15 +35,62 @@ import (
 
 func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.local",
-		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.local",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	// These fixtures deliberately live on a RAM-backed tmpfs (see this
+	// file's package doc comment above) rather than real disk, and this
+	// package's `git gc --aggressive` calls run alongside every other
+	// package's tests under CI's combined `-race -covermode=atomic` sweep.
+	// A 2026-07-17 CI run (job 29549848133) showed every gogitstore test
+	// that calls buildPackedFixture fail simultaneously with an identical
+	// signature — `git gc` itself exiting 128 ("unable to read <hash>",
+	// "could not find pack '.tmp-N-pack-....pack'", "failed to run
+	// repack") — not a single gogitstore assertion failure among them, and
+	// this exact code proved correct across dozens of repeated local runs
+	// (including under -race and constrained GOMAXPROCS). That signature is
+	// git's repack step losing its own temp pack file mid-write, consistent
+	// with transient tmpfs/memory pressure from many concurrent test
+	// binaries sharing one runner's RAM — an environment hiccup, not a
+	// fixture logic error. `git gc` is idempotent, so retrying a bounded
+	// number of times is a safe, targeted absorber for this specific class
+	// of flake; it does not mask a real failure, since a genuinely broken
+	// fixture fails identically on every attempt.
+	const maxAttempts = 3
+	var lastErr error
+	var lastOut []byte
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.local",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.local",
+		)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return
+		}
+		lastErr, lastOut = err, out
+		if !gitCommandIsRetryable(args) || attempt == maxAttempts {
+			break
+		}
+		t.Logf("git %v failed (attempt %d/%d), retrying: %v\n%s", args, attempt, maxAttempts, err, out)
+		time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
 	}
+	t.Fatalf("git %v failed: %v\n%s", args, lastErr, lastOut)
+}
+
+// gitCommandIsRetryable reports whether args is a git subcommand known to be
+// safe to retry after a transient subprocess failure — currently just `gc`,
+// which is idempotent (re-running it after a failed/partial repack simply
+// redoes the repack) and is the specific command observed failing
+// non-deterministically in CI (see gitRun's doc comment). Deliberately not
+// blanket-applied to every git invocation: a real failure in e.g. `commit`
+// or `add` should still fail the test on the first attempt.
+func gitCommandIsRetryable(args []string) bool {
+	for _, a := range args {
+		if a == "gc" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPackedFixture creates a repo at dir with numCommits commits across a
