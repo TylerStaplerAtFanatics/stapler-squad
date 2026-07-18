@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/config"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/pkg/events"
 	"github.com/tstapler/stapler-squad/session"
@@ -254,6 +255,41 @@ func TestAutoRespawnReview_ReworkCapHit_LeavesInReviewAndNotifies(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, open, 1)
 	assert.Equal(t, domain.StuckReasonReworkCap, open[0].Reason, "cap hit must write the same durable rework_cap row the other two rework loops use")
+}
+
+// TestAutoRespawnReview_ReworkCapHit_UsesConfiguredCap_When_MaxAutoReworkIterationsSet
+// verifies the rework cap is read from config.Config, not hardcoded — a cap of 1
+// must trip after a single prior review session, not the default 3.
+func TestAutoRespawnReview_ReworkCapHit_UsesConfiguredCap_When_MaxAutoReworkIterationsSet(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, &config.Config{MaxAutoReworkIterations: 1}, nil, nil, nil)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	item, err := storage.CreateBacklogItem(context.Background(), session.BacklogItemData{
+		Title:    "Configured low-cap item",
+		RepoPath: repoPath,
+		Status:   string(session.BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	is, isErr := storage.CreateItemSession(context.Background(), session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "prior-re-review-only-one",
+		SessionRole: session.SessionRoleReview,
+	})
+	require.NoError(t, isErr)
+	require.NoError(t, storage.UpdateItemSessionEnded(context.Background(), is.ID, time.Now()))
+
+	respawnErr := svc.AutoRespawnReview(context.Background(), item.ID)
+	require.NoError(t, respawnErr, "hitting the configured cap is an expected outcome, not a failure")
+
+	open, err := storage.FindOpenStuckStates(context.Background())
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, domain.StuckReasonReworkCap, open[0].Reason)
+	assert.Contains(t, open[0].Context, "1-iteration rework cap", "context must reflect the configured cap, not the default")
 }
 
 // TestAutoRespawnReview_ActiveReviewSession_SkipsWithoutDoubleSpawn verifies

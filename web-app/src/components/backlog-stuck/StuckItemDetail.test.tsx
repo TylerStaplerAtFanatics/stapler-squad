@@ -102,4 +102,27 @@ describe("StuckItemDetail", () => {
       expect(screen.queryByTestId("stuck-item-action-copy")).not.toBeInTheDocument();
     });
   });
+
+  describe("StuckItemDetail_should_showFixGuidance_When_ReasonIsReworkCap", () => {
+    it("renders how-to-fix copy pointing at Reopen for Revision and Settings", () => {
+      render(
+        <StuckItemDetail
+          item={makeItem({
+            reason: StuckReason.REWORK_CAP,
+            prNumber: 0,
+            prUrl: "",
+            context: "hit the 3-iteration rework cap after a failed review verdict",
+          })}
+        />
+      );
+      const copy = screen.getByTestId("stuck-item-rework-cap-copy");
+      expect(copy.textContent).toMatch(/Reopen for Revision/);
+      expect(copy.textContent).toMatch(/Settings/);
+    });
+
+    it("does not render for a non-rework_cap reason", () => {
+      render(<StuckItemDetail item={makeItem({ reason: StuckReason.PR_READY_UNMERGED })} />);
+      expect(screen.queryByTestId("stuck-item-rework-cap-copy")).not.toBeInTheDocument();
+    });
+  });
 });
