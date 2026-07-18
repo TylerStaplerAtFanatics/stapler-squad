@@ -167,3 +167,39 @@ func TestGetBacklogItemShipStatus_should_ReturnErrorField_When_NoWorkSessionEver
 	assert.NotEmpty(t, resp.Msg.Status.Error)
 	assert.False(t, resp.Msg.Status.Shipped)
 }
+
+// TestGetBacklogItemShipStatus_should_ListShippedCommits_When_MultipleCommitsInRange
+// covers Tyler's ask: identifying which commits actually shipped, like a PR's
+// commits tab, so newest-first ordering and content must both be right.
+func TestGetBacklogItemShipStatus_should_ListShippedCommits_When_MultipleCommitsInRange(t *testing.T) {
+	_, repoPath := setupPRFixSyncRepo(t)
+	baseSHA := strings.TrimSpace(runGitTestCmd(t, repoPath, "rev-parse", "HEAD"))
+
+	runGitTestCmd(t, repoPath, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "first.txt"), []byte("first\n"), 0o644))
+	runGitTestCmd(t, repoPath, "add", "first.txt")
+	runGitTestCmd(t, repoPath, "commit", "-m", "first commit")
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "second.txt"), []byte("second\n"), 0o644))
+	runGitTestCmd(t, repoPath, "add", "second.txt")
+	runGitTestCmd(t, repoPath, "commit", "-m", "second commit")
+	headSHA := strings.TrimSpace(runGitTestCmd(t, repoPath, "rev-parse", "HEAD"))
+
+	storage, repo := createTestStorageWithRepo(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:    "item with two shipped commits",
+		RepoPath: repoPath,
+		Status:   string(session.BacklogStatusDone),
+	})
+	require.NoError(t, err)
+	attachWorkSessionWithRange(t, storage, repo, item.ID, "two-commit-work", repoPath, repoPath, "feature", baseSHA, headSHA)
+
+	resp, err := svc.GetBacklogItemShipStatus(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemShipStatusRequest{ItemId: item.ID}))
+	require.NoError(t, err)
+	st := resp.Msg.Status
+	require.Len(t, st.Commits, 2)
+	assert.Equal(t, headSHA, st.Commits[0].Sha, "newest commit must come first")
+	assert.Equal(t, "second commit", st.Commits[0].Summary)
+	assert.Equal(t, "first commit", st.Commits[1].Summary)
+}

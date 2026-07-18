@@ -877,17 +877,22 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 />
               </div>
 
-              {showChangesModal && workSession && (
-                <ReviewChangesModal
-                  itemId={item.id}
-                  sessionId={workSession.sessionId}
-                  sessionTitle={item.title}
-                  onClose={() => setShowChangesModal(false)}
-                />
-              )}
             </>
           );
         })()}
+
+        {/* Diff modal — reused by the review-flow "View Changes" button above and
+            the Version Control section's "View Diff" button below; works for any
+            status since GetBacklogItemDiff resolves the shipped range from durable
+            git history, not a live session. */}
+        {showChangesModal && (
+          <ReviewChangesModal
+            itemId={item.id}
+            sessionId={latestWorkSession?.sessionId}
+            sessionTitle={item.title}
+            onClose={() => setShowChangesModal(false)}
+          />
+        )}
 
         {/* PR Pending */}
         {item.status === "pr_pending" && (
@@ -1266,7 +1271,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             {vcsStatus ? (
               <VcsStatusDisplay status={vcsStatus} />
             ) : (
-              shipStatus && <ShipStatusDisplay status={shipStatus} />
+              shipStatus && (
+                <ShipStatusDisplay status={shipStatus} onViewDiff={() => setShowChangesModal(true)} />
+              )
             )}
           </div>
         )}

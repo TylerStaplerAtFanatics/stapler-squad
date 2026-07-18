@@ -293,3 +293,43 @@ func TestBranchAheadBehind_should_ReportBehindCount_When_MainAdvancedPastBranch(
 	assert.Equal(t, 0, status.AheadOfMain)
 	assert.Equal(t, 1, status.BehindMain)
 }
+
+// TestListShippedCommits_should_ReturnNewestFirst_When_MultipleCommitsShipped verifies
+// the commit list (Tyler: "identify which commits were shipped to main from the
+// branch") returns every commit in the range, newest first, like a PR's commits tab.
+func TestListShippedCommits_should_ReturnNewestFirst_When_MultipleCommitsShipped(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	baseSHA := strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD"))
+
+	runGit(t, work, "checkout", "-b", "feature")
+	var shas []string
+	for i := 0; i < 3; i++ {
+		fname := fmt.Sprintf("feature-%d.txt", i)
+		require.NoError(t, os.WriteFile(filepath.Join(work, fname), []byte("work\n"), 0o644))
+		runGit(t, work, "add", fname)
+		runGit(t, work, "commit", "-m", fmt.Sprintf("feature commit %d", i))
+		shas = append(shas, strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD")))
+	}
+	headSHA := shas[len(shas)-1]
+
+	commits, err := ListShippedCommits(work, baseSHA, headSHA)
+	require.NoError(t, err)
+	require.Len(t, commits, 3)
+	assert.Equal(t, headSHA, commits[0].SHA, "newest commit must come first")
+	assert.Equal(t, "feature commit 2", commits[0].Summary)
+	assert.Equal(t, "feature commit 0", commits[2].Summary, "oldest of the three shipped commits must be last")
+}
+
+// TestListShippedCommits_should_ReturnEmpty_When_HeadEqualsBase verifies the
+// degenerate no-op range (nothing was actually committed) returns no commits rather
+// than erroring.
+func TestListShippedCommits_should_ReturnEmpty_When_HeadEqualsBase(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	sha := strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD"))
+
+	commits, err := ListShippedCommits(work, sha, sha)
+	require.NoError(t, err)
+	assert.Empty(t, commits)
+}

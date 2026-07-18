@@ -85,7 +85,8 @@ func (s *BacklogService) GetBacklogItemShipStatus(
 		}
 	}
 
-	if wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, lastWork.SessionUUID); wtErr == nil && wt.BranchName != "" {
+	wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, lastWork.SessionUUID)
+	if wtErr == nil && wt.BranchName != "" {
 		status.BranchName = wt.BranchName
 		branchStatus, branchErr := git.BranchAheadBehind(item.RepoPath, wt.BranchName, prFixMainBranch)
 		if branchErr != nil {
@@ -94,6 +95,31 @@ func (s *BacklogService) GetBacklogItemShipStatus(
 			status.BranchExists = branchStatus.BranchExists
 			status.AheadOfMain = int32(branchStatus.AheadOfMain) //#nosec G115 -- bounded by countCommitsNotAncestorOfCap (500)
 			status.BehindMain = int32(branchStatus.BehindMain)   //#nosec G115 -- bounded by countCommitsNotAncestorOfCap (500)
+		}
+	}
+
+	if wtErr == nil && wt.BaseCommitSHA != "" {
+		shipped, commitsErr := git.ListShippedCommits(item.RepoPath, wt.BaseCommitSHA, lastWork.LastCommitSha)
+		if commitsErr != nil {
+			// Non-fatal: the badge/branch info above is still valid even if the
+			// commit list itself can't be resolved (e.g. the base SHA has since
+			// been pruned) — don't let this clobber status.Error's more useful
+			// message from the branch-status check above.
+			if status.Error == "" {
+				status.Error = fmt.Sprintf("failed to list shipped commits: %v", commitsErr)
+			}
+		} else {
+			for _, c := range shipped {
+				commit := &sessionv1.ShippedCommit{
+					Sha:        c.SHA,
+					Summary:    c.Summary,
+					AuthorName: c.AuthorName,
+				}
+				if !c.AuthorAt.IsZero() {
+					commit.AuthoredAt = timestamppb.New(c.AuthorAt)
+				}
+				status.Commits = append(status.Commits, commit)
+			}
 		}
 	}
 

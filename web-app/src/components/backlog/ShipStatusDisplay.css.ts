@@ -59,3 +59,52 @@ export const prLink = style({
     "&:hover": { textDecoration: "underline" },
   },
 });
+
+export const viewDiffButton = style({
+  display: "inline-flex",
+  alignItems: "center",
+  marginLeft: "auto",
+  padding: `${vars.space["1"]} ${vars.space["3"]}`,
+  borderRadius: vars.radii.md,
+  fontSize: vars.fontSize.sm,
+  fontWeight: vars.fontWeight.medium,
+  cursor: "pointer",
+  border: `1px solid ${vars.color.primary}`,
+  background: vars.color.accentBg,
+  color: vars.color.primary,
+  whiteSpace: "nowrap",
+  flexShrink: 0,
+  transition: "background 0.1s ease",
+  ":hover": {
+    background: vars.color.accentHover,
+  },
+});
+
+export const commitList = style({
+  display: "flex",
+  flexDirection: "column",
+  gap: "4px",
+});
+
+export const commitListItems = style({
+  listStyle: "none",
+  margin: 0,
+  padding: 0,
+  display: "flex",
+  flexDirection: "column",
+  gap: "4px",
+  paddingLeft: "60px",
+});
+
+export const commitListItem = style({
+  display: "flex",
+  alignItems: "baseline",
+  gap: "8px",
+});
+
+export const commitDate = style({
+  fontSize: "11px",
+  color: vars.color.textMuted,
+  marginLeft: "auto",
+  whiteSpace: "nowrap",
+});
