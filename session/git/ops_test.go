@@ -177,3 +177,66 @@ func TestMergeMainIntoWorktree_should_ReturnError_When_MergeFailsForNonConflictR
 	require.NoError(t, readErr)
 	assert.Equal(t, "uncommitted local edit\n", string(content))
 }
+
+// TestIsCommitOnMain_should_ReturnTrue_When_CommitIsMainTipLocally verifies the
+// simplest case: a commit that IS main's own local tip is trivially its own ancestor.
+func TestIsCommitOnMain_should_ReturnTrue_When_CommitIsMainTipLocally(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	mainTip := strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD"))
+
+	onMain, err := IsCommitOnMain(work, "main", mainTip)
+	require.NoError(t, err)
+	assert.True(t, onMain)
+}
+
+// TestIsCommitOnMain_should_ReturnFalse_When_CommitOnlyExistsOnUnmergedBranch verifies
+// the core gap this function closes: a commit that was made on a feature branch and
+// never merged anywhere must not be reported as shipped.
+func TestIsCommitOnMain_should_ReturnFalse_When_CommitOnlyExistsOnUnmergedBranch(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	runGit(t, work, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(work, "feature.txt"), []byte("wip\n"), 0o644))
+	runGit(t, work, "add", "feature.txt")
+	runGit(t, work, "commit", "-m", "feature work, never merged")
+	featureSHA := strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD"))
+
+	onMain, err := IsCommitOnMain(work, "main", featureSHA)
+	require.NoError(t, err)
+	assert.False(t, onMain, "an unmerged feature commit must not read as shipped")
+}
+
+// TestIsCommitOnMain_should_ReturnTrue_When_CommitMergedRemotelyButNotPulledLocally
+// verifies the "merged remotely" half of the fix (Tyler: "merged can happen remotely
+// or locally... it effectively needs to be on main either locally or remotely") — a PR
+// merged on GitHub advances origin's main, but the local clone's own main branch isn't
+// automatically updated. IsCommitOnMain must still detect it via its own origin fetch.
+func TestIsCommitOnMain_should_ReturnTrue_When_CommitMergedRemotelyButNotPulledLocally(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+
+	// Advance the "remote" (origin) past what "work" has locally — simulating a PR
+	// merged on GitHub that this local clone hasn't fetched/pulled yet.
+	require.NoError(t, os.WriteFile(filepath.Join(origin, "shipped.txt"), []byte("shipped via PR\n"), 0o644))
+	runGit(t, origin, "add", "shipped.txt")
+	runGit(t, origin, "commit", "-m", "merged via PR on GitHub")
+	remoteSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "HEAD"))
+
+	localMainTip := strings.TrimSpace(runGit(t, work, "rev-parse", "main"))
+	require.NotEqual(t, remoteSHA, localMainTip, "sanity check: work's local main must NOT already have this commit")
+
+	onMain, err := IsCommitOnMain(work, "main", remoteSHA)
+	require.NoError(t, err)
+	assert.True(t, onMain, "a commit merged remotely to origin/main must be detected even before a local pull")
+}
+
+// TestIsCommitOnMain_should_ReturnError_When_ShaDoesNotExist verifies that an invalid
+// or unknown commit SHA surfaces as an error rather than a false "not shipped".
+func TestIsCommitOnMain_should_ReturnError_When_ShaDoesNotExist(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+
+	_, err := IsCommitOnMain(work, "main", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	require.Error(t, err)
+}
