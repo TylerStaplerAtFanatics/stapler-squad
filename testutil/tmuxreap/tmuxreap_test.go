@@ -1,20 +1,19 @@
 //go:build !windows
 
-package tmux
+package tmuxreap
 
 import "testing"
 
-// Regression coverage for the leaked-test-tmux-server class of bug: the
-// reaper in TestMain silently failed to recognize "test-isolated-<pid>"
-// sockets (the name testSocketOnce in tmux.go actually generates, and the
-// name every package's tests share — not just this package's), so orphaned
-// isolated servers from a SIGKILLed test binary accumulated indefinitely
-// instead of being reaped on the next run.
+// Regression coverage for the leaked-test-tmux-server class of bug: a reaper
+// silently failed to recognize "test-isolated-<pid>" sockets (the name
+// testSocketOnce in session/tmux generates, shared by every package's
+// tests), so orphaned isolated servers from a SIGKILLed test binary
+// accumulated indefinitely instead of being reaped on the next run.
 
 func TestIsTestSocketName_MatchesSharedIsolatedSocketPrefix(t *testing.T) {
 	if !isTestSocketName("test-isolated-239479") {
 		t.Fatal("isTestSocketName(\"test-isolated-239479\") = false, want true — " +
-			"the shared per-process isolated socket name (tmux.go testSocketOnce) must be reapable")
+			"the shared per-process isolated socket name (session/tmux testSocketOnce) must be reapable")
 	}
 }
 

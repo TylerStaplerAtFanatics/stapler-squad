@@ -404,7 +404,7 @@ func (s *SessionService) loadInstancesWithWiring() ([]*session.Instance, error) 
 		// the Claude process restarts without a session UUID or MCP connection.
 		// Only applied in-memory; the DB value is updated lazily via SaveInstances.
 		if mcpURL := s.resolveMCPServerURL(); inst.MCPServerURL == "" && mcpURL != "" {
-			inst.MCPServerURL = mcpURL
+			inst.SetMCPServerURL(mcpURL)
 		}
 	}
 
@@ -3483,6 +3483,18 @@ func (s *SessionService) RunOneShot(
 		} else {
 			s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"github_pr_url", "github_pr_number"}))
 		}
+
+		// This RunOneShot call may have been the Review Queue's manual "Create
+		// PR" button for a backlog-linked session — that flow creates the PR
+		// entirely outside the automated pushAndCreatePR path, which is the
+		// only other place that ever moves a backlog item to pr_pending. Without
+		// this call the item is silently left in "review" forever, invisible to
+		// ReconcilePRPending (see RecordPRCreatedOutOfBand's doc comment in
+		// session/backlog_lifecycle.go for the full root-cause trace). No-op for
+		// non-backlog sessions.
+		if s.backlogLifecycleListener != nil {
+			s.backlogLifecycleListener.RecordPRCreatedOutOfBand(ctx, inst.UUID, prURL, prNumber)
+		}
 	}
 
 	return connect.NewResponse(&sessionv1.RunOneShotResponse{
@@ -3492,6 +3504,27 @@ func (s *SessionService) RunOneShot(
 		PrUrl:                  prURL,
 		BranchDivergedFromBase: branchDiverged,
 	}), nil
+}
+
+// RunOneShotForSession runs a one-shot prompt against a session's worktree without
+// the ConnectRPC request/response wrapper, for automation callers. It reuses
+// RunOneShot's exact logic (same PR-URL extraction, same PR persistence) so
+// automated and manual PR creation share one code path — currently used by the
+// opt-in AutoCreatePR review-queue policy (server.ReactiveQueueManager).
+// Returns the extracted PR URL, or an error if the prompt failed.
+func (s *SessionService) RunOneShotForSession(ctx context.Context, sessionID, prompt string, timeoutSeconds int32) (string, error) {
+	resp, err := s.RunOneShot(ctx, connect.NewRequest(&sessionv1.RunOneShotRequest{
+		SessionId:      sessionID,
+		Prompt:         prompt,
+		TimeoutSeconds: timeoutSeconds,
+	}))
+	if err != nil {
+		return "", err
+	}
+	if resp.Msg.Error != "" {
+		return "", fmt.Errorf("one-shot prompt failed: %s", resp.Msg.Error)
+	}
+	return resp.Msg.PrUrl, nil
 }
 
 // extractPRURL scans the last 10 non-empty lines of output for a GitHub PR URL

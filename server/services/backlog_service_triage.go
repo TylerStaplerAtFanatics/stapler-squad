@@ -21,6 +21,7 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/git"
 	"github.com/tstapler/stapler-squad/session/headless"
 )
 
@@ -156,6 +157,10 @@ const defaultTriageCleanupTimeout = 10 * time.Second
 // treated as orphaned in the re-trigger guard. This prevents a hung or leaked session
 // from blocking re-trigger indefinitely.
 const maxTriageSessionAge = 2 * time.Hour
+
+// prFixMainBranch is the branch AutoReopenForPRFix syncs a PR's branch against before
+// respawning a fix session. This repo's convention is "main" (see CLAUDE.md).
+const prFixMainBranch = "main"
 
 // slugify converts s to a lowercase hyphen-delimited slug safe for file paths.
 func slugify(s string) string {
@@ -443,6 +448,18 @@ func hasActiveWorkSession(priorSessions []session.ItemSessionSummary) bool {
 	return false
 }
 
+// hasActiveReviewSession reports whether any of the provided ItemSessions is an
+// open (not yet ended) review-role session. Mirrors hasActiveWorkSession; used by
+// AutoRespawnReview to avoid double-spawning a review pass that is already running.
+func hasActiveReviewSession(priorSessions []session.ItemSessionSummary) bool {
+	for _, ps := range priorSessions {
+		if ps.Role == session.SessionRoleReview && ps.EndedAt == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // buildRevisionTitle returns the session title for a backlog work session. On reopen
 // (isReopen=true) it appends "-rN" where N is one past the existing work-session count.
 func buildRevisionTitle(baseTitle string, isReopen bool, priorSessions []session.ItemSessionSummary) string {
@@ -631,6 +648,18 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 		}
 	}
 
+	// Best-effort: sync the currently open PR's branch with main before handing the
+	// fix off to a new session. This is preventive rather than reactive — a CI
+	// failure caused by drift from main (rather than the PR's own diff) gets
+	// resolved here directly by pushing the merge, and a conflict discovered now
+	// becomes part of the fix context instead of being silently left for a later,
+	// harder-to-diagnose collision (the PR #157 pattern: a branch drifted from main
+	// with nobody proactively resyncing it until it hit a hard conflict). Never
+	// blocks the spawn — any failure here is logged and swallowed.
+	if syncNote := s.syncPRBranchWithMain(ctx, itemID, sessions); syncNote != "" {
+		fixContext = syncNote + "\n\n" + fixContext
+	}
+
 	// Prepend the PR failure context to the item's notes so the spawned session
 	// prompt includes it. Restore original notes after spawning.
 	originalNotes := item.Notes
@@ -667,6 +696,133 @@ func (s *BacklogService) AutoReopenForPRFix(ctx context.Context, itemID string, 
 
 	log.InfoLog.Printf("[AutoReopenForPRFix] item %s → in_progress for PR fix session", itemID)
 	return nil
+}
+
+// AutoRespawnReview implements session.ReviewRespawner. It re-triggers the review gate
+// for a backlog item abandoned in review with no active session — closing the gap where
+// StuckReasonAbandonedReview was previously only detected and notified, never acted on,
+// which let real backlog items sit stuck for days (docs/tasks/backlog-feature-improvement.md).
+//
+// Unlike AutoReopenAfterFailedReview/AutoReopenForPRFix, this does NOT transition the
+// item's status: the item is already "review" (TriggerReReview requires exactly that
+// status) and the underlying work may well already be complete — the whole point of
+// re-review is to find out, not to force another work session. See TriggerReReview for
+// why this is likely the right respawn mechanism over spawning a fresh work session: a
+// live audit found several abandoned-review items with nearly all acceptance criteria
+// already marked complete, just never actually reviewed.
+//
+// Deliberately NOT gated by maxConcurrentBacklogWorkItems: that cap bounds concurrent
+// "in_progress" items, and this path never transitions the item out of "review" (a
+// manual TriggerReReview call doesn't check that cap either — this preserves existing
+// behavior rather than introducing a new restriction). Concurrency is instead bounded by
+// the caller (markAbandonedReview), which dispatches under l.reviewSem — the same
+// limiter ReconcileStuck's sibling review-gate-respawn path already uses.
+func (s *BacklogService) AutoRespawnReview(ctx context.Context, itemID string) error {
+	if s.storage == nil {
+		return fmt.Errorf("storage not available")
+	}
+
+	item, err := s.storage.GetBacklogItem(ctx, itemID)
+	if err != nil {
+		return fmt.Errorf("load item: %w", err)
+	}
+	if session.BacklogStatus(item.Status) != session.BacklogStatusReview {
+		// Already moved on by the time this async call runs (e.g. a review gate
+		// was re-spawned by ReconcileStuck's FindReviewItemsWithoutGate path, or a
+		// human acted manually) — nothing to do.
+		return nil
+	}
+
+	sessions, sessErr := s.storage.ListItemSessions(ctx, item.ID)
+	if sessErr != nil {
+		return fmt.Errorf("list sessions for cap check: %w", sessErr)
+	}
+
+	// Re-check liveness immediately before acting: the caller (markAbandonedReview)
+	// dispatches this asynchronously under a semaphore, so time may have passed
+	// since the detector query that found the item abandoned. Tombstone any work
+	// session confirmed dead first, mirroring AutoReopenForPRFix's identical guard.
+	s.tombstoneOrphanWorkSessions(ctx, itemID, sessions)
+	if hasActiveWorkSession(sessions) || hasActiveReviewSession(sessions) {
+		log.InfoLog.Printf("[AutoRespawnReview] item %s already has an active session; skipping respawn", itemID)
+		return nil
+	}
+
+	// Cap on *review* sessions, not work sessions: this path never spawns a work
+	// session, so the work-session counters AutoReopenAfterFailedReview/
+	// AutoReopenForPRFix use would never trip here. Without a cap of its own, an
+	// item whose underlying work is genuinely incomplete (verdict never PASSes)
+	// would re-review forever, once per abandoned_review occurrence. Reuses the
+	// same threshold and notifyReworkCapHit pattern as the other two rework loops
+	// for consistency rather than inventing a new constant.
+	reviewCount := 0
+	for _, is := range sessions {
+		if is.Role == session.SessionRoleReview {
+			reviewCount++
+		}
+	}
+	if reviewCount >= maxAutoReworkIterations {
+		log.InfoLog.Printf("[AutoRespawnReview] item %s has %d review sessions (cap %d); leaving in review for manual action", itemID, reviewCount, maxAutoReworkIterations)
+		s.notifyReworkCapHit(ctx, itemID, item.Title, session.BacklogStatus(item.Status), "while abandoned in review with no active session")
+		return nil
+	}
+
+	if _, reviewErr := s.TriggerReReview(ctx, connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID})); reviewErr != nil {
+		return fmt.Errorf("trigger re-review: %w", reviewErr)
+	}
+	log.InfoLog.Printf("[AutoRespawnReview] item %s re-review triggered", itemID)
+	return nil
+}
+
+// syncPRBranchWithMain merges prFixMainBranch into the worktree of item's most recent
+// work session — the branch behind the currently open, failing PR — and pushes the
+// merge when it brings in new commits, so the live PR is resynced with main before the
+// fix session starts. It is best-effort: any failure (no worktree found, fetch/merge
+// error, push error) is logged and swallowed, never blocking the fix spawn. Returns a
+// note describing what happened for AutoReopenForPRFix to prepend to the fix context,
+// or "" when there's nothing worth telling the spawned session (no worktree to sync,
+// or the branch was already up to date with main).
+func (s *BacklogService) syncPRBranchWithMain(ctx context.Context, itemID string, sessions []session.ItemSessionSummary) string {
+	_, workSession := findMostRecentSessions(sessions)
+	if workSession == nil {
+		return ""
+	}
+	wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, workSession.SessionUUID)
+	if wtErr != nil || wt.WorktreePath == "" {
+		log.InfoLog.Printf("[AutoReopenForPRFix] syncPRBranchWithMain item=%s: no worktree to sync (%v)", itemID, wtErr)
+		return ""
+	}
+
+	result, mergeErr := git.MergeMainIntoWorktree(wt.WorktreePath, prFixMainBranch)
+	if mergeErr != nil {
+		log.WarningLog.Printf("[AutoReopenForPRFix] merge %s into item=%s branch=%s: %v", prFixMainBranch, itemID, wt.BranchName, mergeErr)
+		return ""
+	}
+
+	switch {
+	case result.Conflicted:
+		log.InfoLog.Printf("[AutoReopenForPRFix] item=%s: merging %s into %s produced conflicts in %v", itemID, prFixMainBranch, wt.BranchName, result.ConflictedFiles)
+		return fmt.Sprintf("[Branch sync] Merging %q into this PR's branch (%s) produced conflicts in:\n- %s\n\nThe merge was aborted so the worktree is clean; resolving these conflicts against %s is part of this fix.",
+			prFixMainBranch, wt.BranchName, strings.Join(result.ConflictedFiles, "\n- "), prFixMainBranch)
+	case result.Merged:
+		g := git.NewGitWorktreeFromStorage(wt.RepoPath, wt.WorktreePath, wt.SessionName, wt.BranchName, wt.BaseCommitSHA)
+		if pushErr := g.PushBranch(); pushErr != nil {
+			log.WarningLog.Printf("[AutoReopenForPRFix] push merged %s into item=%s branch=%s: %v", prFixMainBranch, itemID, wt.BranchName, pushErr)
+			// The fix session that reads this note gets its own fresh worktree
+			// (SpawnSessionFromItem always creates a new one on reopen), not this
+			// one — so the note must be actionable from anywhere, not just "push
+			// it": name the branch and give the exact command against the shared
+			// repo checkout, whose .git the now-deleted worktree's branch ref
+			// still lives in (worktree cleanup never deletes branches).
+			return fmt.Sprintf("[Branch sync] Merged the latest %q into this PR's branch (%s) locally, but could not push it to origin (%v). "+
+				"The merge commit is not lost — push it from the shared repo checkout before continuing: `git -C %s push origin %s`.",
+				prFixMainBranch, wt.BranchName, pushErr, wt.RepoPath, wt.BranchName)
+		}
+		log.InfoLog.Printf("[AutoReopenForPRFix] item=%s: merged and pushed %s into %s", itemID, prFixMainBranch, wt.BranchName)
+		return fmt.Sprintf("[Branch sync] Merged the latest %q into this PR's branch (%s) and pushed it — the branch is now up to date with %s.", prFixMainBranch, wt.BranchName, prFixMainBranch)
+	default: // UpToDate
+		return ""
+	}
 }
 
 // TriggerTriage kicks off a headless triage planning call for a backlog item.
