@@ -17,5 +17,13 @@
 - `/backlog/fail-6` — Mark criterion 6 as failed
 - `/backlog/done-7` — Mark criterion 7 as complete
 - `/backlog/fail-7` — Mark criterion 7 as failed
+- `/backlog/done-8` — Mark criterion 8 as complete
+- `/backlog/fail-8` — Mark criterion 8 as failed
+- `/backlog/done-9` — Mark criterion 9 as complete
+- `/backlog/fail-9` — Mark criterion 9 as failed
+- `/backlog/done-10` — Mark criterion 10 as complete
+- `/backlog/fail-10` — Mark criterion 10 as failed
+- `/backlog/done-11` — Mark criterion 11 as complete
+- `/backlog/fail-11` — Mark criterion 11 as failed
 - `/backlog/review` — Submit for review with a summary
 - `/backlog/ship` — Create a PR with /github:pr-ship and submit for review

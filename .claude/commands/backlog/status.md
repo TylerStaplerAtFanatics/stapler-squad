@@ -1,2 +1,2 @@
-Call the get_backlog_item MCP tool with item_id=4e74a781-8b3e-43ee-97e4-a39e566cb1c6.
+Call the get_backlog_item MCP tool with item_id=a676e235-fa3d-4a20-a457-afcf611b0d7a.
 Format the response as a numbered checklist.
