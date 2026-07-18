@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -1683,6 +1684,105 @@ func (l *BacklogLifecycleListener) RecordPRCreatedOutOfBand(ctx context.Context,
 	log.InfoLog.Printf("[BacklogLifecycle] RecordPRCreatedOutOfBand item=%s session=%s → pr_pending (PR #%d %s, via manual RunOneShot flow)", item.ID, workSessionUUID, prNumber, prURL)
 }
 
+// CaptureShipSnapshot durably captures the GitHub PR/review/CI state and the
+// per-file diff stats for item at the moment its PR merges, so that data
+// survives worktree cleanup once the item reaches "done" — the core
+// unified-vcs-widget requirement. It is a free function, not a method on
+// BacklogLifecycleListener: it needs no state from that type beyond
+// *Storage, which is passed explicitly here (per
+// .claude/rules/interface-pollution-checklist.md, a method only earns its
+// receiver when it genuinely needs the type's other state).
+//
+// Two data groups are captured independently — a failure in one must never
+// discard a success in the other:
+//   - Group A (GitHub): mapped from the already-fetched prStatus.
+//     CaptureShipSnapshot makes no GitHub call of its own. prStatus == nil
+//     means group A already failed before this function was even called
+//     (e.g. the caller's own GetPRStatus errored) — that's a valid input,
+//     not a bug. PRStatus does not expose a raw CI-conclusion string
+//     (worktree_git.go:330-345's field list), so ShippedCheckConclusion is
+//     derived from CIFailing as "failure"/"success" — a minor, accepted
+//     fidelity gap versus Session.githubCheckConclusion.
+//   - Group B (file stats): computed independently via
+//     git.FileStatsBetween(item.RepoPath, wt.BaseCommitSHA, lastWork.LastCommitSha),
+//     JSON-encoded into ShippedFileStats.
+//
+// Whichever group(s) succeed are written via one storage.UpdateBacklogItem
+// call. ShippedSnapshotCaptureFailed is set true whenever either group
+// failed; ShippedSnapshotAt is set whenever at least one group succeeded.
+// ShippedCheckConclusion is never written as "failed" — that field holds
+// only genuine CI-conclusion values; ShippedSnapshotCaptureFailed is the
+// dedicated signal for a capture failure.
+//
+// CaptureShipSnapshot always returns nil: it never blocks the pr_pending →
+// done transition, regardless of how many groups failed. Blocking done on a
+// GitHub API hiccup or a pruned base SHA would leave a genuinely-merged item
+// stuck in pr_pending forever, so this fails closed on data completeness,
+// not on the workflow itself.
+//
+// No in-process cache/memoization is introduced here — every call is a
+// direct write-through via UpdateBacklogItem. If a future caching layer is
+// added on top of this function, it must return the locally-computed
+// snapshot value rather than re-reading a cache slot after a lock is
+// released, per .claude/rules/go-double-checked-locking.md.
+func CaptureShipSnapshot(ctx context.Context, storage *Storage, item *BacklogItemData, prStatus *git.PRStatus, lastWork *ItemSessionSummary, wt *GitWorktreeData) error {
+	var update BacklogItemUpdate
+	groupAFailed := false
+	groupBFailed := false
+	anySucceeded := false
+
+	// Group A: GitHub PR/CI/review state, from the already-fetched prStatus.
+	if prStatus != nil {
+		approvedCount := prStatus.ApprovedCount
+		changesReqCount := prStatus.ChangesRequestedCount
+		conclusion := "success"
+		if prStatus.CIFailing {
+			conclusion = "failure"
+		}
+		update.ShippedApprovedCount = &approvedCount
+		update.ShippedChangesReqCount = &changesReqCount
+		update.ShippedCheckConclusion = &conclusion
+		anySucceeded = true
+	} else {
+		groupAFailed = true
+		log.WarningLog.Printf("[BacklogLifecycle] CaptureShipSnapshot item=%s pr=%d group=github: prStatus unavailable", item.ID, item.PrNumber)
+	}
+
+	// Group B: per-file diff stats, independent of group A's outcome.
+	if lastWork != nil && wt != nil {
+		stats, statsErr := git.FileStatsBetween(item.RepoPath, wt.BaseCommitSHA, lastWork.LastCommitSha)
+		if statsErr != nil {
+			groupBFailed = true
+			log.WarningLog.Printf("[BacklogLifecycle] CaptureShipSnapshot item=%s pr=%d group=file-stats: %v", item.ID, item.PrNumber, statsErr)
+		} else if encoded, jsonErr := json.Marshal(stats); jsonErr != nil {
+			groupBFailed = true
+			log.WarningLog.Printf("[BacklogLifecycle] CaptureShipSnapshot item=%s pr=%d group=file-stats: marshal: %v", item.ID, item.PrNumber, jsonErr)
+		} else {
+			encodedStr := string(encoded)
+			update.ShippedFileStats = &encodedStr
+			anySucceeded = true
+		}
+	} else {
+		groupBFailed = true
+		log.WarningLog.Printf("[BacklogLifecycle] CaptureShipSnapshot item=%s pr=%d group=file-stats: worktree/last-work data unavailable", item.ID, item.PrNumber)
+	}
+
+	if groupAFailed || groupBFailed {
+		captureFailed := true
+		update.ShippedSnapshotCaptureFailed = &captureFailed
+	}
+	if anySucceeded {
+		now := time.Now()
+		update.ShippedSnapshotAt = &now
+	}
+
+	if _, updateErr := storage.UpdateBacklogItem(ctx, item.ID, update, nil); updateErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] CaptureShipSnapshot item=%s pr=%d: UpdateBacklogItem failed: %v", item.ID, item.PrNumber, updateErr)
+	}
+
+	return nil
+}
+
 // ReconcilePRPending polls items in pr_pending status. It transitions to done
 // when the PR is merged, and spawns a fix session when CI fails or reviewers
 // request changes.
@@ -1709,6 +1809,54 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 			continue
 		}
 		if merged {
+			// Capture the durable ship snapshot (GitHub PR/CI/review state +
+			// per-file diff stats) synchronously, before the done transition —
+			// never as a background goroutine — so the data is written before
+			// the worktree is eligible for cleanup (Story 3.3.1). prStatus is
+			// fetched here at the merge-detection point specifically for the
+			// snapshot; a fetch error is passed through as prStatus == nil
+			// rather than skipping capture entirely, since CaptureShipSnapshot
+			// treats a nil prStatus as "group A already failed" and still
+			// captures group B (file stats) independently.
+			snapshotPRStatus, snapshotStatusErr := g.GetPRStatus(item.PrNumber)
+			if snapshotStatusErr != nil {
+				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending GetPRStatus (ship snapshot) item=%s pr=%d: %v", item.ID, item.PrNumber, snapshotStatusErr)
+				snapshotPRStatus = nil
+			}
+
+			itemData := backlogItemToData(item)
+
+			var lastWork *ItemSessionSummary
+			if sessions, sessErr := l.storage.ListItemSessions(ctx, item.ID.String()); sessErr != nil {
+				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending ListItemSessions (ship snapshot) item=%s: %v", item.ID, sessErr)
+			} else {
+				for i := range sessions {
+					// Ascending by CreatedAt (ListItemSessions' query order) —
+					// keep overwriting so this ends up holding the *most
+					// recent* work session, mirroring
+					// backlog_service_ship_status.go:51-58.
+					if sessions[i].Role == SessionRoleWork {
+						lastWork = &sessions[i]
+					}
+				}
+			}
+
+			var wt *GitWorktreeData
+			if lastWork != nil {
+				if wtData, wtErr := l.storage.GetWorktreeDataBySessionUUID(ctx, lastWork.SessionUUID); wtErr != nil {
+					log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending GetWorktreeDataBySessionUUID (ship snapshot) item=%s session=%s: %v", item.ID, lastWork.SessionUUID, wtErr)
+				} else {
+					wt = &wtData
+				}
+			}
+
+			if capErr := CaptureShipSnapshot(ctx, l.storage, &itemData, snapshotPRStatus, lastWork, wt); capErr != nil {
+				// CaptureShipSnapshot always returns nil today; this branch
+				// exists defensively in case that contract ever changes, and
+				// must never block the done transition below.
+				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending CaptureShipSnapshot item=%s pr=%d: %v", item.ID, item.PrNumber, capErr)
+			}
+
 			precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusPRPending)}
 			if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID.String(), BacklogStatusDone, precondition); transErr != nil {
 				log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending done transition item=%s: %v", item.ID, transErr)
