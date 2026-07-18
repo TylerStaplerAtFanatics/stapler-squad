@@ -1480,6 +1480,7 @@ func (s *BacklogService) tombstoneOrphanWorkSessions(ctx context.Context, itemID
 	if s.sessionStopper == nil {
 		return
 	}
+	var freed []session.ItemSessionSummary
 	for i := range sessions {
 		is := &sessions[i]
 		if is.Role != string(session.SessionRoleWork) || is.EndedAt != nil {
@@ -1495,6 +1496,14 @@ func (s *BacklogService) tombstoneOrphanWorkSessions(ctx context.Context, itemID
 		}
 		log.InfoLog.Printf("[tombstoneOrphanWorkSessions] item=%s tombstoned dead work session=%s (created %s)", itemID, is.ID, is.CreatedAt)
 		is.EndedAt = &now
+		freed = append(freed, *is)
+	}
+	// Prune the worktree for every session just tombstoned here, rather than leaving it
+	// on disk until the item is reopened/re-triaged — a dead work session's directory
+	// otherwise lingers indefinitely and can later be found "missing" by a session that
+	// still references it.
+	if len(freed) > 0 {
+		s.cleanupItemWorktrees(ctx, freed)
 	}
 }
 
