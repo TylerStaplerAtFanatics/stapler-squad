@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -239,4 +240,56 @@ func TestIsCommitOnMain_should_ReturnError_When_ShaDoesNotExist(t *testing.T) {
 
 	_, err := IsCommitOnMain(work, "main", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
 	require.Error(t, err)
+}
+
+// TestBranchAheadBehind_should_ReportBranchExistsFalse_When_BranchWasDeleted verifies
+// the expected post-ship state for a done item: the branch has been cleaned up, and
+// that must read as "nothing to show", not an error.
+func TestBranchAheadBehind_should_ReportBranchExistsFalse_When_BranchWasDeleted(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+
+	status, err := BranchAheadBehind(work, "feature-long-gone", "main")
+	require.NoError(t, err)
+	assert.False(t, status.BranchExists)
+}
+
+// TestBranchAheadBehind_should_ReportAheadCount_When_BranchHasUnmergedCommits verifies
+// the ahead count for a branch that's diverged from main with its own commits.
+func TestBranchAheadBehind_should_ReportAheadCount_When_BranchHasUnmergedCommits(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	runGit(t, work, "checkout", "-b", "feature")
+	for i := 0; i < 3; i++ {
+		fname := fmt.Sprintf("feature-%d.txt", i)
+		require.NoError(t, os.WriteFile(filepath.Join(work, fname), []byte("work\n"), 0o644))
+		runGit(t, work, "add", fname)
+		runGit(t, work, "commit", "-m", fmt.Sprintf("feature commit %d", i))
+	}
+
+	status, err := BranchAheadBehind(work, "feature", "main")
+	require.NoError(t, err)
+	assert.True(t, status.BranchExists)
+	assert.Equal(t, 3, status.AheadOfMain)
+	assert.Equal(t, 0, status.BehindMain)
+}
+
+// TestBranchAheadBehind_should_ReportBehindCount_When_MainAdvancedPastBranch verifies
+// the behind count when main has moved on since the branch was created.
+func TestBranchAheadBehind_should_ReportBehindCount_When_MainAdvancedPastBranch(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	runGit(t, work, "checkout", "-b", "feature")
+
+	require.NoError(t, os.WriteFile(filepath.Join(origin, "main-fix.txt"), []byte("fix\n"), 0o644))
+	runGit(t, origin, "add", "main-fix.txt")
+	runGit(t, origin, "commit", "-m", "fix landed on main")
+	runGit(t, work, "fetch", "origin", "main")
+	runGit(t, work, "branch", "-f", "main", "origin/main")
+
+	status, err := BranchAheadBehind(work, "feature", "main")
+	require.NoError(t, err)
+	assert.True(t, status.BranchExists)
+	assert.Equal(t, 0, status.AheadOfMain)
+	assert.Equal(t, 1, status.BehindMain)
 }

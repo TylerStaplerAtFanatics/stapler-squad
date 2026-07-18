@@ -203,6 +203,40 @@ message GetBacklogItemResponse {
   BacklogItem item = 1;
 }
 
+// BacklogItemShipStatus answers "did this item's code actually ship" from
+// durable evidence (repo_path + the most recent work session's commit),
+// rather than a live per-session worktree — the live VCSStatus widget can't
+// answer this once a session's worktree has been cleaned up (done items).
+message BacklogItemShipStatus {
+  // shipped is true when the last work-session commit is confirmed an
+  // ancestor of main, locally or via origin — see IsCommitOnMain.
+  bool shipped = 1;
+  // shipped_via is "pr", "direct", or "" when not shipped.
+  string shipped_via = 2;
+  string pr_url = 3;
+  string branch_name = 4;
+  // branch_exists is false once the branch has been deleted (e.g. after a
+  // GitHub "delete branch on merge" or manual cleanup) — ahead_of_main /
+  // behind_main are only meaningful when this is true.
+  bool branch_exists = 5;
+  int32 ahead_of_main = 6;
+  int32 behind_main = 7;
+  string last_commit_sha = 8;
+  string last_commit_message = 9;
+  google.protobuf.Timestamp last_commit_at = 10;
+  // error is set (with all other fields at zero value) when repo_path is
+  // inaccessible or no work session ever committed anything.
+  string error = 11;
+}
+
+message GetBacklogItemShipStatusRequest {
+  string item_id = 1;
+}
+
+message GetBacklogItemShipStatusResponse {
+  BacklogItemShipStatus status = 1;
+}
+
 message ListBacklogItemsRequest {
   repeated string status = 1;
   repeated int32 priority = 2;
@@ -452,6 +486,12 @@ service BacklogService {
 
   // GetBacklogItem retrieves a single backlog item by ID.
   rpc GetBacklogItem(GetBacklogItemRequest) returns (GetBacklogItemResponse) {}
+
+  // GetBacklogItemShipStatus answers "did this item's code actually ship" from
+  // repo_path + the most recent work session's commit — works even once the
+  // work session's own worktree has been cleaned up (e.g. a "done" item),
+  // unlike the live per-session VCSStatus widget.
+  rpc GetBacklogItemShipStatus(GetBacklogItemShipStatusRequest) returns (GetBacklogItemShipStatusResponse) {}
 
   // ListBacklogItems returns backlog items with optional filtering and sorting.
   rpc ListBacklogItems(ListBacklogItemsRequest) returns (ListBacklogItemsResponse) {}
