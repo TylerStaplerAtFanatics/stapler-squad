@@ -23,6 +23,7 @@ function autoMergeLine(allowAutoMerge: boolean | undefined): string {
 export function StuckItemDetail({ item }: StuckItemDetailProps) {
   const unknown = isPrStatusUnknown(item);
   const isPrReady = item.reason === StuckReason.PR_READY_UNMERGED;
+  const isReworkCap = item.reason === StuckReason.REWORK_CAP;
   const why = item.context?.trim() ? item.context : "No additional context recorded";
 
   return (
@@ -43,6 +44,14 @@ export function StuckItemDetail({ item }: StuckItemDetailProps) {
       {unknown && (
         <p className={styles.actionCopy} data-testid="stuck-item-no-action-copy">
           Couldn&apos;t check this PR&apos;s status — no action available.
+        </p>
+      )}
+
+      {isReworkCap && (
+        <p className={styles.actionCopy} data-testid="stuck-item-rework-cap-copy">
+          Hit the auto-rework cap after repeated failed reviews. Click &quot;Reopen for
+          Revision&quot; on the item to try one more round manually, or raise the cap in
+          Settings → Defaults if repeated failures are expected for this kind of change.
         </p>
       )}
 
