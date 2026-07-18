@@ -182,21 +182,11 @@ test.describe("vcs-widget", () => {
       }
     });
 
-    // KNOWN GAP (found during Phase 5 implementation, not fixed here — this phase is
-    // scoped to registry + e2e files only, see project_plans/unified-vcs-widget's
-    // Phase 5 task description): VcsWidget.tsx's `showNeutralLoadError` only renders
-    // when `data.loadError` is truthy (see fromShipStatus's
-    // `loadError: status.error || undefined`). A *legitimately* shipped pre-feature
-    // item (ShippedSnapshotAt unset, but no backend error — status.Error stays "")
-    // never sets loadError, so the neutral "No history captured for this item" copy
-    // this test asserts is currently unreachable for that real scenario — the widget
-    // instead silently falls back to the last-commit-derived "As of" timestamp with no
-    // file list / GitHub row, which is graceful but not the copy validation.md's B7
-    // criterion specifies. This test intentionally asserts the *intended* behavior
-    // (matching this story's own acceptance criteria) and will fail against the
-    // current VcsWidget.tsx until that gate is loosened to fire on
-    // `kind === "historical" && !snapshotAt` regardless of loadError, with a default
-    // neutral copy when loadError is empty.
+    // B7: a legitimately-shipped pre-feature item (ShippedSnapshotAt unset, no
+    // backend error) must render the neutral "No history captured for this item"
+    // copy rather than a blank/error widget. VcsWidget's neutral-copy gate fires on
+    // `kind === "historical" && !snapshotAt` with a default fallback message when
+    // `loadError` is empty (see VcsWidget.tsx's `showNeutralLoadError`).
     test("VcsWidget_should_RenderNoHistoryCapturedCopy_When_ShippedSnapshotAtUnset", async ({ page, request }) => {
       const itemId = await createBacklogItemViaApi(request, `vcs-widget-no-snapshot-${Date.now()}`);
       try {

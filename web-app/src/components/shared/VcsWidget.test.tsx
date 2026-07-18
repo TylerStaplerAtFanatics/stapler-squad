@@ -187,6 +187,28 @@ describe("VcsWidget", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("VcsWidget_should_RenderDefaultNoHistoryCopy_When_HistoricalWithNoSnapshotAtAndNoLoadError", () => {
+    render(
+      <VcsWidget
+        data={
+          makeData({
+            kind: "historical",
+            snapshotAt: null,
+            loadError: undefined,
+          }) as VcsWidgetData
+        }
+        mode="full"
+      />
+    );
+
+    expect(
+      screen.getByText(
+        "No history captured for this item — it shipped before detailed tracking was added."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("renders data-testid vcs-widget-loaded on the root element", () => {
     render(<VcsWidget data={makeData()} mode="full" />);
     expect(screen.getByTestId("vcs-widget-loaded")).toBeInTheDocument();
