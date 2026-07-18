@@ -9,6 +9,25 @@ and four quality-skill passes (`quality:architecture-review`, `ux:review`, `code
 Findings are bucketed: **[1] reconciliation bugs**, **[2] manual gates that could be
 policy-driven**, **[3] hardcoded pipeline steps that need a configurability seam**.
 
+## Update — 2026-07-17 (night): PR #168's abandon-review respawn verified live, with one caveat
+
+Deployed PR #168 (`make install-service`) and watched the live 60s reconciliation sweep
+(`grep "BacklogLifecycle" ~/.stapler-squad/logs/staplersquad.log`) against the 2 remaining
+real stuck items (`6f22bace`, `9264efe7`). They did NOT get auto-respawned, and the reason
+is a real, worth-documenting edge case in `markAbandonedReview` (`session/backlog_lifecycle.go:1043`):
+the respawn is gated on the SAME notify-once flag as the notification itself
+(`row.NotifiedAt != nil` short-circuits before reaching the respawn dispatch). Both items'
+stuck rows were already notified *days* before this fix deployed (under the old
+notify-only code), so `NotifiedAt` was already non-nil — the new respawn code only fires
+for rows notified *after* deploy, not retroactively for rows already in the notified state.
+
+**This is correct behavior for all future occurrences** (any abandoned_review row created
+from now on gets exactly one respawn attempt, per the fix's documented intent) — it just
+doesn't help pre-existing stuck items from before the deploy. Those need one manual
+`ResolveStuck` (or equivalent) to clear the stale notified row so the next detection cycle
+starts fresh, or (what was actually done for `6f22bace`/`9264efe7`) just finish them
+directly rather than debugging the one-time transitional gap further.
+
 ## Update — 2026-07-17 (evening): systematic autonomy-gap audit — remaining "babysitting" reasons
 
 Prompted by: "do we have any other babysitting gaps that would keep our backlog features
