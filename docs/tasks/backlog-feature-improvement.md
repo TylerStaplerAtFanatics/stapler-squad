@@ -368,3 +368,41 @@ the skill to treat the RPC/MCP tools as authoritative and drop or caveat the dir
   <hash>`). Had `git gc` run first, both fixes would have been permanently lost. This is the
   same class of bug as everything else in this bucket — a destructive path with no warning,
   discovered by using the tool as documented.
+
+## Merged-Before-Done Gate + Audit (2026-07-17)
+
+**Bug**: review→done treated `PrURL != ""` as proof the code shipped. An open, unmerged, or
+later-reverted PR still has `PrURL` set, so it always satisfied the guard — "approved" (a PASS
+review verdict) and "shipped" (code actually on main) were conflated. Worse, three separate
+call sites can drive this transition and only one (`TransitionBacklogItemStatus`, the RPC
+handler) had any shipped-code guard at all — `TriggerReReview`'s and `SubmitManualReview`'s
+auto-transition-on-PASS both called `storage.TransitionBacklogItemStatus` directly, bypassing
+the guard entirely.
+
+**Fix**: all three now share one `isCodeShippedToMain` check
+(`server/services/backlog_service_lifecycle.go`), which verifies the most recent work
+session's commit is an ancestor of `main` — checked locally **and** via `origin/main`, so a PR
+merged remotely on GitHub counts even before a local pull, and a commit merged/committed
+directly to main locally (no PR at all) also counts. Implemented as `git.IsCommitOnMain`
+(`session/git/ops.go`) using go-git rather than shelling out (see the new
+`.claude/rules/prefer-go-git-over-subshells.md`). Fails closed: if the check itself errors,
+the transition is blocked rather than trusting a stale `PrURL`. The RPC path keeps its
+`override_reason` escape hatch; the two internal auto-transition paths have none by design —
+on failure they leave the item in review for a human to decide via the RPC path.
+
+**Audit**: checked all 11 items currently `status = done` against real evidence instead of the
+cached fields the bug trusted — the 4 with a `PrURL` via `gh pr view --json state,mergedAt`
+(all confirmed `MERGED`), the 7 without one via `git merge-base --is-ancestor` against the real
+repo's `main` (all confirmed present). **Zero items were improperly closed.** One artifact
+worth noting, not fixing: "Bad UX when backlog actions linger" has 4 recorded work-session
+commit SHAs; one no longer exists as an object in the repo (likely superseded by a squash/
+rebase somewhere along the way) while the other 3 from the same work stream are confirmed on
+main — the code is verifiably shipped, this is just a stale pointer to a rewritten commit, not
+evidence of a gap. So the guard was genuinely missing, it just hadn't yet produced a bad
+outcome in this dataset.
+
+**Note for next DB-based audit**: the live DB is
+`~/.stapler-squad/workspaces/d685c4b1a423cca3/sessions.db`, found via `lsof -p <stapler-squad
+pid> | grep .db` — **not** `~/.stapler-squad/sessions.db`, which has zero rows and appears to
+be a stale/unused legacy path. This is exactly the staleness trap the "Skill Fix Needed" note
+above already flags; confirming it again here since it cost real time to rediscover.
