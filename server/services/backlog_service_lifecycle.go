@@ -813,6 +813,9 @@ func (s *BacklogService) SubmitManualReview(
 	// the most recent work commit is verified on main. A PASS verdict says the
 	// code is good, not that it has shipped; a manual review here must not
 	// silently mark an item done for code that's still sitting in an open PR.
+	// The item's "Ship PR" action (backlog_service_ship.go) is the intended
+	// recovery path once left here (docs/tasks/backlog-feature-improvement.md,
+	// 2026-07-18 update).
 	if overall == session.ReviewVerdictPass {
 		if item.Status == string(session.BacklogStatusReview) {
 			if !s.isCodeShippedToMain(ctx, req.Msg.ItemId, item.RepoPath, "SubmitManualReview") {

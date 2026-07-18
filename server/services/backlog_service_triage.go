@@ -1381,10 +1381,14 @@ Do not modify the code. Only write the review verdict.
 		// behavior of the tmux-driven submit_review_verdict MCP tool and
 		// SubmitManualReview, both of which already auto-transition on PASS.
 		// Best-effort: verdict is already persisted regardless of transition outcome.
+		//
 		// Gated on isCodeShippedToMain: a PASS verdict says the code is good, not
 		// that it has actually landed on main, and this path (unlike the RPC
 		// handler) has no override_reason escape hatch — if it can't verify, it
-		// must leave the item in review rather than silently mark it done.
+		// must leave the item in review rather than silently mark it done. The
+		// item's "Ship PR" action (backlog_service_ship.go) is the intended
+		// recovery path once left here (docs/tasks/backlog-feature-improvement.md,
+		// 2026-07-18 update).
 		if overall == session.ReviewVerdictPass {
 			if !s.isCodeShippedToMain(ctx, item.ID, item.RepoPath, "TriggerReReview") {
 				log.InfoLog.Printf("[TriggerReReview] item=%s PASS verdict but code not verified on main — leaving in review for manual transition/override", item.ID)
