@@ -1,6 +1,6 @@
 import { FileStatus } from "@/gen/session/v1/types_pb";
 import type { VCSStatus, FileChange, Session, UnfinishedWorktree } from "@/gen/session/v1/types_pb";
-import type { BacklogItemShipStatus, ShippedCommit } from "@/gen/session/v1/backlog_pb";
+import type { BacklogItemShipStatus, ShippedCommit, ShippedFileStat } from "@/gen/session/v1/backlog_pb";
 import type {
   VcsWidgetData,
   FileChangeSummary,
@@ -108,28 +108,70 @@ function toCommitSummary(commit: ShippedCommit): CommitSummary {
   };
 }
 
+// GitHub PR URLs look like https://github.com/{owner}/{repo}/pull/{n}. Some
+// callers already have prNumber from a dedicated proto field (UnfinishedWorktree)
+// and only need owner/repo parsed out; BacklogItemShipStatus has no dedicated
+// prNumber field, so this also extracts it from the URL for that caller.
+function parseGithubUrl(url: string): { owner: string; repo: string; prNumber: number } {
+  const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  return match
+    ? { owner: match[1], repo: match[2], prNumber: Number(match[3]) }
+    : { owner: "", repo: "", prNumber: 0 };
+}
+
+function toShipFileChangeSummary(file: ShippedFileStat): FileChangeSummary {
+  return {
+    path: file.path,
+    status: mapFileStatus(file.status),
+    additions: file.additions,
+    deletions: file.deletions,
+    // ShippedFileStat has no staged/unstaged/conflict distinction — historical
+    // snapshots only record "changed", so default every entry to "unstaged"
+    // (documented known simplification, Task 4.1.1b).
+    section: "unstaged",
+  };
+}
+
+function fromShipStatusGithub(status: BacklogItemShipStatus): GithubSummary | null {
+  if (!status.prUrl) return null;
+  const { owner, repo, prNumber } = parseGithubUrl(status.prUrl);
+  return {
+    owner,
+    repo,
+    prUrl: status.prUrl,
+    prNumber,
+    // Historical snapshots only carry CI/review data, not a raw PR state
+    // string — a captured snapshot belongs to a shipped item, so "merged" is
+    // the only state consistent with that lifecycle.
+    prState: "merged",
+    isDraft: false,
+    checkConclusion: toCheckConclusion(status.shippedCheckConclusion),
+    approvedCount: status.shippedApprovedCount,
+    changesReqCount: status.shippedChangesReqCount,
+  };
+}
+
 export function fromShipStatus(status: BacklogItemShipStatus): VcsWidgetData {
+  const hasSnapshot = status.snapshotAt != null;
   return {
     kind: "historical",
     branch: status.branchName,
     isClean: true,
-    fileChanges: [],
+    fileChanges: hasSnapshot ? status.fileStats.map(toShipFileChangeSummary) : [],
     aheadOfMain: status.aheadOfMain,
     behindMain: status.behindMain,
     branchExists: status.branchExists,
     commits: status.commits.map(toCommitSummary),
-    github: null,
+    github: hasSnapshot ? fromShipStatusGithub(status) : null,
     shipped: status.shipped,
     loadError: status.error || undefined,
-    snapshotAt: toDate(status.lastCommitAt),
+    snapshotAt: hasSnapshot ? toDate(status.snapshotAt) : toDate(status.lastCommitAt),
+    // Mapped independently of hasSnapshot: when both capture groups fail,
+    // status.snapshotAt can stay nil while snapshotCaptureFailed is still
+    // true (Story 3.3.1) — VcsWidgetGithubRow's failure-copy branch depends
+    // on this field being true in exactly that case.
+    snapshotCaptureFailed: status.snapshotCaptureFailed,
   };
-}
-
-// GitHub PR URLs look like https://github.com/{owner}/{repo}/pull/{n} —
-// UnfinishedWorktree has no owner/repo fields of its own, only the PR URL.
-function parseGithubUrl(url: string): { owner: string; repo: string } {
-  const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/);
-  return match ? { owner: match[1], repo: match[2] } : { owner: "", repo: "" };
 }
 
 function fromUnfinishedWorktreeGithub(wt: UnfinishedWorktree): GithubSummary | null {

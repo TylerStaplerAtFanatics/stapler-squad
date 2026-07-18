@@ -25,13 +25,9 @@ export function VcsWidgetGithubRow({ data }: VcsWidgetGithubRowProps) {
   if (!data.github && !captureFailed) return null;
 
   if (!data.github) {
-    // Minimal placeholder — Story 4.2.1 owns the full "couldn't capture PR
-    // status" failure copy for this branch. This story only guarantees the
-    // component doesn't collapse to null here, so that later story can
-    // extend the render without a prop-shape change.
     return (
       <div className={styles.container}>
-        <span className={styles.captureFailed}>GitHub status unavailable</span>
+        <span className={styles.captureFailed}>{"Couldn't capture PR status at ship time"}</span>
       </div>
     );
   }
@@ -69,6 +65,10 @@ export function VcsWidgetGithubRow({ data }: VcsWidgetGithubRowProps) {
 
       {github.checkConclusion && (
         <span className={ciClassName(github.checkConclusion)}>CI: {github.checkConclusion}</span>
+      )}
+
+      {captureFailed && (
+        <span className={styles.captureFailed}>{"Couldn't fully capture PR status at ship time"}</span>
       )}
     </div>
   );
