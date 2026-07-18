@@ -910,6 +910,11 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	backlogSvc.SetEventBus(eventBus)
 	backlogSvc.SetSessionStopper(sessionService)
 	backlogSvc.SetAutonomousDriverStarter(sessionService)
+	// Wires the self-service "Ship PR" action (TriggerShipPR) — sessionService
+	// is available this early (constructed in BuildCoreDepsWithOptions, aliased
+	// above), so no setter-injection race window, mirroring
+	// reactiveQueueMgr.SetOneShotRunner(sessionService) below.
+	backlogSvc.SetOneShotRunner(sessionService)
 	if headlessPool != nil {
 		backlogSvc.SetHeadlessPool(headlessPool)
 	}

@@ -406,3 +406,128 @@ outcome in this dataset.
 pid> | grep .db` — **not** `~/.stapler-squad/sessions.db`, which has zero rows and appears to
 be a stale/unused legacy path. This is exactly the staleness trap the "Skill Fix Needed" note
 above already flags; confirming it again here since it cost real time to rediscover.
+
+## Update — 2026-07-18: "Ship PR" self-service action on the item detail page
+
+Closes the live gap reported directly against the UI: a backlog item sitting at status=`review`
+with all acceptance criteria complete and a PASS-looking gate verdict (screenshot: "Dedent
+shortcut broken in edit mode", 6/6 AC, PASS) had **no button anywhere on the item detail page**
+to ask the agent to ship a PR — the only Actions shown were Override → Done, Re-review, Submit
+Review, Restart, ↩ Return to Triage, ↩ Back to Ready, Delete. Verified every fact this update's
+briefing assumed against current `main` first (all still accurate): `AutoCreatePR` (opt-in,
+default `false`) and `RunOneShotForSession` (the 2026-07-17 update above) are both live and
+merged; `RecordPRCreatedOutOfBand` still only reconciles a PR back onto the item when
+`item.Status == review`; `GetBacklogItemShipStatus` **does not exist** anywhere in the tree —
+there is no pre-built "is this item ready to ship" helper, so readiness is computed inline in
+the new UI code (see below) rather than delegated to a nonexistent RPC.
+
+**Fix — self-service action**: added a "🚀 Ship PR" button to `BacklogItemDetail.tsx`'s Actions
+panel, visible when `item.status === "review" && !item.prUrl` (first button in that block,
+alongside Override → Done / Re-review / Submit Review / Restart). Disabled — with an
+explanatory `title` — until all acceptance criteria are `done`; does **not** require a PASS
+gate verdict, matching the existing human-override philosophy of "Override → Done" (a reviewer
+can still force-ship off an UNVERIFIABLE/PARTIAL verdict). Wired to a new `TriggerShipPR` RPC
+(`proto/session/v1/backlog.proto`, handler in the new `server/services/backlog_service_ship.go`)
+that resolves the item's most recent work-role `ItemSession` (reusing `findMostRecentSessions`,
+the same helper `TriggerReReview` uses) and delegates to `RunOneShotForSession` — the *same*
+one-shot PR-creation mechanism the opt-in `AutoCreatePR` policy and the Review Queue's manual
+"Create PR" button already use, per this doc's own precedent against introducing a second writer
+of `pr_pending` (PR #160's bug). No new PR-creation code path was written; `TriggerShipPR` is a
+thin resolve-the-session-then-delegate handler, wired into `BacklogService` via a new narrow
+`PRRunner` interface (mirrors `server.OneShotPRCreator`, satisfied by `*services.SessionService`)
+and a `SetOneShotRunner` setter, following the exact `SetSessionStopper`/`SetHeadlessPool`
+setter-injection precedent already used throughout `backlog_service.go`. Because this reuses
+`RunOneShotForSession`, `RecordPRCreatedOutOfBand`'s existing reconciliation still handles the
+`review`→`pr_pending` transition once a PR URL is extracted — no new transition logic needed.
+Scoped to `status == review` only (not extended to `done`) — see the "second root cause" below
+for why.
+
+**Investigation — "why isn't this happening automatically"**: this is genuinely two separate,
+compounding causes, not one:
+
+1. **The known, working-as-designed cause**: `AutoCreatePR` defaults to `false` per item and
+   most items (including the screenshot's) never opt in — the 2026-07-17 update's own UX gap.
+   The Ship PR button above closes this half without changing the opt-in default (still a
+   deliberate human-review-the-prompt checkpoint, per that update's stated trust trade-off).
+
+2. **A second, previously-undocumented live bug, found while tracing every PASS-verdict code
+   path per this update's brief**: `SubmitManualReview` (`server/services/backlog_service_lifecycle.go`)
+   and `TriggerReReview`'s headless-PASS branch (`server/services/backlog_service_triage.go`)
+   both transition `review`→`done` **directly via the storage layer**
+   (`s.storage.TransitionBacklogItemStatus`), not through the guarded
+   `TransitionBacklogItemStatus` **RPC handler**
+   (`server/services/backlog_service_lifecycle.go`'s `TransitionBacklogItemStatus` method, the
+   one the frontend's generic `transitionStatus()` calls for `mark_done`/`send_back_*`/etc.).
+   Only that RPC handler enforces `ErrPRRequired` — the guard that blocks `review`→`done` when a
+   work session has committed code (`LastCommitSha != ""`) but `item.PrURL == ""` (see
+   `session/domain/backlog.go`'s `TransitionGuard`, `from == BacklogStatusReview && to ==
+   BacklogStatusDone` case). Both bypassing call sites could therefore mark an item **done**
+   while its work session's commits were never pushed or turned into a PR at all — silently
+   losing the ship step, with no PR, no `pr_pending` stop, and (before this fix) no way to
+   recover short of manually re-opening the item and finding the Review Queue page. Confirmed
+   this is real (not a false positive) by reading `TransitionGuard`'s guard and tracing that
+   `s.storage.TransitionBacklogItemStatus` is the raw storage-layer method, not the RPC handler
+   — the storage layer has no knowledge of `ErrPRRequired` at all.
+
+   By contrast, `handleReviewSessionExited` (`session/backlog_lifecycle.go`, the path driven by
+   the tmux review session's process actually exiting after calling the `submit_review_verdict`
+   MCP tool) is unaffected — it always calls `pushAndCreatePR` on PASS, which pushes the branch
+   and creates the PR itself before ever reaching `done`.
+
+   **Fix applied — converged with the "Merged-Before-Done Gate" fix above during merge
+   reconciliation**: this investigation was scoped and largely written in parallel with the
+   "Merged-Before-Done Gate + Audit (2026-07-17)" section above, on a worktree branch that
+   branched before that fix landed on `main`. It independently found the same two bypassing call
+   sites (`SubmitManualReview`, `TriggerReReview`) and initially fixed them with a new, narrower
+   helper (`hasUnshippedWorkSessionCode`, checking only `item.PrURL != ""`). At merge time
+   `isCodeShippedToMain` was already live and already gating both of those exact call sites — a
+   strictly more correct check (verifies actual git-ancestry-on-main, not just "a PR URL exists,"
+   which does not distinguish an open/unmerged/reverted PR from a truly shipped one — the precise
+   gap the Merged-Before-Done Gate fix exists to close). The merge resolution keeps
+   `isCodeShippedToMain` at both sites and drops `hasUnshippedWorkSessionCode` entirely rather
+   than run two divergent guards; the Ship PR button below is unaffected — it was net-new
+   either way, once the item is correctly left in review. Two dedicated regression tests
+   originally written against `hasUnshippedWorkSessionCode`'s metadata-only fixture were adapted
+   to real git fixtures (`setupPRFixSyncRepo`/`runGitTestCmd`, matching
+   `TestTransitionBacklogItemStatus_should_BlockDone_When_PrURLSetButCommitNotOnMain`'s pattern)
+   so they exercise the guard that actually ships, not the superseded one.
+
+   **Deliberately not fixed here (follow-up)**: items that already reached `done` with unshipped
+   code *before* the Merged-Before-Done Gate fix landed have no PR and no recovery button, since
+   Ship PR is scoped to `status == review`. Extending it to `done` would require also relaxing
+   `RecordPRCreatedOutOfBand`'s status guard (currently only reconciles `review`→`pr_pending`) and
+   confirming `done`→`pr_pending` is a sane state-machine transition — out of scope for this pass;
+   flagged for a follow-up rather than guessed at here.
+
+**Files touched**: `proto/session/v1/backlog.proto` (`TriggerShipPRRequest/Response` + RPC) →
+`server/services/backlog_service_ship.go` (new: `PRRunner` interface, `SetOneShotRunner`,
+`TriggerShipPR` handler) → `server/services/backlog_service.go` (`oneShotRunner` field) →
+`server/services/backlog_service_lifecycle.go` (`SubmitManualReview` guard, using the pre-existing
+`isCodeShippedToMain`) → `server/services/backlog_service_triage.go` (`TriggerReReview`
+headless-PASS guard, same check) → `server/dependencies.go`
+(`backlogSvc.SetOneShotRunner(sessionService)`, mirroring `reactiveQueueMgr.SetOneShotRunner(sessionService)`)
+→ `web-app/src/lib/hooks/useBacklogService.ts` (`triggerShipPR`) →
+`web-app/src/components/backlog/BacklogItemDetail.tsx` (button + `handleAction` case) →
+`tools/scanner/backend/proto_scanner.go` (`methodToID["TriggerShipPR"]`, required for the
+feature-registry scanner to resolve the `+api:` marker to `backlog:trigger-ship-pr` instead of a
+raw-method-name fallback).
+
+**Tests**: `server/services/backlog_service_ship_test.go` — 6 tests covering `TriggerShipPR`'s
+happy path (resolves the correct work session, delegates to `PRRunner`), and rejection paths
+(not in review, already has a PR, no work session, `PRRunner` unwired, runner error).
+`server/services/backlog_service_lifecycle_test.go` —
+`TestSubmitManualReview_PassNoUnshippedCode_TransitionsToDone` (regression guard: nothing-to-ship
+PASS must still auto-transition, unchanged) and
+`TestSubmitManualReview_PassWithUnshippedCode_StaysInReviewForShipPR` (adapted at merge time to a
+real git fixture proving the commit is genuinely unmerged, exercising `isCodeShippedToMain`).
+`server/services/backlog_service_test.go` —
+`TestTriggerReReview_HeadlessPassWithUnshippedCode_StaysInReviewForShipPR` (pairs with the
+pre-existing `TestTriggerReReview_HeadlessPassAutoTransitionsToDone`, which continues to pass
+unchanged since its fixture has no work session at all). Frontend:
+`web-app/src/components/backlog/BacklogItemDetail.shipPR.test.tsx` (new — button visibility
+across status/PR/AC-completion combinations, click wiring) plus `triggerShipPR` added to the two
+existing `BacklogItemDetail.*.test.tsx` mocks. Full `go test ./server/... ./session/...` and
+`cd web-app && npx jest --no-coverage` re-verified after merge reconciliation (see this file's
+own commit history for the exact pass/fail counts at merge time). No e2e spec added — follows the
+same established pattern as `AutoSpawnSession`/`AutoCreatePR` (Go + Jest only, no e2e), per
+`.claude/rules/feature-registry.md`'s existing precedent in this file.
