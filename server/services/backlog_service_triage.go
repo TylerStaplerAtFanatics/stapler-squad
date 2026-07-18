@@ -310,12 +310,17 @@ func (s *BacklogService) SpawnSessionFromItem(
 	baseTitle := repoName + "-" + triageShortTitle(priorSessions, item.Title)
 	title := buildRevisionTitle(baseTitle, isReopen, priorSessions)
 
-	// 10. Create a dedicated git worktree for this work session. Falls back to a plain
-	// directory session if the repo is not git-managed (or worktree creation fails for
-	// any other reason — e.g. a bare clone, a detached HEAD, or disk quota hit).
+	// 10. Create a dedicated git worktree for this work session. The branch slug is
+	// derived from baseTitle (NOT title) so rework/reopen iterations reuse the same
+	// "backlog/<item>" branch instead of minting a new one per -rN revision — the
+	// worktree setup path already detects and reuses an existing branch (see
+	// git.GitWorktree.Setup), so this just needs a stable slug across reopens.
+	// Falls back to a plain directory session if the repo is not git-managed (or
+	// worktree creation fails for any other reason — e.g. a bare clone, a detached
+	// HEAD, or disk quota hit).
 	// Files must be written to the session path BEFORE spawning.
 	// worktreeMu guards concurrent spawns from interleaving writes to the same path.
-	worktreePath, useWorktree, resolveErr := resolveSessionPath(item.RepoPath, slugify(title))
+	worktreePath, useWorktree, resolveErr := resolveSessionPath(item.RepoPath, slugify(baseTitle))
 	if resolveErr != nil {
 		return nil, resolveErr
 	}
