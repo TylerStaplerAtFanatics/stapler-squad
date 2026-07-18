@@ -458,6 +458,37 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// by the service layer.
 	workflowEngine := session.NewDefaultWorkflowEngine()
 
+	// PipelineEngine resolves a backlog item's slash-command set / prompts (Epic 1.5).
+	// Constructed here — before NewBacklogLifecycleListenerWithPool and
+	// services.NewBacklogService below — so both share the exact same
+	// *session.CachingPipelineEngine instance (Story 1.5.1's pointer-equality
+	// requirement; see server/dependencies_test.go). storage.GetEntClient() is
+	// already available this early (aliased above, and used successfully even
+	// earlier by BuildCoreDepsWithOptions for NewErrorRegistry), so there is no
+	// bootstrap-ordering obstacle to constructing it now rather than deferring via
+	// a Set*-style setter. Degrades gracefully — never aborts boot — if the ent
+	// client is unavailable (non-ent-backed storage, e.g. some test configurations)
+	// or construction otherwise fails: pipelineEngine stays a true nil interface
+	// (not a typed-nil *CachingPipelineEngine, which would break every
+	// `s.pipelineEngine != nil` guard downstream) and every call site falls back to
+	// the built-in default pipeline for all items.
+	// pipelineModeRepo is lifted to this outer scope (rather than staying local to
+	// the entClient-available branch below) because services.NewBacklogService
+	// (Epic 2.2) needs the same repository instance to back its PipelineMode CRUD
+	// RPCs, independent of whether pipelineEngine construction itself succeeded.
+	var pipelineEngine session.PipelineEngine
+	var pipelineModeRepo session.PipelineModeRepository
+	if entClient := storage.GetEntClient(); entClient != nil {
+		pipelineModeRepo = session.NewEntPipelineModeRepository(entClient)
+		if cachingPipelineEngine, err := session.NewPipelineEngine(pipelineModeRepo); err != nil {
+			log.Warn("pipelineEngine construction failed; continuing with the default pipeline for all backlog items", "err", err)
+		} else {
+			pipelineEngine = cachingPipelineEngine
+		}
+	} else {
+		log.Warn("pipelineEngine unavailable: storage is not ent-backed; continuing with the default pipeline for all backlog items")
+	}
+
 	// Construct the headless LLM pool early so the lifecycle listener can receive it
 	// via constructor (eliminating the post-construction wiring race). Non-fatal if
 	// the claude binary is not found.
@@ -480,8 +511,14 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	// Backlog lifecycle listener — always created, enabled state set from config below.
 	// The pool is passed at construction time to close the race window that existed when
 	// SetHeadlessPool was called hundreds of lines after instance wiring.
-	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithPool(storage, headlessPool)
+	backlogLifecycleListener := session.NewBacklogLifecycleListenerWithPool(storage, headlessPool, pipelineEngine)
 	backlogLifecycleListener.SetNotifier(&services.EventBusNotifier{Bus: eventBus})
+	// Review now always spawns a real, hidden session.Instance (via
+	// SessionService.SpawnReviewSession) instead of an in-process headless LLM
+	// call, so review-queue visibility (idle/error/approval detection) works the
+	// same as for every other automated session. sessionService already
+	// satisfies session.ReviewGateSpawner.
+	backlogLifecycleListener.SetSessionCreator(sessionService)
 
 	// Step 5 (continued): wire dependencies to each instance
 	// inst.SetReviewQueue and inst.SetStatusManager are called per-instance in a loop;
@@ -658,6 +695,10 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 
 	// Step 8: ReactiveQueueManager
 	reactiveQueueMgr := NewReactiveQueueManager(reviewQueue, reviewQueuePoller, eventBus, statusManager, storage)
+	// Wires the opt-in AutoCreatePR policy — sessionService is available this early
+	// (constructed in BuildCoreDepsWithOptions, aliased above), so no setter-injection
+	// race window like SetHeadlessPool's had.
+	reactiveQueueMgr.SetOneShotRunner(sessionService)
 	log.Info("ReactiveQueueManager initialized")
 
 	// Step 8.5: HistoryLinker — detects Claude JSONL files and links conversation
@@ -816,6 +857,17 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Warn("could not determine config dir for analytics DB", "err", configErr)
 	}
 
+	// One-time startup backfill: seed durable BacklogStuckState rows (with
+	// notified_at pre-set) for items that are already stuck, so the first
+	// genuine reconcile tick below does not re-notify for conditions already
+	// known before this restart. Must run before the ticker starts. Gated on
+	// the backlog feature flag directly (backlogCtrl isn't constructed until
+	// after the ticker below) — seeding rows a disabled ticker will never
+	// maintain would leave stale, un-reconciled rows behind.
+	if cfg.GetFeatureFlag("backlog") {
+		backlogLifecycleListener.BackfillStuckStates(context.Background())
+	}
+
 	// 60 s reconcile ticker: safety net for abnormal exits where EventExited cannot fire.
 	// This goroutine is the only fallback for review-gate respawn, stale-item detection,
 	// and PR-pending polling (merge/CI/conflict) — a panic here must not kill it silently.
@@ -852,13 +904,14 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		log.Info("backlog feature disabled (toggle via Settings → Features)")
 	}
 
-	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine)
+	backlogSvc := services.NewBacklogService(storage, sessionService, cfg, workflowEngine, pipelineEngine, pipelineModeRepo)
 	backlogSvc.SetEventBus(eventBus)
 	backlogSvc.SetSessionStopper(sessionService)
 	backlogSvc.SetAutonomousDriverStarter(sessionService)
 	if headlessPool != nil {
 		backlogSvc.SetHeadlessPool(headlessPool)
 	}
+	backlogSvc.SetScrollbackManager(scrollbackManager)
 	// Reuse the same registry/keyFunc backlogCtrl's periodic SyncLoop uses, so a
 	// manual TriggerSync call decrypts tokens and dispatches to plugins identically.
 	backlogSvc.SetPluginRegistry(syncRegistry)
@@ -868,6 +921,23 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	backlogSvc.SetSyncFeatureEnabledCheck(backlogCtrl.IsEnabled)
 	backlogLifecycleListener.SetAutoReopener(backlogSvc)
 	backlogLifecycleListener.SetPRFixSpawner(backlogSvc)
+	backlogLifecycleListener.SetReviewRespawner(backlogSvc)
+	// Wire the zombie-session liveness checker (pre-mortem F3, Task 2.1.3d):
+	// reuses the existing session.Registry + Instance.TmuxSessionExists rather
+	// than inventing a new liveness mechanism. Acquire failure (session not
+	// tracked live) is treated as "not alive" — the whole point of this check
+	// is to catch sessions whose DB row looks active but whose process is gone.
+	if svc.Registry != nil {
+		registry := svc.Registry
+		backlogLifecycleListener.SetSessionLivenessChecker(func(sessionUUID string) bool {
+			alive := false
+			_ = registry.WithInstance(context.Background(), sessionUUID, func(li *session.LiveInstance) error {
+				alive = li.TmuxSessionExists()
+				return nil
+			})
+			return alive
+		})
+	}
 	sessionService.SetBacklogLifecycleListener(backlogLifecycleListener)
 	sessionService.SetReviewGateTrigger(backlogLifecycleListener)
 	// Wire the tmux-UUID → Claude-conversation-UUID resolver so GetClaudeHistoryMessages

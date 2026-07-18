@@ -35,6 +35,12 @@ type BacklogItem struct {
 	SkipReviewGate bool `json:"skip_review_gate,omitempty"`
 	// SkipPlanning holds the value of the "skip_planning" field.
 	SkipPlanning bool `json:"skip_planning,omitempty"`
+	// When true, a work session is spawned automatically once the item reaches ready — no manual 'Spawn Session' click required.
+	AutoSpawnSession bool `json:"auto_spawn_session,omitempty"`
+	// When true, a PR is created automatically (via the same one-shot prompt the manual Review Queue 'Create PR' button uses) once a work session for this item reaches TASK_COMPLETE — no manual click required.
+	AutoCreatePr bool `json:"auto_create_pr,omitempty"`
+	// Slug of the PipelineMode this item uses to drive triage/work/review content. Empty string means the built-in default (today's fixed hardcoded pipeline).
+	PipelineMode string `json:"pipeline_mode,omitempty"`
 	// PlanApproved holds the value of the "plan_approved" field.
 	PlanApproved bool `json:"plan_approved,omitempty"`
 	// PlanApprovedAt holds the value of the "plan_approved_at" field.
@@ -74,11 +80,15 @@ type BacklogItemEdges struct {
 	Sessions []*Session `json:"sessions,omitempty"`
 	// StatusEvents holds the value of the status_events edge.
 	StatusEvents []*BacklogStatusEvent `json:"status_events,omitempty"`
+	// StuckStates holds the value of the stuck_states edge.
+	StuckStates []*BacklogStuckState `json:"stuck_states,omitempty"`
+	// ProgressNotes holds the value of the progress_notes edge.
+	ProgressNotes []*BacklogProgressNote `json:"progress_notes,omitempty"`
 	// Source holds the value of the source edge.
 	Source *ItemSource `json:"source,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [4]bool
+	loadedTypes [6]bool
 }
 
 // ItemSessionsOrErr returns the ItemSessions value or an error if the edge
@@ -108,12 +118,30 @@ func (e BacklogItemEdges) StatusEventsOrErr() ([]*BacklogStatusEvent, error) {
 	return nil, &NotLoadedError{edge: "status_events"}
 }
 
+// StuckStatesOrErr returns the StuckStates value or an error if the edge
+// was not loaded in eager-loading.
+func (e BacklogItemEdges) StuckStatesOrErr() ([]*BacklogStuckState, error) {
+	if e.loadedTypes[3] {
+		return e.StuckStates, nil
+	}
+	return nil, &NotLoadedError{edge: "stuck_states"}
+}
+
+// ProgressNotesOrErr returns the ProgressNotes value or an error if the edge
+// was not loaded in eager-loading.
+func (e BacklogItemEdges) ProgressNotesOrErr() ([]*BacklogProgressNote, error) {
+	if e.loadedTypes[4] {
+		return e.ProgressNotes, nil
+	}
+	return nil, &NotLoadedError{edge: "progress_notes"}
+}
+
 // SourceOrErr returns the Source value or an error if the edge
 // was not loaded in eager-loading, or loaded but was not found.
 func (e BacklogItemEdges) SourceOrErr() (*ItemSource, error) {
 	if e.Source != nil {
 		return e.Source, nil
-	} else if e.loadedTypes[3] {
+	} else if e.loadedTypes[5] {
 		return nil, &NotFoundError{label: itemsource.Label}
 	}
 	return nil, &NotLoadedError{edge: "source"}
@@ -124,11 +152,11 @@ func (*BacklogItem) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case backlogitem.FieldSkipReviewGate, backlogitem.FieldSkipPlanning, backlogitem.FieldPlanApproved:
+		case backlogitem.FieldSkipReviewGate, backlogitem.FieldSkipPlanning, backlogitem.FieldAutoSpawnSession, backlogitem.FieldAutoCreatePr, backlogitem.FieldPlanApproved:
 			values[i] = new(sql.NullBool)
 		case backlogitem.FieldPriority, backlogitem.FieldPrNumber:
 			values[i] = new(sql.NullInt64)
-		case backlogitem.FieldTitle, backlogitem.FieldDescription, backlogitem.FieldAcceptanceCriteria, backlogitem.FieldStatus, backlogitem.FieldRepoPath, backlogitem.FieldPlanArtifactsPath, backlogitem.FieldUserModifiedFields, backlogitem.FieldNotes, backlogitem.FieldExternalID, backlogitem.FieldPrURL:
+		case backlogitem.FieldTitle, backlogitem.FieldDescription, backlogitem.FieldAcceptanceCriteria, backlogitem.FieldStatus, backlogitem.FieldRepoPath, backlogitem.FieldPipelineMode, backlogitem.FieldPlanArtifactsPath, backlogitem.FieldUserModifiedFields, backlogitem.FieldNotes, backlogitem.FieldExternalID, backlogitem.FieldPrURL:
 			values[i] = new(sql.NullString)
 		case backlogitem.FieldPlanApprovedAt, backlogitem.FieldUserModifiedStatusAt, backlogitem.FieldArchivedAt, backlogitem.FieldCreatedAt, backlogitem.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -204,6 +232,24 @@ func (_m *BacklogItem) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field skip_planning", values[i])
 			} else if value.Valid {
 				_m.SkipPlanning = value.Bool
+			}
+		case backlogitem.FieldAutoSpawnSession:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field auto_spawn_session", values[i])
+			} else if value.Valid {
+				_m.AutoSpawnSession = value.Bool
+			}
+		case backlogitem.FieldAutoCreatePr:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field auto_create_pr", values[i])
+			} else if value.Valid {
+				_m.AutoCreatePr = value.Bool
+			}
+		case backlogitem.FieldPipelineMode:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field pipeline_mode", values[i])
+			} else if value.Valid {
+				_m.PipelineMode = value.String
 			}
 		case backlogitem.FieldPlanApproved:
 			if value, ok := values[i].(*sql.NullBool); !ok {
@@ -315,6 +361,16 @@ func (_m *BacklogItem) QueryStatusEvents() *BacklogStatusEventQuery {
 	return NewBacklogItemClient(_m.config).QueryStatusEvents(_m)
 }
 
+// QueryStuckStates queries the "stuck_states" edge of the BacklogItem entity.
+func (_m *BacklogItem) QueryStuckStates() *BacklogStuckStateQuery {
+	return NewBacklogItemClient(_m.config).QueryStuckStates(_m)
+}
+
+// QueryProgressNotes queries the "progress_notes" edge of the BacklogItem entity.
+func (_m *BacklogItem) QueryProgressNotes() *BacklogProgressNoteQuery {
+	return NewBacklogItemClient(_m.config).QueryProgressNotes(_m)
+}
+
 // QuerySource queries the "source" edge of the BacklogItem entity.
 func (_m *BacklogItem) QuerySource() *ItemSourceQuery {
 	return NewBacklogItemClient(_m.config).QuerySource(_m)
@@ -366,6 +422,15 @@ func (_m *BacklogItem) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("skip_planning=")
 	builder.WriteString(fmt.Sprintf("%v", _m.SkipPlanning))
+	builder.WriteString(", ")
+	builder.WriteString("auto_spawn_session=")
+	builder.WriteString(fmt.Sprintf("%v", _m.AutoSpawnSession))
+	builder.WriteString(", ")
+	builder.WriteString("auto_create_pr=")
+	builder.WriteString(fmt.Sprintf("%v", _m.AutoCreatePr))
+	builder.WriteString(", ")
+	builder.WriteString("pipeline_mode=")
+	builder.WriteString(_m.PipelineMode)
 	builder.WriteString(", ")
 	builder.WriteString("plan_approved=")
 	builder.WriteString(fmt.Sprintf("%v", _m.PlanApproved))

@@ -14,7 +14,9 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogprogressnote"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
 	"github.com/tstapler/stapler-squad/session/ent/session"
@@ -128,6 +130,48 @@ func (_c *BacklogItemCreate) SetSkipPlanning(v bool) *BacklogItemCreate {
 func (_c *BacklogItemCreate) SetNillableSkipPlanning(v *bool) *BacklogItemCreate {
 	if v != nil {
 		_c.SetSkipPlanning(*v)
+	}
+	return _c
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (_c *BacklogItemCreate) SetAutoSpawnSession(v bool) *BacklogItemCreate {
+	_c.mutation.SetAutoSpawnSession(v)
+	return _c
+}
+
+// SetNillableAutoSpawnSession sets the "auto_spawn_session" field if the given value is not nil.
+func (_c *BacklogItemCreate) SetNillableAutoSpawnSession(v *bool) *BacklogItemCreate {
+	if v != nil {
+		_c.SetAutoSpawnSession(*v)
+	}
+	return _c
+}
+
+// SetAutoCreatePr sets the "auto_create_pr" field.
+func (_c *BacklogItemCreate) SetAutoCreatePr(v bool) *BacklogItemCreate {
+	_c.mutation.SetAutoCreatePr(v)
+	return _c
+}
+
+// SetNillableAutoCreatePr sets the "auto_create_pr" field if the given value is not nil.
+func (_c *BacklogItemCreate) SetNillableAutoCreatePr(v *bool) *BacklogItemCreate {
+	if v != nil {
+		_c.SetAutoCreatePr(*v)
+	}
+	return _c
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (_c *BacklogItemCreate) SetPipelineMode(v string) *BacklogItemCreate {
+	_c.mutation.SetPipelineMode(v)
+	return _c
+}
+
+// SetNillablePipelineMode sets the "pipeline_mode" field if the given value is not nil.
+func (_c *BacklogItemCreate) SetNillablePipelineMode(v *string) *BacklogItemCreate {
+	if v != nil {
+		_c.SetPipelineMode(*v)
 	}
 	return _c
 }
@@ -359,6 +403,36 @@ func (_c *BacklogItemCreate) AddStatusEvents(v ...*BacklogStatusEvent) *BacklogI
 	return _c.AddStatusEventIDs(ids...)
 }
 
+// AddStuckStateIDs adds the "stuck_states" edge to the BacklogStuckState entity by IDs.
+func (_c *BacklogItemCreate) AddStuckStateIDs(ids ...uuid.UUID) *BacklogItemCreate {
+	_c.mutation.AddStuckStateIDs(ids...)
+	return _c
+}
+
+// AddStuckStates adds the "stuck_states" edges to the BacklogStuckState entity.
+func (_c *BacklogItemCreate) AddStuckStates(v ...*BacklogStuckState) *BacklogItemCreate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddStuckStateIDs(ids...)
+}
+
+// AddProgressNoteIDs adds the "progress_notes" edge to the BacklogProgressNote entity by IDs.
+func (_c *BacklogItemCreate) AddProgressNoteIDs(ids ...uuid.UUID) *BacklogItemCreate {
+	_c.mutation.AddProgressNoteIDs(ids...)
+	return _c
+}
+
+// AddProgressNotes adds the "progress_notes" edges to the BacklogProgressNote entity.
+func (_c *BacklogItemCreate) AddProgressNotes(v ...*BacklogProgressNote) *BacklogItemCreate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddProgressNoteIDs(ids...)
+}
+
 // SetSourceID sets the "source" edge to the ItemSource entity by ID.
 func (_c *BacklogItemCreate) SetSourceID(id uuid.UUID) *BacklogItemCreate {
 	_c.mutation.SetSourceID(id)
@@ -429,6 +503,18 @@ func (_c *BacklogItemCreate) defaults() {
 		v := backlogitem.DefaultSkipPlanning
 		_c.mutation.SetSkipPlanning(v)
 	}
+	if _, ok := _c.mutation.AutoSpawnSession(); !ok {
+		v := backlogitem.DefaultAutoSpawnSession
+		_c.mutation.SetAutoSpawnSession(v)
+	}
+	if _, ok := _c.mutation.AutoCreatePr(); !ok {
+		v := backlogitem.DefaultAutoCreatePr
+		_c.mutation.SetAutoCreatePr(v)
+	}
+	if _, ok := _c.mutation.PipelineMode(); !ok {
+		v := backlogitem.DefaultPipelineMode
+		_c.mutation.SetPipelineMode(v)
+	}
 	if _, ok := _c.mutation.PlanApproved(); !ok {
 		v := backlogitem.DefaultPlanApproved
 		_c.mutation.SetPlanApproved(v)
@@ -477,6 +563,15 @@ func (_c *BacklogItemCreate) check() error {
 	}
 	if _, ok := _c.mutation.SkipPlanning(); !ok {
 		return &ValidationError{Name: "skip_planning", err: errors.New(`ent: missing required field "BacklogItem.skip_planning"`)}
+	}
+	if _, ok := _c.mutation.AutoSpawnSession(); !ok {
+		return &ValidationError{Name: "auto_spawn_session", err: errors.New(`ent: missing required field "BacklogItem.auto_spawn_session"`)}
+	}
+	if _, ok := _c.mutation.AutoCreatePr(); !ok {
+		return &ValidationError{Name: "auto_create_pr", err: errors.New(`ent: missing required field "BacklogItem.auto_create_pr"`)}
+	}
+	if _, ok := _c.mutation.PipelineMode(); !ok {
+		return &ValidationError{Name: "pipeline_mode", err: errors.New(`ent: missing required field "BacklogItem.pipeline_mode"`)}
 	}
 	if _, ok := _c.mutation.PlanApproved(); !ok {
 		return &ValidationError{Name: "plan_approved", err: errors.New(`ent: missing required field "BacklogItem.plan_approved"`)}
@@ -554,6 +649,18 @@ func (_c *BacklogItemCreate) createSpec() (*BacklogItem, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.SkipPlanning(); ok {
 		_spec.SetField(backlogitem.FieldSkipPlanning, field.TypeBool, value)
 		_node.SkipPlanning = value
+	}
+	if value, ok := _c.mutation.AutoSpawnSession(); ok {
+		_spec.SetField(backlogitem.FieldAutoSpawnSession, field.TypeBool, value)
+		_node.AutoSpawnSession = value
+	}
+	if value, ok := _c.mutation.AutoCreatePr(); ok {
+		_spec.SetField(backlogitem.FieldAutoCreatePr, field.TypeBool, value)
+		_node.AutoCreatePr = value
+	}
+	if value, ok := _c.mutation.PipelineMode(); ok {
+		_spec.SetField(backlogitem.FieldPipelineMode, field.TypeString, value)
+		_node.PipelineMode = value
 	}
 	if value, ok := _c.mutation.PlanApproved(); ok {
 		_spec.SetField(backlogitem.FieldPlanApproved, field.TypeBool, value)
@@ -644,6 +751,38 @@ func (_c *BacklogItemCreate) createSpec() (*BacklogItem, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.StuckStatesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StuckStatesTable,
+			Columns: []string{backlogitem.StuckStatesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstuckstate.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.ProgressNotesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.ProgressNotesTable,
+			Columns: []string{backlogitem.ProgressNotesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogprogressnote.FieldID, field.TypeUUID),
 			},
 		}
 		for _, k := range nodes {
@@ -837,6 +976,42 @@ func (u *BacklogItemUpsert) SetSkipPlanning(v bool) *BacklogItemUpsert {
 // UpdateSkipPlanning sets the "skip_planning" field to the value that was provided on create.
 func (u *BacklogItemUpsert) UpdateSkipPlanning() *BacklogItemUpsert {
 	u.SetExcluded(backlogitem.FieldSkipPlanning)
+	return u
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (u *BacklogItemUpsert) SetAutoSpawnSession(v bool) *BacklogItemUpsert {
+	u.Set(backlogitem.FieldAutoSpawnSession, v)
+	return u
+}
+
+// UpdateAutoSpawnSession sets the "auto_spawn_session" field to the value that was provided on create.
+func (u *BacklogItemUpsert) UpdateAutoSpawnSession() *BacklogItemUpsert {
+	u.SetExcluded(backlogitem.FieldAutoSpawnSession)
+	return u
+}
+
+// SetAutoCreatePr sets the "auto_create_pr" field.
+func (u *BacklogItemUpsert) SetAutoCreatePr(v bool) *BacklogItemUpsert {
+	u.Set(backlogitem.FieldAutoCreatePr, v)
+	return u
+}
+
+// UpdateAutoCreatePr sets the "auto_create_pr" field to the value that was provided on create.
+func (u *BacklogItemUpsert) UpdateAutoCreatePr() *BacklogItemUpsert {
+	u.SetExcluded(backlogitem.FieldAutoCreatePr)
+	return u
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (u *BacklogItemUpsert) SetPipelineMode(v string) *BacklogItemUpsert {
+	u.Set(backlogitem.FieldPipelineMode, v)
+	return u
+}
+
+// UpdatePipelineMode sets the "pipeline_mode" field to the value that was provided on create.
+func (u *BacklogItemUpsert) UpdatePipelineMode() *BacklogItemUpsert {
+	u.SetExcluded(backlogitem.FieldPipelineMode)
 	return u
 }
 
@@ -1220,6 +1395,48 @@ func (u *BacklogItemUpsertOne) SetSkipPlanning(v bool) *BacklogItemUpsertOne {
 func (u *BacklogItemUpsertOne) UpdateSkipPlanning() *BacklogItemUpsertOne {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.UpdateSkipPlanning()
+	})
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (u *BacklogItemUpsertOne) SetAutoSpawnSession(v bool) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetAutoSpawnSession(v)
+	})
+}
+
+// UpdateAutoSpawnSession sets the "auto_spawn_session" field to the value that was provided on create.
+func (u *BacklogItemUpsertOne) UpdateAutoSpawnSession() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdateAutoSpawnSession()
+	})
+}
+
+// SetAutoCreatePr sets the "auto_create_pr" field.
+func (u *BacklogItemUpsertOne) SetAutoCreatePr(v bool) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetAutoCreatePr(v)
+	})
+}
+
+// UpdateAutoCreatePr sets the "auto_create_pr" field to the value that was provided on create.
+func (u *BacklogItemUpsertOne) UpdateAutoCreatePr() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdateAutoCreatePr()
+	})
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (u *BacklogItemUpsertOne) SetPipelineMode(v string) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetPipelineMode(v)
+	})
+}
+
+// UpdatePipelineMode sets the "pipeline_mode" field to the value that was provided on create.
+func (u *BacklogItemUpsertOne) UpdatePipelineMode() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdatePipelineMode()
 	})
 }
 
@@ -1802,6 +2019,48 @@ func (u *BacklogItemUpsertBulk) SetSkipPlanning(v bool) *BacklogItemUpsertBulk {
 func (u *BacklogItemUpsertBulk) UpdateSkipPlanning() *BacklogItemUpsertBulk {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.UpdateSkipPlanning()
+	})
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (u *BacklogItemUpsertBulk) SetAutoSpawnSession(v bool) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetAutoSpawnSession(v)
+	})
+}
+
+// UpdateAutoSpawnSession sets the "auto_spawn_session" field to the value that was provided on create.
+func (u *BacklogItemUpsertBulk) UpdateAutoSpawnSession() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdateAutoSpawnSession()
+	})
+}
+
+// SetAutoCreatePr sets the "auto_create_pr" field.
+func (u *BacklogItemUpsertBulk) SetAutoCreatePr(v bool) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetAutoCreatePr(v)
+	})
+}
+
+// UpdateAutoCreatePr sets the "auto_create_pr" field to the value that was provided on create.
+func (u *BacklogItemUpsertBulk) UpdateAutoCreatePr() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdateAutoCreatePr()
+	})
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (u *BacklogItemUpsertBulk) SetPipelineMode(v string) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetPipelineMode(v)
+	})
+}
+
+// UpdatePipelineMode sets the "pipeline_mode" field to the value that was provided on create.
+func (u *BacklogItemUpsertBulk) UpdatePipelineMode() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdatePipelineMode()
 	})
 }
 

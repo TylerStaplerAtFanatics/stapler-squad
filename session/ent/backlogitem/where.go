@@ -96,6 +96,21 @@ func SkipPlanning(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldEQ(FieldSkipPlanning, v))
 }
 
+// AutoSpawnSession applies equality check predicate on the "auto_spawn_session" field. It's identical to AutoSpawnSessionEQ.
+func AutoSpawnSession(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldAutoSpawnSession, v))
+}
+
+// AutoCreatePr applies equality check predicate on the "auto_create_pr" field. It's identical to AutoCreatePrEQ.
+func AutoCreatePr(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldAutoCreatePr, v))
+}
+
+// PipelineMode applies equality check predicate on the "pipeline_mode" field. It's identical to PipelineModeEQ.
+func PipelineMode(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldPipelineMode, v))
+}
+
 // PlanApproved applies equality check predicate on the "plan_approved" field. It's identical to PlanApprovedEQ.
 func PlanApproved(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldEQ(FieldPlanApproved, v))
@@ -569,6 +584,91 @@ func SkipPlanningEQ(v bool) predicate.BacklogItem {
 // SkipPlanningNEQ applies the NEQ predicate on the "skip_planning" field.
 func SkipPlanningNEQ(v bool) predicate.BacklogItem {
 	return predicate.BacklogItem(sql.FieldNEQ(FieldSkipPlanning, v))
+}
+
+// AutoSpawnSessionEQ applies the EQ predicate on the "auto_spawn_session" field.
+func AutoSpawnSessionEQ(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldAutoSpawnSession, v))
+}
+
+// AutoSpawnSessionNEQ applies the NEQ predicate on the "auto_spawn_session" field.
+func AutoSpawnSessionNEQ(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNEQ(FieldAutoSpawnSession, v))
+}
+
+// AutoCreatePrEQ applies the EQ predicate on the "auto_create_pr" field.
+func AutoCreatePrEQ(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldAutoCreatePr, v))
+}
+
+// AutoCreatePrNEQ applies the NEQ predicate on the "auto_create_pr" field.
+func AutoCreatePrNEQ(v bool) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNEQ(FieldAutoCreatePr, v))
+}
+
+// PipelineModeEQ applies the EQ predicate on the "pipeline_mode" field.
+func PipelineModeEQ(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEQ(FieldPipelineMode, v))
+}
+
+// PipelineModeNEQ applies the NEQ predicate on the "pipeline_mode" field.
+func PipelineModeNEQ(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNEQ(FieldPipelineMode, v))
+}
+
+// PipelineModeIn applies the In predicate on the "pipeline_mode" field.
+func PipelineModeIn(vs ...string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldIn(FieldPipelineMode, vs...))
+}
+
+// PipelineModeNotIn applies the NotIn predicate on the "pipeline_mode" field.
+func PipelineModeNotIn(vs ...string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldNotIn(FieldPipelineMode, vs...))
+}
+
+// PipelineModeGT applies the GT predicate on the "pipeline_mode" field.
+func PipelineModeGT(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldGT(FieldPipelineMode, v))
+}
+
+// PipelineModeGTE applies the GTE predicate on the "pipeline_mode" field.
+func PipelineModeGTE(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldGTE(FieldPipelineMode, v))
+}
+
+// PipelineModeLT applies the LT predicate on the "pipeline_mode" field.
+func PipelineModeLT(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldLT(FieldPipelineMode, v))
+}
+
+// PipelineModeLTE applies the LTE predicate on the "pipeline_mode" field.
+func PipelineModeLTE(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldLTE(FieldPipelineMode, v))
+}
+
+// PipelineModeContains applies the Contains predicate on the "pipeline_mode" field.
+func PipelineModeContains(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldContains(FieldPipelineMode, v))
+}
+
+// PipelineModeHasPrefix applies the HasPrefix predicate on the "pipeline_mode" field.
+func PipelineModeHasPrefix(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldHasPrefix(FieldPipelineMode, v))
+}
+
+// PipelineModeHasSuffix applies the HasSuffix predicate on the "pipeline_mode" field.
+func PipelineModeHasSuffix(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldHasSuffix(FieldPipelineMode, v))
+}
+
+// PipelineModeEqualFold applies the EqualFold predicate on the "pipeline_mode" field.
+func PipelineModeEqualFold(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldEqualFold(FieldPipelineMode, v))
+}
+
+// PipelineModeContainsFold applies the ContainsFold predicate on the "pipeline_mode" field.
+func PipelineModeContainsFold(v string) predicate.BacklogItem {
+	return predicate.BacklogItem(sql.FieldContainsFold(FieldPipelineMode, v))
 }
 
 // PlanApprovedEQ applies the EQ predicate on the "plan_approved" field.
@@ -1297,6 +1397,52 @@ func HasStatusEvents() predicate.BacklogItem {
 func HasStatusEventsWith(preds ...predicate.BacklogStatusEvent) predicate.BacklogItem {
 	return predicate.BacklogItem(func(s *sql.Selector) {
 		step := newStatusEventsStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasStuckStates applies the HasEdge predicate on the "stuck_states" edge.
+func HasStuckStates() predicate.BacklogItem {
+	return predicate.BacklogItem(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, StuckStatesTable, StuckStatesColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasStuckStatesWith applies the HasEdge predicate on the "stuck_states" edge with a given conditions (other predicates).
+func HasStuckStatesWith(preds ...predicate.BacklogStuckState) predicate.BacklogItem {
+	return predicate.BacklogItem(func(s *sql.Selector) {
+		step := newStuckStatesStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasProgressNotes applies the HasEdge predicate on the "progress_notes" edge.
+func HasProgressNotes() predicate.BacklogItem {
+	return predicate.BacklogItem(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, ProgressNotesTable, ProgressNotesColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasProgressNotesWith applies the HasEdge predicate on the "progress_notes" edge with a given conditions (other predicates).
+func HasProgressNotesWith(preds ...predicate.BacklogProgressNote) predicate.BacklogItem {
+	return predicate.BacklogItem(func(s *sql.Selector) {
+		step := newProgressNotesStep()
 		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
 			for _, p := range preds {
 				p(s)

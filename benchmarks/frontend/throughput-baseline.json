@@ -1,13 +1,3 @@
-[
-  {
-    "name": "terminal-throughput-mean",
-    "unit": "bytes/sec",
-    "value": 16127,
-    "extra": "p50=16KB/s p95=18KB/s cv=7.5% payload=100KB runs=8"
-  },
-  {
-    "name": "terminal-throughput-p50",
-    "unit": "bytes/sec",
-    "value": 16127
-  }
-]
+version https://git-lfs.github.com/spec/v1
+oid sha256:8383c4df7da853c564356c11b96f197b40f1a319edf2587c327e1a3389049496
+size 254

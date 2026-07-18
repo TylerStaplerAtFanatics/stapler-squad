@@ -13,7 +13,9 @@ import (
 	"entgo.io/ent/schema/field"
 	"github.com/google/uuid"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogprogressnote"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
 	"github.com/tstapler/stapler-squad/session/ent/predicate"
@@ -166,6 +168,48 @@ func (_u *BacklogItemUpdate) SetSkipPlanning(v bool) *BacklogItemUpdate {
 func (_u *BacklogItemUpdate) SetNillableSkipPlanning(v *bool) *BacklogItemUpdate {
 	if v != nil {
 		_u.SetSkipPlanning(*v)
+	}
+	return _u
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (_u *BacklogItemUpdate) SetAutoSpawnSession(v bool) *BacklogItemUpdate {
+	_u.mutation.SetAutoSpawnSession(v)
+	return _u
+}
+
+// SetNillableAutoSpawnSession sets the "auto_spawn_session" field if the given value is not nil.
+func (_u *BacklogItemUpdate) SetNillableAutoSpawnSession(v *bool) *BacklogItemUpdate {
+	if v != nil {
+		_u.SetAutoSpawnSession(*v)
+	}
+	return _u
+}
+
+// SetAutoCreatePr sets the "auto_create_pr" field.
+func (_u *BacklogItemUpdate) SetAutoCreatePr(v bool) *BacklogItemUpdate {
+	_u.mutation.SetAutoCreatePr(v)
+	return _u
+}
+
+// SetNillableAutoCreatePr sets the "auto_create_pr" field if the given value is not nil.
+func (_u *BacklogItemUpdate) SetNillableAutoCreatePr(v *bool) *BacklogItemUpdate {
+	if v != nil {
+		_u.SetAutoCreatePr(*v)
+	}
+	return _u
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (_u *BacklogItemUpdate) SetPipelineMode(v string) *BacklogItemUpdate {
+	_u.mutation.SetPipelineMode(v)
+	return _u
+}
+
+// SetNillablePipelineMode sets the "pipeline_mode" field if the given value is not nil.
+func (_u *BacklogItemUpdate) SetNillablePipelineMode(v *string) *BacklogItemUpdate {
+	if v != nil {
+		_u.SetPipelineMode(*v)
 	}
 	return _u
 }
@@ -422,6 +466,36 @@ func (_u *BacklogItemUpdate) AddStatusEvents(v ...*BacklogStatusEvent) *BacklogI
 	return _u.AddStatusEventIDs(ids...)
 }
 
+// AddStuckStateIDs adds the "stuck_states" edge to the BacklogStuckState entity by IDs.
+func (_u *BacklogItemUpdate) AddStuckStateIDs(ids ...uuid.UUID) *BacklogItemUpdate {
+	_u.mutation.AddStuckStateIDs(ids...)
+	return _u
+}
+
+// AddStuckStates adds the "stuck_states" edges to the BacklogStuckState entity.
+func (_u *BacklogItemUpdate) AddStuckStates(v ...*BacklogStuckState) *BacklogItemUpdate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddStuckStateIDs(ids...)
+}
+
+// AddProgressNoteIDs adds the "progress_notes" edge to the BacklogProgressNote entity by IDs.
+func (_u *BacklogItemUpdate) AddProgressNoteIDs(ids ...uuid.UUID) *BacklogItemUpdate {
+	_u.mutation.AddProgressNoteIDs(ids...)
+	return _u
+}
+
+// AddProgressNotes adds the "progress_notes" edges to the BacklogProgressNote entity.
+func (_u *BacklogItemUpdate) AddProgressNotes(v ...*BacklogProgressNote) *BacklogItemUpdate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddProgressNoteIDs(ids...)
+}
+
 // SetSourceID sets the "source" edge to the ItemSource entity by ID.
 func (_u *BacklogItemUpdate) SetSourceID(id uuid.UUID) *BacklogItemUpdate {
 	_u.mutation.SetSourceID(id)
@@ -507,6 +581,48 @@ func (_u *BacklogItemUpdate) RemoveStatusEvents(v ...*BacklogStatusEvent) *Backl
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveStatusEventIDs(ids...)
+}
+
+// ClearStuckStates clears all "stuck_states" edges to the BacklogStuckState entity.
+func (_u *BacklogItemUpdate) ClearStuckStates() *BacklogItemUpdate {
+	_u.mutation.ClearStuckStates()
+	return _u
+}
+
+// RemoveStuckStateIDs removes the "stuck_states" edge to BacklogStuckState entities by IDs.
+func (_u *BacklogItemUpdate) RemoveStuckStateIDs(ids ...uuid.UUID) *BacklogItemUpdate {
+	_u.mutation.RemoveStuckStateIDs(ids...)
+	return _u
+}
+
+// RemoveStuckStates removes "stuck_states" edges to BacklogStuckState entities.
+func (_u *BacklogItemUpdate) RemoveStuckStates(v ...*BacklogStuckState) *BacklogItemUpdate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveStuckStateIDs(ids...)
+}
+
+// ClearProgressNotes clears all "progress_notes" edges to the BacklogProgressNote entity.
+func (_u *BacklogItemUpdate) ClearProgressNotes() *BacklogItemUpdate {
+	_u.mutation.ClearProgressNotes()
+	return _u
+}
+
+// RemoveProgressNoteIDs removes the "progress_notes" edge to BacklogProgressNote entities by IDs.
+func (_u *BacklogItemUpdate) RemoveProgressNoteIDs(ids ...uuid.UUID) *BacklogItemUpdate {
+	_u.mutation.RemoveProgressNoteIDs(ids...)
+	return _u
+}
+
+// RemoveProgressNotes removes "progress_notes" edges to BacklogProgressNote entities.
+func (_u *BacklogItemUpdate) RemoveProgressNotes(v ...*BacklogProgressNote) *BacklogItemUpdate {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveProgressNoteIDs(ids...)
 }
 
 // ClearSource clears the "source" edge to the ItemSource entity.
@@ -613,6 +729,15 @@ func (_u *BacklogItemUpdate) sqlSave(ctx context.Context) (_node int, err error)
 	}
 	if value, ok := _u.mutation.SkipPlanning(); ok {
 		_spec.SetField(backlogitem.FieldSkipPlanning, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AutoSpawnSession(); ok {
+		_spec.SetField(backlogitem.FieldAutoSpawnSession, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AutoCreatePr(); ok {
+		_spec.SetField(backlogitem.FieldAutoCreatePr, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.PipelineMode(); ok {
+		_spec.SetField(backlogitem.FieldPipelineMode, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.PlanApproved(); ok {
 		_spec.SetField(backlogitem.FieldPlanApproved, field.TypeBool, value)
@@ -812,6 +937,96 @@ func (_u *BacklogItemUpdate) sqlSave(ctx context.Context) (_node int, err error)
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
+	if _u.mutation.StuckStatesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StuckStatesTable,
+			Columns: []string{backlogitem.StuckStatesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstuckstate.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedStuckStatesIDs(); len(nodes) > 0 && !_u.mutation.StuckStatesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StuckStatesTable,
+			Columns: []string{backlogitem.StuckStatesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstuckstate.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.StuckStatesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StuckStatesTable,
+			Columns: []string{backlogitem.StuckStatesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstuckstate.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.ProgressNotesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.ProgressNotesTable,
+			Columns: []string{backlogitem.ProgressNotesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogprogressnote.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedProgressNotesIDs(); len(nodes) > 0 && !_u.mutation.ProgressNotesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.ProgressNotesTable,
+			Columns: []string{backlogitem.ProgressNotesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogprogressnote.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.ProgressNotesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.ProgressNotesTable,
+			Columns: []string{backlogitem.ProgressNotesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogprogressnote.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
 	if _u.mutation.SourceCleared() {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
@@ -994,6 +1209,48 @@ func (_u *BacklogItemUpdateOne) SetSkipPlanning(v bool) *BacklogItemUpdateOne {
 func (_u *BacklogItemUpdateOne) SetNillableSkipPlanning(v *bool) *BacklogItemUpdateOne {
 	if v != nil {
 		_u.SetSkipPlanning(*v)
+	}
+	return _u
+}
+
+// SetAutoSpawnSession sets the "auto_spawn_session" field.
+func (_u *BacklogItemUpdateOne) SetAutoSpawnSession(v bool) *BacklogItemUpdateOne {
+	_u.mutation.SetAutoSpawnSession(v)
+	return _u
+}
+
+// SetNillableAutoSpawnSession sets the "auto_spawn_session" field if the given value is not nil.
+func (_u *BacklogItemUpdateOne) SetNillableAutoSpawnSession(v *bool) *BacklogItemUpdateOne {
+	if v != nil {
+		_u.SetAutoSpawnSession(*v)
+	}
+	return _u
+}
+
+// SetAutoCreatePr sets the "auto_create_pr" field.
+func (_u *BacklogItemUpdateOne) SetAutoCreatePr(v bool) *BacklogItemUpdateOne {
+	_u.mutation.SetAutoCreatePr(v)
+	return _u
+}
+
+// SetNillableAutoCreatePr sets the "auto_create_pr" field if the given value is not nil.
+func (_u *BacklogItemUpdateOne) SetNillableAutoCreatePr(v *bool) *BacklogItemUpdateOne {
+	if v != nil {
+		_u.SetAutoCreatePr(*v)
+	}
+	return _u
+}
+
+// SetPipelineMode sets the "pipeline_mode" field.
+func (_u *BacklogItemUpdateOne) SetPipelineMode(v string) *BacklogItemUpdateOne {
+	_u.mutation.SetPipelineMode(v)
+	return _u
+}
+
+// SetNillablePipelineMode sets the "pipeline_mode" field if the given value is not nil.
+func (_u *BacklogItemUpdateOne) SetNillablePipelineMode(v *string) *BacklogItemUpdateOne {
+	if v != nil {
+		_u.SetPipelineMode(*v)
 	}
 	return _u
 }
@@ -1250,6 +1507,36 @@ func (_u *BacklogItemUpdateOne) AddStatusEvents(v ...*BacklogStatusEvent) *Backl
 	return _u.AddStatusEventIDs(ids...)
 }
 
+// AddStuckStateIDs adds the "stuck_states" edge to the BacklogStuckState entity by IDs.
+func (_u *BacklogItemUpdateOne) AddStuckStateIDs(ids ...uuid.UUID) *BacklogItemUpdateOne {
+	_u.mutation.AddStuckStateIDs(ids...)
+	return _u
+}
+
+// AddStuckStates adds the "stuck_states" edges to the BacklogStuckState entity.
+func (_u *BacklogItemUpdateOne) AddStuckStates(v ...*BacklogStuckState) *BacklogItemUpdateOne {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddStuckStateIDs(ids...)
+}
+
+// AddProgressNoteIDs adds the "progress_notes" edge to the BacklogProgressNote entity by IDs.
+func (_u *BacklogItemUpdateOne) AddProgressNoteIDs(ids ...uuid.UUID) *BacklogItemUpdateOne {
+	_u.mutation.AddProgressNoteIDs(ids...)
+	return _u
+}
+
+// AddProgressNotes adds the "progress_notes" edges to the BacklogProgressNote entity.
+func (_u *BacklogItemUpdateOne) AddProgressNotes(v ...*BacklogProgressNote) *BacklogItemUpdateOne {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddProgressNoteIDs(ids...)
+}
+
 // SetSourceID sets the "source" edge to the ItemSource entity by ID.
 func (_u *BacklogItemUpdateOne) SetSourceID(id uuid.UUID) *BacklogItemUpdateOne {
 	_u.mutation.SetSourceID(id)
@@ -1335,6 +1622,48 @@ func (_u *BacklogItemUpdateOne) RemoveStatusEvents(v ...*BacklogStatusEvent) *Ba
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveStatusEventIDs(ids...)
+}
+
+// ClearStuckStates clears all "stuck_states" edges to the BacklogStuckState entity.
+func (_u *BacklogItemUpdateOne) ClearStuckStates() *BacklogItemUpdateOne {
+	_u.mutation.ClearStuckStates()
+	return _u
+}
+
+// RemoveStuckStateIDs removes the "stuck_states" edge to BacklogStuckState entities by IDs.
+func (_u *BacklogItemUpdateOne) RemoveStuckStateIDs(ids ...uuid.UUID) *BacklogItemUpdateOne {
+	_u.mutation.RemoveStuckStateIDs(ids...)
+	return _u
+}
+
+// RemoveStuckStates removes "stuck_states" edges to BacklogStuckState entities.
+func (_u *BacklogItemUpdateOne) RemoveStuckStates(v ...*BacklogStuckState) *BacklogItemUpdateOne {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveStuckStateIDs(ids...)
+}
+
+// ClearProgressNotes clears all "progress_notes" edges to the BacklogProgressNote entity.
+func (_u *BacklogItemUpdateOne) ClearProgressNotes() *BacklogItemUpdateOne {
+	_u.mutation.ClearProgressNotes()
+	return _u
+}
+
+// RemoveProgressNoteIDs removes the "progress_notes" edge to BacklogProgressNote entities by IDs.
+func (_u *BacklogItemUpdateOne) RemoveProgressNoteIDs(ids ...uuid.UUID) *BacklogItemUpdateOne {
+	_u.mutation.RemoveProgressNoteIDs(ids...)
+	return _u
+}
+
+// RemoveProgressNotes removes "progress_notes" edges to BacklogProgressNote entities.
+func (_u *BacklogItemUpdateOne) RemoveProgressNotes(v ...*BacklogProgressNote) *BacklogItemUpdateOne {
+	ids := make([]uuid.UUID, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveProgressNoteIDs(ids...)
 }
 
 // ClearSource clears the "source" edge to the ItemSource entity.
@@ -1471,6 +1800,15 @@ func (_u *BacklogItemUpdateOne) sqlSave(ctx context.Context) (_node *BacklogItem
 	}
 	if value, ok := _u.mutation.SkipPlanning(); ok {
 		_spec.SetField(backlogitem.FieldSkipPlanning, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AutoSpawnSession(); ok {
+		_spec.SetField(backlogitem.FieldAutoSpawnSession, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.AutoCreatePr(); ok {
+		_spec.SetField(backlogitem.FieldAutoCreatePr, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.PipelineMode(); ok {
+		_spec.SetField(backlogitem.FieldPipelineMode, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.PlanApproved(); ok {
 		_spec.SetField(backlogitem.FieldPlanApproved, field.TypeBool, value)
@@ -1663,6 +2001,96 @@ func (_u *BacklogItemUpdateOne) sqlSave(ctx context.Context) (_node *BacklogItem
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(backlogstatusevent.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.StuckStatesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StuckStatesTable,
+			Columns: []string{backlogitem.StuckStatesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstuckstate.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedStuckStatesIDs(); len(nodes) > 0 && !_u.mutation.StuckStatesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StuckStatesTable,
+			Columns: []string{backlogitem.StuckStatesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstuckstate.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.StuckStatesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.StuckStatesTable,
+			Columns: []string{backlogitem.StuckStatesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogstuckstate.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.ProgressNotesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.ProgressNotesTable,
+			Columns: []string{backlogitem.ProgressNotesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogprogressnote.FieldID, field.TypeUUID),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedProgressNotesIDs(); len(nodes) > 0 && !_u.mutation.ProgressNotesCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.ProgressNotesTable,
+			Columns: []string{backlogitem.ProgressNotesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogprogressnote.FieldID, field.TypeUUID),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.ProgressNotesIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   backlogitem.ProgressNotesTable,
+			Columns: []string{backlogitem.ProgressNotesColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(backlogprogressnote.FieldID, field.TypeUUID),
 			},
 		}
 		for _, k := range nodes {

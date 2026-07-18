@@ -40,6 +40,15 @@ func (BacklogItem) Fields() []ent.Field {
 			Default(false),
 		field.Bool("skip_planning").
 			Default(false),
+		field.Bool("auto_spawn_session").
+			Default(false).
+			Comment("When true, a work session is spawned automatically once the item reaches ready — no manual 'Spawn Session' click required."),
+		field.Bool("auto_create_pr").
+			Default(false).
+			Comment("When true, a PR is created automatically (via the same one-shot prompt the manual Review Queue 'Create PR' button uses) once a work session for this item reaches TASK_COMPLETE — no manual click required."),
+		field.String("pipeline_mode").
+			Default("").
+			Comment("Slug of the PipelineMode this item uses to drive triage/work/review content. Empty string means the built-in default (today's fixed hardcoded pipeline)."),
 		field.Bool("plan_approved").
 			Default(false),
 		field.Time("plan_approved_at").
@@ -80,6 +89,10 @@ func (BacklogItem) Edges() []ent.Edge {
 		edge.To("item_sessions", ItemSession.Type),
 		edge.To("sessions", Session.Type),
 		edge.To("status_events", BacklogStatusEvent.Type).
+			Annotations(entsql.OnDelete(entsql.Cascade)),
+		edge.To("stuck_states", BacklogStuckState.Type).
+			Annotations(entsql.OnDelete(entsql.Cascade)),
+		edge.To("progress_notes", BacklogProgressNote.Type).
 			Annotations(entsql.OnDelete(entsql.Cascade)),
 		edge.From("source", ItemSource.Type).
 			Ref("backlog_items").

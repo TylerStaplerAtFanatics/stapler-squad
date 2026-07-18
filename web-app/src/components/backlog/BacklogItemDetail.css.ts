@@ -1,5 +1,22 @@
-import { style } from "@vanilla-extract/css";
+import { keyframes, style } from "@vanilla-extract/css";
 import { vars } from "@/styles/theme.css";
+
+const spinKeyframes = keyframes({
+  from: { transform: "rotate(0deg)" },
+  to: { transform: "rotate(360deg)" },
+});
+
+export const buttonSpinner = style({
+  display: "inline-block",
+  width: 12,
+  height: 12,
+  border: `2px solid currentColor`,
+  borderTopColor: "transparent",
+  borderRadius: vars.radii.full,
+  animation: `${spinKeyframes} 0.7s linear infinite`,
+  opacity: 0.7,
+  flexShrink: 0,
+});
 
 export const container = style({
   display: "flex",
@@ -309,13 +326,49 @@ export const sessionList = style({
 
 export const sessionRow = style({
   display: "flex",
-  alignItems: "center",
-  gap: vars.space["3"],
+  flexDirection: "column",
+  gap: vars.space["1"],
   padding: `${vars.space["2"]} ${vars.space["3"]}`,
   background: vars.color.cardBackground,
   border: `1px solid ${vars.color.borderColor}`,
   borderRadius: vars.radii.sm,
   fontSize: vars.fontSize.sm,
+});
+
+export const sessionRowMain = style({
+  display: "flex",
+  alignItems: "center",
+  gap: vars.space["3"],
+});
+
+export const pipelineGroup = style({
+  display: "flex",
+  alignItems: "center",
+  gap: vars.space["2"],
+  fontSize: vars.fontSize.xs,
+  color: vars.color.textMuted,
+  paddingLeft: vars.space["1"],
+});
+
+export const pipelineLabel = style({
+  color: vars.color.textDisabled,
+});
+
+export const pipelineValue = style({
+  color: vars.color.textSecondary,
+});
+
+export const pipelineDriftBadge = style({
+  display: "inline-flex",
+  alignItems: "center",
+  padding: `1px ${vars.space["2"]}`,
+  borderRadius: vars.radii.sm,
+  background: vars.color.warningBg,
+  color: vars.color.warningText,
+  border: `1px solid ${vars.color.warning}`,
+  fontSize: vars.fontSize.xs,
+  fontWeight: vars.fontWeight.medium,
+  whiteSpace: "nowrap",
 });
 
 export const sessionLink = style({

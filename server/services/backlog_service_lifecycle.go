@@ -16,8 +16,41 @@ import (
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/ent"
 )
+
+// resolveStuckOnManualTransition immediately resolves the durable stuck
+// reasons that a manual TransitionBacklogItemStatus call makes obsolete,
+// rather than waiting for the self-heal sweep's next tick (Task 2.1.5b —
+// "manual re-review/transition"). Best-effort: errors are logged, never
+// returned. Mirrors (but does not replace) the reconcile self-heal sweep in
+// session/backlog_lifecycle.go, which remains the correctness backstop for
+// any transition path this handler doesn't cover.
+func resolveStuckOnManualTransition(ctx context.Context, storage *session.Storage, itemID string, to session.BacklogStatus) {
+	if storage == nil {
+		return
+	}
+	var reasons []domain.StuckReason
+	switch to {
+	case session.BacklogStatusInProgress:
+		// Leaving review/pr_pending for rework — the cap-hit and
+		// review-abandonment conditions no longer apply.
+		reasons = []domain.StuckReason{domain.StuckReasonReworkCap, domain.StuckReasonAbandonedReview}
+	case session.BacklogStatusDone, session.BacklogStatusArchived:
+		// Terminal — every reason is obsolete.
+		reasons = domain.AllStuckReasons
+	case session.BacklogStatusPRPending:
+		reasons = []domain.StuckReason{domain.StuckReasonAbandonedReview, domain.StuckReasonStaleWork}
+	default:
+		return
+	}
+	for _, reason := range reasons {
+		if _, err := storage.ResolveStuck(ctx, itemID, reason); err != nil {
+			log.WarningLog.Printf("[TransitionBacklogItemStatus] ResolveStuck(%s) item=%s: %v", reason, itemID, err)
+		}
+	}
+}
 
 // encryptAndMergeToken produces a token config JSON string suitable for storage.
 // If key is non-nil the token is AES-GCM encrypted and the result is
@@ -124,6 +157,9 @@ func (s *BacklogService) CreateBacklogItem(
 		RepoPath:           repoPath,
 		SkipReviewGate:     req.Msg.SkipReviewGate,
 		SkipPlanning:       req.Msg.SkipPlanning,
+		AutoSpawnSession:   req.Msg.AutoSpawnSession,
+		AutoCreatePR:       req.Msg.AutoCreatePr,
+		PipelineMode:       req.Msg.GetPipelineMode(),
 		Notes:              req.Msg.Notes,
 	}
 
@@ -198,6 +234,18 @@ func (s *BacklogService) UpdateBacklogItem(
 	update.SkipReviewGate = &skipRG
 	skipP := req.Msg.SkipPlanning
 	update.SkipPlanning = &skipP
+	autoSpawn := req.Msg.AutoSpawnSession
+	update.AutoSpawnSession = &autoSpawn
+	autoCreatePR := req.Msg.AutoCreatePr
+	update.AutoCreatePR = &autoCreatePR
+	// PipelineMode is presence-gated (optional string on the wire): only set
+	// update.PipelineMode when the field was explicitly present on the
+	// request, so an omitted pipeline_mode never clobbers the item's existing
+	// mode back to "". This is deliberately NOT an unconditional wrap like
+	// SkipReviewGate/SkipPlanning/AutoSpawnSession above — see Story 1.4.4.
+	if req.Msg.PipelineMode != nil {
+		update.PipelineMode = req.Msg.PipelineMode
+	}
 	if req.Msg.Notes != "" {
 		notes := req.Msg.Notes
 		update.Notes = &notes
@@ -389,6 +437,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to transition backlog item: %w", err))
 	}
+	resolveStuckOnManualTransition(ctx, s.storage, req.Msg.ItemId, to)
 
 	// Best-effort: clean up git worktrees for work sessions on terminal transitions.
 	if to == session.BacklogStatusDone || to == session.BacklogStatusArchived {

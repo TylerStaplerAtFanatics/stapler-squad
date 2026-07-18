@@ -9,6 +9,7 @@ import (
 
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/artifacts"
+	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/ent/sessiongoal"
 	"github.com/tstapler/stapler-squad/session/tokens"
@@ -721,6 +722,65 @@ func (s *Storage) TransitionBacklogItemStatus(ctx context.Context, id string, to
 	return s.repo.TransitionBacklogItemStatus(ctx, id, toStatus, precondition)
 }
 
+// --- BacklogStuckState (durable stuck-state read surface) ---
+
+// FindOpenStuckStates returns every open (unresolved, un-snoozed)
+// BacklogStuckState row, joined with rendering-relevant item fields. Returns
+// an empty slice (no error) when the backend does not support stuck-state
+// queries (e.g. an in-memory test double).
+func (s *Storage) FindOpenStuckStates(ctx context.Context) ([]OpenStuckStateData, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, nil
+	}
+	return er.FindOpenStuckStates(ctx)
+}
+
+// SnoozeStuckState sets snoozed_until on an open BacklogStuckState row for
+// (itemID, reason). Returns false, nil when the backend does not support
+// stuck-state writes or no matching open row exists — never an error for a
+// missing row.
+func (s *Storage) SnoozeStuckState(ctx context.Context, itemID string, reason domain.StuckReason, until time.Time) (bool, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return false, nil
+	}
+	return er.SnoozeStuckState(ctx, itemID, reason, until)
+}
+
+// MarkStuck opens/refreshes/reopens a durable BacklogStuckState row for
+// (itemID, reason). Thin passthrough so callers outside package session
+// (e.g. server/services, which cannot reach the unexported repo field) can
+// write stuck state. Returns false, nil when the backend does not support
+// stuck-state writes — never an error for an unsupported backend.
+func (s *Storage) MarkStuck(ctx context.Context, itemID string, reason domain.StuckReason, expectedStatus BacklogStatus, stuckContext string) (bool, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return false, nil
+	}
+	return er.MarkStuck(ctx, itemID, reason, expectedStatus, stuckContext)
+}
+
+// ResolveStuck atomically, idempotently closes an open BacklogStuckState row
+// for (itemID, reason). Thin passthrough, same rationale as MarkStuck above.
+func (s *Storage) ResolveStuck(ctx context.Context, itemID string, reason domain.StuckReason) (bool, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return false, nil
+	}
+	return er.ResolveStuck(ctx, itemID, reason)
+}
+
+// MarkStuckNotified sets notified_at=now on an open, not-yet-notified stuck
+// row for (itemID, reason). Thin passthrough, same rationale as MarkStuck above.
+func (s *Storage) MarkStuckNotified(ctx context.Context, itemID string, reason domain.StuckReason) (bool, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return false, nil
+	}
+	return er.MarkStuckNotified(ctx, itemID, reason)
+}
+
 // --- ItemSource ---
 
 // CreateItemSource registers a new external item source.
@@ -896,6 +956,26 @@ func (s *Storage) UpdateAcCriterionStatus(ctx context.Context, itemID string, cr
 		return fmt.Errorf("AC criterion updates not supported by this storage backend")
 	}
 	return er.UpdateAcCriterionStatus(ctx, itemID, criterionIndex, status, note)
+}
+
+// AppendProgressNote records a single report_progress call as an immutable history
+// entry, in addition to the current-note-per-criterion updated by UpdateAcCriterionStatus.
+func (s *Storage) AppendProgressNote(ctx context.Context, itemID string, criterionIndex int, note, status string) error {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return fmt.Errorf("progress note history not supported by this storage backend")
+	}
+	return er.AppendProgressNote(ctx, itemID, criterionIndex, note, status)
+}
+
+// ListProgressNotesForItem returns the full append-only history of report_progress
+// calls for a backlog item, ordered by created_at ascending.
+func (s *Storage) ListProgressNotesForItem(ctx context.Context, itemID string) ([]ProgressNoteData, error) {
+	er, ok := s.repo.(*EntRepository)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return er.ListProgressNotesForItem(ctx, itemID)
 }
 
 // CreateItemSession creates a new ItemSession linked to a BacklogItem.

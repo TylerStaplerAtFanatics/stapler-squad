@@ -519,6 +519,16 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	cbHandler.RegisterRoutes(srv.mux)
 	log.Info("Registered Circuit Breaker debug handler at /api/debug/circuit-breakers")
 
+	// Register the backlog stuck-item debug seed endpoint ONLY for the e2e
+	// test server (STAPLER_SQUAD_INSTANCE=e2e-local) — lets the Playwright
+	// suite seed BacklogStuckState rows directly, bypassing the reconciler's
+	// real thresholds. Never registered outside that instance.
+	if os.Getenv("STAPLER_SQUAD_INSTANCE") == "e2e-local" && deps.Storage != nil {
+		backlogSeedHandler := services.NewBacklogDebugSeedHandler(deps.Storage)
+		backlogSeedHandler.RegisterRoutes(srv.mux)
+		log.Info("Registered backlog stuck-item debug seed handler at /api/debug/backlog/seed-stuck (e2e-local only)")
+	}
+
 	// Wire analytics provider: SQLite when DB client is available, log-only fallback otherwise.
 	var analyticsProvider analytics.AnalyticsProvider
 	if deps.AnalyticsEntClient != nil {

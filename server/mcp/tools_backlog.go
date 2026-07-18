@@ -244,6 +244,14 @@ func (h *backlogHandlers) reportProgress(ctx context.Context, req mcpgo.CallTool
 		return errResult(ErrInternalError, fmt.Sprintf("update criterion status: %v", err), ""), nil
 	}
 
+	// Append to the full-history log in addition to the current-note-per-criterion
+	// update above. This is an enrichment for reviewers (full timeline of notes across
+	// a work session), not part of report_progress's primary contract — a failure here
+	// must not fail the call that already succeeded above.
+	if appendErr := h.storage.AppendProgressNote(ctx, itemID, criteriaIndex, note, acStatus); appendErr != nil {
+		log.WarningLog.Printf("[mcp:report_progress] failed to append progress note history item=%s criterion=%d: %v", itemID, criteriaIndex, appendErr)
+	}
+
 	return mcpgo.NewToolResultText(fmt.Sprintf(
 		"Criterion %d updated to %q on item %s.", criteriaIndex, status, itemID,
 	)), nil
@@ -431,14 +439,14 @@ func (h *backlogHandlers) submitReviewVerdict(ctx context.Context, req mcpgo.Cal
 		return errResult(ErrInternalError, fmt.Sprintf("save review verdict: %v", saveErr), ""), nil
 	}
 
-	// If PASS, transition item to done (only from review status).
-	if overallOutcome == session.ReviewVerdictPass {
-		precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
-		if _, transErr := h.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusDone, precondition); transErr != nil {
-			log.InfoLog.Printf("[mcp:submit_review_verdict] PASS but transition to done failed: %v", transErr)
-			// Non-fatal — verdict is saved, status transition is best-effort.
-		}
-	}
+	// Deliberately no status transition here: BacklogLifecycleListener.
+	// handleReviewSessionExited (session/backlog_lifecycle.go) is the sole place
+	// that decides what happens next once this review session exits — on PASS it
+	// pushes the branch, creates a PR, and transitions to pr_pending
+	// (pushAndCreatePR); on FAIL/PARTIAL/UNVERIFIABLE it triggers auto-reopen.
+	// Transitioning straight to done here would race that handler: its own
+	// precondition (ExpectedStatus: review) would then fail once the session
+	// actually exits, silently skipping PR creation.
 
 	// Stop the AutonomousDriver for this review session (belt-and-suspenders).
 	// The verdict is already persisted; a subsequent Stuck fireCompletion is harmless
@@ -699,7 +707,8 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 		mcpgo.NewTool("request_review",
 			mcpgo.WithDescription("Signal that implementation is complete and the item is ready for review. Role: work only. Call after all acceptance criteria are marked pass. Transitions the item to 'review' status and notifies the reviewer. Do not call until all AC criteria are done. "+
 				"The reviewer only sees the committed diff plus what you report here — it CANNOT see command output or UI behavior you observed. "+
-				"If any acceptance criterion describes something that isn't visible in a diff (a test suite passing, `make quick-check` succeeding, a manually-verified UI behavior), you MUST report it in verification_notes or the reviewer will mark that criterion UNVERIFIABLE even if you genuinely did the work."),
+				"If any acceptance criterion describes something that isn't visible in a diff (a test suite passing, `make quick-check` succeeding, a manually-verified UI behavior), you MUST report it in verification_notes or the reviewer will mark that criterion UNVERIFIABLE even if you genuinely did the work. "+
+				"If you concluded an acceptance criterion is already satisfied by existing code and made no change for it, say so explicitly and cite the exact file path and function/symbol that already satisfies it — an unsupported claim like \"already implemented\" or \"already done\" with no citation is weak evidence and is likely to be marked UNVERIFIABLE."),
 			mcpgo.WithString("item_id",
 				mcpgo.Description("UUID of the backlog item"),
 				mcpgo.Required(),
@@ -714,7 +723,10 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 					"\"ran `go test ./session/...` -> ok (41 tests)\" or \"ran `make quick-check` -> build/test/lint all passed\". "+
 					"For manually-verified UI behavior, describe exactly what you did and observed, e.g. "+
 					"\"ran make install-service, opened the session list, confirmed the new session appeared under Category=Backlog\". "+
-					"Vague claims like \"I tested it\" or \"verified manually\" with no specifics are not useful evidence — be concrete or omit the claim."),
+					"Vague claims like \"I tested it\" or \"verified manually\" with no specifics are not useful evidence — be concrete or omit the claim. "+
+					"If a criterion required no change because it's already implemented, state that explicitly and cite the exact file path and function/symbol that satisfies it, e.g. "+
+					"\"AC 2 already satisfied by ValidateSessionOwnership() in session/backlog_review.go — no change needed\". "+
+					"A citation-free claim of \"already implemented\" is weak evidence for the reviewer."),
 			),
 		),
 		h.requestReview,

@@ -29,7 +29,6 @@ import (
 
 const ProgramClaude = "claude"
 
-
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
 
@@ -415,6 +414,16 @@ func prependSocket(socket string, args []string) []string {
 // processes that are still alive inside tmux.
 type TmuxServerReady struct{}
 
+// startServerSucceededDespiteError reports whether a failed start-server attempt
+// should be treated as success because a follow-up check shows a server is now
+// (or still) actually running -- see EnsureServerRunning's doc comment on the
+// check-race this recovers from. isNotRunning is checkServerNotRunning, passed
+// in so tests can simulate the race deterministically instead of depending on
+// real tmux subprocess timing.
+func startServerSucceededDespiteError(isNotRunning func() bool) bool {
+	return !isNotRunning()
+}
+
 // EnsureServerRunning starts the tmux server if it is not already running.
 // Uses exec.Command directly so it always runs regardless of circuit breaker state.
 // Returns a TmuxServerReady token that callers must pass to BuildRuntimeDeps.
@@ -429,6 +438,18 @@ func EnsureServerRunning(serverSocket string) (TmuxServerReady, error) {
 		return safeexec.CommandContext(startCtx, Binary(), args...).CombinedOutput()
 	})
 	if err != nil {
+		// Under heavy concurrent tmux usage, the list-sessions check above can itself
+		// transiently report "server exited unexpectedly" against a socket that
+		// actually has a live server (a racy connect, not a real absence) -- which
+		// sends us down this path to start a server that's already running, and the
+		// start-server call then hits the same transient failure. Since this
+		// function's actual contract is "a server is running when this returns", not
+		// "this call is the one that started it", re-check before surfacing the
+		// error: if a server is now (or still) up, that's success.
+		if startServerSucceededDespiteError(func() bool { return checkServerNotRunning(serverSocket) }) {
+			log.Info("[tmux] start-server reported failure but server is now running (transient check race)", "err", err, "output", string(out))
+			return TmuxServerReady{}, nil
+		}
 		return TmuxServerReady{}, fmt.Errorf("tmux start-server failed: %w (output: %s)", err, out)
 	}
 	log.Info("[tmux] server started successfully")

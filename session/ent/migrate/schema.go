@@ -115,6 +115,9 @@ var (
 		{Name: "repo_path", Type: field.TypeString, Nullable: true},
 		{Name: "skip_review_gate", Type: field.TypeBool, Default: false},
 		{Name: "skip_planning", Type: field.TypeBool, Default: false},
+		{Name: "auto_spawn_session", Type: field.TypeBool, Default: false},
+		{Name: "auto_create_pr", Type: field.TypeBool, Default: false},
+		{Name: "pipeline_mode", Type: field.TypeString, Default: ""},
 		{Name: "plan_approved", Type: field.TypeBool, Default: false},
 		{Name: "plan_approved_at", Type: field.TypeTime, Nullable: true},
 		{Name: "plan_artifacts_path", Type: field.TypeString, Nullable: true},
@@ -137,7 +140,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "backlog_items_item_sources_backlog_items",
-				Columns:    []*schema.Column{BacklogItemsColumns[21]},
+				Columns:    []*schema.Column{BacklogItemsColumns[24]},
 				RefColumns: []*schema.Column{ItemSourcesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -151,17 +154,47 @@ var (
 			{
 				Name:    "backlogitem_status_updated_at",
 				Unique:  false,
-				Columns: []*schema.Column{BacklogItemsColumns[5], BacklogItemsColumns[20]},
+				Columns: []*schema.Column{BacklogItemsColumns[5], BacklogItemsColumns[23]},
 			},
 			{
 				Name:    "backlogitem_external_id",
 				Unique:  false,
-				Columns: []*schema.Column{BacklogItemsColumns[14]},
+				Columns: []*schema.Column{BacklogItemsColumns[17]},
 			},
 			{
 				Name:    "backlogitem_status",
 				Unique:  false,
 				Columns: []*schema.Column{BacklogItemsColumns[5]},
+			},
+		},
+	}
+	// BacklogProgressNotesColumns holds the columns for the "backlog_progress_notes" table.
+	BacklogProgressNotesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeUUID},
+		{Name: "criterion_index", Type: field.TypeInt},
+		{Name: "note", Type: field.TypeString, Nullable: true},
+		{Name: "status", Type: field.TypeString},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "item_id", Type: field.TypeUUID},
+	}
+	// BacklogProgressNotesTable holds the schema information for the "backlog_progress_notes" table.
+	BacklogProgressNotesTable = &schema.Table{
+		Name:       "backlog_progress_notes",
+		Columns:    BacklogProgressNotesColumns,
+		PrimaryKey: []*schema.Column{BacklogProgressNotesColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "backlog_progress_notes_backlog_items_progress_notes",
+				Columns:    []*schema.Column{BacklogProgressNotesColumns[5]},
+				RefColumns: []*schema.Column{BacklogItemsColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "backlogprogressnote_item_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{BacklogProgressNotesColumns[5], BacklogProgressNotesColumns[4]},
 			},
 		},
 	}
@@ -193,6 +226,39 @@ var (
 				Name:    "backlogstatusevent_item_id_created_at",
 				Unique:  false,
 				Columns: []*schema.Column{BacklogStatusEventsColumns[6], BacklogStatusEventsColumns[5]},
+			},
+		},
+	}
+	// BacklogStuckStatesColumns holds the columns for the "backlog_stuck_states" table.
+	BacklogStuckStatesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeUUID},
+		{Name: "reason", Type: field.TypeString},
+		{Name: "first_detected_at", Type: field.TypeTime},
+		{Name: "last_checked_at", Type: field.TypeTime},
+		{Name: "notified_at", Type: field.TypeTime, Nullable: true},
+		{Name: "resolved_at", Type: field.TypeTime, Nullable: true},
+		{Name: "snoozed_until", Type: field.TypeTime, Nullable: true},
+		{Name: "context", Type: field.TypeString, Nullable: true},
+		{Name: "item_id", Type: field.TypeUUID},
+	}
+	// BacklogStuckStatesTable holds the schema information for the "backlog_stuck_states" table.
+	BacklogStuckStatesTable = &schema.Table{
+		Name:       "backlog_stuck_states",
+		Columns:    BacklogStuckStatesColumns,
+		PrimaryKey: []*schema.Column{BacklogStuckStatesColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "backlog_stuck_states_backlog_items_stuck_states",
+				Columns:    []*schema.Column{BacklogStuckStatesColumns[8]},
+				RefColumns: []*schema.Column{BacklogItemsColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "backlogstuckstate_item_id_reason",
+				Unique:  true,
+				Columns: []*schema.Column{BacklogStuckStatesColumns[8], BacklogStuckStatesColumns[1]},
 			},
 		},
 	}
@@ -420,6 +486,8 @@ var (
 		{Name: "started_at", Type: field.TypeTime, Nullable: true},
 		{Name: "ended_at", Type: field.TypeTime, Nullable: true},
 		{Name: "ac_snapshot", Type: field.TypeString, Nullable: true},
+		{Name: "pipeline_mode_snapshot", Type: field.TypeString, Default: ""},
+		{Name: "pipeline_mode_snapshot_hash", Type: field.TypeString, Default: ""},
 		{Name: "triage_result", Type: field.TypeString, Nullable: true},
 		{Name: "verification_notes", Type: field.TypeString, Nullable: true},
 		{Name: "last_commit_sha", Type: field.TypeString, Nullable: true},
@@ -440,7 +508,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "item_sessions_backlog_items_item_sessions",
-				Columns:    []*schema.Column{ItemSessionsColumns[16]},
+				Columns:    []*schema.Column{ItemSessionsColumns[18]},
 				RefColumns: []*schema.Column{BacklogItemsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -454,7 +522,7 @@ var (
 			{
 				Name:    "itemsession_created_at_backlog_item_item_sessions",
 				Unique:  false,
-				Columns: []*schema.Column{ItemSessionsColumns[14], ItemSessionsColumns[16]},
+				Columns: []*schema.Column{ItemSessionsColumns[16], ItemSessionsColumns[18]},
 			},
 		},
 	}
@@ -485,6 +553,48 @@ var (
 				Name:    "itemsource_enabled",
 				Unique:  false,
 				Columns: []*schema.Column{ItemSourcesColumns[4]},
+			},
+		},
+	}
+	// PipelineModesColumns holds the columns for the "pipeline_modes" table.
+	PipelineModesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeUUID},
+		{Name: "slug", Type: field.TypeString, Unique: true},
+		{Name: "name", Type: field.TypeString},
+		{Name: "description", Type: field.TypeString, Nullable: true},
+		{Name: "enabled", Type: field.TypeBool, Default: true},
+		{Name: "status_command_template", Type: field.TypeString},
+		{Name: "done_command_template", Type: field.TypeString},
+		{Name: "fail_command_template", Type: field.TypeString},
+		{Name: "review_command_template", Type: field.TypeString},
+		{Name: "ship_command_template", Type: field.TypeString},
+		{Name: "help_command_template", Type: field.TypeString},
+		{Name: "triage_prompt_template", Type: field.TypeString},
+		{Name: "review_prompt_template", Type: field.TypeString},
+		{Name: "initial_prompt_template", Type: field.TypeString},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "updated_at", Type: field.TypeTime},
+	}
+	// PipelineModesTable holds the schema information for the "pipeline_modes" table.
+	PipelineModesTable = &schema.Table{
+		Name:       "pipeline_modes",
+		Columns:    PipelineModesColumns,
+		PrimaryKey: []*schema.Column{PipelineModesColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "pipelinemode_slug",
+				Unique:  false,
+				Columns: []*schema.Column{PipelineModesColumns[1]},
+			},
+			{
+				Name:    "pipelinemode_enabled",
+				Unique:  false,
+				Columns: []*schema.Column{PipelineModesColumns[4]},
+			},
+			{
+				Name:    "pipelinemode_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{PipelineModesColumns[14]},
 			},
 		},
 	}
@@ -890,7 +1000,9 @@ var (
 		AnalyticsEventsTable,
 		ApprovalRulesTable,
 		BacklogItemsTable,
+		BacklogProgressNotesTable,
 		BacklogStatusEventsTable,
+		BacklogStuckStatesTable,
 		ClassificationAnalyticsTable,
 		ClaudeMetadataTable,
 		ClaudeSessionsTable,
@@ -899,6 +1011,7 @@ var (
 		EscapeEventsTable,
 		ItemSessionsTable,
 		ItemSourcesTable,
+		PipelineModesTable,
 		ProjectsTable,
 		ReviewVerdictsTable,
 		SessionsTable,
@@ -915,7 +1028,9 @@ var (
 
 func init() {
 	BacklogItemsTable.ForeignKeys[0].RefTable = ItemSourcesTable
+	BacklogProgressNotesTable.ForeignKeys[0].RefTable = BacklogItemsTable
 	BacklogStatusEventsTable.ForeignKeys[0].RefTable = BacklogItemsTable
+	BacklogStuckStatesTable.ForeignKeys[0].RefTable = BacklogItemsTable
 	ClaudeMetadataTable.ForeignKeys[0].RefTable = ClaudeSessionsTable
 	ClaudeSessionsTable.ForeignKeys[0].RefTable = SessionsTable
 	DiffStatsTable.ForeignKeys[0].RefTable = SessionsTable

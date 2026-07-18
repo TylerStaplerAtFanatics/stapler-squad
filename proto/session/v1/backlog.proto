@@ -78,6 +78,8 @@ message ItemSession {
   double estimated_cost_usd = 13;
   string worktree_branch = 14;
   string worktree_path = 15;
+  string pipeline_mode_snapshot = 16;
+  string pipeline_mode_snapshot_hash = 17;
 }
 
 // BacklogStatusEvent records a single status transition for a backlog item.
@@ -114,6 +116,9 @@ message BacklogItem {
   double total_estimated_cost_usd = 21;
   string pr_url = 22;
   int32 pr_number = 23;
+  bool auto_spawn_session = 24;
+  optional string pipeline_mode = 25;
+  bool auto_create_pr = 26;
 }
 
 // ItemSource represents an external plugin source that syncs items into the
@@ -127,6 +132,33 @@ message ItemSource {
   bool token_configured = 6;
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp updated_at = 8;
+}
+
+// PipelineMode is a named, slug-addressed, user-creatable definition of which
+// slash-commands and prompt content a backlog item's pipeline uses.
+message PipelineMode {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  string description = 4;
+  bool enabled = 5;
+  string status_command_template = 6;
+  string done_command_template = 7;
+  string fail_command_template = 8;
+  string review_command_template = 9;
+  string ship_command_template = 10;
+  string help_command_template = 11;
+  string triage_prompt_template = 12;
+  string review_prompt_template = 13;
+  string initial_prompt_template = 14;
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp updated_at = 16;
+  // content_hash is DERIVED: computed on read (SHA-256 hex, truncated to 16
+  // chars) from the row's live 9 content-template fields, in fixed field
+  // order — it is not a stored DB column. Used by the "what ran" UI to
+  // detect drift between a session's frozen snapshot hash and this mode's
+  // current content.
+  string content_hash = 17;
 }
 
 // SourceSyncEvent records the result of a single sync run for an ItemSource.
@@ -153,6 +185,9 @@ message CreateBacklogItemRequest {
   string repo_path = 7;
   string notes = 8;
   bool skip_triage = 9;
+  bool auto_spawn_session = 10;
+  optional string pipeline_mode = 11;
+  bool auto_create_pr = 12;
 }
 
 message CreateBacklogItemResponse {
@@ -191,6 +226,9 @@ message UpdateBacklogItemRequest {
   string notes = 9;
   string expected_status = 10;
   google.protobuf.Timestamp expected_updated_at = 11;
+  bool auto_spawn_session = 12;
+  optional string pipeline_mode = 13;
+  bool auto_create_pr = 14;
 }
 
 message UpdateBacklogItemResponse {
@@ -346,6 +384,66 @@ message GetSyncHistoryResponse {
   bool truncated = 2;
 }
 
+message CreatePipelineModeRequest {
+  string slug = 1;
+  string name = 2;
+  string description = 3;
+  bool enabled = 4;
+  string status_command_template = 5;
+  string done_command_template = 6;
+  string fail_command_template = 7;
+  string review_command_template = 8;
+  string ship_command_template = 9;
+  string help_command_template = 10;
+  string triage_prompt_template = 11;
+  string review_prompt_template = 12;
+  string initial_prompt_template = 13;
+}
+
+message CreatePipelineModeResponse {
+  PipelineMode item = 1;
+}
+
+message UpdatePipelineModeRequest {
+  string id = 1;
+  optional string name = 2;
+  optional string description = 3;
+  optional bool enabled = 4;
+  optional string status_command_template = 5;
+  optional string done_command_template = 6;
+  optional string fail_command_template = 7;
+  optional string review_command_template = 8;
+  optional string ship_command_template = 9;
+  optional string help_command_template = 10;
+  optional string triage_prompt_template = 11;
+  optional string review_prompt_template = 12;
+  optional string initial_prompt_template = 13;
+}
+
+message UpdatePipelineModeResponse {
+  PipelineMode item = 1;
+}
+
+message DeletePipelineModeRequest {
+  string id = 1;
+}
+
+message DeletePipelineModeResponse {}
+
+message GetPipelineModeRequest {
+  string slug = 1;
+}
+
+message GetPipelineModeResponse {
+  PipelineMode item = 1;
+}
+
+message ListPipelineModesRequest {}
+
+message ListPipelineModesResponse {
+  repeated PipelineMode items = 1;
+}
+
 // BacklogService manages backlog items and their lifecycle through AI-assisted
 // planning, implementation, and review workflows.
 service BacklogService {
@@ -412,6 +510,21 @@ service BacklogService {
   // GetSyncHistory returns the sync event history for an item source.
   rpc GetSyncHistory(GetSyncHistoryRequest) returns (GetSyncHistoryResponse) {}
 
+  // CreatePipelineMode registers a new runtime-definable pipeline mode.
+  rpc CreatePipelineMode(CreatePipelineModeRequest) returns (CreatePipelineModeResponse) {}
+
+  // UpdatePipelineMode modifies an existing pipeline mode's fields.
+  rpc UpdatePipelineMode(UpdatePipelineModeRequest) returns (UpdatePipelineModeResponse) {}
+
+  // DeletePipelineMode removes a pipeline mode definition.
+  rpc DeletePipelineMode(DeletePipelineModeRequest) returns (DeletePipelineModeResponse) {}
+
+  // GetPipelineMode retrieves a single pipeline mode by slug.
+  rpc GetPipelineMode(GetPipelineModeRequest) returns (GetPipelineModeResponse) {}
+
+  // ListPipelineModes returns all pipeline modes, including disabled ones.
+  rpc ListPipelineModes(ListPipelineModesRequest) returns (ListPipelineModesResponse) {}
+
   // ImportGitHubIssue creates a backlog item pre-populated from a GitHub issue.
   rpc ImportGitHubIssue(ImportGitHubIssueRequest) returns (ImportGitHubIssueResponse) {}
 
@@ -435,6 +548,15 @@ service BacklogService {
   // SubmitManualReview allows a user to submit a review verdict directly,
   // without running an AI review session.
   rpc SubmitManualReview(SubmitManualReviewRequest) returns (SubmitManualReviewResponse) {}
+
+  // ListStuckBacklogItems returns open (unresolved, un-snoozed) stuck backlog
+  // items — items that have stopped progressing toward merge, with a reason,
+  // since-when, and PR context.
+  rpc ListStuckBacklogItems(ListStuckBacklogItemsRequest) returns (ListStuckBacklogItemsResponse) {}
+
+  // SnoozeStuckItem suppresses a stuck row from the active view and from
+  // re-notification until the given time.
+  rpc SnoozeStuckItem(SnoozeStuckItemRequest) returns (SnoozeStuckItemResponse) {}
 }
 
 message ImportGitHubIssueRequest {
@@ -554,4 +676,65 @@ message SubmitManualReviewRequest {
 
 message SubmitManualReviewResponse {
   BacklogItem item = 1;
+}
+
+// --- Stuck backlog item visibility ---
+
+// StuckReason mirrors domain.StuckReason (session/domain/backlog.go) — the
+// validated string-backed enum of classes a backlog item can be "stuck" for.
+// STUCK_REASON_UNSPECIFIED is also used as the safe fallback when an unknown
+// string is encountered mapping a DB row to proto (never panics).
+enum StuckReason {
+  STUCK_REASON_UNSPECIFIED = 0;
+  STUCK_REASON_PR_READY_UNMERGED = 1;
+  STUCK_REASON_REWORK_CAP = 2;
+  STUCK_REASON_ABANDONED_REVIEW = 3;
+  STUCK_REASON_STALE_WORK = 4;
+  STUCK_REASON_BOUNCING = 5;
+  STUCK_REASON_PUSH_FAILED = 6;
+  STUCK_REASON_ORPHANED_TRIAGE = 7;
+}
+
+// StuckBacklogItem is a single open (unresolved, un-snoozed) BacklogStuckState
+// row joined with its parent item's rendering-relevant fields.
+message StuckBacklogItem {
+  string item_id = 1;
+  string title = 2;
+  string status = 3;
+  StuckReason reason = 4;
+  google.protobuf.Timestamp first_detected_at = 5;
+  google.protobuf.Timestamp last_checked_at = 6;
+  int32 pr_number = 7;
+  string pr_url = 8;
+  string context = 9;
+  // snoozed_until is present only when the row was already scheduled to
+  // become un-snoozed at query time (ListStuckBacklogItems only ever returns
+  // rows that are currently un-snoozed, so this is normally unset).
+  google.protobuf.Timestamp snoozed_until = 10;
+  // allow_auto_merge surfaces the repo's GitHub auto-merge setting, read-only
+  // and best-effort (see plan.md Story 4.1.4 / ADR discussion). This field is
+  // declared here so the Phase 4 frontend work doesn't require a second
+  // proto-gen round-trip, but it is intentionally left unset (not populated)
+  // by the ListStuckBacklogItems handler added in this change — Phase 4 owns
+  // fetching and populating it. Unset means "not fetched / unknown", not
+  // "auto-merge disabled".
+  optional bool allow_auto_merge = 11;
+}
+
+message ListStuckBacklogItemsRequest {}
+
+message ListStuckBacklogItemsResponse {
+  repeated StuckBacklogItem items = 1;
+}
+
+message SnoozeStuckItemRequest {
+  string item_id = 1;
+  StuckReason reason = 2;
+  google.protobuf.Timestamp until = 3;
+}
+
+message SnoozeStuckItemResponse {
+  // applied is true when an open row matching (item_id, reason) was found
+  // and snoozed; false when no such open row exists (not an error).
+  bool applied = 1;
 }

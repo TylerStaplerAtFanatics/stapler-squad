@@ -156,6 +156,13 @@ var methodToID = map[string]string{
 	"GetBacklogItemCost":          "backlog:get-item-cost",
 	"GetSessionBacklogIndex":      "backlog:get-session-index",
 	"SubmitManualReview":          "backlog:submit-manual-review",
+	"ListStuckBacklogItems":       "backlog:list-stuck",
+	"SnoozeStuckItem":             "backlog:snooze-stuck",
+	"CreatePipelineMode":          "backlog:create-pipeline-mode",
+	"UpdatePipelineMode":          "backlog:update-pipeline-mode",
+	"DeletePipelineMode":          "backlog:delete-pipeline-mode",
+	"GetPipelineMode":             "backlog:get-pipeline-mode",
+	"ListPipelineModes":           "backlog:list-pipeline-modes",
 	// GitHub issue import RPCs (BacklogService) - mapped to the method name
 	// itself, not a kebab-case backlog:* id: origin/main already has
 	// committed registry files under docs/registry/features/backend/{method
