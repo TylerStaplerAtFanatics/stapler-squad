@@ -995,6 +995,16 @@ func (l *BacklogLifecycleListener) reconcileStuckReviewItems(ctx context.Context
 				if !allDead {
 					continue // at least one active session is genuinely alive
 				}
+				// Tombstone the confirmed-dead rows now, not just flag them. Without
+				// this, AutoRespawnReview's hasActiveWorkSession/hasActiveReviewSession
+				// guard (server/services/backlog_service_triage.go) still sees these
+				// EndedAt-nil rows as "active" and silently skips the respawn it was
+				// just dispatched to perform — the zombie detection fired for nothing.
+				for _, is := range item.Edges.ItemSessions {
+					if endErr := l.storage.UpdateItemSessionEnded(ctx, is.ID.String(), time.Now()); endErr != nil {
+						log.WarningLog.Printf("[BacklogLifecycle] reconcileStuckReviewItems UpdateItemSessionEnded item=%s session=%s: %v", item.ID, is.ID, endErr)
+					}
+				}
 				seen[item.ID.String()] = true
 				l.markAbandonedReview(ctx, er, item.ID.String(), item.Title, "review session process is gone (zombie)")
 			}
@@ -1274,6 +1284,16 @@ func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Cont
 		}
 		if latestTriage == nil || time.Since(latestTriage.CreatedAt) <= maxWorkSessionStaleness {
 			continue // no open triage session, or still plausibly running
+		}
+
+		// Tombstone the dead row now rather than leaving it open until a human
+		// manually re-triggers triage (the only other path that closes it, via
+		// tombstoneOrphanTriageSessions in server/services). Staleness past
+		// maxWorkSessionStaleness IS the confirmed-dead signal for this detector
+		// (see doc comment above: no liveness checker, headless calls don't run
+		// this long) — nothing left to preserve by keeping the row open.
+		if endErr := l.storage.UpdateItemSessionEnded(ctx, latestTriage.ID, time.Now()); endErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedTriageItems UpdateItemSessionEnded item=%s session=%s: %v", item.ID, latestTriage.ID, endErr)
 		}
 
 		applied, markErr := er.MarkStuck(ctx, item.ID, domain.StuckReasonOrphanedTriage, BacklogStatusIdea,
