@@ -352,6 +352,30 @@ func TestReconcileStuckReviewItems_should_markAbandoned_When_OnlyActiveSessionIs
 	assert.Contains(t, open[0].Context, "zombie")
 }
 
+// TestReconcileStuckReviewItems_should_tombstoneZombieSession_When_ConfirmedDead is the
+// regression test for the bug where zombie detection fired but never closed the
+// EndedAt-nil ItemSession row it found — leaving AutoRespawnReview's
+// hasActiveReviewSession guard (server/services/backlog_service_triage.go) permanently
+// convinced a respawn was already in flight, silently no-oping every dispatched retry.
+func TestReconcileStuckReviewItems_should_tombstoneZombieSession_When_ConfirmedDead(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	item := newStuckReviewTestItem(t, storage, ReviewVerdictUnverifiable, false, false)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.SetSessionLivenessChecker(func(sessionUUID string) bool { return false }) // always dead
+
+	er := storage.repo.(*EntRepository)
+	listener.reconcileStuckReviewItems(ctx, er)
+
+	sessions, err := storage.ListItemSessions(ctx, item.ID)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	assert.NotNil(t, sessions[0].EndedAt, "confirmed-dead zombie review session must be tombstoned, not left EndedAt-nil")
+}
+
 // TestReconcileStuckReviewItems_should_notMarkAbandoned_When_ActiveSessionStillAlive
 // verifies the zombie detector does not flag a genuinely-live review session —
 // a real in-flight review is not a false positive.
@@ -498,6 +522,29 @@ func TestReconcileOrphanedTriageItems_should_writeDurableRowNotifyOnce_When_Tria
 	// Repeat tick must not re-notify (DB-backed notify-once dedup).
 	listener.reconcileOrphanedTriageItems(ctx, er)
 	assert.Len(t, notifier.calls, 1)
+}
+
+// TestReconcileOrphanedTriageItems_should_tombstoneStaleSession_When_Detected is the
+// regression test for the bug where a stale triage row was flagged/notified but left
+// EndedAt-nil forever — only a human manually re-triggering triage (via
+// tombstoneOrphanTriageSessions, server/services/backlog_service_triage.go) ever closed
+// it, so a crashed triage on an item nobody revisits accumulated as an open row
+// indefinitely.
+func TestReconcileOrphanedTriageItems_should_tombstoneStaleSession_When_Detected(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item := newOrphanedTriageTestItem(t, storage, er, 3*time.Hour) // beyond maxWorkSessionStaleness (2h)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.reconcileOrphanedTriageItems(ctx, er)
+
+	sessions, err := storage.ListItemSessions(ctx, item.ID)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	assert.NotNil(t, sessions[0].EndedAt, "a confirmed-stale triage session must be tombstoned, not left open indefinitely")
 }
 
 func TestReconcileOrphanedTriageItems_should_notFlag_When_TriageSessionRecent(t *testing.T) {
