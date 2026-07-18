@@ -39,6 +39,9 @@ const (
 	// BacklogServiceGetBacklogItemProcedure is the fully-qualified name of the BacklogService's
 	// GetBacklogItem RPC.
 	BacklogServiceGetBacklogItemProcedure = "/session.v1.BacklogService/GetBacklogItem"
+	// BacklogServiceGetBacklogItemShipStatusProcedure is the fully-qualified name of the
+	// BacklogService's GetBacklogItemShipStatus RPC.
+	BacklogServiceGetBacklogItemShipStatusProcedure = "/session.v1.BacklogService/GetBacklogItemShipStatus"
 	// BacklogServiceListBacklogItemsProcedure is the fully-qualified name of the BacklogService's
 	// ListBacklogItems RPC.
 	BacklogServiceListBacklogItemsProcedure = "/session.v1.BacklogService/ListBacklogItems"
@@ -146,6 +149,11 @@ type BacklogServiceClient interface {
 	CreateBacklogItem(context.Context, *connect.Request[v1.CreateBacklogItemRequest]) (*connect.Response[v1.CreateBacklogItemResponse], error)
 	// GetBacklogItem retrieves a single backlog item by ID.
 	GetBacklogItem(context.Context, *connect.Request[v1.GetBacklogItemRequest]) (*connect.Response[v1.GetBacklogItemResponse], error)
+	// GetBacklogItemShipStatus answers "did this item's code actually ship" from
+	// repo_path + the most recent work session's commit — works even once the
+	// work session's own worktree has been cleaned up (e.g. a "done" item),
+	// unlike the live per-session VCSStatus widget.
+	GetBacklogItemShipStatus(context.Context, *connect.Request[v1.GetBacklogItemShipStatusRequest]) (*connect.Response[v1.GetBacklogItemShipStatusResponse], error)
 	// ListBacklogItems returns backlog items with optional filtering and sorting.
 	ListBacklogItems(context.Context, *connect.Request[v1.ListBacklogItemsRequest]) (*connect.Response[v1.ListBacklogItemsResponse], error)
 	// UpdateBacklogItem modifies the properties of an existing backlog item.
@@ -241,6 +249,12 @@ func NewBacklogServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			httpClient,
 			baseURL+BacklogServiceGetBacklogItemProcedure,
 			connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItem")),
+			connect.WithClientOptions(opts...),
+		),
+		getBacklogItemShipStatus: connect.NewClient[v1.GetBacklogItemShipStatusRequest, v1.GetBacklogItemShipStatusResponse](
+			httpClient,
+			baseURL+BacklogServiceGetBacklogItemShipStatusProcedure,
+			connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItemShipStatus")),
 			connect.WithClientOptions(opts...),
 		),
 		listBacklogItems: connect.NewClient[v1.ListBacklogItemsRequest, v1.ListBacklogItemsResponse](
@@ -448,6 +462,7 @@ func NewBacklogServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 type backlogServiceClient struct {
 	createBacklogItem           *connect.Client[v1.CreateBacklogItemRequest, v1.CreateBacklogItemResponse]
 	getBacklogItem              *connect.Client[v1.GetBacklogItemRequest, v1.GetBacklogItemResponse]
+	getBacklogItemShipStatus    *connect.Client[v1.GetBacklogItemShipStatusRequest, v1.GetBacklogItemShipStatusResponse]
 	listBacklogItems            *connect.Client[v1.ListBacklogItemsRequest, v1.ListBacklogItemsResponse]
 	updateBacklogItem           *connect.Client[v1.UpdateBacklogItemRequest, v1.UpdateBacklogItemResponse]
 	archiveBacklogItem          *connect.Client[v1.ArchiveBacklogItemRequest, v1.ArchiveBacklogItemResponse]
@@ -491,6 +506,11 @@ func (c *backlogServiceClient) CreateBacklogItem(ctx context.Context, req *conne
 // GetBacklogItem calls session.v1.BacklogService.GetBacklogItem.
 func (c *backlogServiceClient) GetBacklogItem(ctx context.Context, req *connect.Request[v1.GetBacklogItemRequest]) (*connect.Response[v1.GetBacklogItemResponse], error) {
 	return c.getBacklogItem.CallUnary(ctx, req)
+}
+
+// GetBacklogItemShipStatus calls session.v1.BacklogService.GetBacklogItemShipStatus.
+func (c *backlogServiceClient) GetBacklogItemShipStatus(ctx context.Context, req *connect.Request[v1.GetBacklogItemShipStatusRequest]) (*connect.Response[v1.GetBacklogItemShipStatusResponse], error) {
+	return c.getBacklogItemShipStatus.CallUnary(ctx, req)
 }
 
 // ListBacklogItems calls session.v1.BacklogService.ListBacklogItems.
@@ -664,6 +684,11 @@ type BacklogServiceHandler interface {
 	CreateBacklogItem(context.Context, *connect.Request[v1.CreateBacklogItemRequest]) (*connect.Response[v1.CreateBacklogItemResponse], error)
 	// GetBacklogItem retrieves a single backlog item by ID.
 	GetBacklogItem(context.Context, *connect.Request[v1.GetBacklogItemRequest]) (*connect.Response[v1.GetBacklogItemResponse], error)
+	// GetBacklogItemShipStatus answers "did this item's code actually ship" from
+	// repo_path + the most recent work session's commit — works even once the
+	// work session's own worktree has been cleaned up (e.g. a "done" item),
+	// unlike the live per-session VCSStatus widget.
+	GetBacklogItemShipStatus(context.Context, *connect.Request[v1.GetBacklogItemShipStatusRequest]) (*connect.Response[v1.GetBacklogItemShipStatusResponse], error)
 	// ListBacklogItems returns backlog items with optional filtering and sorting.
 	ListBacklogItems(context.Context, *connect.Request[v1.ListBacklogItemsRequest]) (*connect.Response[v1.ListBacklogItemsResponse], error)
 	// UpdateBacklogItem modifies the properties of an existing backlog item.
@@ -755,6 +780,12 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 		BacklogServiceGetBacklogItemProcedure,
 		svc.GetBacklogItem,
 		connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItem")),
+		connect.WithHandlerOptions(opts...),
+	)
+	backlogServiceGetBacklogItemShipStatusHandler := connect.NewUnaryHandler(
+		BacklogServiceGetBacklogItemShipStatusProcedure,
+		svc.GetBacklogItemShipStatus,
+		connect.WithSchema(backlogServiceMethods.ByName("GetBacklogItemShipStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
 	backlogServiceListBacklogItemsHandler := connect.NewUnaryHandler(
@@ -961,6 +992,8 @@ func NewBacklogServiceHandler(svc BacklogServiceHandler, opts ...connect.Handler
 			backlogServiceCreateBacklogItemHandler.ServeHTTP(w, r)
 		case BacklogServiceGetBacklogItemProcedure:
 			backlogServiceGetBacklogItemHandler.ServeHTTP(w, r)
+		case BacklogServiceGetBacklogItemShipStatusProcedure:
+			backlogServiceGetBacklogItemShipStatusHandler.ServeHTTP(w, r)
 		case BacklogServiceListBacklogItemsProcedure:
 			backlogServiceListBacklogItemsHandler.ServeHTTP(w, r)
 		case BacklogServiceUpdateBacklogItemProcedure:
@@ -1042,6 +1075,10 @@ func (UnimplementedBacklogServiceHandler) CreateBacklogItem(context.Context, *co
 
 func (UnimplementedBacklogServiceHandler) GetBacklogItem(context.Context, *connect.Request[v1.GetBacklogItemRequest]) (*connect.Response[v1.GetBacklogItemResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.GetBacklogItem is not implemented"))
+}
+
+func (UnimplementedBacklogServiceHandler) GetBacklogItemShipStatus(context.Context, *connect.Request[v1.GetBacklogItemShipStatusRequest]) (*connect.Response[v1.GetBacklogItemShipStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session.v1.BacklogService.GetBacklogItemShipStatus is not implemented"))
 }
 
 func (UnimplementedBacklogServiceHandler) ListBacklogItems(context.Context, *connect.Request[v1.ListBacklogItemsRequest]) (*connect.Response[v1.ListBacklogItemsResponse], error) {

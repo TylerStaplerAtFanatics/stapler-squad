@@ -83,6 +83,94 @@ func isAncestorOfRef(repo *git.Repository, commit *object.Commit, ref plumbing.R
 	return commit.IsAncestor(target)
 }
 
+// BranchStatus describes branchName's position relative to mainBranch.
+type BranchStatus struct {
+	// BranchExists is false once the branch has been deleted (e.g. after a
+	// "delete branch on merge" or manual cleanup). AheadOfMain/BehindMain are
+	// only meaningful when true.
+	BranchExists bool
+	AheadOfMain  int
+	BehindMain   int
+}
+
+// BranchAheadBehind reports branchName's commit position relative to
+// mainBranch: how many commits are on the branch but not on main (ahead), and
+// vice versa (behind) — mirroring `git rev-list --left-right --count
+// branch...main`. Checks the local branch ref only; a branch already deleted
+// locally reports BranchExists=false rather than an error, since that's the
+// expected state for a shipped, cleaned-up item, not a failure.
+func BranchAheadBehind(repoPath, branchName, mainBranch string) (BranchStatus, error) {
+	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{DetectDotGit: true})
+	if err != nil {
+		return BranchStatus{}, fmt.Errorf("failed to open git repo at %s: %w", repoPath, err)
+	}
+
+	branchRef, err := repo.Reference(plumbing.NewBranchReferenceName(branchName), true)
+	if err != nil {
+		return BranchStatus{BranchExists: false}, nil
+	}
+	mainRef, err := repo.Reference(plumbing.NewBranchReferenceName(mainBranch), true)
+	if err != nil {
+		return BranchStatus{}, fmt.Errorf("failed to resolve local %s: %w", mainBranch, err)
+	}
+
+	branchCommit, err := repo.CommitObject(branchRef.Hash())
+	if err != nil {
+		return BranchStatus{}, fmt.Errorf("failed to resolve commit for %s: %w", branchName, err)
+	}
+	mainCommit, err := repo.CommitObject(mainRef.Hash())
+	if err != nil {
+		return BranchStatus{}, fmt.Errorf("failed to resolve commit for %s: %w", mainBranch, err)
+	}
+
+	ahead, err := countCommitsNotAncestorOf(branchCommit, mainCommit)
+	if err != nil {
+		return BranchStatus{}, fmt.Errorf("failed to count commits ahead of %s: %w", mainBranch, err)
+	}
+	behind, err := countCommitsNotAncestorOf(mainCommit, branchCommit)
+	if err != nil {
+		return BranchStatus{}, fmt.Errorf("failed to count commits behind %s: %w", mainBranch, err)
+	}
+
+	return BranchStatus{BranchExists: true, AheadOfMain: ahead, BehindMain: behind}, nil
+}
+
+// countCommitsNotAncestorOfCap bounds the walk in countCommitsNotAncestorOf so a
+// long-diverged pair of branches can't turn a status check into an unbounded scan;
+// a UI badge only ever needs to distinguish "a few commits" from "many".
+const countCommitsNotAncestorOfCap = 500
+
+// countCommitsNotAncestorOf walks back from "from" via parent edges, counting
+// commits until each path reaches one that is an ancestor of "target" (i.e. the
+// merge-base on that path) — equivalent to `git rev-list from ^target --count`.
+func countCommitsNotAncestorOf(from, target *object.Commit) (int, error) {
+	seen := map[plumbing.Hash]bool{from.Hash: true}
+	queue := []*object.Commit{from}
+	count := 0
+	for len(queue) > 0 && count < countCommitsNotAncestorOfCap {
+		c := queue[0]
+		queue = queue[1:]
+		isAncestor, err := c.IsAncestor(target)
+		if err != nil {
+			return count, err
+		}
+		if isAncestor {
+			continue
+		}
+		count++
+		if err := c.Parents().ForEach(func(p *object.Commit) error {
+			if !seen[p.Hash] {
+				seen[p.Hash] = true
+				queue = append(queue, p)
+			}
+			return nil
+		}); err != nil {
+			return count, err
+		}
+	}
+	return count, nil
+}
+
 // CheckoutBranch checks out a branch in an existing repository.
 func CheckoutBranch(repoPath, branchName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
