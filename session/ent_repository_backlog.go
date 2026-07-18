@@ -133,28 +133,34 @@ func sourceSyncEventToData(e *ent.SourceSyncEvent) SourceSyncEventData {
 
 func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 	data := BacklogItemData{
-		ID:                 item.ID.String(),
-		Title:              item.Title,
-		Description:        item.Description,
-		AcceptanceCriteria: AcCriteriaJSON(item.AcceptanceCriteria),
-		Priority:           item.Priority,
-		Status:             item.Status,
-		RepoPath:           item.RepoPath,
-		SkipReviewGate:     item.SkipReviewGate,
-		SkipPlanning:       item.SkipPlanning,
-		AutoSpawnSession:   item.AutoSpawnSession,
-		AutoCreatePR:       item.AutoCreatePr,
-		PipelineMode:       item.PipelineMode,
-		PlanApproved:       item.PlanApproved,
-		PlanApprovedAt:     item.PlanApprovedAt,
-		PlanArtifactsPath:  item.PlanArtifactsPath,
-		Notes:              item.Notes,
-		ExternalID:         item.ExternalID,
-		ArchivedAt:         item.ArchivedAt,
-		PrURL:              item.PrURL,
-		PrNumber:           item.PrNumber,
-		CreatedAt:          item.CreatedAt,
-		UpdatedAt:          item.UpdatedAt,
+		ID:                           item.ID.String(),
+		Title:                        item.Title,
+		Description:                  item.Description,
+		AcceptanceCriteria:           AcCriteriaJSON(item.AcceptanceCriteria),
+		Priority:                     item.Priority,
+		Status:                       item.Status,
+		RepoPath:                     item.RepoPath,
+		SkipReviewGate:               item.SkipReviewGate,
+		SkipPlanning:                 item.SkipPlanning,
+		AutoSpawnSession:             item.AutoSpawnSession,
+		AutoCreatePR:                 item.AutoCreatePr,
+		PipelineMode:                 item.PipelineMode,
+		PlanApproved:                 item.PlanApproved,
+		PlanApprovedAt:               item.PlanApprovedAt,
+		PlanArtifactsPath:            item.PlanArtifactsPath,
+		Notes:                        item.Notes,
+		ExternalID:                   item.ExternalID,
+		ArchivedAt:                   item.ArchivedAt,
+		PrURL:                        item.PrURL,
+		PrNumber:                     item.PrNumber,
+		ShippedCheckConclusion:       item.ShippedCheckConclusion,
+		ShippedApprovedCount:         item.ShippedApprovedCount,
+		ShippedChangesReqCount:       item.ShippedChangesReqCount,
+		ShippedSnapshotAt:            item.ShippedSnapshotAt,
+		ShippedFileStats:             item.ShippedFileStats,
+		ShippedSnapshotCaptureFailed: item.ShippedSnapshotCaptureFailed,
+		CreatedAt:                    item.CreatedAt,
+		UpdatedAt:                    item.UpdatedAt,
 	}
 	// Resolve source ID from the eager-loaded edge when available.
 	if item.Edges.Source != nil {
@@ -468,6 +474,24 @@ func (r *EntRepository) UpdateBacklogItem(ctx context.Context, id string, update
 	}
 	if update.PrNumber != nil {
 		u.SetPrNumber(*update.PrNumber)
+	}
+	if update.ShippedCheckConclusion != nil {
+		u.SetShippedCheckConclusion(*update.ShippedCheckConclusion)
+	}
+	if update.ShippedApprovedCount != nil {
+		u.SetShippedApprovedCount(*update.ShippedApprovedCount)
+	}
+	if update.ShippedChangesReqCount != nil {
+		u.SetShippedChangesReqCount(*update.ShippedChangesReqCount)
+	}
+	if update.ShippedSnapshotAt != nil {
+		u.SetShippedSnapshotAt(*update.ShippedSnapshotAt)
+	}
+	if update.ShippedFileStats != nil {
+		u.SetShippedFileStats(*update.ShippedFileStats)
+	}
+	if update.ShippedSnapshotCaptureFailed != nil {
+		u.SetShippedSnapshotCaptureFailed(*update.ShippedSnapshotCaptureFailed)
 	}
 
 	item, err := u.Save(ctx)
