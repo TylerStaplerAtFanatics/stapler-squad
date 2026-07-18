@@ -379,8 +379,28 @@ type BacklogItemData struct {
 	SourceID          string
 	PrURL             string
 	PrNumber          int
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// ShippedCheckConclusion holds the durable GitHub CI-conclusion snapshot
+	// captured at ship time — genuine GitHub CI-conclusion values only, never
+	// a capture-failure sentinel. See ShippedSnapshotCaptureFailed.
+	ShippedCheckConclusion string
+	// ShippedApprovedCount is the durable review-approval-count snapshot
+	// captured at ship time.
+	ShippedApprovedCount int
+	// ShippedChangesReqCount is the durable "changes requested" review-count
+	// snapshot captured at ship time.
+	ShippedChangesReqCount int
+	// ShippedSnapshotAt is the timestamp the durable ship snapshot was
+	// captured at. Nil when no snapshot has ever been captured.
+	ShippedSnapshotAt *time.Time
+	// ShippedFileStats holds the JSON-encoded []ShippedFileStat snapshot of
+	// per-file diff stats captured at ship time.
+	ShippedFileStats string
+	// ShippedSnapshotCaptureFailed is true when CaptureShipSnapshot's GitHub
+	// fetch or file-stats computation failed — distinct from
+	// ShippedCheckConclusion, which holds only genuine CI-conclusion values.
+	ShippedSnapshotCaptureFailed bool
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
 	// ItemSessions holds the eagerly-loaded item sessions for this backlog item.
 	// Only populated when explicitly loaded by the caller (e.g. GetBacklogItem).
 	ItemSessions []ItemSessionSummary
@@ -457,6 +477,18 @@ type BacklogItemUpdate struct {
 	PlanArtifactsPath *string
 	PrURL             *string
 	PrNumber          *int
+	// ShippedCheckConclusion, ShippedApprovedCount, ShippedChangesReqCount,
+	// ShippedSnapshotAt, ShippedFileStats, and ShippedSnapshotCaptureFailed
+	// are pointers for partial-update presence, following the existing
+	// convention: nil means "leave the item's stored value untouched", a
+	// non-nil pointer explicitly sets it. See BacklogItemData's fields of
+	// the same name for semantics.
+	ShippedCheckConclusion       *string
+	ShippedApprovedCount         *int
+	ShippedChangesReqCount       *int
+	ShippedSnapshotAt            *time.Time
+	ShippedFileStats             *string
+	ShippedSnapshotCaptureFailed *bool
 }
 
 // BacklogItemPrecondition is used for optimistic locking on update/transition.

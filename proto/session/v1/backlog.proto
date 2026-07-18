@@ -3,6 +3,7 @@ syntax = "proto3";
 package session.v1;
 
 import "google/protobuf/timestamp.proto";
+import "session/v1/types.proto";
 
 // AcCriterion represents a single acceptance criterion for a backlog item.
 message AcCriterion {
@@ -232,6 +233,33 @@ message BacklogItemShipStatus {
   // durable git history rather than the GitHub API, so it works the same
   // whether the code shipped via a merged PR or a direct commit to main.
   repeated ShippedCommit commits = 12;
+  // shipped_check_conclusion holds the durable GitHub CI-conclusion snapshot
+  // captured at ship time — genuine GitHub CI-conclusion values only (or
+  // unset); never a capture-failure sentinel — see snapshot_capture_failed.
+  // Populated only when a durable snapshot exists (nil/zero-value otherwise).
+  string shipped_check_conclusion = 13;
+  // shipped_approved_count is the durable review-approval-count snapshot
+  // captured at ship time. Populated only when a durable snapshot exists
+  // (nil/zero-value otherwise).
+  int32 shipped_approved_count = 14;
+  // shipped_changes_req_count is the durable "changes requested" review
+  // count snapshot captured at ship time. Populated only when a durable
+  // snapshot exists (nil/zero-value otherwise).
+  int32 shipped_changes_req_count = 15;
+  // file_stats is the durable per-file diff-stat snapshot captured at ship
+  // time. Populated only when a durable snapshot exists (nil/zero-value
+  // otherwise).
+  repeated ShippedFileStat file_stats = 16;
+  // snapshot_at is the timestamp the durable snapshot was captured at.
+  // Populated only when a durable snapshot exists (nil/zero-value
+  // otherwise).
+  google.protobuf.Timestamp snapshot_at = 17;
+  // snapshot_capture_failed is true when CaptureShipSnapshot's GitHub-data
+  // group or file-stats group failed to capture at ship time — distinct
+  // from shipped_check_conclusion, which holds only genuine CI-conclusion
+  // values. Populated only when a durable snapshot exists (nil/zero-value
+  // otherwise).
+  bool snapshot_capture_failed = 18;
 }
 
 // ShippedCommit is one commit in a BacklogItemShipStatus's shipped range.
@@ -240,6 +268,16 @@ message ShippedCommit {
   string summary = 2; // first line of the commit message
   string author_name = 3;
   google.protobuf.Timestamp authored_at = 4;
+}
+
+// ShippedFileStat is one file's durable per-file diff-stat snapshot,
+// captured at ship time via FileStatsBetween. Mirrors FileChange's field
+// shape so the proto<->ent mapping stays mechanical.
+message ShippedFileStat {
+  string path = 1;
+  session.v1.FileStatus status = 2;
+  int32 additions = 3;
+  int32 deletions = 4;
 }
 
 message GetBacklogItemShipStatusRequest {
