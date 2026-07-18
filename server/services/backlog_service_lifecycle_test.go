@@ -1,12 +1,17 @@
 package services
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
+	"github.com/tstapler/stapler-squad/session"
 )
 
 // ─── pipeline_mode presence gating (Story 1.4.4) ───────────────────────────────
@@ -113,4 +118,76 @@ func TestCreateBacklogItem_should_PersistAutoCreatePr_When_FieldSetTrue(t *testi
 	}))
 	require.NoError(t, err)
 	assert.True(t, updated.Msg.Item.AutoCreatePr, "UpdateBacklogItem must persist auto_create_pr")
+}
+
+// TestTransitionBacklogItemStatus_should_BlockDone_When_PrURLSetButCommitNotOnMain is
+// the regression test for the bug Tyler reported: an item could reach "done" once a
+// PrURL existed at all, regardless of whether that PR was ever actually merged — an
+// open, unmerged PR still has PrURL set, so it silently satisfied the old guard.
+func TestTransitionBacklogItemStatus_should_BlockDone_When_PrURLSetButCommitNotOnMain(t *testing.T) {
+	_, repoPath := setupPRFixSyncRepo(t)
+
+	// A commit that exists only on a feature branch — never merged anywhere —
+	// mirroring a PR that was opened but never actually merged.
+	runGitTestCmd(t, repoPath, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("unshipped work\n"), 0o644))
+	runGitTestCmd(t, repoPath, "add", "feature.txt")
+	runGitTestCmd(t, repoPath, "commit", "-m", "work that never actually merged")
+	unshippedSHA := strings.TrimSpace(runGitTestCmd(t, repoPath, "rev-parse", "HEAD"))
+
+	storage, repo := createTestStorageWithRepo(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+
+	item, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:    "item with an open, unmerged PR",
+		RepoPath: repoPath,
+		Status:   string(session.BacklogStatusReview),
+		PrURL:    "https://github.com/example/repo/pull/999", // set, but the PR was never merged
+	})
+	require.NoError(t, err)
+
+	// A PASS review verdict, so the failure below is unambiguously the code-on-main
+	// gate (ErrCodeNotOnMain), not the separate, already-covered verdict gate.
+	_, err = storage.CreateItemSessionWithVerdict(t.Context(), session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "review-session",
+		SessionRole: session.SessionRoleReview,
+	}, session.ReviewVerdictData{
+		OverallOutcome: session.ReviewVerdictPass,
+	})
+	require.NoError(t, err)
+
+	is, err := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "unmerged-work-session",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.UpdateItemSessionGitActivity(t.Context(), is.ID, unshippedSHA, "work that never actually merged", time.Now(), 1))
+
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       item.ID,
+		TargetStatus: "done",
+	}))
+	require.Error(t, err, "an item whose only PR was never merged must not reach done just because PrURL is set")
+	assert.Contains(t, err.Error(), "must actually be on main")
+
+	fetched, err := storage.GetBacklogItem(t.Context(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusReview), fetched.Status, "the item must stay in review, not silently reach done")
+
+	// Now actually merge the commit to main — the item must be allowed to reach
+	// done once the code is verifiably shipped.
+	runGitTestCmd(t, repoPath, "checkout", "main")
+	runGitTestCmd(t, repoPath, "merge", "--no-edit", "feature")
+
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       item.ID,
+		TargetStatus: "done",
+	}))
+	require.NoError(t, err, "once the commit is actually merged to main, done must be allowed")
+
+	fetched, err = storage.GetBacklogItem(t.Context(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusDone), fetched.Status)
 }

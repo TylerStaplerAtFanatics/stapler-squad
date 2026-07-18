@@ -154,6 +154,7 @@ var methodToID = map[string]string{
 	"GetSyncHistory":              "backlog:get-sync-history",
 	"GetBacklogItemDiff":          "backlog:get-item-diff",
 	"GetBacklogItemCost":          "backlog:get-item-cost",
+	"GetBacklogItemShipStatus":    "backlog:get-item-ship-status",
 	"GetSessionBacklogIndex":      "backlog:get-session-index",
 	"SubmitManualReview":          "backlog:submit-manual-review",
 	"ListStuckBacklogItems":       "backlog:list-stuck",
