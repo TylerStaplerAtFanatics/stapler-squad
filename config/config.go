@@ -54,6 +54,25 @@ func IsTestMode() bool {
 	return false
 }
 
+// IsNamedInstance reports whether this process is running as an explicitly
+// named, non-default instance (STAPLER_SQUAD_INSTANCE set to anything other
+// than "" or "shared" — see GetConfigDirForDir's priority hierarchy above).
+// A named instance gets its own isolated DB/config directory but does NOT get
+// its own tmux socket — it shares the default tmux server with every other
+// instance on the machine, including the real production one. IsTestMode()
+// alone doesn't catch this: this repo's own E2E harness (tests/e2e, per
+// CLAUDE.md: "STAPLER_SQUAD_INSTANCE=e2e-local ./stapler-squad
+// --tmux-keep-server") runs the real production binary, not a `go test`
+// binary, so IsTestMode() returns false for it even though it has exactly the
+// same "small, isolated instance list vs. the shared tmux socket" hazard a
+// `go test` binary does. Confirmed live: an e2e-local run's orphan sweep
+// killed 5 unrelated production tmux sessions it had never heard of,
+// including the interactive session this very fix was written in.
+func IsNamedInstance() bool {
+	instanceID := os.Getenv("STAPLER_SQUAD_INSTANCE")
+	return instanceID != "" && instanceID != "shared"
+}
+
 // GetConfigDir returns the path to the application's configuration directory
 // with hierarchical isolation for safe multi-instance and test execution.
 //
