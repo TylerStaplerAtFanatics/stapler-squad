@@ -14,9 +14,12 @@
  */
 
 import React from "react";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
+import { create } from "@bufbuild/protobuf";
 import { BacklogItemDetail } from "./BacklogItemDetail";
 import type { BacklogItem, LinkedSession, PipelineMode } from "@/lib/hooks/useBacklogService";
+import { VCSStatusSchema } from "@/gen/session/v1/types_pb";
+import { BacklogItemShipStatusSchema } from "@/gen/session/v1/backlog_pb";
 
 // Heavy children pull their own hooks/timers; stub them out so this test is
 // focused on BacklogItemDetail's own render behavior.
@@ -24,6 +27,23 @@ jest.mock("./SessionMonitor", () => ({ SessionMonitor: () => null }));
 jest.mock("./GateVerdictBox", () => ({ GateVerdictBox: () => null }));
 jest.mock("./TriageReviewPanel", () => ({ TriageReviewPanel: () => null }));
 jest.mock("./TriageLoadingIndicator", () => ({ TriageLoadingIndicator: () => null }));
+
+// ReviewChangesModal makes a real ConnectRPC call on mount — stub it to a marker
+// element so Story 2.2.3's "View Diff opens the modal" tests can assert it opened
+// without standing up a transport.
+jest.mock("./ReviewChangesModal", () => ({
+  ReviewChangesModal: () => <div data-testid="review-changes-modal-stub" />,
+}));
+
+const useVcsStatusMock = jest.fn();
+jest.mock("@/lib/hooks/useVcsStatus", () => ({
+  useVcsStatus: (...args: unknown[]) => useVcsStatusMock(...args),
+}));
+
+const useBacklogItemShipStatusMock = jest.fn();
+jest.mock("@/lib/hooks/useBacklogItemShipStatus", () => ({
+  useBacklogItemShipStatus: (...args: unknown[]) => useBacklogItemShipStatusMock(...args),
+}));
 
 // The edit-mode branch renders BacklogItemForm -> RepoPathInput, which uses
 // useSessionRepoPaths (Redux) and usePathCompletions (RPC). Stub both so this
@@ -81,6 +101,11 @@ beforeAll(() => {
 
 afterAll(() => {
   jest.restoreAllMocks();
+});
+
+beforeEach(() => {
+  useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
+  useBacklogItemShipStatusMock.mockReturnValue({ data: null, loading: false, refetch: jest.fn() });
 });
 
 function makeMode(overrides: Partial<PipelineMode> & Pick<PipelineMode, "slug" | "name">): PipelineMode {
@@ -198,5 +223,71 @@ describe("BacklogItemDetail — Epic 3.4 'what ran' Pipeline surface", () => {
     const group = screen.getByRole("group", { name: "Pipeline" });
     expect(group).toHaveTextContent("default");
     expect(group).not.toHaveTextContent("content since changed");
+  });
+});
+
+describe("BacklogItemDetail — Story 2.2.3: VcsWidget wiring", () => {
+  it("BacklogItemDetail_should_RenderShippedPillWithViewDiff_When_VcsStatusNullAndShipStatusShipped", async () => {
+    useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
+    useBacklogItemShipStatusMock.mockReturnValue({
+      data: create(BacklogItemShipStatusSchema, {
+        shipped: true,
+        shippedVia: "pr",
+        branchName: "feature/foo",
+        branchExists: false,
+      }),
+      loading: false,
+      refetch: jest.fn(),
+    });
+
+    const session = makeSession({ role: "work", worktreePath: "/tmp/repo-wt" });
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([session]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Shipped")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("vcs-widget-view-diff"));
+
+    expect(screen.getByTestId("review-changes-modal-stub")).toBeInTheDocument();
+  });
+
+  it("BacklogItemDetail_should_PreferLiveVcsStatusOverShipStatus_When_BothResolveNonNull", async () => {
+    useVcsStatusMock.mockReturnValue({
+      data: create(VCSStatusSchema, { branch: "feat/live-branch", isClean: true }),
+      loading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+    useBacklogItemShipStatusMock.mockReturnValue({
+      data: create(BacklogItemShipStatusSchema, { shipped: true, branchName: "feat/historical-branch" }),
+      loading: false,
+      refetch: jest.fn(),
+    });
+
+    const sessions = [
+      makeSession({ entityId: "s1", sessionId: "session-1", role: "work" }),
+      makeSession({ entityId: "s2", sessionId: "session-2", role: "work" }),
+    ];
+    getBacklogItem.mockReset().mockResolvedValue(makeItem(sessions));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Live vcsStatus wins over the historical shipStatus when both resolve non-null.
+    expect(screen.getByText("feat/live-branch")).toBeInTheDocument();
+    expect(screen.queryByText("feat/historical-branch")).not.toBeInTheDocument();
+
+    // 2 linked sessions with role "work" and no endedAt (active) → activeSessionCount=2.
+    expect(screen.getByText("2 active sessions")).toBeInTheDocument();
   });
 });

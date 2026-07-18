@@ -9,10 +9,10 @@ import { useNotifications } from "@/lib/contexts/NotificationContext";
 import { useAnalytics } from "@/lib/analytics";
 import { getStatusLabel } from "@/lib/backlog/status";
 import { useVcsStatus } from "@/lib/hooks/useVcsStatus";
-import { VcsStatusDisplay } from "@/components/shared/VcsStatusDisplay";
 import { useBacklogItemShipStatus } from "@/lib/hooks/useBacklogItemShipStatus";
-import { ShipStatusDisplay } from "./ShipStatusDisplay";
 import { getApiBaseUrl } from "@/lib/config";
+import { VcsWidget } from "@/components/shared/VcsWidget";
+import { fromSessionVcs, fromShipStatus } from "@/lib/vcs/adapters";
 import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
 import { SessionMonitor } from "./SessionMonitor";
@@ -21,7 +21,6 @@ import { InlineError } from "./InlineError";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import { TriageReviewPanel } from "./TriageReviewPanel";
 import { ReviewChangesModal } from "./ReviewChangesModal";
-import { BacklogFileBrowserModal } from "./BacklogFileBrowserModal";
 import * as styles from "./BacklogItemDetail.css";
 
 interface BacklogItemDetailProps {
@@ -166,9 +165,6 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   // Review changes modal
   const [showChangesModal, setShowChangesModal] = useState(false);
 
-  // File browser modal
-  const [showFileBrowser, setShowFileBrowser] = useState(false);
-
   // Manual review form
   const [showManualReview, setShowManualReview] = useState(false);
   const [manualReviewOutcome, setManualReviewOutcome] = useState("PASS");
@@ -182,23 +178,16 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   const [triageElapsedSeconds, setTriageElapsedSeconds] = useState(0);
 
   // Version control state for the most recent work session's worktree.
-  const [copiedWorktreePath, setCopiedWorktreePath] = useState(false);
   const latestWorkSession = [...(item?.linkedSessions ?? [])].reverse().find((s) => s.role === "work");
+  // Surfaces the "most recent work session" heuristic's ambiguity when more than
+  // one work session is currently active — the heuristic above is unchanged, this
+  // only makes it visible via VcsWidgetHeader's "N active sessions" indicator.
+  const activeWorkSessionCount = (item?.linkedSessions ?? []).filter((s) => s.role === "work" && !s.endedAt).length;
   const { data: vcsStatus } = useVcsStatus(latestWorkSession?.sessionId ?? "", getApiBaseUrl());
   // Fallback for once the live session's worktree has been cleaned up (the normal
   // state for a done item) — vcsStatus above comes back null in that case since
   // useVcsStatus needs a live in-memory Instance to query.
   const { data: shipStatus } = useBacklogItemShipStatus(!vcsStatus && item ? item.id : "");
-  const handleCopyWorktreePath = useCallback((path: string) => {
-    navigator.clipboard.writeText(path)
-      .then(() => {
-        setCopiedWorktreePath(true);
-        setTimeout(() => setCopiedWorktreePath(false), 1500);
-      })
-      .catch((err) => {
-        console.warn("[BacklogItemDetail] clipboard write failed", err);
-      });
-  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1241,42 +1230,28 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           </div>
         )}
 
-        {/* Version Control — live VCS state + worktree path for the most recent work
-            session, falling back to the durable ship-status check once the live
-            worktree is gone (the normal state for a done item — see
-            useBacklogItemShipStatus). */}
-        {latestWorkSession && (vcsStatus || shipStatus || latestWorkSession.worktreePath) && (
-          <div className={styles.section}>
-            <h3 className={styles.sectionTitle}>Version Control</h3>
-            {latestWorkSession.worktreePath && (
-              <div className={styles.worktreePathRow}>
-                <code className={styles.artifactsPath}>{latestWorkSession.worktreePath}</code>
-                <button
-                  className={styles.editButton}
-                  onClick={() => handleCopyWorktreePath(latestWorkSession.worktreePath!)}
-                  title="Copy worktree path"
-                >
-                  {copiedWorktreePath ? "✓" : "📋"}
-                </button>
-                <button
-                  className={styles.editButton}
-                  onClick={() => setShowFileBrowser(true)}
-                  title="Browse files in this worktree"
-                  data-testid="backlog-browse-files"
-                >
-                  📁 Browse
-                </button>
+        {/* Version Control — live VCS state for the most recent work session, falling
+            back to the durable ship-status check once the live worktree is gone (the
+            normal state for a done item — see useBacklogItemShipStatus). The
+            fallback-by-data-presence rule (vcsStatus wins when both resolve non-null)
+            is preserved exactly from the pre-VcsWidget implementation. */}
+        {(() => {
+          const widgetData = vcsStatus ? fromSessionVcs(vcsStatus) : shipStatus ? fromShipStatus(shipStatus) : null;
+          return (
+            widgetData && (
+              <div className={styles.section}>
+                <h3 className={styles.sectionTitle}>Version Control</h3>
+                <VcsWidget
+                  data={widgetData}
+                  mode="full"
+                  onViewDiff={() => setShowChangesModal(true)}
+                  activeSessionCount={activeWorkSessionCount}
+                  worktreePath={latestWorkSession?.worktreePath}
+                />
               </div>
-            )}
-            {vcsStatus ? (
-              <VcsStatusDisplay status={vcsStatus} />
-            ) : (
-              shipStatus && (
-                <ShipStatusDisplay status={shipStatus} onViewDiff={() => setShowChangesModal(true)} />
-              )
-            )}
-          </div>
-        )}
+            )
+          );
+        })()}
 
         {/* Linked Sessions */}
         {item.linkedSessions.length > 0 && (
@@ -1499,13 +1474,6 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         </div>
       </div>
 
-      {showFileBrowser && latestWorkSession && (
-        <BacklogFileBrowserModal
-          sessionId={latestWorkSession.sessionId}
-          sessionTitle={item.title}
-          onClose={() => setShowFileBrowser(false)}
-        />
-      )}
     </article>
   );
 }
