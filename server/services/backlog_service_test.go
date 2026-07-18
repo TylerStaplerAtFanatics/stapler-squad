@@ -836,6 +836,52 @@ func TestSpawnSessionFromItem_Reopen_SetsBacklogCategory(t *testing.T) {
 		"backlog revision-reopen session should have Category == Backlog")
 }
 
+// TestSpawnSessionFromItem_Reopen_ReusesBranch is the regression test for the bug
+// where every reopen/rework spawn minted a brand-new "backlog/<slug>-rN" branch off
+// current HEAD instead of resuming the item's existing branch — see the -rN suffix
+// in buildRevisionTitle leaking into the worktree/branch slug. The fix derives the
+// worktree slug from baseTitle (stable across reopens), not title (which varies).
+// This test drives two real spawns through the real git worktree path (not mocked)
+// and asserts both land on the identical branch.
+func TestSpawnSessionFromItem_Reopen_ReusesBranch(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	itemID := createReadyItemForSpawn(t, svc, repoPath, "reuse branch item")
+
+	_, err := svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 1)
+	firstBranch := currentBranch(t, creator.calls[0].path)
+
+	// End the work session so the reopen isn't blocked by the active-session guard.
+	sessions, err := storage.ListItemSessions(t.Context(), itemID)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	require.NoError(t, storage.UpdateItemSessionEnded(t.Context(), sessions[0].ID, time.Now()))
+
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 2)
+	secondBranch := currentBranch(t, creator.calls[1].path)
+
+	assert.Equal(t, firstBranch, secondBranch, "reopen must reuse the same branch, not mint a new -rN branch")
+	assert.NotContains(t, secondBranch, "-r2", "branch name must not pick up the session title's revision suffix")
+}
+
+// currentBranch returns the checked-out branch name at path via the real git CLI.
+func currentBranch(t *testing.T, path string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD") //nolint:norawexec // test helper, blocking CombinedOutput, no zombie risk
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git rev-parse failed: %s", out)
+	return strings.TrimSpace(string(out))
+}
+
 // createReadyItemForSpawn creates a SkipPlanning backlog item and advances it to
 // "ready", returning its ID. Reduces boilerplate for WIP-limit and spawn tests
 // that don't care about the triage/planning flow.
