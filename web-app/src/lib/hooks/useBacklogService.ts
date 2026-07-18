@@ -455,6 +455,8 @@ interface UseBacklogServiceReturn {
   approvePlan: (id: string) => Promise<BacklogItem | null>;
   overrideVerdict: (id: string, overrideReason: string, toStatus?: string) => Promise<boolean>;
   triggerReReview: (id: string) => Promise<boolean>;
+  /** Self-service "Ship PR" action — runs the one-shot PR-creation prompt for an item in review with no PR yet. */
+  triggerShipPR: (id: string) => Promise<{ prUrl: string } | null>;
   submitManualReview: (id: string, overallOutcome: string, summary: string) => Promise<BacklogItem | null>;
   /**
    * Fetches all pipeline modes (enabled AND disabled — callers that only want
@@ -734,6 +736,27 @@ export function useBacklogService(): UseBacklogServiceReturn {
     }
   }, []);
 
+  /**
+   * Runs the same one-shot PR-creation prompt the opt-in AutoCreatePR policy
+   * uses automatically, for an item in review with no PR yet — the
+   * self-service "Ship PR" action on the item detail page. Can take a while
+   * (the underlying RunOneShot call may run for several minutes), matching
+   * ReviewQueuePanel's existing manual "Create PR" flow. Rethrows on failure
+   * so the caller can show the specific error (e.g. "work session not
+   * running") rather than a generic failure state.
+   */
+  const triggerShipPR = useCallback(async (id: string): Promise<{ prUrl: string } | null> => {
+    if (!clientRef.current) return null;
+    try {
+      const resp = await clientRef.current.triggerShipPR({ itemId: id });
+      return { prUrl: resp.prUrl };
+    } catch (err) {
+      console.error("[useBacklogService] triggerShipPR:", err);
+      setLastError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
+    }
+  }, []);
+
   const submitManualReview = useCallback(
     async (id: string, overallOutcome: string, summary: string): Promise<BacklogItem | null> => {
       if (!clientRef.current) return null;
@@ -941,6 +964,7 @@ export function useBacklogService(): UseBacklogServiceReturn {
       approvePlan,
       overrideVerdict,
       triggerReReview,
+      triggerShipPR,
       submitManualReview,
       listPipelineModes,
       getPipelineMode,

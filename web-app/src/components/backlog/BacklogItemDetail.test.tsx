@@ -61,6 +61,7 @@ jest.mock("@/lib/hooks/useBacklogService", () => ({
     approvePlan: jest.fn(),
     overrideVerdict: jest.fn(),
     triggerReReview: jest.fn(),
+    triggerShipPR: jest.fn(),
     submitManualReview: jest.fn(),
     archiveBacklogItem: jest.fn(),
     deleteBacklogItem: jest.fn(),

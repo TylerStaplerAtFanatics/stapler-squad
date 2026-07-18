@@ -1318,6 +1318,72 @@ func TestTriggerReReview_HeadlessPassAutoTransitionsToDone(t *testing.T) {
 		"PASS verdict from headless re-review should auto-transition item to done")
 }
 
+// TestTriggerReReview_HeadlessPassWithUnshippedCode_StaysInReviewForShipPR is the
+// regression test for the 2026-07-18 finding (docs/tasks/backlog-feature-improvement.md):
+// TriggerReReview's headless-PASS branch transitions review->done via the storage
+// layer directly, which bypasses the TransitionBacklogItemStatus RPC handler's
+// ErrPRRequired guard entirely. Before this fix, a PASS verdict here could mark an
+// item "done" even though its work session had committed code that was never
+// pushed or turned into a PR — silently losing the ship step. The item must now
+// stay in review so the "Ship PR" action can recover it.
+func TestTriggerReReview_HeadlessPassWithUnshippedCode_StaysInReviewForShipPR(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+	repoDir := t.TempDir()
+	require.NoError(t, os.WriteFile(repoDir+"/README.md", []byte("hello\n"), 0o644))
+	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"looks good","verdicts":[{"criterion_index":0,"outcome":"PASS","evidence":"verified"}],"tool_reads":["README.md"]}`}
+	svc.SetHeadlessPool(pool)
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    "test item",
+		RepoPath: repoDir,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	for _, status := range []string{
+		string(session.BacklogStatusReady),
+		string(session.BacklogStatusInProgress),
+	} {
+		_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+			ItemId:       itemID,
+			TargetStatus: status,
+		}))
+		require.NoError(t, err)
+	}
+
+	// Seed a work session with committed-but-unpushed code — the scenario the
+	// ErrPRRequired guard (and this replicated check) exists for.
+	workIS, err := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: "work-session-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	require.NoError(t, storage.UpdateItemSessionGitActivity(t.Context(), workIS.ID, "abc123", "wip", time.Now(), 1))
+
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusReview),
+	}))
+	require.NoError(t, err)
+
+	_, err = svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{
+		ItemId: itemID,
+	}))
+	require.NoError(t, err)
+
+	updated, err := svc.GetBacklogItem(t.Context(), connect.NewRequest(&sessionv1.GetBacklogItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusReview), updated.Msg.Item.Status,
+		"PASS verdict with unshipped work-session code and no PR must stay in review for the Ship PR action, not silently transition to done")
+}
+
 // TestTriggerReReview_SetsBacklogCategory verifies that TriggerReReview with a
 // SessionCreator wired spawns the re-review session with Category == "Backlog"
 // so it groups correctly in the session list UI.

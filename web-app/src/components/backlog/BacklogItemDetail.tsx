@@ -51,6 +51,7 @@ const ACTION_SUCCESS_MESSAGES: Record<string, string> = {
   mark_done: "Marked done.",
   override_done: "Overridden to done.",
   re_review: "Re-review triggered.",
+  ship_pr: "PR created.",
   archive: "Archived.",
   reopen: "Reopened for review.",
   send_back_idea: "Sent back to triage.",
@@ -128,6 +129,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     approvePlan,
     overrideVerdict,
     triggerReReview,
+    triggerShipPR,
     submitManualReview,
     archiveBacklogItem,
     deleteBacklogItem,
@@ -305,6 +307,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           case "re_review":
             await triggerReReview(item.id);
             break;
+          case "ship_pr":
+            await triggerShipPR(item.id);
+            break;
           case "manual_review":
             setShowManualReview(true);
             return;
@@ -341,7 +346,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         if (mountedRef.current) setActionLoading(null);
       }
     },
-    [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, archiveBacklogItem, deleteBacklogItem, onClose, load, showActionToast]
+    [item, transitionStatus, triggerTriage, spawnSessionFromItem, approvePlan, overrideVerdict, triggerReReview, triggerShipPR, archiveBacklogItem, deleteBacklogItem, onClose, load, showActionToast]
   );
 
   // The backend writes skipPlanning/skipReviewGate/autoSpawnSession/autoCreatePR
@@ -636,6 +641,16 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     (item.skipPlanning || item.planApproved);
   // Autonomous mode does its own planning — no plan-approval gate needed.
   const canRunAutonomously = item.status === "ready";
+
+  // Self-service "Ship PR" action: only makes sense for an item sitting in
+  // review with no PR yet — the exact gap this closes (see
+  // docs/tasks/backlog-feature-improvement.md, 2026-07-18 update). All AC
+  // criteria must be complete before shipping; a gate verdict of PASS is
+  // encouraged (via the button's title) but not required — same
+  // human-override philosophy as the existing "Override → Done" action.
+  const acAllComplete =
+    item.acCriteria.length > 0 && item.acCriteria.every((c) => c.status === "done");
+  const canShipPR = item.status === "review" && !item.prUrl;
 
   if (editMode) {
     return (
@@ -1054,6 +1069,23 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
 
             {item.status === "review" && (
               <>
+                {canShipPR && (
+                  <button
+                    className={styles.actionButton}
+                    onClick={() => handleAction("ship_pr")}
+                    disabled={actionLoading !== null || !acAllComplete}
+                    aria-disabled={!acAllComplete}
+                    aria-busy={actionLoading === "ship_pr"}
+                    title={
+                      !acAllComplete
+                        ? "All acceptance criteria must be complete before shipping a PR."
+                        : "Ask the agent to push the branch and open a pull request for this item."
+                    }
+                    data-testid="backlog-action-ship-pr"
+                  >
+                    <ActionButtonLabel pending={actionLoading === "ship_pr"} label="🚀 Ship PR" />
+                  </button>
+                )}
                 <button
                   className={`${styles.actionButton} ${styles.actionButtonDanger}`}
                   onClick={() => handleAction("override_done")}
