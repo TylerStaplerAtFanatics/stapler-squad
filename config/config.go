@@ -244,6 +244,11 @@ type Config struct {
 	// MachineEncryptionKey is a base64-encoded 32-byte AES-256-GCM key for local data encryption.
 	// Generated on first run and persisted here. Used to encrypt sensitive token data in ItemSource configs.
 	MachineEncryptionKey string `json:"machine_encryption_key,omitempty"`
+	// MaxAutoReworkIterations caps how many automated work sessions the backlog auto-reopen
+	// loop will spawn for a single item before leaving it for manual review. 0 = use the
+	// default (3).
+	MaxAutoReworkIterations int `json:"max_auto_rework_iterations,omitempty"`
+
 	// AnalyticsMaxRows is the maximum number of analytics events to retain in the database.
 	// When exceeded, the oldest rows are deleted. 0 means no row-count limit.
 	// Default: 100_000.
@@ -485,6 +490,15 @@ func (c *Config) AnalyticsMaxRowsOrDefault() int {
 		return 100_000
 	}
 	return c.AnalyticsMaxRows
+}
+
+// MaxAutoReworkIterationsOrDefault returns the configured rework-cap ceiling, or 3
+// if not set (zero value) or c is nil (BacklogService's cfg is nil in some test setups).
+func (c *Config) MaxAutoReworkIterationsOrDefault() int {
+	if c == nil || c.MaxAutoReworkIterations <= 0 {
+		return 3
+	}
+	return c.MaxAutoReworkIterations
 }
 
 // AnalyticsMaxAgeDaysOrDefault returns the configured max analytics age in days,
