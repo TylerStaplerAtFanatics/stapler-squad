@@ -1,1 +1,1 @@
-Call report_progress with item_id=c35902a2-8027-4910-a8bd-2c6d0fd564fc, criteria_index=0, status=fail
+Call report_progress with item_id=6f22bace-4488-474b-b6f5-36a826ecc627, criteria_index=0, status=fail
