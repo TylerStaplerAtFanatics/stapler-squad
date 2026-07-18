@@ -19,6 +19,7 @@ interface VcsWidgetProps {
   onRefresh?: () => void;
   activeSessionCount?: number;
   worktreePath?: string;
+  onBrowseFiles?: () => void;
 }
 
 export function VcsWidget({
@@ -29,6 +30,7 @@ export function VcsWidget({
   onRefresh,
   activeSessionCount,
   worktreePath,
+  onBrowseFiles,
 }: VcsWidgetProps) {
   const mergeabilityState = deriveMergeabilityState(data);
   const showRefresh = data.kind === "live" && !!onRefresh;
@@ -78,6 +80,7 @@ export function VcsWidget({
         mode={mode}
         worktreePath={mode === "full" ? worktreePath : undefined}
         activeSessionCount={activeSessionCount}
+        onBrowseFiles={mode === "full" ? onBrowseFiles : undefined}
       />
 
       {mode === "full" && (

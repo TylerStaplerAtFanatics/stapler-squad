@@ -205,4 +205,33 @@ describe("VcsWidget", () => {
     );
     expect(screen.queryByTestId("vcs-widget-view-diff")).not.toBeInTheDocument();
   });
+
+  it("VcsWidget_should_ForwardOnBrowseFilesToHeader_When_FullModeWithWorktreePath", () => {
+    const onBrowseFiles = jest.fn();
+    render(
+      <VcsWidget
+        data={makeData()}
+        mode="full"
+        worktreePath="/tmp/some-worktree"
+        onBrowseFiles={onBrowseFiles}
+      />
+    );
+
+    screen.getByRole("button", { name: "Browse files in this worktree" }).click();
+    expect(onBrowseFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it("VcsWidget_should_OmitBrowseFilesButton_When_CompactModeEvenWithOnBrowseFiles", () => {
+    const onBrowseFiles = jest.fn();
+    render(
+      <VcsWidget
+        data={makeData()}
+        mode="compact"
+        worktreePath="/tmp/some-worktree"
+        onBrowseFiles={onBrowseFiles}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: "Browse files in this worktree" })).not.toBeInTheDocument();
+  });
 });

@@ -67,4 +67,14 @@ describe("VcsWidgetHeader", () => {
     render(<VcsWidgetHeader data={makeData({ isClean: true })} mode="full" />);
     expect(screen.getByText("Clean")).toBeInTheDocument();
   });
+
+  it("VcsWidgetHeader_should_RenderDeletedBranchCopy_When_BranchExistsFalse", () => {
+    render(<VcsWidgetHeader data={makeData({ branchExists: false })} mode="full" />);
+    expect(screen.getByText("(deleted — already merged)")).toBeInTheDocument();
+  });
+
+  it("VcsWidgetHeader_should_OmitDeletedBranchCopy_When_BranchExistsTrue", () => {
+    render(<VcsWidgetHeader data={makeData({ branchExists: true })} mode="full" />);
+    expect(screen.queryByText("(deleted — already merged)")).not.toBeInTheDocument();
+  });
 });

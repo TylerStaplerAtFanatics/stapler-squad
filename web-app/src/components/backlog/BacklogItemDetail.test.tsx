@@ -35,6 +35,13 @@ jest.mock("./ReviewChangesModal", () => ({
   ReviewChangesModal: () => <div data-testid="review-changes-modal-stub" />,
 }));
 
+// BacklogFileBrowserModal pulls in FileTree/FileContentViewer, which need a
+// real ConnectRPC transport — stub it the same way as ReviewChangesModal so
+// the "Browse files" wiring test can assert it opened without standing one up.
+jest.mock("./BacklogFileBrowserModal", () => ({
+  BacklogFileBrowserModal: () => <div data-testid="file-browser-modal-stub" />,
+}));
+
 const useVcsStatusMock = jest.fn();
 jest.mock("@/lib/hooks/useVcsStatus", () => ({
   useVcsStatus: (...args: unknown[]) => useVcsStatusMock(...args),
@@ -289,5 +296,31 @@ describe("BacklogItemDetail — Story 2.2.3: VcsWidget wiring", () => {
 
     // 2 linked sessions with role "work" and no endedAt (active) → activeSessionCount=2.
     expect(screen.getByText("2 active sessions")).toBeInTheDocument();
+  });
+
+  it("BacklogItemDetail_should_OpenFileBrowserModal_When_BrowseFilesButtonClicked", async () => {
+    useVcsStatusMock.mockReturnValue({
+      data: create(VCSStatusSchema, { branch: "feat/live-branch", isClean: true }),
+      loading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+    useBacklogItemShipStatusMock.mockReturnValue({ data: null, loading: false, refetch: jest.fn() });
+
+    const session = makeSession({ role: "work", worktreePath: "/tmp/repo-wt" });
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([session]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId("file-browser-modal-stub")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Browse files in this worktree" }));
+
+    expect(screen.getByTestId("file-browser-modal-stub")).toBeInTheDocument();
   });
 });

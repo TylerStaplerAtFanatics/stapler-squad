@@ -151,6 +151,15 @@ function fromShipStatusGithub(status: BacklogItemShipStatus): GithubSummary | nu
   };
 }
 
+// Older/simpler ship-status data only ever recorded the last commit, not a
+// full commit list — fall back to synthesizing a single CommitSummary from
+// those fields when commits is empty (legacy ShipStatusDisplay parity).
+function commitsOrLastCommitFallback(status: BacklogItemShipStatus): CommitSummary[] {
+  if (status.commits.length > 0) return status.commits.map(toCommitSummary);
+  if (!status.lastCommitSha) return [];
+  return [{ sha: status.lastCommitSha, summary: status.lastCommitMessage }];
+}
+
 export function fromShipStatus(status: BacklogItemShipStatus): VcsWidgetData {
   const hasSnapshot = status.snapshotAt != null;
   return {
@@ -161,7 +170,7 @@ export function fromShipStatus(status: BacklogItemShipStatus): VcsWidgetData {
     aheadOfMain: status.aheadOfMain,
     behindMain: status.behindMain,
     branchExists: status.branchExists,
-    commits: status.commits.map(toCommitSummary),
+    commits: commitsOrLastCommitFallback(status),
     github: hasSnapshot ? fromShipStatusGithub(status) : null,
     shipped: status.shipped,
     loadError: status.error || undefined,
