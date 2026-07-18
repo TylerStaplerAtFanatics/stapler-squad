@@ -6,8 +6,9 @@ import {
   UnfinishedWorktreeSchema,
   FileStatus,
 } from "@/gen/session/v1/types_pb";
-import { BacklogItemShipStatusSchema, ShippedCommitSchema } from "@/gen/session/v1/backlog_pb";
+import { BacklogItemShipStatusSchema, ShippedCommitSchema, ShippedFileStatSchema } from "@/gen/session/v1/backlog_pb";
 import { fromSessionVcs, fromShipStatus, fromUnfinishedWorktree, toPrState, toCheckConclusion } from "./adapters";
+import { deriveMergeabilityState } from "./mergeability";
 
 describe("toPrState", () => {
   it("toPrState_should_PassThroughRecognizedValues_When_RawIsOpenClosedOrMerged", () => {
@@ -126,6 +127,79 @@ describe("fromShipStatus", () => {
     expect(result.loadError).toBe("no work session ever committed code for this item");
     expect(result.fileChanges).toEqual([]);
     expect(result.commits).toEqual([]);
+  });
+
+  it("fromShipStatus_should_MapGithubAndFileStatsFromSnapshot_When_SnapshotAtPopulated", () => {
+    const snapshotAt = { seconds: BigInt(Math.floor(new Date("2026-07-17T10:00:00Z").getTime() / 1000)), nanos: 0 };
+    const status = create(BacklogItemShipStatusSchema, {
+      prUrl: "https://github.com/tstapler/stapler-squad/pull/42",
+      shippedCheckConclusion: "success",
+      shippedApprovedCount: 2,
+      shippedChangesReqCount: 0,
+      fileStats: [
+        create(ShippedFileStatSchema, { path: "src/foo.ts", status: FileStatus.MODIFIED, additions: 5, deletions: 2 }),
+      ],
+      snapshotAt,
+      snapshotCaptureFailed: false,
+    });
+
+    const result = fromShipStatus(status);
+
+    expect(result.github).toEqual({
+      owner: "tstapler",
+      repo: "stapler-squad",
+      prUrl: "https://github.com/tstapler/stapler-squad/pull/42",
+      prNumber: 42,
+      prState: "merged",
+      isDraft: false,
+      checkConclusion: "success",
+      approvedCount: 2,
+      changesReqCount: 0,
+    });
+    expect(result.fileChanges).toEqual([
+      { path: "src/foo.ts", status: "modified", additions: 5, deletions: 2, section: "unstaged" },
+    ]);
+    expect(result.kind === "historical" && result.snapshotAt).toEqual(new Date("2026-07-17T10:00:00Z"));
+    expect(result.kind === "historical" && result.snapshotCaptureFailed).toBe(false);
+  });
+
+  it("fromShipStatus_should_PreservePartiallySuccessfulGithubGroup_When_SnapshotCaptureFailedTrueAndFileStatsEmpty", () => {
+    const snapshotAt = { seconds: BigInt(Math.floor(new Date("2026-07-17T10:00:00Z").getTime() / 1000)), nanos: 0 };
+    const status = create(BacklogItemShipStatusSchema, {
+      prUrl: "https://github.com/tstapler/stapler-squad/pull/42",
+      shippedCheckConclusion: "success",
+      shippedApprovedCount: 2,
+      shippedChangesReqCount: 0,
+      fileStats: [],
+      snapshotAt,
+      snapshotCaptureFailed: true,
+    });
+
+    const result = fromShipStatus(status);
+
+    expect(result.kind === "historical" && result.snapshotCaptureFailed).toBe(true);
+    expect(result.github).toEqual({
+      owner: "tstapler",
+      repo: "stapler-squad",
+      prUrl: "https://github.com/tstapler/stapler-squad/pull/42",
+      prNumber: 42,
+      prState: "merged",
+      isDraft: false,
+      checkConclusion: "success",
+      approvedCount: 2,
+      changesReqCount: 0,
+    });
+    expect(result.fileChanges).toEqual([]);
+    expect(deriveMergeabilityState(result)).toBe("snapshot_unavailable");
+  });
+
+  it("fromShipStatus_should_PreserveZeroValueBehavior_When_SnapshotAtUnset", () => {
+    const status = create(BacklogItemShipStatusSchema, {});
+
+    const result = fromShipStatus(status);
+
+    expect(result.github).toBeNull();
+    expect(result.kind === "historical" && result.snapshotAt).toBeNull();
   });
 });
 

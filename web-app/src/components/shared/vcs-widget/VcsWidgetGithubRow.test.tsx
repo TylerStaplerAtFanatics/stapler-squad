@@ -61,4 +61,33 @@ describe("VcsWidgetGithubRow", () => {
     const link = screen.getByRole("link", { name: /PR #42/ });
     expect(link).toHaveAttribute("href", "https://github.com/example/repo/pull/42");
   });
+
+  it("VcsWidgetGithubRow_should_RenderFullCaptureFailureCopy_When_SnapshotCaptureFailedTrueAndGithubNull", () => {
+    render(
+      <VcsWidgetGithubRow
+        data={makeData({ kind: "historical", snapshotAt: null, snapshotCaptureFailed: true, github: null })}
+      />
+    );
+
+    expect(screen.getByText("Couldn't capture PR status at ship time")).toBeInTheDocument();
+    expect(screen.queryByText(/^CI:/)).not.toBeInTheDocument();
+  });
+
+  it("VcsWidgetGithubRow_should_RenderPartialCaptureFailureCopyAlongsideRealData_When_GithubPartiallyPopulated", () => {
+    render(
+      <VcsWidgetGithubRow
+        data={makeData({
+          kind: "historical",
+          snapshotAt: new Date("2026-07-17T10:00:00Z"),
+          snapshotCaptureFailed: true,
+          github: makeGithub({ prNumber: 42, checkConclusion: "success" }),
+        })}
+      />
+    );
+
+    const link = screen.getByRole("link", { name: /PR #42/ });
+    expect(link).toHaveAttribute("href", "https://github.com/example/repo/pull/42");
+    expect(screen.getByText("CI: success")).toBeInTheDocument();
+    expect(screen.getByText("Couldn't fully capture PR status at ship time")).toBeInTheDocument();
+  });
 });
