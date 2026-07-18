@@ -333,6 +333,16 @@ message TriggerReReviewResponse {
   ItemSession item_session = 1;
 }
 
+message TriggerShipPRRequest {
+  string item_id = 1;
+}
+
+message TriggerShipPRResponse {
+  // pr_url is the GitHub PR URL extracted from the one-shot run's output, or
+  // empty if the run completed without producing a detectable PR URL.
+  string pr_url = 1;
+}
+
 message TriggerSyncRequest {
   string source_id = 1;
 }
@@ -491,6 +501,12 @@ service BacklogService {
 
   // TriggerReReview re-runs the review gate for a backlog item.
   rpc TriggerReReview(TriggerReReviewRequest) returns (TriggerReReviewResponse) {}
+
+  // TriggerShipPR manually runs the same one-shot PR-creation flow the opt-in
+  // AutoCreatePR policy uses, for an item sitting in review (or done with no PR
+  // yet) with no PR of its own — the self-service "Ship PR" action on the item
+  // detail page.
+  rpc TriggerShipPR(TriggerShipPRRequest) returns (TriggerShipPRResponse) {}
 
   // TriggerSync initiates a sync run for an external item source.
   rpc TriggerSync(TriggerSyncRequest) returns (TriggerSyncResponse) {}

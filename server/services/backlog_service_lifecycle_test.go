@@ -2,11 +2,13 @@ package services
 
 import (
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
+	"github.com/tstapler/stapler-squad/session"
 )
 
 // ─── pipeline_mode presence gating (Story 1.4.4) ───────────────────────────────
@@ -113,4 +115,106 @@ func TestCreateBacklogItem_should_PersistAutoCreatePr_When_FieldSetTrue(t *testi
 	}))
 	require.NoError(t, err)
 	assert.True(t, updated.Msg.Item.AutoCreatePr, "UpdateBacklogItem must persist auto_create_pr")
+}
+
+// ─── SubmitManualReview PASS→done guard (2026-07-18 finding) ──────────────────
+//
+// docs/tasks/backlog-feature-improvement.md's 2026-07-18 update: SubmitManualReview
+// transitions review->done via the storage layer directly
+// (s.storage.TransitionBacklogItemStatus), bypassing the guarded
+// TransitionBacklogItemStatus RPC handler's ErrPRRequired check entirely. These
+// tests cover both the pre-existing intended behavior (nothing to ship — PASS
+// still marks done) and the new guard (unshipped code — stays in review).
+
+// TestSubmitManualReview_PassNoUnshippedCode_TransitionsToDone is the happy-path
+// regression test: an item with no work-session commits (nothing to ship) must
+// still auto-transition straight to done on a PASS manual review, matching the
+// pre-existing behavior this guard must not regress.
+func TestSubmitManualReview_PassNoUnshippedCode_TransitionsToDone(t *testing.T) {
+	svc := newBacklogService(t)
+
+	created, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:        "item with nothing to ship",
+		SkipPlanning: true,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+	}))
+	require.NoError(t, err)
+	itemID := created.Msg.Item.Id
+
+	for _, status := range []string{
+		string(session.BacklogStatusReady),
+		string(session.BacklogStatusInProgress),
+		string(session.BacklogStatusReview),
+	} {
+		_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+			ItemId:       itemID,
+			TargetStatus: status,
+		}))
+		require.NoError(t, err)
+	}
+
+	resp, err := svc.SubmitManualReview(t.Context(), connect.NewRequest(&sessionv1.SubmitManualReviewRequest{
+		ItemId:         itemID,
+		OverallOutcome: "PASS",
+		Summary:        "looks good",
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusDone), resp.Msg.Item.Status,
+		"PASS manual review with nothing to ship should still auto-transition to done")
+}
+
+// TestSubmitManualReview_PassWithUnshippedCode_StaysInReviewForShipPR is the
+// regression test for the guard itself: a PASS manual review must not mark an
+// item done while its work session has committed code that was never pushed or
+// turned into a PR — it must stay in review so the new "Ship PR" action
+// (backlog_service_ship.go) can recover it.
+func TestSubmitManualReview_PassWithUnshippedCode_StaysInReviewForShipPR(t *testing.T) {
+	svc := newBacklogService(t)
+	storage := svc.storage
+
+	created, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:        "item with unshipped code",
+		SkipPlanning: true,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+	}))
+	require.NoError(t, err)
+	itemID := created.Msg.Item.Id
+
+	for _, status := range []string{
+		string(session.BacklogStatusReady),
+		string(session.BacklogStatusInProgress),
+	} {
+		_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+			ItemId:       itemID,
+			TargetStatus: status,
+		}))
+		require.NoError(t, err)
+	}
+
+	workIS, err := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: "work-session-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	require.NoError(t, storage.UpdateItemSessionGitActivity(t.Context(), workIS.ID, "abc123", "wip", time.Now(), 1))
+
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: string(session.BacklogStatusReview),
+	}))
+	require.NoError(t, err)
+
+	resp, err := svc.SubmitManualReview(t.Context(), connect.NewRequest(&sessionv1.SubmitManualReviewRequest{
+		ItemId:         itemID,
+		OverallOutcome: "PASS",
+		Summary:        "looks good",
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusReview), resp.Msg.Item.Status,
+		"PASS manual review with unshipped work-session code and no PR must stay in review for the Ship PR action")
 }

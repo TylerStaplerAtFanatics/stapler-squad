@@ -776,12 +776,23 @@ func (s *BacklogService) SubmitManualReview(
 		log.WarningLog.Printf("[SubmitManualReview] UpdateItemSessionEnded: %v", endErr)
 	}
 
-	// If PASS, transition item to done (only from review status).
+	// If PASS, transition item to done (only from review status). This call goes
+	// through the storage layer directly, not the guarded TransitionBacklogItemStatus
+	// RPC handler, so it does not automatically get that handler's ErrPRRequired
+	// check — replicate it here: if a work session has committed code that was
+	// never shipped via a PR, stay in review instead of silently marking done.
+	// The item's new "Ship PR" action (backlog_service_ship.go) is the intended
+	// recovery path once left here (docs/tasks/backlog-feature-improvement.md,
+	// 2026-07-18 update).
 	if overall == session.ReviewVerdictPass {
 		if item.Status == string(session.BacklogStatusReview) {
-			precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
-			if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, req.Msg.ItemId, session.BacklogStatusDone, precondition); transErr != nil {
-				log.WarningLog.Printf("[SubmitManualReview] PASS but transition to done failed: %v", transErr)
+			if hasUnshippedWorkSessionCode(ctx, s.storage, item.ID, item.PrURL) {
+				log.InfoLog.Printf("[SubmitManualReview] item %s PASS but has unshipped work-session code and no PR — leaving in review for Ship PR", item.ID)
+			} else {
+				precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
+				if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, req.Msg.ItemId, session.BacklogStatusDone, precondition); transErr != nil {
+					log.WarningLog.Printf("[SubmitManualReview] PASS but transition to done failed: %v", transErr)
+				}
 			}
 		}
 	}

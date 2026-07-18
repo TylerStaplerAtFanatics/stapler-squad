@@ -1362,10 +1362,22 @@ Do not modify the code. Only write the review verdict.
 		// behavior of the tmux-driven submit_review_verdict MCP tool and
 		// SubmitManualReview, both of which already auto-transition on PASS.
 		// Best-effort: verdict is already persisted regardless of transition outcome.
+		//
+		// This call goes through the storage layer directly, not the guarded
+		// TransitionBacklogItemStatus RPC handler, so it doesn't automatically
+		// get that handler's ErrPRRequired check — replicate it here: if the
+		// work session has committed code that was never shipped via a PR, stay
+		// in review instead of silently marking done. The item's "Ship PR"
+		// action (backlog_service_ship.go) is the intended recovery path once
+		// left here (docs/tasks/backlog-feature-improvement.md, 2026-07-18 update).
 		if overall == session.ReviewVerdictPass {
-			precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
-			if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, precondition); transErr != nil {
-				log.WarningLog.Printf("[TriggerReReview] PASS but transition to done failed: %v", transErr)
+			if hasUnshippedWorkSessionCode(ctx, s.storage, item.ID, item.PrURL) {
+				log.InfoLog.Printf("[TriggerReReview] item %s PASS but has unshipped work-session code and no PR — leaving in review for Ship PR", item.ID)
+			} else {
+				precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
+				if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, precondition); transErr != nil {
+					log.WarningLog.Printf("[TriggerReReview] PASS but transition to done failed: %v", transErr)
+				}
 			}
 		}
 
