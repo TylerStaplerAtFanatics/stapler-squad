@@ -2,12 +2,19 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
+
 	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/log"
 )
 
 // FetchBranch fetches a specific branch from the origin remote.
@@ -22,6 +29,58 @@ func FetchBranch(repoPath, branchName string) error {
 		return fmt.Errorf("failed to fetch branch: %w", err)
 	}
 	return nil
+}
+
+// IsCommitOnMain reports whether sha has actually landed on mainBranch — either the
+// local branch (a commit merged directly to main without ever going through a PR) or
+// origin's copy (a PR merged remotely on GitHub that hasn't been pulled locally yet).
+// Approval (a passing review verdict) and shipping are different questions; this
+// answers only the second one, and does so by checking ancestry rather than trusting
+// any cached "PR merged" flag, since that flag can be stale, absent (no PR was ever
+// opened), or simply wrong for a manually-merged branch.
+//
+// Uses go-git rather than shelling out (repo convention — see
+// .claude/rules/prefer-go-git-over-subshells.md). The origin fetch is best-effort: a
+// failure (offline, no such remote, nothing new) does not fail the whole check, since
+// the local-main check alone still answers the "merged directly to main locally" case.
+func IsCommitOnMain(repoPath, mainBranch, sha string) (bool, error) {
+	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{DetectDotGit: true})
+	if err != nil {
+		return false, fmt.Errorf("failed to open git repo at %s: %w", repoPath, err)
+	}
+
+	refSpec := config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", mainBranch, mainBranch))
+	if fetchErr := repo.Fetch(&git.FetchOptions{RemoteName: "origin", RefSpecs: []config.RefSpec{refSpec}}); fetchErr != nil && !errors.Is(fetchErr, git.NoErrAlreadyUpToDate) {
+		log.Warn("IsCommitOnMain: fetch origin failed, falling back to local main only", "repoPath", repoPath, "err", fetchErr)
+	}
+
+	shaCommit, err := repo.CommitObject(plumbing.NewHash(sha))
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve commit %s in %s: %w", sha, repoPath, err)
+	}
+
+	onLocal, localErr := isAncestorOfRef(repo, shaCommit, plumbing.NewBranchReferenceName(mainBranch))
+	if localErr != nil {
+		log.Warn("IsCommitOnMain: local main ref check failed, falling back to origin/main", "repoPath", repoPath, "err", localErr)
+	} else if onLocal {
+		return true, nil
+	}
+
+	return isAncestorOfRef(repo, shaCommit, plumbing.NewRemoteReferenceName("origin", mainBranch))
+}
+
+// isAncestorOfRef resolves ref to its commit and reports whether commit is an
+// ancestor of it (i.e. commit is already contained in ref's history).
+func isAncestorOfRef(repo *git.Repository, commit *object.Commit, ref plumbing.ReferenceName) (bool, error) {
+	r, err := repo.Reference(ref, true)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve ref %s: %w", ref, err)
+	}
+	target, err := repo.CommitObject(r.Hash())
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve commit for ref %s: %w", ref, err)
+	}
+	return commit.IsAncestor(target)
 }
 
 // CheckoutBranch checks out a branch in an existing repository.
