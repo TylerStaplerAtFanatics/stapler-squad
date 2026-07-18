@@ -1,11 +1,11 @@
 {
-  "id": "DeleteBacklogItem",
+  "id": "GetBacklogItemDiff",
   "type": "backend",
   "service": "BacklogService",
-  "method": "DeleteBacklogItem",
+  "method": "GetBacklogItemDiff",
   "protoFile": "proto/session/v1/backlog.proto",
   "markerFound": false,
   "tested": false,
   "testIds": [],
-  "lastModified": "2026-07-03T08:22:28.408941664-07:00"
+  "lastModified": "2026-07-18T09:23:31.577230663-07:00"
 }

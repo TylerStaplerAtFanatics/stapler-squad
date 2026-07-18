@@ -1,0 +1,11 @@
+{
+  "id": "GetSessionBacklogIndex",
+  "type": "backend",
+  "service": "BacklogService",
+  "method": "GetSessionBacklogIndex",
+  "protoFile": "proto/session/v1/backlog.proto",
+  "markerFound": false,
+  "tested": false,
+  "testIds": [],
+  "lastModified": "2026-07-18T09:23:31.577230663-07:00"
+}
