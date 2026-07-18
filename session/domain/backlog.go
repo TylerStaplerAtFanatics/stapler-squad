@@ -303,7 +303,7 @@ var (
 	ErrPlanRequired          = errors.New("plan must be approved or skip_planning must be true before spawning work session")
 	ErrPlanArtifactsRequired = errors.New("plan artifacts path is required when planning is not skipped")
 	ErrVerdictRequired       = errors.New("PASS verdict or manual override required before marking done")
-	ErrPRRequired            = errors.New("code changes must be shipped via PR before marking done; create a PR or provide override_reason")
+	ErrCodeNotOnMain         = errors.New("code changes must actually be on main (merged locally or via a merged PR) before marking done; provide override_reason to bypass")
 )
 
 // BacklogItemTransitionInput carries the fields needed by TransitionGuard.
@@ -315,9 +315,12 @@ type BacklogItemTransitionInput struct {
 	PlanArtifactsPath string        // path to plan artifacts written by triage session
 	OverallOutcome    ReviewOutcome // from linked ReviewVerdict
 	OverrideReason    string
-	// HasUnshippedCode is true when a work session made commits in a worktree
-	// (LastCommitSha != "") but no PR was ever created (PrURL == "").
-	// The review→done guard uses this to block premature done transitions.
+	// HasUnshippedCode is true when a work session committed code
+	// (LastCommitSha != "") that has not been verified to actually be on main —
+	// locally (merged/committed directly) or remotely (merged PR, pulled or not).
+	// A PrURL alone does NOT clear this: an open, unmerged, or later-reverted PR
+	// still has PrURL set, so it was never proof the code shipped. The
+	// review→done guard uses this to block premature done transitions.
 	HasUnshippedCode bool
 }
 
@@ -360,7 +363,7 @@ func TransitionGuard(item BacklogItemTransitionInput, to BacklogStatus) error {
 			return ErrVerdictRequired
 		}
 		if item.HasUnshippedCode {
-			return ErrPRRequired
+			return ErrCodeNotOnMain
 		}
 		return nil
 

@@ -286,6 +286,9 @@ ifeq ($(UNAME_S),Darwin)
 endif
 	@STAPLER_SQUAD_BIN="$(CURDIR)/stapler-squad" ./scripts/install-service.sh $(if $(NO_PROFILE),--no-profile) $(if $(PROFILE_PORT),--profile-port $(PROFILE_PORT))
 
+sync-worktrees: ## Merge main into every worktree (skips dirty ones, reports conflicts for manual resolution)
+	@./scripts/sync-worktrees.sh
+
 rollback: ## Restore the previous build (stapler-squad.prev) and restart the service
 	@if [ ! -f ./stapler-squad.prev ]; then \
 		echo "✗ No previous build found (./stapler-squad.prev does not exist)"; \
