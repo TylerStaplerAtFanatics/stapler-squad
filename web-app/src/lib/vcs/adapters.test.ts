@@ -201,6 +201,28 @@ describe("fromShipStatus", () => {
     expect(result.github).toBeNull();
     expect(result.kind === "historical" && result.snapshotAt).toBeNull();
   });
+
+  it("fromShipStatus_should_SynthesizeSingleCommitFromLastCommitFields_When_CommitsArrayEmpty", () => {
+    const status = create(BacklogItemShipStatusSchema, {
+      commits: [],
+      lastCommitSha: "d4e5f6a",
+      lastCommitMessage: "fix: legacy single-commit fallback",
+    });
+
+    const result = fromShipStatus(status);
+
+    expect(result.commits).toEqual([
+      { sha: "d4e5f6a", summary: "fix: legacy single-commit fallback" },
+    ]);
+  });
+
+  it("fromShipStatus_should_MapEmptyCommits_When_CommitsAndLastCommitShaBothEmpty", () => {
+    const status = create(BacklogItemShipStatusSchema, { commits: [], lastCommitSha: "" });
+
+    const result = fromShipStatus(status);
+
+    expect(result.commits).toEqual([]);
+  });
 });
 
 describe("fromUnfinishedWorktree", () => {

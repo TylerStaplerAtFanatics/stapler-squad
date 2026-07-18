@@ -21,6 +21,7 @@ import { InlineError } from "./InlineError";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import { TriageReviewPanel } from "./TriageReviewPanel";
 import { ReviewChangesModal } from "./ReviewChangesModal";
+import { BacklogFileBrowserModal } from "./BacklogFileBrowserModal";
 import * as styles from "./BacklogItemDetail.css";
 
 interface BacklogItemDetailProps {
@@ -164,6 +165,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
 
   // Review changes modal
   const [showChangesModal, setShowChangesModal] = useState(false);
+
+  // File browser modal
+  const [showFileBrowser, setShowFileBrowser] = useState(false);
 
   // Manual review form
   const [showManualReview, setShowManualReview] = useState(false);
@@ -883,6 +887,14 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           />
         )}
 
+        {showFileBrowser && latestWorkSession && (
+          <BacklogFileBrowserModal
+            sessionId={latestWorkSession.sessionId}
+            sessionTitle={item.title}
+            onClose={() => setShowFileBrowser(false)}
+          />
+        )}
+
         {/* PR Pending */}
         {item.status === "pr_pending" && (
           <div className={styles.section}>
@@ -1247,6 +1259,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   onViewDiff={() => setShowChangesModal(true)}
                   activeSessionCount={activeWorkSessionCount}
                   worktreePath={latestWorkSession?.worktreePath}
+                  onBrowseFiles={() => setShowFileBrowser(true)}
                 />
               </div>
             )

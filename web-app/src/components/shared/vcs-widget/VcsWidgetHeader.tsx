@@ -52,6 +52,7 @@ export function VcsWidgetHeader({
         <span className={data.isClean ? styles.clean : styles.dirty}>
           {data.isClean ? "Clean" : "Uncommitted changes"}
         </span>
+        {data.branchExists === false && <span className={styles.stat}>(deleted — already merged)</span>}
       </div>
 
       {(data.aheadOfMain > 0 || data.behindMain > 0) && (
