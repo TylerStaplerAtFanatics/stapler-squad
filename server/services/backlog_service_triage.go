@@ -1362,10 +1362,18 @@ Do not modify the code. Only write the review verdict.
 		// behavior of the tmux-driven submit_review_verdict MCP tool and
 		// SubmitManualReview, both of which already auto-transition on PASS.
 		// Best-effort: verdict is already persisted regardless of transition outcome.
+		// Gated on isCodeShippedToMain: a PASS verdict says the code is good, not
+		// that it has actually landed on main, and this path (unlike the RPC
+		// handler) has no override_reason escape hatch — if it can't verify, it
+		// must leave the item in review rather than silently mark it done.
 		if overall == session.ReviewVerdictPass {
-			precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
-			if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, precondition); transErr != nil {
-				log.WarningLog.Printf("[TriggerReReview] PASS but transition to done failed: %v", transErr)
+			if !s.isCodeShippedToMain(ctx, item.ID, item.RepoPath, "TriggerReReview") {
+				log.InfoLog.Printf("[TriggerReReview] item=%s PASS verdict but code not verified on main — leaving in review for manual transition/override", item.ID)
+			} else {
+				precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
+				if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, precondition); transErr != nil {
+					log.WarningLog.Printf("[TriggerReReview] PASS but transition to done failed: %v", transErr)
+				}
 			}
 		}
 

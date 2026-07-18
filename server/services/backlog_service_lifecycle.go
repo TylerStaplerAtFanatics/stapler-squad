@@ -18,6 +18,7 @@ import (
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/ent"
+	"github.com/tstapler/stapler-squad/session/git"
 )
 
 // resolveStuckOnManualTransition immediately resolves the durable stuck
@@ -337,6 +338,43 @@ func (s *BacklogService) DeleteBacklogItem(
 
 // --- TransitionBacklogItemStatus ---
 
+// isCodeShippedToMain reports whether itemID's most recent work-session commit (if
+// any) has actually landed on main — locally or via a merged PR pushed to origin.
+// Returns true when there is nothing to verify (no work session ever committed code)
+// or the commit is confirmed on main; false when there IS a commit that could not be
+// confirmed shipped, or the check itself failed (fails closed — callers must not
+// silently mark an item done just because verification was unavailable).
+//
+// This is the single check shared by every path that can transition an item to
+// done — the RPC handler, TriggerReReview's and SubmitManualReview's auto-transition
+// on a PASS verdict — so "approved" (a review verdict) and "shipped" (code actually on
+// main) stay two independently-enforced gates everywhere, not just at the one call
+// site a human happens to go through.
+func (s *BacklogService) isCodeShippedToMain(ctx context.Context, itemID, repoPath, logPrefix string) bool {
+	itemSessions, err := s.storage.ListItemSessions(ctx, itemID)
+	if err != nil {
+		log.WarningLog.Printf("[%s] isCodeShippedToMain: failed to load item sessions for item %s: %v", logPrefix, itemID, err)
+		return false
+	}
+	var lastCommitSha string
+	for _, is := range itemSessions {
+		// Ascending by CreatedAt (ListItemSessions' query order) — keep overwriting
+		// so this ends up holding the *most recent* work session's commit.
+		if is.Role == session.SessionRoleWork && is.LastCommitSha != "" {
+			lastCommitSha = is.LastCommitSha
+		}
+	}
+	if lastCommitSha == "" {
+		return true // nothing was ever committed — nothing to verify
+	}
+	onMain, mainErr := git.IsCommitOnMain(repoPath, prFixMainBranch, lastCommitSha)
+	if mainErr != nil {
+		log.WarningLog.Printf("[%s] isCodeShippedToMain: failed to verify commit %s on main for item %s: %v", logPrefix, lastCommitSha, itemID, mainErr)
+		return false
+	}
+	return onMain
+}
+
 // TransitionBacklogItemStatus moves an item through the status state machine.
 // +api: backlog:transition-status
 func (s *BacklogService) TransitionBacklogItemStatus(
@@ -372,21 +410,16 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 		// Non-fatal: proceed with empty outcome; TransitionGuard will block review→done if needed.
 	}
 
-	// Check for unshipped worktree code when transitioning to done.
-	// If a work session made commits (LastCommitSha != "") but no PR was created
-	// (PrURL == ""), the code must be shipped before marking done.
+	// Check for unshipped worktree code when transitioning to done. A PrURL alone
+	// is not proof the code shipped — that PR may still be open, may have been
+	// closed without merging, or may have been reverted — so verify the most
+	// recent work session's commit is actually an ancestor of main (locally or on
+	// origin) rather than trusting the cached PrURL field. This is a distinct
+	// gate from OverallOutcome above: a PASS verdict says the code is good, not
+	// that it has landed on main.
 	var hasUnshippedCode bool
-	if to == session.BacklogStatusDone && item.PrURL == "" {
-		if itemSessions, sessErr := s.storage.ListItemSessions(ctx, req.Msg.ItemId); sessErr != nil {
-			log.WarningLog.Printf("[TransitionBacklogItemStatus] failed to load item sessions for item %s: %v", req.Msg.ItemId, sessErr)
-		} else {
-			for _, is := range itemSessions {
-				if is.Role == session.SessionRoleWork && is.LastCommitSha != "" {
-					hasUnshippedCode = true
-					break
-				}
-			}
-		}
+	if to == session.BacklogStatusDone {
+		hasUnshippedCode = !s.isCodeShippedToMain(ctx, req.Msg.ItemId, item.RepoPath, "TransitionBacklogItemStatus")
 	}
 
 	// Run transition guard for business rules.
@@ -405,7 +438,7 @@ func (s *BacklogService) TransitionBacklogItemStatus(
 			errors.Is(guardErr, session.ErrPlanRequired) ||
 			errors.Is(guardErr, session.ErrPlanArtifactsRequired) ||
 			errors.Is(guardErr, session.ErrVerdictRequired) ||
-			errors.Is(guardErr, session.ErrPRRequired) {
+			errors.Is(guardErr, session.ErrCodeNotOnMain) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, guardErr)
 		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, guardErr)
@@ -776,12 +809,19 @@ func (s *BacklogService) SubmitManualReview(
 		log.WarningLog.Printf("[SubmitManualReview] UpdateItemSessionEnded: %v", endErr)
 	}
 
-	// If PASS, transition item to done (only from review status).
+	// If PASS, transition item to done (only from review status) — but only once
+	// the most recent work commit is verified on main. A PASS verdict says the
+	// code is good, not that it has shipped; a manual review here must not
+	// silently mark an item done for code that's still sitting in an open PR.
 	if overall == session.ReviewVerdictPass {
 		if item.Status == string(session.BacklogStatusReview) {
-			precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
-			if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, req.Msg.ItemId, session.BacklogStatusDone, precondition); transErr != nil {
-				log.WarningLog.Printf("[SubmitManualReview] PASS but transition to done failed: %v", transErr)
+			if !s.isCodeShippedToMain(ctx, req.Msg.ItemId, item.RepoPath, "SubmitManualReview") {
+				log.InfoLog.Printf("[SubmitManualReview] item=%s PASS verdict but code not verified on main — leaving in review for manual transition/override", req.Msg.ItemId)
+			} else {
+				precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
+				if _, transErr := s.storage.TransitionBacklogItemStatus(ctx, req.Msg.ItemId, session.BacklogStatusDone, precondition); transErr != nil {
+					log.WarningLog.Printf("[SubmitManualReview] PASS but transition to done failed: %v", transErr)
+				}
 			}
 		}
 	}
