@@ -10,6 +10,8 @@ import { useAnalytics } from "@/lib/analytics";
 import { getStatusLabel } from "@/lib/backlog/status";
 import { useVcsStatus } from "@/lib/hooks/useVcsStatus";
 import { VcsStatusDisplay } from "@/components/shared/VcsStatusDisplay";
+import { useBacklogItemShipStatus } from "@/lib/hooks/useBacklogItemShipStatus";
+import { ShipStatusDisplay } from "./ShipStatusDisplay";
 import { getApiBaseUrl } from "@/lib/config";
 import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
@@ -183,6 +185,10 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   const [copiedWorktreePath, setCopiedWorktreePath] = useState(false);
   const latestWorkSession = [...(item?.linkedSessions ?? [])].reverse().find((s) => s.role === "work");
   const { data: vcsStatus } = useVcsStatus(latestWorkSession?.sessionId ?? "", getApiBaseUrl());
+  // Fallback for once the live session's worktree has been cleaned up (the normal
+  // state for a done item) — vcsStatus above comes back null in that case since
+  // useVcsStatus needs a live in-memory Instance to query.
+  const { data: shipStatus } = useBacklogItemShipStatus(!vcsStatus && item ? item.id : "");
   const handleCopyWorktreePath = useCallback((path: string) => {
     navigator.clipboard.writeText(path)
       .then(() => {
@@ -871,17 +877,22 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 />
               </div>
 
-              {showChangesModal && workSession && (
-                <ReviewChangesModal
-                  itemId={item.id}
-                  sessionId={workSession.sessionId}
-                  sessionTitle={item.title}
-                  onClose={() => setShowChangesModal(false)}
-                />
-              )}
             </>
           );
         })()}
+
+        {/* Diff modal — reused by the review-flow "View Changes" button above and
+            the Version Control section's "View Diff" button below; works for any
+            status since GetBacklogItemDiff resolves the shipped range from durable
+            git history, not a live session. */}
+        {showChangesModal && (
+          <ReviewChangesModal
+            itemId={item.id}
+            sessionId={latestWorkSession?.sessionId}
+            sessionTitle={item.title}
+            onClose={() => setShowChangesModal(false)}
+          />
+        )}
 
         {/* PR Pending */}
         {item.status === "pr_pending" && (
@@ -1230,8 +1241,11 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           </div>
         )}
 
-        {/* Version Control — VCS state + worktree path for the most recent work session */}
-        {latestWorkSession && (vcsStatus || latestWorkSession.worktreePath) && (
+        {/* Version Control — live VCS state + worktree path for the most recent work
+            session, falling back to the durable ship-status check once the live
+            worktree is gone (the normal state for a done item — see
+            useBacklogItemShipStatus). */}
+        {latestWorkSession && (vcsStatus || shipStatus || latestWorkSession.worktreePath) && (
           <div className={styles.section}>
             <h3 className={styles.sectionTitle}>Version Control</h3>
             {latestWorkSession.worktreePath && (
@@ -1254,7 +1268,13 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                 </button>
               </div>
             )}
-            {vcsStatus && <VcsStatusDisplay status={vcsStatus} />}
+            {vcsStatus ? (
+              <VcsStatusDisplay status={vcsStatus} />
+            ) : (
+              shipStatus && (
+                <ShipStatusDisplay status={shipStatus} onViewDiff={() => setShowChangesModal(true)} />
+              )
+            )}
           </div>
         )}
 

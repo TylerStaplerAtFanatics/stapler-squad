@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,4 +177,159 @@ func TestMergeMainIntoWorktree_should_ReturnError_When_MergeFailsForNonConflictR
 	content, readErr := os.ReadFile(filepath.Join(work, "main-fix.txt"))
 	require.NoError(t, readErr)
 	assert.Equal(t, "uncommitted local edit\n", string(content))
+}
+
+// TestIsCommitOnMain_should_ReturnTrue_When_CommitIsMainTipLocally verifies the
+// simplest case: a commit that IS main's own local tip is trivially its own ancestor.
+func TestIsCommitOnMain_should_ReturnTrue_When_CommitIsMainTipLocally(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	mainTip := strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD"))
+
+	onMain, err := IsCommitOnMain(work, "main", mainTip)
+	require.NoError(t, err)
+	assert.True(t, onMain)
+}
+
+// TestIsCommitOnMain_should_ReturnFalse_When_CommitOnlyExistsOnUnmergedBranch verifies
+// the core gap this function closes: a commit that was made on a feature branch and
+// never merged anywhere must not be reported as shipped.
+func TestIsCommitOnMain_should_ReturnFalse_When_CommitOnlyExistsOnUnmergedBranch(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	runGit(t, work, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(work, "feature.txt"), []byte("wip\n"), 0o644))
+	runGit(t, work, "add", "feature.txt")
+	runGit(t, work, "commit", "-m", "feature work, never merged")
+	featureSHA := strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD"))
+
+	onMain, err := IsCommitOnMain(work, "main", featureSHA)
+	require.NoError(t, err)
+	assert.False(t, onMain, "an unmerged feature commit must not read as shipped")
+}
+
+// TestIsCommitOnMain_should_ReturnTrue_When_CommitMergedRemotelyButNotPulledLocally
+// verifies the "merged remotely" half of the fix (Tyler: "merged can happen remotely
+// or locally... it effectively needs to be on main either locally or remotely") — a PR
+// merged on GitHub advances origin's main, but the local clone's own main branch isn't
+// automatically updated. IsCommitOnMain must still detect it via its own origin fetch.
+func TestIsCommitOnMain_should_ReturnTrue_When_CommitMergedRemotelyButNotPulledLocally(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+
+	// Advance the "remote" (origin) past what "work" has locally — simulating a PR
+	// merged on GitHub that this local clone hasn't fetched/pulled yet.
+	require.NoError(t, os.WriteFile(filepath.Join(origin, "shipped.txt"), []byte("shipped via PR\n"), 0o644))
+	runGit(t, origin, "add", "shipped.txt")
+	runGit(t, origin, "commit", "-m", "merged via PR on GitHub")
+	remoteSHA := strings.TrimSpace(runGit(t, origin, "rev-parse", "HEAD"))
+
+	localMainTip := strings.TrimSpace(runGit(t, work, "rev-parse", "main"))
+	require.NotEqual(t, remoteSHA, localMainTip, "sanity check: work's local main must NOT already have this commit")
+
+	onMain, err := IsCommitOnMain(work, "main", remoteSHA)
+	require.NoError(t, err)
+	assert.True(t, onMain, "a commit merged remotely to origin/main must be detected even before a local pull")
+}
+
+// TestIsCommitOnMain_should_ReturnError_When_ShaDoesNotExist verifies that an invalid
+// or unknown commit SHA surfaces as an error rather than a false "not shipped".
+func TestIsCommitOnMain_should_ReturnError_When_ShaDoesNotExist(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+
+	_, err := IsCommitOnMain(work, "main", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	require.Error(t, err)
+}
+
+// TestBranchAheadBehind_should_ReportBranchExistsFalse_When_BranchWasDeleted verifies
+// the expected post-ship state for a done item: the branch has been cleaned up, and
+// that must read as "nothing to show", not an error.
+func TestBranchAheadBehind_should_ReportBranchExistsFalse_When_BranchWasDeleted(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+
+	status, err := BranchAheadBehind(work, "feature-long-gone", "main")
+	require.NoError(t, err)
+	assert.False(t, status.BranchExists)
+}
+
+// TestBranchAheadBehind_should_ReportAheadCount_When_BranchHasUnmergedCommits verifies
+// the ahead count for a branch that's diverged from main with its own commits.
+func TestBranchAheadBehind_should_ReportAheadCount_When_BranchHasUnmergedCommits(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	runGit(t, work, "checkout", "-b", "feature")
+	for i := 0; i < 3; i++ {
+		fname := fmt.Sprintf("feature-%d.txt", i)
+		require.NoError(t, os.WriteFile(filepath.Join(work, fname), []byte("work\n"), 0o644))
+		runGit(t, work, "add", fname)
+		runGit(t, work, "commit", "-m", fmt.Sprintf("feature commit %d", i))
+	}
+
+	status, err := BranchAheadBehind(work, "feature", "main")
+	require.NoError(t, err)
+	assert.True(t, status.BranchExists)
+	assert.Equal(t, 3, status.AheadOfMain)
+	assert.Equal(t, 0, status.BehindMain)
+}
+
+// TestBranchAheadBehind_should_ReportBehindCount_When_MainAdvancedPastBranch verifies
+// the behind count when main has moved on since the branch was created.
+func TestBranchAheadBehind_should_ReportBehindCount_When_MainAdvancedPastBranch(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	runGit(t, work, "checkout", "-b", "feature")
+
+	require.NoError(t, os.WriteFile(filepath.Join(origin, "main-fix.txt"), []byte("fix\n"), 0o644))
+	runGit(t, origin, "add", "main-fix.txt")
+	runGit(t, origin, "commit", "-m", "fix landed on main")
+	runGit(t, work, "fetch", "origin", "main")
+	runGit(t, work, "branch", "-f", "main", "origin/main")
+
+	status, err := BranchAheadBehind(work, "feature", "main")
+	require.NoError(t, err)
+	assert.True(t, status.BranchExists)
+	assert.Equal(t, 0, status.AheadOfMain)
+	assert.Equal(t, 1, status.BehindMain)
+}
+
+// TestListShippedCommits_should_ReturnNewestFirst_When_MultipleCommitsShipped verifies
+// the commit list (Tyler: "identify which commits were shipped to main from the
+// branch") returns every commit in the range, newest first, like a PR's commits tab.
+func TestListShippedCommits_should_ReturnNewestFirst_When_MultipleCommitsShipped(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	baseSHA := strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD"))
+
+	runGit(t, work, "checkout", "-b", "feature")
+	var shas []string
+	for i := 0; i < 3; i++ {
+		fname := fmt.Sprintf("feature-%d.txt", i)
+		require.NoError(t, os.WriteFile(filepath.Join(work, fname), []byte("work\n"), 0o644))
+		runGit(t, work, "add", fname)
+		runGit(t, work, "commit", "-m", fmt.Sprintf("feature commit %d", i))
+		shas = append(shas, strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD")))
+	}
+	headSHA := shas[len(shas)-1]
+
+	commits, err := ListShippedCommits(work, baseSHA, headSHA)
+	require.NoError(t, err)
+	require.Len(t, commits, 3)
+	assert.Equal(t, headSHA, commits[0].SHA, "newest commit must come first")
+	assert.Equal(t, "feature commit 2", commits[0].Summary)
+	assert.Equal(t, "feature commit 0", commits[2].Summary, "oldest of the three shipped commits must be last")
+}
+
+// TestListShippedCommits_should_ReturnEmpty_When_HeadEqualsBase verifies the
+// degenerate no-op range (nothing was actually committed) returns no commits rather
+// than erroring.
+func TestListShippedCommits_should_ReturnEmpty_When_HeadEqualsBase(t *testing.T) {
+	origin := setupTestRepo(t)
+	work := cloneTestRepo(t, origin)
+	sha := strings.TrimSpace(runGit(t, work, "rev-parse", "HEAD"))
+
+	commits, err := ListShippedCommits(work, sha, sha)
+	require.NoError(t, err)
+	assert.Empty(t, commits)
 }

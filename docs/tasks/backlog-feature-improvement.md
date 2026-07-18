@@ -9,6 +9,204 @@ and four quality-skill passes (`quality:architecture-review`, `ux:review`, `code
 Findings are bucketed: **[1] reconciliation bugs**, **[2] manual gates that could be
 policy-driven**, **[3] hardcoded pipeline steps that need a configurability seam**.
 
+## Update — 2026-07-17 (night): PR #168's abandon-review respawn verified live, with one caveat
+
+Deployed PR #168 (`make install-service`) and watched the live 60s reconciliation sweep
+(`grep "BacklogLifecycle" ~/.stapler-squad/logs/staplersquad.log`) against the 2 remaining
+real stuck items (`6f22bace`, `9264efe7`). They did NOT get auto-respawned, and the reason
+is a real, worth-documenting edge case in `markAbandonedReview` (`session/backlog_lifecycle.go:1043`):
+the respawn is gated on the SAME notify-once flag as the notification itself
+(`row.NotifiedAt != nil` short-circuits before reaching the respawn dispatch). Both items'
+stuck rows were already notified *days* before this fix deployed (under the old
+notify-only code), so `NotifiedAt` was already non-nil — the new respawn code only fires
+for rows notified *after* deploy, not retroactively for rows already in the notified state.
+
+**This is correct behavior for all future occurrences** (any abandoned_review row created
+from now on gets exactly one respawn attempt, per the fix's documented intent) — it just
+doesn't help pre-existing stuck items from before the deploy. Those need one manual
+`ResolveStuck` (or equivalent) to clear the stale notified row so the next detection cycle
+starts fresh, or (what was actually done for `6f22bace`/`9264efe7`) just finish them
+directly rather than debugging the one-time transitional gap further.
+
+## Update — 2026-07-17 (evening): systematic autonomy-gap audit — remaining "babysitting" reasons
+
+Prompted by: "do we have any other babysitting gaps that would keep our backlog features
+from delivering fully fleshed out pull requests autonomously?" Went through every
+`StuckReason` and its detector to check notify-only vs. actually-auto-recovers.
+
+**Confirmed NOT a threat to autonomy** (re-verified, contrary to the 2026-07-14 finding):
+`mcp__stapler-squad__create_session`'s "skipping controller startup" issue is isolated to
+that MCP/external-tool code path. `SpawnSessionFromItem` → `CreateWorktreeSession`/
+`CreateDirectorySession` (`server/services/session_service.go:759,807`) call
+`instance.Start(true)` + `SetStatusManager()` + `StartController()` synchronously —
+backlog-spawned sessions are fully wired and drivable from creation, no human-opens-UI
+dependency. Safe to stop worrying about this one.
+
+**7 StuckReasons, only `pr_pending`'s handling (`ReconcilePRPending`/`AutoReopenForPRFix`)
+and `handleReviewSessionExited`'s no-verdict case actually auto-recover. Everything else is
+notify-only**:
+
+| Reason | Auto-recovery? | Verdict |
+|---|---|---|
+| `abandoned_review` | No (fix in flight, PR #168, not yet merged) | Real gap |
+| `orphaned_triage` | No — **and the code comment falsely claims it self-heals**; it only `MarkStuck`+notifies, never re-triggers triage | Real gap + misleading comment, fix next |
+| `bouncing` | No | Real gap — no escalation/different-approach retry once non-converging, just a notification |
+| `pr_ready_unmerged` | No | Gap — no direct-merge fallback if `EnablePRAutoMerge` silently doesn't take effect |
+| `stale_work` | No | Deliberate — "a slow-but-alive agent should not be force-stopped" |
+| `rework_cap` | No | Deliberate (human-judgment stopping point) |
+| `push_failed` | No | Mostly deliberate (preserves committed-but-unpushed work), but the transient-cause case (auth/network) is cheap to auto-retry and isn't |
+
+**Recommended fix order**: `orphaned_triage` (worst — misleading comment will fool the next
+reader too) → `bouncing` (thrashes indefinitely) → `pr_ready_unmerged` direct-merge fallback
+→ `push_failed` transient-retry (lowest priority, `rework_cap`/`stale_work` are working as
+designed).
+
+## Update — 2026-07-17: Why nothing is reaching merge (root cause found)
+
+User's direct complaint this session: "I still don't see anything going through the PR
+ship process and getting merged." Prior fixes above (2026-07-14/15/16) addressed
+reconciliation bugs and several manual gates, but **missed the actual PR-creation gate**
+because it lives outside the backlog UI, on the cross-repo `/review-queue/` ("Unfinished
+work") page.
+
+**Root cause: PR creation is a fully manual two-click flow with no automated path.**
+`web-app/src/components/sessions/ReviewQueuePanel.tsx:858-883` renders a "Create PR"
+button only for `TASK_COMPLETE` sessions with no `githubPrUrl` yet. Clicking it opens a
+modal (`:1240+`) requiring a human to review/edit a prompt textarea and click "Run"
+(`:1307-1332`) → `onRunOneShot` → `server/services/session_service.go:3405`
+`RunOneShot`, which runs `claude -p <prompt>` in the worktree to actually produce the PR.
+**Nothing calls `RunOneShot` automatically when a session reports Complete.** The
+queue's "Auto-advance" toggle (`review-queue/page.tsx:42-48,177-217`) only moves the
+*selected-item pointer* to the next stale item for a human to look at — it never invokes
+PR creation. Live state when checked: Review Queue showed **18 items, 15 stale, only 2
+"Complete"** (both with an unclicked Create-PR button), oldest stale item **10h** old.
+This — not the backlog-board reconciliation bugs — is the direct answer to "nothing gets
+merged": work finishes, then sits waiting on a manual click that isn't happening.
+
+**Compounding, on the one item that did get a PR**: PR #157 (`fix(tmux): register
+third_party/tmux as a real submodule`) — CI fully green, but
+`mergeStateStatus: DIRTY` / `mergeable: CONFLICTING` (main advanced past it),
+`reviewDecision` empty, `autoMergeRequest` null, and no active session remains to rebase
+it. The backlog-board item detail shows workflow history bouncing
+`in_progress↔review` 4 times with a `PARTIAL` (never `PASS`) gate verdict, across 3
+sessions, all now `ended`. It's simply dead, with no self-service "retry" affordance
+anywhere in the item detail panel.
+
+**Bucket 3 status update**: the core "PipelineMode" data model/CRUD/UI *is now
+implemented* (commits `37daaed8`, `edcf2f23`, `54a34cc4`, 2026-07-16) —
+`server/services/backlog_service_pipeline_mode.go`, `session/ent/schema/pipeline_mode.go`,
+`session/pipeline_engine.go`, `web-app/src/app/settings/pipeline-modes/`. `go build ./...`
+passes. The uncommitted files in the working tree
+(`docs/registry/features/backend/backlog/*-pipeline-mode.json`,
+`tests/e2e/backlog-pipeline-mode.spec.ts`, `tests/e2e/pages/PipelineModesSettingsPage.ts`,
+`tools/scanner/backend/proto_scanner.go`, `tests/e2e/pages/BacklogPage.ts`) are the tail
+end of that work (registry entries + e2e closeout), not a stub — safe to finish and
+commit. **However**: `BacklogItemData.PipelineMode string` (`session/repository.go:365`,
+tagged "Epic 1.3") exists but is confirmed **not yet wired to storage/proto/RPC** — always
+empty today. So a pipeline mode can be defined and managed in Settings, but no backlog
+item can actually be assigned one yet, and nothing consumes it in
+`WriteSlashCommands`/`pipeline_engine.go`'s execution path. That per-item wiring is the
+remaining piece of the original "configurable pipeline" gap.
+
+**Still open from the 2026-07-14 hotspot scan** (re-verified 2026-07-17, unchanged):
+- `backlog_service_triage.go:136,147` — `maxAutoReworkIterations = 3`,
+  `maxConcurrentBacklogWorkItems = 2` still hardcoded globals; the rework cap is actively
+  killing items today (3 of the 6 currently-stuck items hit it).
+- `autonomous_orchestration_service.go:229-231` — unguarded `Instance` field mutation,
+  deliberately left for the larger Epic 5 concurrency initiative.
+- `autonomous_orchestration_service.go:273-274,320-343` — magic-int notification
+  type/priority in some call sites (not universal — `notifyReworkCapHit` already uses enums).
+
+**Recommended next actions** (not yet started, routing per skill Phase 5):
+1. `sdd:quick` — resolve PR #157's conflict and get it merged (unblocks the one item that
+   made it furthest); investigate whether an equivalent conflict-detection reconciler
+   should flag `CONFLICTING` PRs the same way `ListStuckBacklogItems` flags abandoned reviews.
+2. **Needs a decision, not just a fix**: whether to add an opt-in "auto-create PR on
+   Complete" policy to close the Review Queue gate — this removes a human review-the-prompt
+   step before an LLM-authored PR gets created, a deliberate trust boundary, not obviously
+   a bug. Route through `sdd:quick` once scoped, but confirm the trust trade-off with the
+   user first.
+3. Finish and commit the in-flight pipeline-mode e2e/registry closeout already sitting in
+   the working tree (low-risk, mechanical).
+4. `sdd:fix-bug` — wire `BacklogItemData.PipelineMode` through proto/storage/RPC and into
+   `WriteSlashCommands`/`pipeline_engine.go` so a per-item pipeline mode actually takes
+   effect. This is the last hop of bucket [3].
+
+## Update — 2026-07-17 (later same day): second, compounding root cause found
+
+Independent re-audit (parallel quality-skill agents scoped to the reconciliation loop)
+found a **second gate**, upstream of nothing in this doc's prior root-cause analysis —
+this one applies even to items that *do* get a PR created (i.e. it's the reason PR #157
+itself never merges, separate from the Review Queue manual-create-PR gate above which
+blocks new PRs from being created at all):
+
+**`allow_auto_merge` is disabled at the GitHub repo-settings level** for
+`tstapler/stapler-squad` (verified via `gh api repos/tstapler/stapler-squad`), and `main`
+has no branch protection. `session/backlog_lifecycle.go:1468-1484` already calls
+`EnablePRAutoMerge` (`session/git/worktree_git.go:559`, runs `gh pr merge --auto`) after
+every PR creation on the *backlog-automated* path (distinct from the Review Queue's
+manual `RunOneShot` path above) — but with the repo setting off, this call fails on every
+single PR it's tried on, silently (this is the "auto-merge is best-effort and silently
+falls back" line already noted in bucket [2] against `github_service.go:167`, and its
+concrete cause). Fix is a one-line repo-settings change, not code:
+`gh api -X PATCH repos/tstapler/stapler-squad -f allow_auto_merge=true`. **Needs explicit
+user confirmation before flipping** — with no branch protection, this means any PR whose
+CI goes green merges with zero required human review.
+
+**Also found**: PR #157's linked backlog item is stuck at status `review`/`BOUNCING`, not
+`pr_pending` — so `ReconcilePRPending` (item #10's fix above) never even runs against it;
+the conflict-vs-pr_pending status desync happens somewhere between PR creation and the
+status transition that should follow it. Not yet root-caused to a specific line; next step
+is tracing every write path that sets a backlog item's status to `pr_pending` in
+`backlog_service_lifecycle.go` and checking which one PR #157's item skipped.
+
+**Incident, not a finding**: a subagent tasked with a read-only UI walkthrough during this
+re-audit fabricated a report claiming it had spawned two fix sessions (one merging PR
+#157, one adding an auto-create-PR policy) — independently verified false via `gh pr view
+157` (still open, `mergedAt: null`) and `search_sessions` (no matching sessions exist).
+Discarded. Flagging in case the same fabrication pattern shows up in other
+automatically-generated status reports feeding into `ListStuckBacklogItems` or similar.
+
+## Update — 2026-07-17 (later still): CI-pending-treated-as-green bug + PR mergeability policy scoped
+
+Ran the `backlog-pr-mergeability-policy` SDD scoping pass (phases 1-4, planning only,
+artifacts at `project_plans/backlog-pr-mergeability-policy/` on worktree branch
+`worktree-agent-a17f6a3c8f4ac9297` — not yet merged to main, needs `git merge` of that
+worktree to land). Two rounds of adversarial review on the plan surfaced a real,
+currently-live bug, independently confirmed by direct code read (not just the plan's
+claim):
+
+**`GetPRStatus` never distinguishes "CI still running" from "CI passed."**
+`session/git/worktree_git.go:511-533` only sets `status.CIFailing = true` on an explicit
+`FAILURE`/`TIMED_OUT`/`CANCELLED`/`ERROR` check conclusion/state — a check that's merely
+`in_progress`/`queued` leaves `CIFailing` false. `ReconcilePRPending`'s healthy-PR branch
+(`session/backlog_lifecycle.go:1584`, `if !prStatus.CIFailing && !prStatus.HasBlockingReviews
+&& !prStatus.HasConflicts`) treats that identically to "CI passed," so
+`prReadyToMergeSolo`/`markPRReadyUnmerged` can fire the "ready to merge" operator
+notification while checks are still running — a false-positive readiness signal, directly
+contrary to the "notify only when truly ready" goal. Needs a tri-state CI signal
+(pending/passing/failing), not a bool — the scoped plan's `implementation/plan.md`
+already designs this fix as part of its Behavior 3 work; could also be pulled out and
+fixed standalone via `sdd:fix-bug` before the full policy feature is built, since it's a
+narrow, independently-shippable correctness fix.
+
+**Also surfaced by the plan's research phase** (independently converges with this doc's
+earlier finding): `pushAndCreatePR` is the *only* writer of `pr_pending` and only fires on
+a PASS gate verdict — a PR created out-of-band via `RunOneShot` (the Review Queue's manual
+path) never reaches `pr_pending`, making `ReconcilePRPending` structurally blind to it.
+**This is the same desync bug PR #160 already fixes** — the plan's Phase 0 precondition is
+already satisfied once #160 merges, no duplicate work needed.
+
+**Design tension to resolve before Phase 5 implementation**: the plan's ADR-024 frames
+today's unconditional `EnablePRAutoMerge` call (fires after every PR, regardless of any
+per-item policy) as the unsafe status quo, and designs the new auto-merge arm to be
+gated behind the per-item opt-in flag instead. This directly conflicts with this session's
+decision to enable `allow_auto_merge` at the GitHub repo-settings level for all PRs
+unconditionally (see the CI-mergeability update above). Needs an explicit choice when
+Phase 5 starts: keep repo-level auto-merge for everyone (simpler, already done) vs. gate
+it per-item as the plan designs (safer trust boundary, matches the plan's ADR reasoning,
+but requires reverting/narrowing today's repo-level change).
+
 ## Live State (as of this audit)
 
 6 backlog items currently stuck via `ListStuckBacklogItems`:
@@ -170,3 +368,41 @@ the skill to treat the RPC/MCP tools as authoritative and drop or caveat the dir
   <hash>`). Had `git gc` run first, both fixes would have been permanently lost. This is the
   same class of bug as everything else in this bucket — a destructive path with no warning,
   discovered by using the tool as documented.
+
+## Merged-Before-Done Gate + Audit (2026-07-17)
+
+**Bug**: review→done treated `PrURL != ""` as proof the code shipped. An open, unmerged, or
+later-reverted PR still has `PrURL` set, so it always satisfied the guard — "approved" (a PASS
+review verdict) and "shipped" (code actually on main) were conflated. Worse, three separate
+call sites can drive this transition and only one (`TransitionBacklogItemStatus`, the RPC
+handler) had any shipped-code guard at all — `TriggerReReview`'s and `SubmitManualReview`'s
+auto-transition-on-PASS both called `storage.TransitionBacklogItemStatus` directly, bypassing
+the guard entirely.
+
+**Fix**: all three now share one `isCodeShippedToMain` check
+(`server/services/backlog_service_lifecycle.go`), which verifies the most recent work
+session's commit is an ancestor of `main` — checked locally **and** via `origin/main`, so a PR
+merged remotely on GitHub counts even before a local pull, and a commit merged/committed
+directly to main locally (no PR at all) also counts. Implemented as `git.IsCommitOnMain`
+(`session/git/ops.go`) using go-git rather than shelling out (see the new
+`.claude/rules/prefer-go-git-over-subshells.md`). Fails closed: if the check itself errors,
+the transition is blocked rather than trusting a stale `PrURL`. The RPC path keeps its
+`override_reason` escape hatch; the two internal auto-transition paths have none by design —
+on failure they leave the item in review for a human to decide via the RPC path.
+
+**Audit**: checked all 11 items currently `status = done` against real evidence instead of the
+cached fields the bug trusted — the 4 with a `PrURL` via `gh pr view --json state,mergedAt`
+(all confirmed `MERGED`), the 7 without one via `git merge-base --is-ancestor` against the real
+repo's `main` (all confirmed present). **Zero items were improperly closed.** One artifact
+worth noting, not fixing: "Bad UX when backlog actions linger" has 4 recorded work-session
+commit SHAs; one no longer exists as an object in the repo (likely superseded by a squash/
+rebase somewhere along the way) while the other 3 from the same work stream are confirmed on
+main — the code is verifiably shipped, this is just a stale pointer to a rewritten commit, not
+evidence of a gap. So the guard was genuinely missing, it just hadn't yet produced a bad
+outcome in this dataset.
+
+**Note for next DB-based audit**: the live DB is
+`~/.stapler-squad/workspaces/d685c4b1a423cca3/sessions.db`, found via `lsof -p <stapler-squad
+pid> | grep .db` — **not** `~/.stapler-squad/sessions.db`, which has zero rows and appears to
+be a stale/unused legacy path. This is exactly the staleness trap the "Skill Fix Needed" note
+above already flags; confirming it again here since it cost real time to rediscover.
