@@ -35,7 +35,11 @@ export function VcsWidget({
   const mergeabilityState = deriveMergeabilityState(data);
   const showRefresh = data.kind === "live" && !!onRefresh;
   const snapshotAt = data.kind === "historical" ? data.snapshotAt : null;
-  const showNeutralLoadError = data.kind === "historical" && !data.snapshotAt && !!data.loadError;
+  const showNeutralLoadError = data.kind === "historical" && !data.snapshotAt;
+  const neutralLoadErrorMessage =
+    data.kind === "historical" && data.loadError
+      ? data.loadError
+      : "No history captured for this item — it shipped before detailed tracking was added.";
   const showViewDiff = mode === "full" && !!onViewDiff;
 
   return (
@@ -50,7 +54,9 @@ export function VcsWidget({
             As of {formatRelativeTime(snapshotAt.getTime())}
           </span>
         )}
-        {showNeutralLoadError && <span className={styles.neutralNotice}>{data.loadError}</span>}
+        {showNeutralLoadError && (
+          <span className={styles.neutralNotice}>{neutralLoadErrorMessage}</span>
+        )}
 
         {showViewDiff && (
           <button
