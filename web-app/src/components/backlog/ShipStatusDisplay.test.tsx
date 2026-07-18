@@ -8,12 +8,24 @@
  *  4. Branch still existing shows ahead/behind counts
  *  5. Branch deleted shows "(deleted — already merged)" instead of counts
  *  6. Error field short-circuits to just the error message
+ *  7. Commit list renders every commit, newest first, instead of the single last-commit row
+ *  8. Falls back to the single last-commit row when no commit list is available
+ *  9. View Diff button only renders when onViewDiff is passed, and calls it on click
  */
 
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { ShipStatusDisplay } from "./ShipStatusDisplay";
-import type { BacklogItemShipStatus } from "@/gen/session/v1/backlog_pb";
+import type { BacklogItemShipStatus, ShippedCommit } from "@/gen/session/v1/backlog_pb";
+
+function makeCommit(overrides: Partial<ShippedCommit> = {}): ShippedCommit {
+  return {
+    sha: "abc1234567",
+    summary: "a commit",
+    authorName: "Test Author",
+    ...overrides,
+  } as ShippedCommit;
+}
 
 function makeStatus(overrides: Partial<BacklogItemShipStatus> = {}): BacklogItemShipStatus {
   return {
@@ -27,6 +39,7 @@ function makeStatus(overrides: Partial<BacklogItemShipStatus> = {}): BacklogItem
     lastCommitSha: "",
     lastCommitMessage: "",
     error: "",
+    commits: [],
     ...overrides,
   } as BacklogItemShipStatus;
 }
@@ -76,5 +89,42 @@ describe("ShipStatusDisplay", () => {
     render(<ShipStatusDisplay status={makeStatus({ error: "no work session ever committed code" })} />);
     expect(screen.getByText("no work session ever committed code")).toBeInTheDocument();
     expect(screen.queryByText(/Shipped|Not yet on main/)).not.toBeInTheDocument();
+  });
+
+  it("renders every shipped commit, newest first, instead of the single last-commit row", () => {
+    render(
+      <ShipStatusDisplay
+        status={makeStatus({
+          lastCommitSha: "newest111",
+          lastCommitMessage: "should not render — commits list takes over",
+          commits: [
+            makeCommit({ sha: "newest111", summary: "newest commit" }),
+            makeCommit({ sha: "oldest222", summary: "oldest commit" }),
+          ],
+        })}
+      />
+    );
+    expect(screen.getByText("Commits (2):")).toBeInTheDocument();
+    expect(screen.getByText("newest commit")).toBeInTheDocument();
+    expect(screen.getByText("oldest commit")).toBeInTheDocument();
+    expect(screen.queryByText("should not render — commits list takes over")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the single last-commit row when no commit list is available", () => {
+    render(
+      <ShipStatusDisplay status={makeStatus({ lastCommitSha: "abc1234567", lastCommitMessage: "the only commit" })} />
+    );
+    expect(screen.getByText("the only commit")).toBeInTheDocument();
+    expect(screen.queryByText(/Commits \(/)).not.toBeInTheDocument();
+  });
+
+  it("only renders the View Diff button when onViewDiff is passed, and calls it on click", () => {
+    const onViewDiff = jest.fn();
+    const { rerender } = render(<ShipStatusDisplay status={makeStatus()} />);
+    expect(screen.queryByTestId("ship-status-view-diff")).not.toBeInTheDocument();
+
+    rerender(<ShipStatusDisplay status={makeStatus()} onViewDiff={onViewDiff} />);
+    fireEvent.click(screen.getByTestId("ship-status-view-diff"));
+    expect(onViewDiff).toHaveBeenCalledTimes(1);
   });
 });

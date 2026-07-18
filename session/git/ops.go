@@ -171,6 +171,73 @@ func countCommitsNotAncestorOf(from, target *object.Commit) (int, error) {
 	return count, nil
 }
 
+// ShippedCommit describes one commit in the range shipped by a work session.
+type ShippedCommit struct {
+	SHA        string
+	Summary    string // first line of the commit message
+	AuthorAt   time.Time
+	AuthorName string
+}
+
+// listShippedCommitsCap bounds ListShippedCommits the same way
+// countCommitsNotAncestorOfCap bounds the ahead/behind walk — a UI commit list
+// only ever needs "the last several", not an unbounded history dump.
+const listShippedCommitsCap = 100
+
+// ListShippedCommits returns the commits reachable from headSHA but not from
+// baseSHA — i.e. what a work session's commit range actually shipped — newest
+// first, like a PR's "Commits" tab. Both SHAs must already be resolved commit
+// hashes (not branch names): the caller typically has these directly from
+// GitWorktreeData.BaseCommitSHA and the work session's LastCommitSha, which
+// remain valid even after the branch itself has been deleted post-merge.
+func ListShippedCommits(repoPath, baseSHA, headSHA string) ([]ShippedCommit, error) {
+	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{DetectDotGit: true})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open git repo at %s: %w", repoPath, err)
+	}
+
+	head, err := repo.CommitObject(plumbing.NewHash(headSHA))
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve commit %s: %w", headSHA, err)
+	}
+	base, err := repo.CommitObject(plumbing.NewHash(baseSHA))
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve commit %s: %w", baseSHA, err)
+	}
+
+	var commits []ShippedCommit
+	seen := map[plumbing.Hash]bool{head.Hash: true}
+	queue := []*object.Commit{head}
+	for len(queue) > 0 && len(commits) < listShippedCommitsCap {
+		c := queue[0]
+		queue = queue[1:]
+		isAncestor, err := c.IsAncestor(base)
+		if err != nil {
+			return commits, err
+		}
+		if isAncestor {
+			continue
+		}
+		summary, _, _ := strings.Cut(c.Message, "\n")
+		commits = append(commits, ShippedCommit{
+			SHA:        c.Hash.String(),
+			Summary:    strings.TrimSpace(summary),
+			AuthorAt:   c.Author.When,
+			AuthorName: c.Author.Name,
+		})
+		if err := c.Parents().ForEach(func(p *object.Commit) error {
+			if !seen[p.Hash] {
+				seen[p.Hash] = true
+				queue = append(queue, p)
+			}
+			return nil
+		}); err != nil {
+			return commits, err
+		}
+	}
+	return commits, nil
+}
+
 // CheckoutBranch checks out a branch in an existing repository.
 func CheckoutBranch(repoPath, branchName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
