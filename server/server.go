@@ -675,6 +675,7 @@ func (s *Server) Start(ctx context.Context) error {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok","service":"stapler-squad-web"}`)) //nolint:errcheck
 	})
+	s.registerActuatorRoutes()
 
 	// Build middleware chain:
 	// otelhttp -> logging -> CORS -> gzip -> [auth] -> mux
