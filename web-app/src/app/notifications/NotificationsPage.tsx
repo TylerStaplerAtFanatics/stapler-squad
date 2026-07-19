@@ -13,6 +13,7 @@ import { useAuditLog } from "@/lib/hooks/useAuditLog";
 import { formatRelativeTime } from "@/lib/utils/datetime";
 import { groupNotifications } from "@/lib/utils/notificationGrouping";
 import { getApiBaseUrl } from "@/lib/config";
+import { routes } from "@/lib/routes";
 import { NotificationData } from "@/lib/types/notification";
 import {
   notificationTypeIcon,
@@ -375,7 +376,7 @@ export function NotificationsPage() {
                       )}
                       {notification.metadata?.["item_id"] && (
                         <Link
-                          href={`/backlog?item=${encodeURIComponent(notification.metadata["item_id"])}`}
+                          href={routes.backlogItem(encodeURIComponent(notification.metadata["item_id"]))}
                           className={viewButton}
                           onClick={() => handleNotificationClick(group.allIds, undefined, notification.sessionId)}
                           data-testid="notification-view-backlog"

@@ -6,7 +6,15 @@
   "markerLine": 0,
   "tested": true,
   "testIds": [
-    "BacklogItemDetail — background refresh must not unmount the view"
+    "BacklogItemDetail — background refresh must not unmount the view",
+    "BacklogItemDetail — item ID & deep-link copy affordances",
+    "BacklogBoardPage — deep-link restore on mount",
+    "e2e:backlog-item-id-visible",
+    "e2e:backlog-copy-item-id",
+    "e2e:backlog-copy-item-link",
+    "e2e:backlog-deep-link-opens-item",
+    "e2e:backlog-board-deep-link-opens-item",
+    "e2e:backlog-invalid-item-id"
   ],
-  "lastModified": "2026-07-01T00:00:00Z"
+  "lastModified": "2026-07-18T00:00:00Z"
 }

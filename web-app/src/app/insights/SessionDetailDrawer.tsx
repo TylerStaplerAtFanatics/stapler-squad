@@ -5,6 +5,7 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { SessionTokenSummary } from "@/gen/session/v1/insights_pb";
 import type { BacklogIndexEntry } from "@/lib/hooks/useBacklogService";
+import { routes } from "@/lib/routes";
 import {
   overlay,
   drawer,
@@ -117,7 +118,7 @@ export function SessionDetailDrawer({ session, onClose, backlogEntry }: Props) {
               <dt className={metaLabel}>Title</dt>
               <dd className={metaValue}>
                 <a
-                  href={`/backlog?item=${backlogEntry.itemId}`}
+                  href={routes.backlogItem(backlogEntry.itemId)}
                   className={backlogLink}
                 >
                   {backlogEntry.itemTitle}

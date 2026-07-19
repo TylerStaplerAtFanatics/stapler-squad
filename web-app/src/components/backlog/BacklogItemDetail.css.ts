@@ -170,6 +170,45 @@ export const headerActions = style({
   flexShrink: 0,
 });
 
+export const idRow = style({
+  display: "flex",
+  alignItems: "center",
+  gap: vars.space["2"],
+  flexWrap: "wrap",
+});
+
+export const idText = style({
+  fontSize: vars.fontSize.xs,
+  fontFamily: vars.font.mono,
+  color: vars.color.textMuted,
+  userSelect: "all",
+});
+
+export const copyButton = style({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: vars.space["1"],
+  padding: `${vars.space["1"]} ${vars.space["2"]}`,
+  minHeight: "44px",
+  borderRadius: vars.radii.sm,
+  border: `1px solid ${vars.color.borderMuted}`,
+  background: "transparent",
+  color: vars.color.textSecondary,
+  cursor: "pointer",
+  fontSize: vars.fontSize.xs,
+  fontWeight: vars.fontWeight.medium,
+  ":hover": {
+    background: vars.color.hoverBackground,
+    borderColor: vars.color.borderStrong,
+    color: vars.color.textPrimary,
+  },
+});
+
+export const copyButtonCopied = style({
+  color: vars.color.success,
+  borderColor: vars.color.success,
+});
+
 export const editButton = style({
   display: "inline-flex",
   alignItems: "center",

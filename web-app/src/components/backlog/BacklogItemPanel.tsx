@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { AppLink } from "@/components/ui/AppLink";
 import { useBacklogService, type BacklogItem } from "@/lib/hooks/useBacklogService";
+import { routes } from "@/lib/routes";
 import * as styles from "./BacklogItemPanel.css";
 
 interface BacklogItemPanelProps {
@@ -97,7 +98,7 @@ export function BacklogItemPanel({
                 </span>
               </div>
               <AppLink
-                href={`/backlog?item=${item.id}`}
+                href={routes.backlogItem(item.id)}
                 className={styles.title}
                 data-testid="backlog-panel-title"
               >
@@ -134,7 +135,7 @@ export function BacklogItemPanel({
 
               <div className={styles.actions}>
                 <AppLink
-                  href={`/backlog?item=${item.id}`}
+                  href={routes.backlogItem(item.id)}
                   className={styles.actionLink}
                   data-testid="backlog-panel-view-full"
                 >

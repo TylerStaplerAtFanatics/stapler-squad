@@ -6,6 +6,7 @@ import { TableVirtuoso } from "react-virtuoso";
 import Fuse from "fuse.js";
 import type { SessionTokenSummary } from "@/gen/session/v1/insights_pb";
 import type { BacklogIndexEntry } from "@/lib/hooks/useBacklogService";
+import { routes } from "@/lib/routes";
 import {
   tableCard,
   tableHeader,
@@ -141,7 +142,7 @@ export function SessionsTable({ sessions, onSessionClick, backlogIndex }: Props)
           )}
           {backlogEntry && (
             <a
-              href={`/backlog?item=${backlogEntry.itemId}`}
+              href={routes.backlogItem(backlogEntry.itemId)}
               className={backlogBadge}
               data-testid="backlog-badge"
               title={`${backlogEntry.sessionRole}: ${backlogEntry.itemTitle}`}

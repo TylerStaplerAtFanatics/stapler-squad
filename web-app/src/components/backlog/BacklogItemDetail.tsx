@@ -13,6 +13,7 @@ import { VcsStatusDisplay } from "@/components/shared/VcsStatusDisplay";
 import { useBacklogItemShipStatus } from "@/lib/hooks/useBacklogItemShipStatus";
 import { ShipStatusDisplay } from "./ShipStatusDisplay";
 import { getApiBaseUrl } from "@/lib/config";
+import { routes } from "@/lib/routes";
 import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
 import { SessionMonitor } from "./SessionMonitor";
@@ -194,6 +195,30 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
       .then(() => {
         setCopiedWorktreePath(true);
         setTimeout(() => setCopiedWorktreePath(false), 1500);
+      })
+      .catch((err) => {
+        console.warn("[BacklogItemDetail] clipboard write failed", err);
+      });
+  }, []);
+
+  // Copy-ID / copy-link affordances for the item header.
+  const [copiedField, setCopiedField] = useState<"id" | "link" | null>(null);
+  const handleCopyId = useCallback((id: string) => {
+    navigator.clipboard.writeText(id)
+      .then(() => {
+        setCopiedField("id");
+        setTimeout(() => setCopiedField(null), 1500);
+      })
+      .catch((err) => {
+        console.warn("[BacklogItemDetail] clipboard write failed", err);
+      });
+  }, []);
+  const handleCopyLink = useCallback((id: string) => {
+    const url = `${window.location.origin}${routes.backlogItem(id)}`;
+    navigator.clipboard.writeText(url)
+      .then(() => {
+        setCopiedField("link");
+        setTimeout(() => setCopiedField(null), 1500);
       })
       .catch((err) => {
         console.warn("[BacklogItemDetail] clipboard write failed", err);
@@ -712,6 +737,31 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   · Updated {formatDate(item.updatedAt)}
                 </span>
               )}
+            </div>
+            <div className={styles.idRow}>
+              <span
+                className={styles.idText}
+                data-testid="backlog-item-id"
+                title="Backlog item ID"
+              >
+                {item.id}
+              </span>
+              <button
+                className={`${styles.copyButton} ${copiedField === "id" ? styles.copyButtonCopied : ""}`}
+                onClick={() => handleCopyId(item.id)}
+                aria-label="Copy item ID"
+                data-testid="copy-backlog-id"
+              >
+                {copiedField === "id" ? "Copied" : "Copy ID"}
+              </button>
+              <button
+                className={`${styles.copyButton} ${copiedField === "link" ? styles.copyButtonCopied : ""}`}
+                onClick={() => handleCopyLink(item.id)}
+                aria-label="Copy shareable link"
+                data-testid="copy-backlog-link"
+              >
+                {copiedField === "link" ? "Copied" : "Copy link"}
+              </button>
             </div>
           </div>
           <div className={styles.headerActions}>

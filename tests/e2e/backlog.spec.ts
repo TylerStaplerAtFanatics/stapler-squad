@@ -492,6 +492,99 @@ test.describe('Backlog', () => {
     });
   });
 
+  test.describe('Item ID & Deep Links', () => {
+    let createdItemId: string | undefined;
+    let createdItemTitle: string;
+
+    test.beforeEach(async ({ request }) => {
+      createdItemTitle = `id-deeplink-test-${Date.now()}`;
+      const createRes = await request.post(
+        `${BASE_URL}/api/session.v1.BacklogService/CreateBacklogItem`,
+        {
+          headers: { 'Content-Type': 'application/json' },
+          data: { title: createdItemTitle, priority: 3, repoPath: '', skipTriage: true },
+        }
+      );
+      const body = await createRes.json() as { item?: { id: string } };
+      createdItemId = body.item?.id;
+    });
+
+    test.afterEach(async ({ request }) => {
+      if (!createdItemId) return;
+      try {
+        await request.post(
+          `${BASE_URL}/api/session.v1.BacklogService/ArchiveBacklogItem`,
+          { headers: { 'Content-Type': 'application/json' }, data: { id: createdItemId } }
+        );
+      } catch {
+        // Best-effort cleanup — do not fail the test on cleanup errors.
+      }
+      createdItemId = undefined;
+    });
+
+    test('e2e:backlog-item-id-visible - Detail pane shows the item ID as visible, selectable text', async ({ page }) => {
+      const backlogPage = new BacklogPage(page);
+      await page.reload();
+      await page.waitForSelector('[data-testid="backlog-table-row"]', { timeout: 10000 });
+      await backlogPage.openItemDetail(createdItemTitle);
+
+      const idText = page.locator('[data-testid="backlog-item-id"]');
+      await expect(idText).toBeVisible();
+      await expect(idText).toHaveText(createdItemId!);
+    });
+
+    test('e2e:backlog-copy-item-id - Copy ID button copies the full UUID and shows a confirmation state', async ({ page, context }) => {
+      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+      const backlogPage = new BacklogPage(page);
+      await page.reload();
+      await page.waitForSelector('[data-testid="backlog-table-row"]', { timeout: 10000 });
+      await backlogPage.openItemDetail(createdItemTitle);
+
+      const copyIdButton = page.locator('[data-testid="copy-backlog-id"]');
+      await copyIdButton.click();
+      await expect(copyIdButton).toHaveText('Copied');
+
+      const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+      expect(clipboardText).toBe(createdItemId);
+    });
+
+    test('e2e:backlog-copy-item-link - Copy link button copies a /backlog?item=<id> deep link', async ({ page, context }) => {
+      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+      const backlogPage = new BacklogPage(page);
+      await page.reload();
+      await page.waitForSelector('[data-testid="backlog-table-row"]', { timeout: 10000 });
+      await backlogPage.openItemDetail(createdItemTitle);
+
+      const copyLinkButton = page.locator('[data-testid="copy-backlog-link"]');
+      await copyLinkButton.click();
+      await expect(copyLinkButton).toHaveText('Copied');
+
+      const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+      expect(clipboardText).toMatch(new RegExp(`/backlog\\?item=${createdItemId}$`));
+    });
+
+    test('e2e:backlog-deep-link-opens-item - Visiting /backlog?item=<uuid> opens the correct item detail pane', async ({ page }) => {
+      await page.goto(`${BASE_URL}/backlog?item=${createdItemId}`, { waitUntil: 'domcontentloaded' });
+      const pane = page.locator('[data-testid="backlog-item-detail"]');
+      await expect(pane).toBeVisible({ timeout: 10000 });
+      await expect(pane).toContainText(createdItemTitle);
+    });
+
+    test('e2e:backlog-board-deep-link-opens-item - Visiting board view with ?item= restores the detail pane on load', async ({ page }) => {
+      await page.goto(`${BASE_URL}/backlog/board?item=${createdItemId}`, { waitUntil: 'domcontentloaded' });
+      const pane = page.locator('[data-testid="backlog-item-detail"]');
+      await expect(pane).toBeVisible({ timeout: 10000 });
+      await expect(pane).toContainText(createdItemTitle);
+    });
+
+    test('e2e:backlog-invalid-item-id - Invalid item ID in URL shows the "Item not found" state without crashing', async ({ page }) => {
+      await page.goto(`${BASE_URL}/backlog?item=not-a-real-uuid`, { waitUntil: 'domcontentloaded' });
+      const pane = page.locator('[data-testid="backlog-item-detail"]');
+      await expect(pane).toBeVisible({ timeout: 10000 });
+      await expect(pane).toContainText('Item not found');
+    });
+  });
+
   test.describe('Backlog Tour', () => {
     test('e2e:backlog-tour-first-visit - Tour appears on first visit and dismissing it persists across reload', async ({ page }) => {
       const backlogPage = new BacklogPage(page);

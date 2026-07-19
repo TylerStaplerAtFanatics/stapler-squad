@@ -29,6 +29,7 @@ export const routes = {
   escapeAnalytics: "/analytics/escape",
   files: "/files",
   sessionDetail: (id: string) => `/?session=${id}`,
+  backlogItem: (id: string) => `/backlog?item=${id}`,
   newSessionFromWorktree: (worktreePath: string, branch: string, title?: string) => {
     const params = new URLSearchParams({ worktree: worktreePath, branch });
     if (title) params.set("title", title);
