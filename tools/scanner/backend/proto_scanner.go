@@ -146,6 +146,7 @@ var methodToID = map[string]string{
 	"SuggestNextItem":             "backlog:suggest-next",
 	"OverrideVerdict":             "backlog:override-verdict",
 	"TriggerReReview":             "backlog:trigger-re-review",
+	"TriggerShipPR":               "backlog:trigger-ship-pr",
 	"TriggerSync":                 "backlog:trigger-sync",
 	"CreateItemSource":            "backlog:create-source",
 	"ListItemSources":             "backlog:list-sources",
@@ -154,8 +155,16 @@ var methodToID = map[string]string{
 	"GetSyncHistory":              "backlog:get-sync-history",
 	"GetBacklogItemDiff":          "backlog:get-item-diff",
 	"GetBacklogItemCost":          "backlog:get-item-cost",
+	"GetBacklogItemShipStatus":    "backlog:get-item-ship-status",
 	"GetSessionBacklogIndex":      "backlog:get-session-index",
 	"SubmitManualReview":          "backlog:submit-manual-review",
+	"ListStuckBacklogItems":       "backlog:list-stuck",
+	"SnoozeStuckItem":             "backlog:snooze-stuck",
+	"CreatePipelineMode":          "backlog:create-pipeline-mode",
+	"UpdatePipelineMode":          "backlog:update-pipeline-mode",
+	"DeletePipelineMode":          "backlog:delete-pipeline-mode",
+	"GetPipelineMode":             "backlog:get-pipeline-mode",
+	"ListPipelineModes":           "backlog:list-pipeline-modes",
 	// GitHub issue import RPCs (BacklogService) - mapped to the method name
 	// itself, not a kebab-case backlog:* id: origin/main already has
 	// committed registry files under docs/registry/features/backend/{method

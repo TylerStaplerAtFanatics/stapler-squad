@@ -29,7 +29,6 @@ import (
 
 const ProgramClaude = "claude"
 
-
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
 
@@ -415,6 +414,16 @@ func prependSocket(socket string, args []string) []string {
 // processes that are still alive inside tmux.
 type TmuxServerReady struct{}
 
+// startServerSucceededDespiteError reports whether a failed start-server attempt
+// should be treated as success because a follow-up check shows a server is now
+// (or still) actually running -- see EnsureServerRunning's doc comment on the
+// check-race this recovers from. isNotRunning is checkServerNotRunning, passed
+// in so tests can simulate the race deterministically instead of depending on
+// real tmux subprocess timing.
+func startServerSucceededDespiteError(isNotRunning func() bool) bool {
+	return !isNotRunning()
+}
+
 // EnsureServerRunning starts the tmux server if it is not already running.
 // Uses exec.Command directly so it always runs regardless of circuit breaker state.
 // Returns a TmuxServerReady token that callers must pass to BuildRuntimeDeps.
@@ -429,6 +438,18 @@ func EnsureServerRunning(serverSocket string) (TmuxServerReady, error) {
 		return safeexec.CommandContext(startCtx, Binary(), args...).CombinedOutput()
 	})
 	if err != nil {
+		// Under heavy concurrent tmux usage, the list-sessions check above can itself
+		// transiently report "server exited unexpectedly" against a socket that
+		// actually has a live server (a racy connect, not a real absence) -- which
+		// sends us down this path to start a server that's already running, and the
+		// start-server call then hits the same transient failure. Since this
+		// function's actual contract is "a server is running when this returns", not
+		// "this call is the one that started it", re-check before surfacing the
+		// error: if a server is now (or still) up, that's success.
+		if startServerSucceededDespiteError(func() bool { return checkServerNotRunning(serverSocket) }) {
+			log.Info("[tmux] start-server reported failure but server is now running (transient check race)", "err", err, "output", string(out))
+			return TmuxServerReady{}, nil
+		}
 		return TmuxServerReady{}, fmt.Errorf("tmux start-server failed: %w (output: %s)", err, out)
 	}
 	log.Info("[tmux] server started successfully")
@@ -804,6 +825,30 @@ func (t *TmuxSession) setRemainOnExit() {
 	}
 }
 
+// ErrWorkDirMissing indicates a session's working directory is unset or no
+// longer exists on disk (e.g. a pruned git worktree). Callers can match on it
+// with errors.Is to distinguish a permanent failure — the session should be
+// failed with a clear status, not silently retried against a guessed directory.
+var ErrWorkDirMissing = errors.New("session working directory missing")
+
+// validateWorkDir rejects an empty or nonexistent working directory instead of
+// letting a caller silently fall back to a guessed directory (e.g. os.Getwd(),
+// which for a long-running server process is often $HOME) — see start() and
+// RestoreWithWorkDir()'s recreate path.
+func validateWorkDir(workDir string) error {
+	if workDir == "" {
+		return fmt.Errorf("working directory not set: %w", ErrWorkDirMissing)
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return fmt.Errorf("working directory %q is not accessible: %w: %w", workDir, ErrWorkDirMissing, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("working directory %q is not a directory: %w", workDir, ErrWorkDirMissing)
+	}
+	return nil
+}
+
 // start is the internal implementation for Start and StartWithCleanup
 func (t *TmuxSession) start(workDir string, setupCleanup bool, cleanup *CleanupFunc) error {
 	// Use a no-cache check here to detect stale sessions from previous server runs.
@@ -824,6 +869,10 @@ func (t *TmuxSession) start(workDir string, setupCleanup bool, cleanup *CleanupF
 		return nil
 	}
 
+	if err := validateWorkDir(workDir); err != nil {
+		return fmt.Errorf("cannot start tmux session %s: %w", t.sanitizedName, err)
+	}
+
 	// Create a new detached tmux session and start the program in it.
 	// Pass -e CLAUDECODE= to unset CLAUDECODE in the child environment so that
 	// nested Claude Code sessions are not blocked by the "nested session" guard.
@@ -840,10 +889,27 @@ func (t *TmuxSession) start(workDir string, setupCleanup bool, cleanup *CleanupF
 	cmd := t.buildTmuxCommand(newSessionArgs...)
 
 	// Use cmdExec.Run() instead of pty.Start() for detached session creation
-	// since detached sessions don't need PTY attachment during creation
+	// since detached sessions don't need PTY attachment during creation.
+	//
+	// stderr goes to a scratch FILE, not a pipe/buffer: `tmux new-session -d`
+	// forks a detached server that inherits these fds, so a buffer-based
+	// capture (CombinedOutput, bytes.Buffer) blocks forever waiting for EOF
+	// that the still-running server never sends. A file has no such wait.
+	var stderrOutput string
+	stderrFile, tmpErr := os.CreateTemp("", "tmux-new-session-stderr-*")
+	if tmpErr == nil {
+		cmd.Stderr = stderrFile
+		defer os.Remove(stderrFile.Name())
+		defer stderrFile.Close()
+	}
 	err := runGatedErr(context.Background(), t.serverSocket, func() error {
 		return t.cmdExec.Run(cmd)
 	})
+	if stderrFile != nil {
+		if data, readErr := os.ReadFile(stderrFile.Name()); readErr == nil {
+			stderrOutput = strings.TrimSpace(string(data))
+		}
+	}
 	if err != nil {
 		// Cleanup any partially created session if any exists.
 		if t.DoesSessionExist() {
@@ -859,6 +925,9 @@ func (t *TmuxSession) start(workDir string, setupCleanup bool, cleanup *CleanupF
 		// If we have a cleanup function pointer, set it to nil since startup failed
 		if setupCleanup && cleanup != nil {
 			*cleanup = func() error { return nil }
+		}
+		if stderrOutput != "" {
+			return fmt.Errorf("error starting tmux session: %s (%w)", stderrOutput, err)
 		}
 		return fmt.Errorf("error starting tmux session: %w", err)
 	}
@@ -990,14 +1059,12 @@ func (t *TmuxSession) RestoreWithWorkDir(workDir string) error {
 			// Session truly doesn't exist after all checks - safe to create new one
 			log.Warn("tmux session doesn't exist after all attempts, creating new session instead of restoring", "session", t.sanitizedName, "attempts", maxRetries)
 
-			// Use the provided working directory, fall back to current directory if not provided
-			if workDir == "" {
-				var err error
-				workDir, err = os.Getwd()
-				if err != nil {
-					log.Warn("could not get working directory for session", "session", t.sanitizedName, "err", err)
-					workDir = "."
-				}
+			// ponytail: never guess a directory here (e.g. os.Getwd(), which for a
+			// long-running server process is often $HOME) — a wrong guess silently
+			// reconnects the session to the wrong workspace. Fail loudly instead so
+			// the caller can surface a clear status to the user.
+			if err := validateWorkDir(workDir); err != nil {
+				return fmt.Errorf("cannot recreate tmux session %s: %w", t.sanitizedName, err)
 			}
 
 			// Create a new detached tmux session directly (avoid recursive call to Start).

@@ -55,10 +55,9 @@ if [[ ! -f "$SUBMODULE_DIR/configure.ac" ]]; then
     (cd "$ROOT" && git submodule update --init third_party/tmux)
   else
     log "Cloning tmux 3.4 into third_party/tmux (gitlink not registered; run 'git submodule add' to fix)..."
-    # Clone into a temp dir then merge so we preserve any existing files (e.g. BUILD.bazel).
     TMUX_TMP="$(mktemp -d)"
     git clone --depth 1 --branch 3.4 https://github.com/tmux/tmux.git "$TMUX_TMP"
-    cp -rn "$TMUX_TMP"/. "$SUBMODULE_DIR/"   # -n = no-clobber, keeps our BUILD.bazel
+    cp -rn "$TMUX_TMP"/. "$SUBMODULE_DIR/"
     rm -rf "$TMUX_TMP"
   fi
 fi
@@ -85,31 +84,23 @@ log "Building tmux from $SUBMODULE_DIR..."
 cd "$SUBMODULE_DIR"
 
 if [[ ! -f "./configure" ]]; then
-  # Prefer downloading configure from the release tarball — faster and avoids the
-  # macOS autotools hang (autogen.sh → 'automake --add-missing' triggers network
+  # Prefer downloading the release tarball — faster and avoids the macOS
+  # autotools hang (autogen.sh → 'automake --add-missing' triggers network
   # fetches; libtoolize can block scanning the locate database for minutes).
+  # The tarball ships more than just `configure` — aclocal.m4, Makefile.in,
+  # and etc/{install-sh,config.guess,...} are also autotools-generated and
+  # absent from a plain git checkout, so extract the whole tarball and layer
+  # it over the submodule source with no-clobber (keeps our git-tracked files).
   TMUX_VERSION="3.4"
   TARBALL_URL="https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz"
   TMPTAR="$(mktemp /tmp/tmux-XXXXXX.tar.gz)"
-  log "Downloading configure from release tarball (${TARBALL_URL})..."
-  # configure also needs generated files a plain git checkout doesn't have —
-  # aclocal.m4, Makefile.in, and the etc/ autotools scaffold (install-sh,
-  # config.guess/sub, missing, depcomp, compile) — release tarballs bundle these,
-  # git checkouts don't (they're produced by `automake`/`autoreconf` at dist time).
+  log "Downloading generated build files from release tarball (${TARBALL_URL})..."
   if curl -fsSL -o "$TMPTAR" "$TARBALL_URL" 2>/dev/null && \
-     tar xzf "$TMPTAR" -C /tmp \
-       "tmux-${TMUX_VERSION}/configure" \
-       "tmux-${TMUX_VERSION}/aclocal.m4" \
-       "tmux-${TMUX_VERSION}/Makefile.in" \
-       "tmux-${TMUX_VERSION}/etc" 2>/dev/null; then
-    cp "/tmp/tmux-${TMUX_VERSION}/configure" ./configure
+     tar xzf "$TMPTAR" -C /tmp "tmux-${TMUX_VERSION}" 2>/dev/null; then
+    cp -rn "/tmp/tmux-${TMUX_VERSION}/." .
     chmod +x ./configure
-    cp "/tmp/tmux-${TMUX_VERSION}/aclocal.m4" ./aclocal.m4
-    cp "/tmp/tmux-${TMUX_VERSION}/Makefile.in" ./Makefile.in
-    mkdir -p ./etc
-    cp -rn "/tmp/tmux-${TMUX_VERSION}/etc/." ./etc/
-    rm -f "$TMPTAR"
-    log "configure extracted from release tarball"
+    rm -rf "$TMPTAR" "/tmp/tmux-${TMUX_VERSION}"
+    log "Generated build files extracted from release tarball"
   else
     rm -f "$TMPTAR"
     log "Tarball download failed; falling back to autoreconf -fi..."

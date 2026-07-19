@@ -136,6 +136,30 @@ func (h *backlogHandlers) getBacklogItem(ctx context.Context, req mcpgo.CallTool
 		sb.WriteString("\n\n")
 	}
 
+	// Latest review verdict, if one has been submitted. This is the primary way a
+	// still-running work session discovers review feedback without being killed and
+	// respawned — see request_review's guidance below.
+	if verdict := latestReviewVerdict(ctx, h.storage, itemID); verdict != nil {
+		sb.WriteString("## Latest Review Verdict\n")
+		fmt.Fprintf(&sb, "Outcome: %s\n", verdict.OverallOutcome)
+		if verdict.Summary != "" {
+			fmt.Fprintf(&sb, "Reviewer summary: %s\n", session.SanitizeForAgentContext(verdict.Summary, 500))
+		}
+		var perCriterion []session.CriterionVerdict
+		if verdict.PerCriterion != "" {
+			if jsonErr := json.Unmarshal([]byte(verdict.PerCriterion), &perCriterion); jsonErr != nil {
+				log.WarningLog.Printf("get_backlog_item: failed to parse per-criterion verdicts for item %s: %v", itemID, jsonErr)
+			}
+		}
+		for _, v := range perCriterion {
+			if v.Outcome == session.ReviewOutcomePass {
+				continue
+			}
+			fmt.Fprintf(&sb, "  Criterion %d (%s): %s\n", v.CriterionIndex, v.Outcome, session.SanitizeForAgentContext(v.Evidence, 300))
+		}
+		sb.WriteString("\n")
+	}
+
 	// Role-aware workflow guidance: look up the caller's role if a session UUID is present.
 	role := ""
 	if callerUUID, ok := sessionUUIDFromContext(ctx); ok {
@@ -158,6 +182,7 @@ func (h *backlogHandlers) getBacklogItem(ctx context.Context, req mcpgo.CallTool
 		sb.WriteString("1. Work through each AC criterion\n")
 		sb.WriteString("2. After completing each criterion, call report_progress with criteria_index + status=pass\n")
 		sb.WriteString("3. When all criteria are done, call request_review with a summary of what you built\n")
+		sb.WriteString("4. Do NOT end your session after request_review. Wait a bit, then call get_backlog_item again — once a verdict lands it appears under \"Latest Review Verdict\" above. PASS → status becomes done, you're finished. FAIL/PARTIAL → fix the noted gaps yourself in this same session and call request_review again. Keep looping until PASS.\n")
 	case "review":
 		sb.WriteString("## Your Role: Review\n")
 		sb.WriteString("Verify each acceptance criterion is met. Do NOT modify source code or call report_progress.\n\n")
@@ -180,6 +205,24 @@ func (h *backlogHandlers) getBacklogItem(ctx context.Context, req mcpgo.CallTool
 	)
 
 	return mcpgo.NewToolResultText(envelope), nil
+}
+
+// latestReviewVerdict returns the most recently submitted ReviewVerdict for the item,
+// or nil if none exists yet. ListItemSessions orders ascending by created_at, so the
+// last session carrying a verdict is the most recent one.
+func latestReviewVerdict(ctx context.Context, storage *session.Storage, itemID string) *session.ReviewVerdictSummary {
+	sessions, err := storage.ListItemSessions(ctx, itemID)
+	if err != nil {
+		log.WarningLog.Printf("get_backlog_item: failed to list item sessions for %s: %v", itemID, err)
+		return nil
+	}
+	var latest *session.ReviewVerdictSummary
+	for _, s := range sessions {
+		if s.ReviewVerdict != nil {
+			latest = s.ReviewVerdict
+		}
+	}
+	return latest
 }
 
 // --- report_progress ---
@@ -439,14 +482,14 @@ func (h *backlogHandlers) submitReviewVerdict(ctx context.Context, req mcpgo.Cal
 		return errResult(ErrInternalError, fmt.Sprintf("save review verdict: %v", saveErr), ""), nil
 	}
 
-	// If PASS, transition item to done (only from review status).
-	if overallOutcome == session.ReviewVerdictPass {
-		precondition := &session.BacklogItemPrecondition{ExpectedStatus: string(session.BacklogStatusReview)}
-		if _, transErr := h.storage.TransitionBacklogItemStatus(ctx, itemID, session.BacklogStatusDone, precondition); transErr != nil {
-			log.InfoLog.Printf("[mcp:submit_review_verdict] PASS but transition to done failed: %v", transErr)
-			// Non-fatal — verdict is saved, status transition is best-effort.
-		}
-	}
+	// Deliberately no status transition here: BacklogLifecycleListener.
+	// handleReviewSessionExited (session/backlog_lifecycle.go) is the sole place
+	// that decides what happens next once this review session exits — on PASS it
+	// pushes the branch, creates a PR, and transitions to pr_pending
+	// (pushAndCreatePR); on FAIL/PARTIAL/UNVERIFIABLE it triggers auto-reopen.
+	// Transitioning straight to done here would race that handler: its own
+	// precondition (ExpectedStatus: review) would then fail once the session
+	// actually exits, silently skipping PR creation.
 
 	// Stop the AutonomousDriver for this review session (belt-and-suspenders).
 	// The verdict is already persisted; a subsequent Stuck fireCompletion is harmless

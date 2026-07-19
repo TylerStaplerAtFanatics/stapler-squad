@@ -17,7 +17,17 @@ const backlogCommandsDir = ".claude/commands/backlog"
 
 // WriteSlashCommands creates the .claude/commands/backlog/ directory and writes
 // per-item slash command markdown files. Retries directory creation up to 3 times.
-func WriteSlashCommands(item *BacklogItemData, worktreePath string) error {
+//
+// Content generation is delegated to engine.SlashCommandSet (Epic 1.5, Story 1.5.2) —
+// this function only owns directory creation and the disk-write loop. engine may be
+// nil, in which case content generation falls back to buildDefaultSlashCommandSet
+// directly, matching CachingPipelineEngine's own default-mode behavior; this keeps
+// tests that don't care about PipelineEngine free to pass nil. Both real callers
+// (server/services/backlog_service_triage.go's SpawnSessionFromItem and
+// backlog_service_sync.go's AttachSessionToItem) must pass the SAME shared engine
+// instance (BacklogService.pipelineEngine) — passing two different engines would
+// reintroduce the "2 independent callers can drift" regression this seam closes.
+func WriteSlashCommands(engine PipelineEngine, item *BacklogItemData, worktreePath string) error {
 	cmdDir := filepath.Join(worktreePath, backlogCommandsDir)
 
 	var mkErr error
@@ -32,54 +42,71 @@ func WriteSlashCommands(item *BacklogItemData, worktreePath string) error {
 		return fmt.Errorf("WriteSlashCommands: failed to create commands dir %s: %w", cmdDir, mkErr)
 	}
 
-	itemID := item.ID
-
-	// status.md
-	if err := writeFile(filepath.Join(cmdDir, "status.md"),
-		fmt.Sprintf("Call the get_backlog_item MCP tool with item_id=%s.\nFormat the response as a numbered checklist.\n", itemID),
-	); err != nil {
+	var files map[string]string
+	var err error
+	if engine != nil {
+		files, err = engine.SlashCommandSet(item)
+	} else {
+		files, err = buildDefaultSlashCommandSet(item)
+	}
+	if err != nil {
 		return err
 	}
+	for name, content := range files {
+		if err := writeFile(filepath.Join(cmdDir, name), content); err != nil {
+			return err
+		}
+	}
 
-	// Per-criterion done-N.md and fail-N.md
+	addWorktreeExcludes(worktreePath)
+	return nil
+}
+
+// buildDefaultSlashCommandSet returns the filename→rendered-content map for
+// the built-in default pipeline's slash commands: status.md, one done-N.md/
+// fail-N.md pair per acceptance criterion, review.md, ship.md, and help.md.
+//
+// This is exactly the content-generation logic WriteSlashCommands used to
+// build inline before the PipelineEngine refactor (backlog-configurable-
+// pipeline, Epic 1.3) — extracted unchanged so CachingPipelineEngine's
+// default-mode short-circuit (session/pipeline_engine.go) and this on-disk
+// writer share one source of truth with zero behavior drift.
+func buildDefaultSlashCommandSet(item *BacklogItemData) (map[string]string, error) {
+	itemID := item.ID
 	criteria, err := ParseAcCriteria(item.AcceptanceCriteria)
 	if err != nil {
-		return fmt.Errorf("WriteSlashCommands: failed to parse AC criteria: %w", err)
+		return nil, fmt.Errorf("buildDefaultSlashCommandSet: failed to parse AC criteria: %w", err)
 	}
+
+	files := make(map[string]string, len(criteria)*2+4)
+
+	// status.md
+	files["status.md"] = fmt.Sprintf("Call the get_backlog_item MCP tool with item_id=%s.\nFormat the response as a numbered checklist.\n", itemID)
+
+	// Per-criterion done-N.md and fail-N.md
 	for _, c := range criteria {
-		doneContent := fmt.Sprintf("Call report_progress with item_id=%s, criteria_index=%d, status=pass\n", itemID, c.Index)
-		if err := writeFile(filepath.Join(cmdDir, fmt.Sprintf("done-%d.md", c.Index)), doneContent); err != nil {
-			return err
-		}
-		failContent := fmt.Sprintf("Call report_progress with item_id=%s, criteria_index=%d, status=fail\n", itemID, c.Index)
-		if err := writeFile(filepath.Join(cmdDir, fmt.Sprintf("fail-%d.md", c.Index)), failContent); err != nil {
-			return err
-		}
+		files[fmt.Sprintf("done-%d.md", c.Index)] = fmt.Sprintf("Call report_progress with item_id=%s, criteria_index=%d, status=pass\n", itemID, c.Index)
+		files[fmt.Sprintf("fail-%d.md", c.Index)] = fmt.Sprintf("Call report_progress with item_id=%s, criteria_index=%d, status=fail\n", itemID, c.Index)
 	}
 
 	// review.md
-	if err := writeFile(filepath.Join(cmdDir, "review.md"),
-		fmt.Sprintf("Call request_review with item_id=%s and a 2-3 sentence summary of what was built.\n", itemID),
-	); err != nil {
-		return err
-	}
+	files["review.md"] = fmt.Sprintf("Call request_review with item_id=%s and a 2-3 sentence summary of what was built.\n\n"+
+		"Do NOT end your session after this. Wait a bit, then call get_backlog_item (or /backlog/status) again — "+
+		"the verdict appears under \"Latest Review Verdict\" once the reviewer submits it. PASS → you're done. "+
+		"FAIL/PARTIAL → fix the noted gaps in this same session and run /backlog/review again. Keep looping until PASS.\n", itemID)
 
 	// ship.md
-	if err := writeFile(filepath.Join(cmdDir, "ship.md"),
-		"You are ready to ship your work as a pull request.\n\n"+
-			"Before shipping, confirm all acceptance criteria are marked complete (`/backlog/status`).\n\n"+
-			"Steps:\n"+
-			"1. Create the pull request:\n"+
-			"   Run `/github:pr-ship` — this drives the PR through local CI, code review, remote CI, and\n"+
-			"   merge-conflict resolution. It will stop short of actually merging; the final merge is left to\n"+
-			"   the human reviewer.\n\n"+
-			"2. Once `/github:pr-ship` reports all gates green, request the automated review:\n"+
-			"   Run `/backlog/review` with a 2-3 sentence summary of what was built and the PR number.\n\n"+
-			"Note: if the repository has no GitHub remote, use `gh pr create --fill` to create the PR manually,\n"+
-			"then run `/backlog/review`.\n",
-	); err != nil {
-		return err
-	}
+	files["ship.md"] = "You are ready to ship your work as a pull request.\n\n" +
+		"Before shipping, confirm all acceptance criteria are marked complete (`/backlog/status`).\n\n" +
+		"Steps:\n" +
+		"1. Create the pull request:\n" +
+		"   Run `/github:pr-ship` — this drives the PR through local CI, code review, remote CI, and\n" +
+		"   merge-conflict resolution. It will stop short of actually merging; the final merge is left to\n" +
+		"   the human reviewer.\n\n" +
+		"2. Once `/github:pr-ship` reports all gates green, request the automated review:\n" +
+		"   Run `/backlog/review` with a 2-3 sentence summary of what was built and the PR number.\n\n" +
+		"Note: if the repository has no GitHub remote, use `gh pr create --fill` to create the PR manually,\n" +
+		"then run `/backlog/review`.\n"
 
 	// help.md — list all available commands
 	var helpSb strings.Builder
@@ -91,12 +118,9 @@ func WriteSlashCommands(item *BacklogItemData, worktreePath string) error {
 	}
 	helpSb.WriteString("- `/backlog/review` — Submit for review with a summary\n")
 	helpSb.WriteString("- `/backlog/ship` — Create a PR with /github:pr-ship and submit for review\n")
-	if err := writeFile(filepath.Join(cmdDir, "help.md"), helpSb.String()); err != nil {
-		return err
-	}
+	files["help.md"] = helpSb.String()
 
-	addWorktreeExcludes(worktreePath)
-	return nil
+	return files, nil
 }
 
 // CleanupSlashCommands removes the backlog slash command directory.
@@ -123,6 +147,10 @@ func WriteBacklogContextFile(item *BacklogItemData, priorSessions []ItemSessionS
 	sb.WriteString("\n## Fallback Instructions\n")
 	sb.WriteString("If MCP tools are unavailable, continue using the acceptance criteria above.\n")
 	sb.WriteString("Record completed criteria in commit messages. Run git commit after each criterion is done.\n")
+	sb.WriteString("\n## Before You Start\n")
+	sb.WriteString("This worktree's branch may be behind main (this file is rewritten on every spawn and re-attach, but the branch itself is not auto-synced). ")
+	sb.WriteString("Run `git merge main` before starting substantive work. If it merges cleanly, continue. ")
+	sb.WriteString("If it conflicts, resolve them as part of this task — you have the context to do it correctly; a background process does not.\n")
 
 	content := sb.String()
 
