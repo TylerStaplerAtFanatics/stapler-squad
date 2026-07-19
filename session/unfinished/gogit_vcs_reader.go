@@ -72,7 +72,7 @@ var blobCacheTotalTargetFraction int64 = 8 // 1/8th of the repoCache budget
 // cache lives inside one cachedRepo, whose total cost that constant already
 // budgets for.
 const (
-	blobCacheMaxBytesFloor   = 2 * 1024 * 1024  // 2MB: room for a handful of typical changed files
+	blobCacheMaxBytesFloor   = 2 * 1024 * 1024              // 2MB: room for a handful of typical changed files
 	blobCacheMaxBytesCeiling = approxBytesPerCachedRepo / 4 // 24MB
 )
 
@@ -545,6 +545,29 @@ func (g *GoGitVCSReader) BlobCacheStats() BlobCacheStats {
 		Misses:             misses,
 		EstimatedTimeSaved: avgMiss * time.Duration(hits),
 	}
+}
+
+// currentReader holds the process's live GoGitVCSReader for debug
+// introspection (see BlobCacheStatsSnapshot). There is normally exactly one
+// per process — the scanner's own reader, constructed once in
+// server/dependencies.go — registered here by NewScannerWithReader. This
+// lets profiling.StartProfiling's debug HTTP server (which starts before
+// the scanner exists — see main.go) reach it later without threading a
+// reference through that early setup: the registered pointer is only
+// dereferenced when a debug request actually arrives.
+var currentReader atomic.Pointer[GoGitVCSReader]
+
+// BlobCacheStatsSnapshot returns BlobCacheStats for the process's registered
+// reader (see currentReader), or a zero value if none has been registered
+// yet — e.g. queried before the scanner starts, or in tests that construct
+// a *GoGitVCSReader directly without going through NewScanner/
+// NewScannerWithReader.
+func BlobCacheStatsSnapshot() BlobCacheStats {
+	r := currentReader.Load()
+	if r == nil {
+		return BlobCacheStats{}
+	}
+	return r.BlobCacheStats()
 }
 
 // perRepoObjectCacheSize replaces go-git's PlainOpenWithOptions default of
