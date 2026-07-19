@@ -401,8 +401,12 @@ func (s *BacklogService) SpawnSessionFromItem(
 
 	// 12c. On reopen, clean up git worktrees from prior work sessions now that the
 	// new session is safely persisted. Best-effort only — errors are logged, not returned.
+	// worktreePath itself is exempted: step 10 reuses the same "backlog/<item>" worktree
+	// across reopens (same branch slug every revision), so priorSessions still contains a
+	// worktree row pointing at this exact path — cleaning it up here would delete the
+	// directory the session spawned above just started using.
 	if isReopen {
-		s.cleanupItemWorktrees(ctx, priorSessions)
+		s.cleanupItemWorktreesExcept(ctx, priorSessions, worktreePath)
 	}
 
 	// 13. Transition item to in_progress (no-op if already in_progress on reopen).

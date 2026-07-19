@@ -892,6 +892,48 @@ func TestSpawnSessionFromItem_Reopen_ReusesBranch(t *testing.T) {
 	assert.NotContains(t, secondBranch, "-r2", "branch name must not pick up the session title's revision suffix")
 }
 
+// TestSpawnSessionFromItem_Reopen_ReusesWorktreeInPlace is a regression test for a
+// real bug: reopen used to force-remove and recreate the worktree at the reused
+// path (git.GitWorktree.setupFromExistingBranch always ran `worktree remove -f`
+// before `worktree add`), and cleanupItemWorktrees then ran a second time against
+// that same identical path via priorSessions — either step alone could wipe the
+// worktree the brand-new session had just started using, leaving a still
+// in_progress/review item with no worktree on disk at all (empty diffs, degraded
+// re-review). Both the worktree path and an uncommitted file written before reopen
+// must survive a reopen unchanged.
+func TestSpawnSessionFromItem_Reopen_ReusesWorktreeInPlace(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	itemID := createReadyItemForSpawn(t, svc, repoPath, "reuse worktree item")
+
+	_, err := svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 1)
+	firstPath := creator.calls[0].path
+
+	uncommitted := filepath.Join(firstPath, "uncommitted.txt")
+	require.NoError(t, os.WriteFile(uncommitted, []byte("not yet committed\n"), 0o644))
+
+	// End the work session so the reopen isn't blocked by the active-session guard.
+	sessions, err := storage.ListItemSessions(t.Context(), itemID)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	require.NoError(t, storage.UpdateItemSessionEnded(t.Context(), sessions[0].ID, time.Now()))
+
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 2)
+	secondPath := creator.calls[1].path
+
+	assert.Equal(t, firstPath, secondPath, "reopen must reuse the same worktree path, not mint a new one")
+	assert.FileExists(t, uncommitted, "reopen must not wipe the existing worktree — the file written before reopen must survive")
+}
+
 // currentBranch returns the checked-out branch name at path via the real git CLI.
 func currentBranch(t *testing.T, path string) string {
 	t.Helper()
