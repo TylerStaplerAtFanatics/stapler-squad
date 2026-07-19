@@ -59,9 +59,23 @@ func (g *GitWorktree) Setup() error {
 	return g.setupNewWorktree()
 }
 
-// setupFromExistingBranch creates a worktree from an existing branch
+// setupFromExistingBranch creates a worktree from an existing branch, reusing one
+// already checked out at g.worktreePath in place rather than tearing it down and
+// recreating it. Backlog rework/reopen spawns intentionally reuse the same
+// "backlog/<item>" branch and worktree path across every revision (see
+// SpawnSessionFromItem's reopen comment) — force-removing and re-adding the worktree
+// here on every single reopen discarded whatever uncommitted state the worktree held
+// and needlessly recreated the directory, which is exactly the behavior that left a
+// still in_progress/review item with a missing worktree once anything else (a
+// concurrent cleanup call, or simply a slow-running review) touched it mid-recreation.
 func (g *GitWorktree) setupFromExistingBranch() error {
 	// Directory already created in Setup(), skip duplicate creation
+
+	if g.worktreeAlreadyRegisteredForBranch() {
+		log.Info("worktree already checked out for branch, reusing in place", "branch", g.branchName, "path", g.worktreePath)
+		g.initBaseCommitSHA()
+		return nil
+	}
 
 	// Clean up any existing worktree first
 	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
@@ -116,6 +130,24 @@ func (g *GitWorktree) initBaseCommitSHA() {
 		}
 	}
 	log.Warn("could not find merge-base for branch with any default branch (main/master/develop/trunk)", "branch", g.branchName)
+}
+
+// worktreeAlreadyRegisteredForBranch reports whether g.worktreePath is already a live
+// git worktree checked out to g.branchName — i.e. reused in place rather than removed
+// and recreated. Requires both the git registration (via 'worktree list --porcelain')
+// AND the directory's actual presence on disk: 'git worktree list' still reports
+// prunable entries for directories deleted out from under git (e.g. by an external
+// rm -rf), and reusing one of those would hand back a path that doesn't exist.
+func (g *GitWorktree) worktreeAlreadyRegisteredForBranch() bool {
+	if _, statErr := os.Stat(g.worktreePath); statErr != nil {
+		return false
+	}
+	output, err := g.runGitCommand(g.repoPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false
+	}
+	path, found := g.findWorktreeForBranch(output, g.branchName)
+	return found && path == g.worktreePath
 }
 
 // findWorktreeForBranch parses the output of 'git worktree list --porcelain'
