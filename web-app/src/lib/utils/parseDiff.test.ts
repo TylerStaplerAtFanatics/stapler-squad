@@ -66,6 +66,15 @@ describe("buildGutterMarks", () => {
     expect(marks.size).toBe(1);
   });
 
+  it("returns an empty map for a binary-file diff (no @@ hunks, just a 'Binary files differ' marker)", () => {
+    const diff = `diff --git a/image.png b/image.png
+index 111..222 100644
+Binary files a/image.png and b/image.png differ
+`;
+    expect(() => buildGutterMarks(diff, "image.png")).not.toThrow();
+    expect(buildGutterMarks(diff, "image.png")).toEqual(new Map());
+  });
+
   it("marks the line after a pure-deletion hunk as 'delete'", () => {
     const diff = `diff --git a/a.txt b/a.txt
 --- a/a.txt
