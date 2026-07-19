@@ -626,18 +626,19 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 		// available to call Destroy(). Must run after 6/6b so re-adopted sessions
 		// are already registered and won't be mistaken for orphans.
 		//
-		// SKIP in test mode AND for any other named instance: ReconcileOrphanedTmuxSessions
-		// calls plain `tmux list-sessions` with no socket isolation -- it always targets the
-		// shared default tmux socket, regardless of this process's own (isolated) DB/config
+		// SKIP for any isolated-instance process: ReconcileOrphanedTmuxSessions calls plain
+		// `tmux list-sessions` with no socket isolation -- it always targets the shared
+		// default tmux socket, regardless of this process's own (isolated) DB/config
 		// directory. This process's `instances` list only ever contains its own handful of
 		// sessions, so every real session on the machine's shared tmux server -- including
 		// production sessions from an entirely separate stapler-squad process -- looks like
 		// an orphan and gets killed. This was the root cause of production sessions dying in
 		// tight clusters whenever any integration test called BuildDependencies() on the same
-		// machine -- and, confirmed live, the E2E test harness's real-binary invocation
-		// (STAPLER_SQUAD_INSTANCE=e2e-local, not caught by IsTestMode()) hits the exact same
-		// hazard. See config.IsNamedInstance's doc comment.
-		if !config.IsTestMode() && !config.IsNamedInstance() {
+		// machine, the E2E test harness's real-binary invocation (STAPLER_SQUAD_INSTANCE=
+		// e2e-local, not caught by IsTestMode()), and the demo-server harness's --test-mode/
+		// STAPLER_SQUAD_TEST_DIR invocation (also not caught by either IsTestMode() or
+		// IsNamedInstance() alone). See config.IsIsolatedInstance's doc comment.
+		if !config.IsIsolatedInstance() {
 			session.ReconcileOrphanedTmuxSessions(instances)
 		}
 
@@ -942,6 +943,11 @@ func BuildRuntimeDeps(_ tmux.TmuxServerReady, svc *ServiceDeps, cfg *config.Conf
 	backlogLifecycleListener.SetAutoReopener(backlogSvc)
 	backlogLifecycleListener.SetPRFixSpawner(backlogSvc)
 	backlogLifecycleListener.SetReviewRespawner(backlogSvc)
+	// Wire the autonomous-stuck respawner so a work session that hits its turn
+	// cap without a DONE signal gets a fresh turn budget directly instead of
+	// being forced into a doomed review cycle (see AutonomousStuckRespawner's
+	// doc comment in autonomous_orchestration_service.go).
+	sessionService.SetAutonomousStuckRespawner(backlogSvc)
 	// Wire the zombie-session liveness checker (pre-mortem F3, Task 2.1.3d):
 	// reuses the existing session.Registry + Instance.TmuxSessionExists rather
 	// than inventing a new liveness mechanism. Acquire failure (session not
