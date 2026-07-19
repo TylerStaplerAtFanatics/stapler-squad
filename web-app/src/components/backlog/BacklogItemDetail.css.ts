@@ -163,6 +163,48 @@ export const dateMeta = style({
   fontFamily: vars.font.mono,
 });
 
+export const idRow = style({
+  display: "flex",
+  alignItems: "center",
+  gap: vars.space["2"],
+  flexWrap: "wrap",
+});
+
+export const idValue = style({
+  fontFamily: vars.font.mono,
+  fontSize: vars.fontSize.xs,
+  color: vars.color.textMuted,
+  userSelect: "all",
+  wordBreak: "break-all",
+});
+
+export const idCopyButton = style({
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  minHeight: "28px",
+  padding: `${vars.space["1"]} ${vars.space["2"]}`,
+  borderRadius: vars.radii.sm,
+  border: `1px solid ${vars.color.borderMuted}`,
+  background: "transparent",
+  color: vars.color.textSecondary,
+  cursor: "pointer",
+  fontSize: vars.fontSize.xs,
+  fontWeight: vars.fontWeight.medium,
+  whiteSpace: "nowrap",
+  ":hover": {
+    background: vars.color.hoverBackground,
+    borderColor: vars.color.borderStrong,
+    color: vars.color.textPrimary,
+  },
+  "@media": {
+    "(max-width: 768px)": {
+      minHeight: "44px",
+      minWidth: "44px",
+    },
+  },
+});
+
 export const headerActions = style({
   display: "flex",
   alignItems: "center",

@@ -231,3 +231,41 @@ func TestUpdateBacklogItem_ShouldRoundTripAllSixSnapshotFields_ThroughEntBackedS
 	assert.Equal(t, fileStats, fetched.ShippedFileStats)
 	assert.False(t, fetched.ShippedSnapshotCaptureFailed)
 }
+
+// TestGetBacklogItem_should_StillResolveItem_When_ItemIsArchived guards the
+// "copied deep link to an archived item still resolves" acceptance criterion
+// for the backlog item ID/deep-link feature — ArchiveBacklogItem soft-deletes
+// via archived_at, and GetBacklogItem must not filter archived rows out.
+func TestGetBacklogItem_should_StillResolveItem_When_ItemIsArchived(t *testing.T) {
+	repo, cleanup := createTestEntRepository(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	item, err := repo.CreateBacklogItem(ctx, BacklogItemData{Title: "item to archive"})
+	require.NoError(t, err)
+
+	_, err = repo.ArchiveBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+
+	fetched, err := repo.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, item.ID, fetched.ID)
+}
+
+// TestGetBacklogItem_should_ReturnErrNotFound_When_IdIsMalformedOrDeleted
+// guards the "invalid or deleted item IDs in a copied link show an error
+// state, not a crash" acceptance criterion — both a non-UUID string and a
+// syntactically valid but nonexistent UUID must fail the same way
+// (ErrNotFound), which the RPC layer maps to CodeNotFound and the frontend
+// maps to its existing "Item not found" error state.
+func TestGetBacklogItem_should_ReturnErrNotFound_When_IdIsMalformedOrDeleted(t *testing.T) {
+	repo, cleanup := createTestEntRepository(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := repo.GetBacklogItem(ctx, "not-a-uuid")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	_, err = repo.GetBacklogItem(ctx, "00000000-0000-0000-0000-000000000000")
+	assert.ErrorIs(t, err, ErrNotFound)
+}

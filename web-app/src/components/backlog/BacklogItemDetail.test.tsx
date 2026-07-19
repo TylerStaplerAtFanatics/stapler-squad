@@ -326,3 +326,62 @@ describe("BacklogItemDetail — Story 2.2.3: VcsWidget wiring", () => {
     expect(screen.getByTestId("file-browser-modal-stub")).toBeInTheDocument();
   });
 });
+
+describe("BacklogItemDetail — item ID display and copy", () => {
+  const writeText = jest.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    writeText.mockClear();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  it("BacklogItemDetail_should_ShowIdAsVisibleText_When_ItemLoaded", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("backlog-item-id")).toHaveTextContent("item-1");
+  });
+
+  it("BacklogItemDetail_should_CopyFullIdAndShowConfirmation_When_CopyIdClicked", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByTestId("copy-backlog-id"));
+    expect(writeText).toHaveBeenCalledWith("item-1");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("copy-backlog-id")).toHaveTextContent("Copied");
+  });
+
+  it("BacklogItemDetail_should_CopyFullDeepLinkUrl_When_CopyLinkClicked", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByTestId("copy-backlog-link"));
+    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/backlog?item=item-1`);
+  });
+});

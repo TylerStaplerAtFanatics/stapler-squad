@@ -2,12 +2,15 @@
 "use client";
 // +feature: backlog:board-page
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { BacklogBoard } from "@/components/backlog/BacklogBoard";
+import { BacklogItemDetail } from "@/components/backlog/BacklogItemDetail";
 import { useBacklogService } from "@/lib/hooks/useBacklogService";
 import type { BacklogItem } from "@/lib/hooks/useBacklogService";
 import { useNotifications } from "@/lib/contexts/NotificationContext";
+import { routes } from "@/lib/routes";
+import * as detailStyles from "@/app/backlog/backlog.css";
 
 const ACTION_SUCCESS_MESSAGES: Record<string, string> = {
   mark_ready: "Marked ready.",
@@ -16,11 +19,13 @@ const ACTION_SUCCESS_MESSAGES: Record<string, string> = {
   cancel_triage: "Triage cancelled.",
 };
 
-export default function BacklogBoardPage() {
+function BacklogBoardPageInner() {
   const { listBacklogItems, transitionStatus, triggerTriage, spawnSessionFromItem, cancelTriage } =
     useBacklogService();
   const { showActionToast } = useNotifications();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const selectedItemId = searchParams.get("item");
   const [items, setItems] = useState<BacklogItem[]>([]);
   const [loading, setLoading] = useState(true);
   /** itemId -> action key currently in flight for that card. */
@@ -51,7 +56,7 @@ export default function BacklogBoardPage() {
   const handleAction = useCallback(
     async (action: string, itemId: string) => {
       if (action === "view_session" || action === "view_review") {
-        router.push(`/backlog?item=${itemId}`);
+        router.push(`${routes.backlogBoard}?item=${itemId}`);
         return;
       }
       setPending((prev) => ({ ...prev, [itemId]: action }));
@@ -93,18 +98,41 @@ export default function BacklogBoardPage() {
 
   const handleItemClick = useCallback(
     (itemId: string) => {
-      router.push(`/backlog?item=${itemId}`);
+      router.push(`${routes.backlogBoard}?item=${itemId}`);
     },
     [router]
   );
 
+  const handleDetailClose = useCallback(() => {
+    router.push(routes.backlogBoard);
+  }, [router]);
+
   return (
-    <BacklogBoard
-      items={items}
-      onAction={handleAction}
-      onItemClick={handleItemClick}
-      isLoading={loading}
-      pending={pending}
-    />
+    <div className={detailStyles.pageWrapper}>
+      <div className={detailStyles.contentArea}>
+        <div className={detailStyles.listPane}>
+          <BacklogBoard
+            items={items}
+            onAction={handleAction}
+            onItemClick={handleItemClick}
+            isLoading={loading}
+            pending={pending}
+          />
+        </div>
+        {selectedItemId && (
+          <aside className={detailStyles.detailPane} style={{ width: 420 }} aria-label="Item detail">
+            <BacklogItemDetail itemId={selectedItemId} onClose={handleDetailClose} />
+          </aside>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function BacklogBoardPage() {
+  return (
+    <Suspense>
+      <BacklogBoardPageInner />
+    </Suspense>
   );
 }

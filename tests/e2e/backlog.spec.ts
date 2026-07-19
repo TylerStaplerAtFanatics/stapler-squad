@@ -533,4 +533,78 @@ test.describe('Backlog', () => {
       );
     });
   });
+
+  test.describe('Item Detail — ID, Copy, and Deep Links', () => {
+    test('e2e:backlog-item-id-visible-and-copyable - Item ID is visible and Copy ID copies it with confirmation', async ({ page, context }) => {
+      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+      const backlogPage = new BacklogPage(page);
+
+      const itemTitle = `Test Item ID ${Date.now()}`;
+      await backlogPage.createItemViaNewItemButton(itemTitle, { priority: 2 });
+      await backlogPage.openItemDetail(itemTitle);
+
+      const idText = (await page.getByTestId('backlog-item-id').textContent())?.trim();
+      expect(idText).toMatch(/^[0-9a-f-]{36}$/i);
+
+      await page.getByTestId('copy-backlog-id').click();
+      await expect(page.getByTestId('copy-backlog-id')).toHaveText(/Copied/);
+
+      const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+      expect(clipboardText.trim()).toBe(idText);
+    });
+
+    test('e2e:backlog-copy-item-link - Copy Link copies a working /backlog?item= deep link with confirmation', async ({ page, context }) => {
+      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+      const backlogPage = new BacklogPage(page);
+
+      const itemTitle = `Test Item Link ${Date.now()}`;
+      await backlogPage.createItemViaNewItemButton(itemTitle, { priority: 2 });
+      await backlogPage.openItemDetail(itemTitle);
+
+      const idText = (await page.getByTestId('backlog-item-id').textContent())?.trim();
+
+      await page.getByTestId('copy-backlog-link').click();
+      await expect(page.getByTestId('copy-backlog-link')).toHaveText(/Copied/);
+
+      const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+      expect(clipboardText).toBe(`${BASE_URL}/backlog?item=${idText}`);
+    });
+
+    test('e2e:backlog-deep-link-opens-item - Visiting /backlog?item=<id> opens the correct item detail pane', async ({ page }) => {
+      const backlogPage = new BacklogPage(page);
+
+      const itemTitle = `Test Item Deep Link ${Date.now()}`;
+      await backlogPage.createItemViaNewItemButton(itemTitle, { priority: 2 });
+      const row = backlogPage.getTableRows().filter({ hasText: itemTitle }).first();
+      const itemId = await row.getAttribute('data-item-id');
+      expect(itemId).toBeTruthy();
+
+      await page.goto(`${BASE_URL}/backlog?item=${itemId}`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-testid="backlog-item-detail"]', { timeout: 10000 });
+      await expect(page.locator('[data-testid="backlog-item-detail"]')).toContainText(itemTitle);
+    });
+
+    test('e2e:backlog-board-deep-link-restores-pane - Visiting board view with ?item= restores the detail pane on load', async ({ page }) => {
+      const backlogPage = new BacklogPage(page);
+
+      const itemTitle = `Test Item Board Deep Link ${Date.now()}`;
+      await backlogPage.createItemViaNewItemButton(itemTitle, { priority: 2 });
+      const row = backlogPage.getTableRows().filter({ hasText: itemTitle }).first();
+      const itemId = await row.getAttribute('data-item-id');
+      expect(itemId).toBeTruthy();
+
+      await page.goto(`${BASE_URL}/backlog/board?item=${itemId}`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-testid="backlog-board"]', { timeout: 10000 });
+      await page.waitForSelector('[data-testid="backlog-item-detail"]', { timeout: 10000 });
+      await expect(page.locator('[data-testid="backlog-item-detail"]')).toContainText(itemTitle);
+    });
+
+    test('e2e:backlog-invalid-item-id-shows-not-found - Invalid item ID in the URL shows the error state without crashing', async ({ page }) => {
+      await page.goto(`${BASE_URL}/backlog?item=not-a-real-uuid`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-testid="backlog-item-detail"]', { timeout: 10000 });
+      await expect(page.locator('[data-testid="backlog-item-detail"]')).toContainText('not found');
+      // Page must still be functional — not stuck on a crashed render.
+      await expect(page.locator('[data-testid="backlog-page"]')).toBeVisible();
+    });
+  });
 });

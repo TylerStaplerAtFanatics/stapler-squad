@@ -4,7 +4,9 @@
   "component": "BacklogBoard",
   "path": "web-app/src/components/backlog/BacklogBoard.tsx",
   "markerLine": 0,
-  "tested": false,
-  "testIds": [],
-  "lastModified": "2026-05-12T00:00:00Z"
+  "tested": true,
+  "testIds": [
+    "e2e:backlog-board-deep-link-restores-pane"
+  ],
+  "lastModified": "2026-07-19T00:00:00Z"
 }

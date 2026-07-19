@@ -7,7 +7,13 @@
   "tested": true,
   "testIds": [
     "BacklogItemDetail — background refresh must not unmount the view",
-    "BacklogItemDetail — Ship PR action"
+    "BacklogItemDetail — Ship PR action",
+    "BacklogItemDetail — item ID display and copy",
+    "e2e:backlog-item-id-visible-and-copyable",
+    "e2e:backlog-copy-item-link",
+    "e2e:backlog-deep-link-opens-item",
+    "e2e:backlog-board-deep-link-restores-pane",
+    "e2e:backlog-invalid-item-id-shows-not-found"
   ],
-  "lastModified": "2026-07-18T00:00:00Z"
+  "lastModified": "2026-07-19T00:00:00Z"
 }

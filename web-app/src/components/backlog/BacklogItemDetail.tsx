@@ -11,6 +11,7 @@ import { getStatusLabel } from "@/lib/backlog/status";
 import { useVcsStatus } from "@/lib/hooks/useVcsStatus";
 import { useBacklogItemShipStatus } from "@/lib/hooks/useBacklogItemShipStatus";
 import { getApiBaseUrl } from "@/lib/config";
+import { routes } from "@/lib/routes";
 import { VcsWidget } from "@/components/shared/VcsWidget";
 import { fromSessionVcs, fromShipStatus } from "@/lib/vcs/adapters";
 import { BacklogItemForm } from "./BacklogItemForm";
@@ -148,6 +149,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
 
   // Epic 3.4 "what ran" surface: the currently-fetched mode list, used only
   // to resolve a session's frozen pipelineModeSnapshot slug to a
@@ -264,6 +266,17 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
       setTriageElapsedSeconds(0);
     }
   }, [item?.triageStatus]);
+
+  const handleCopy = useCallback((field: string, value: string) => {
+    navigator.clipboard.writeText(value)
+      .then(() => {
+        setCopiedField(field);
+        setTimeout(() => setCopiedField(null), 1500);
+      })
+      .catch((err) => {
+        console.warn("[BacklogItemDetail] clipboard write failed", err);
+      });
+  }, []);
 
   const handleAction = useCallback(
     async (action: string) => {
@@ -720,6 +733,34 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   · Updated {formatDate(item.updatedAt)}
                 </span>
               )}
+            </div>
+            <div className={styles.idRow}>
+              <span className={styles.idValue} data-testid="backlog-item-id">
+                {item.id}
+              </span>
+              <button
+                type="button"
+                className={styles.idCopyButton}
+                onClick={() => handleCopy("id", item.id)}
+                aria-label="Copy item ID"
+                data-testid="copy-backlog-id"
+              >
+                {copiedField === "id" ? "✓ Copied" : "Copy ID"}
+              </button>
+              <button
+                type="button"
+                className={styles.idCopyButton}
+                onClick={() =>
+                  handleCopy(
+                    "link",
+                    `${window.location.origin}${routes.backlogItem(item.id)}`
+                  )
+                }
+                aria-label="Copy shareable link"
+                data-testid="copy-backlog-link"
+              >
+                {copiedField === "link" ? "✓ Copied" : "Copy Link"}
+              </button>
             </div>
           </div>
           <div className={styles.headerActions}>
