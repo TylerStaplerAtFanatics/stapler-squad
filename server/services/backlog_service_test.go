@@ -22,6 +22,25 @@ import (
 	"github.com/tstapler/stapler-squad/session/scrollback"
 )
 
+// TestMain pre-seeds headless.DefaultCapabilitySelfCheck as passed before any test
+// runs. NewBacklogService defaults every instance's capabilityCheck field to that
+// package-level singleton (guarded by sync.Once, deliberately cached for the whole
+// process lifetime in production — see capability_check.go). Left unseeded, the
+// first test in this binary to reach the codebase-read gate without calling
+// SetCapabilityCheck "wins" the once.Do race and permanently resolves the
+// singleton based on whether ITS OWN fakeHeadlessPool response happens to contain
+// the capability marker string (it doesn't — the fakes return scripted verdict
+// JSON) — poisoning it to failed for every other test in the package for the rest
+// of the process, regardless of test order or -count. That was the actual root
+// cause behind TestAutoRespawnReview_DeadWorkSession_TombstonedThenRespawns'
+// order-dependent flake (reliably 1-pass-then-every-subsequent-run-fails under
+// -count=N in one process). Tests that specifically exercise the capability-check
+// failure/success path still override it per-instance via SetCapabilityCheck.
+func TestMain(m *testing.M) {
+	headless.DefaultCapabilitySelfCheck = headless.NewPassedCapabilitySelfCheckForTesting()
+	os.Exit(m.Run())
+}
+
 // ─── fakeHeadlessPool ─────────────────────────────────────────────────────────
 
 // fakeHeadlessPool is a test stub implementing headless.PoolClient.
