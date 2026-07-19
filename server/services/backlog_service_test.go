@@ -1514,6 +1514,9 @@ func TestTriggerReReview_HeadlessPassAutoTransitionsToDone(t *testing.T) {
 		AcceptanceCriteria: []*sessionv1.AcCriterion{
 			{Index: 0, Text: "test", Status: "pending"},
 		},
+		// SkipTriage prevents CreateBacklogItem's auto-triage goroutine from racing
+		// this test's own explicit idea->ready transition below.
+		SkipTriage:   true,
 		SkipPlanning: true,
 	}))
 	require.NoError(t, err)
@@ -1565,6 +1568,9 @@ func TestTriggerReReview_HeadlessPassWithUnshippedCode_StaysInReviewForShipPR(t 
 		AcceptanceCriteria: []*sessionv1.AcCriterion{
 			{Index: 0, Text: "test", Status: "pending"},
 		},
+		// SkipTriage prevents CreateBacklogItem's auto-triage goroutine from racing
+		// this test's own explicit idea->ready transition below.
+		SkipTriage:   true,
 		SkipPlanning: true,
 	}))
 	require.NoError(t, err)
