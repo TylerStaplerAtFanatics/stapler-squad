@@ -69,6 +69,18 @@ func (f BacklogStatusEventFunc) Mutate(ctx context.Context, m ent.Mutation) (ent
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.BacklogStatusEventMutation", m)
 }
 
+// The BacklogStuckStateFunc type is an adapter to allow the use of ordinary
+// function as BacklogStuckState mutator.
+type BacklogStuckStateFunc func(context.Context, *ent.BacklogStuckStateMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f BacklogStuckStateFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.BacklogStuckStateMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.BacklogStuckStateMutation", m)
+}
+
 // The ClassificationAnalyticsFunc type is an adapter to allow the use of ordinary
 // function as ClassificationAnalytics mutator.
 type ClassificationAnalyticsFunc func(context.Context, *ent.ClassificationAnalyticsMutation) (ent.Value, error)
@@ -163,6 +175,18 @@ func (f ItemSourceFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, 
 		return f(ctx, mv)
 	}
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.ItemSourceMutation", m)
+}
+
+// The PipelineModeFunc type is an adapter to allow the use of ordinary
+// function as PipelineMode mutator.
+type PipelineModeFunc func(context.Context, *ent.PipelineModeMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f PipelineModeFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.PipelineModeMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PipelineModeMutation", m)
 }
 
 // The ProjectFunc type is an adapter to allow the use of ordinary

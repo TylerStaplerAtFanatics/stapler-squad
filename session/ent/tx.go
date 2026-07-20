@@ -22,6 +22,8 @@ type Tx struct {
 	BacklogProgressNote *BacklogProgressNoteClient
 	// BacklogStatusEvent is the client for interacting with the BacklogStatusEvent builders.
 	BacklogStatusEvent *BacklogStatusEventClient
+	// BacklogStuckState is the client for interacting with the BacklogStuckState builders.
+	BacklogStuckState *BacklogStuckStateClient
 	// ClassificationAnalytics is the client for interacting with the ClassificationAnalytics builders.
 	ClassificationAnalytics *ClassificationAnalyticsClient
 	// ClaudeMetadata is the client for interacting with the ClaudeMetadata builders.
@@ -38,6 +40,8 @@ type Tx struct {
 	ItemSession *ItemSessionClient
 	// ItemSource is the client for interacting with the ItemSource builders.
 	ItemSource *ItemSourceClient
+	// PipelineMode is the client for interacting with the PipelineMode builders.
+	PipelineMode *PipelineModeClient
 	// Project is the client for interacting with the Project builders.
 	Project *ProjectClient
 	// ReviewVerdict is the client for interacting with the ReviewVerdict builders.
@@ -192,6 +196,7 @@ func (tx *Tx) init() {
 	tx.BacklogItem = NewBacklogItemClient(tx.config)
 	tx.BacklogProgressNote = NewBacklogProgressNoteClient(tx.config)
 	tx.BacklogStatusEvent = NewBacklogStatusEventClient(tx.config)
+	tx.BacklogStuckState = NewBacklogStuckStateClient(tx.config)
 	tx.ClassificationAnalytics = NewClassificationAnalyticsClient(tx.config)
 	tx.ClaudeMetadata = NewClaudeMetadataClient(tx.config)
 	tx.ClaudeSession = NewClaudeSessionClient(tx.config)
@@ -200,6 +205,7 @@ func (tx *Tx) init() {
 	tx.EscapeEvent = NewEscapeEventClient(tx.config)
 	tx.ItemSession = NewItemSessionClient(tx.config)
 	tx.ItemSource = NewItemSourceClient(tx.config)
+	tx.PipelineMode = NewPipelineModeClient(tx.config)
 	tx.Project = NewProjectClient(tx.config)
 	tx.ReviewVerdict = NewReviewVerdictClient(tx.config)
 	tx.Session = NewSessionClient(tx.config)

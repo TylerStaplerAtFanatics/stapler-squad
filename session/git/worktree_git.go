@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,13 @@ import (
 	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
 )
+
+// prNumberFromURLRe extracts the trailing PR number from a GitHub PR URL,
+// e.g. "https://github.com/owner/repo/pull/148" -> 148. Mirrors
+// session/storage_backlog.go's identical pattern (BackfillMissingPRNumbers) —
+// duplicated here rather than imported since session/git cannot import the
+// parent session package without a cycle.
+var prNumberFromURLRe = regexp.MustCompile(`/pull/(\d+)/?$`)
 
 // runGitCommand executes a git command and returns any error.
 // Uses the executor for circuit breaker support when available.
@@ -147,14 +155,20 @@ func (g *GitWorktree) IsDirty() (bool, error) {
 	return g.IsDirtyWithHint(false)
 }
 
-// isDirtyCacheTTL returns the TTL to apply based on the current cached dirty state.
+// isDirtyCacheTTL returns the TTL to apply based on the current cached state.
 // Clean worktrees use a longer TTL because they won't change while the session is idle,
-// and InvalidateDirtyCache() fires on every code path that could make them dirty.
-func isDirtyCacheTTL(dirty bool) time.Duration {
-	if dirty {
+// and InvalidateDirtyCache() fires on every code path that could make them dirty. A
+// cached error (e.g. worktree directory missing) gets its own short backoff so a broken
+// worktree isn't re-checked on every poller tick.
+func isDirtyCacheTTL(state dirtyCacheState) time.Duration {
+	switch {
+	case state.err != nil:
+		return IsDirtyErrorCacheTTL
+	case state.dirty:
 		return IsDirtyCacheTTL
+	default:
+		return IsDirtyCleanCacheTTL
 	}
-	return IsDirtyCleanCacheTTL
 }
 
 // IsDirtyWithHint checks if the worktree has uncommitted changes.
@@ -162,11 +176,14 @@ func isDirtyCacheTTL(dirty bool) time.Duration {
 // (or false if no cached value is available yet), because Claude never modifies worktree state
 // while it is actively generating output.
 func (g *GitWorktree) IsDirtyWithHint(claudeActive bool) (bool, error) {
-	// Fast path: lock-free atomic load; TTL varies by dirty state.
-	// dirty → IsDirtyCacheTTL (30s); clean → IsDirtyCleanCacheTTL (5min).
+	// Fast path: lock-free atomic load; TTL varies by cached state (dirty/clean/error).
+	// dirty → IsDirtyCacheTTL (30s); clean → IsDirtyCleanCacheTTL (5min); error → IsDirtyErrorCacheTTL (60s).
 	if v := g.isDirtyCache.Load(); v != nil {
 		state := v.(dirtyCacheState)
-		if claudeActive || (!state.time.IsZero() && time.Since(state.time) < isDirtyCacheTTL(state.dirty)) {
+		if claudeActive || (!state.time.IsZero() && time.Since(state.time) < isDirtyCacheTTL(state)) {
+			if state.err != nil {
+				return false, state.err
+			}
 			return state.dirty, nil
 		}
 	} else if claudeActive {
@@ -186,7 +203,14 @@ func (g *GitWorktree) IsDirtyWithHint(claudeActive bool) (bool, error) {
 	})
 	res := v.(dirtyResult)
 	if res.err != nil {
-		return false, fmt.Errorf("failed to check worktree status: %w", res.err)
+		// Cache the failure with a backoff TTL (isDirtyCacheTTL routes err!=nil to
+		// IsDirtyErrorCacheTTL) so a worktree with a stale/missing path — e.g. left
+		// behind by a rework/reopen cycle — doesn't get re-checked on every poller
+		// tick (previously: a fresh subprocess spawn roughly every few seconds,
+		// indefinitely, for a directory that will never come back on its own).
+		wrapped := fmt.Errorf("failed to check worktree status: %w", res.err)
+		g.isDirtyCache.Store(dirtyCacheState{time: time.Now(), err: wrapped})
+		return false, wrapped
 	}
 	dirty := res.dirty
 
@@ -282,18 +306,37 @@ func (g *GitWorktree) CreatePR(title, body string) (prURL string, prNumber int, 
 		return "", 0, fmt.Errorf("gh pr create failed: %s (%w)", out, runErr)
 	}
 
-	// gh pr create prints the PR URL as the last line.
+	// gh pr create prints the PR URL as the last line. Some gh versions treat
+	// "PR already exists for this branch" as success rather than an error (the
+	// findExistingPR race-check above already covers the common case, but not
+	// every gh version/timing), so out may point at a pre-existing PR.
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	prURL = strings.TrimSpace(lines[len(lines)-1])
 
-	// Fetch the PR number from the URL.
-	numCtx, numCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer numCancel()
-	numCmd := safeexec.CommandContext(numCtx, "gh", "pr", "view", "--json", "number", "--jq", ".number", "--head", g.branchName)
-	numCmd.Dir = g.worktreePath
-	numOut, numErr := g.runCombinedOutput(numCmd)
-	if numErr == nil {
-		prNumber, _ = strconv.Atoi(strings.TrimSpace(string(numOut)))
+	// Parse the number directly from the URL first — a plain string operation
+	// that can't silently fail the way a second gh subprocess call can. Found
+	// live: the separate `gh pr view --head` call below occasionally returned
+	// empty/erroring output (its error was silently swallowed, leaving
+	// prNumber at its zero value) even though prURL had already resolved
+	// correctly — the resulting "PR #0" was then passed to EnablePRAutoMerge,
+	// which predictably failed with "no pull requests found", so auto-merge
+	// never got enabled for a PR that otherwise pushed and tracked correctly.
+	if m := prNumberFromURLRe.FindStringSubmatch(prURL); m != nil {
+		if n, convErr := strconv.Atoi(m[1]); convErr == nil && n > 0 {
+			prNumber = n
+		}
+	}
+	if prNumber == 0 {
+		// Fallback: the URL didn't parse (unexpected format) — try the
+		// original gh-view-based lookup as a last resort.
+		numCtx, numCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer numCancel()
+		numCmd := safeexec.CommandContext(numCtx, "gh", "pr", "view", "--json", "number", "--jq", ".number", "--head", g.branchName)
+		numCmd.Dir = g.worktreePath
+		numOut, numErr := g.runCombinedOutput(numCmd)
+		if numErr == nil {
+			prNumber, _ = strconv.Atoi(strings.TrimSpace(string(numOut)))
+		}
 	}
 
 	return prURL, prNumber, nil
@@ -342,6 +385,25 @@ type PRStatus struct {
 	// "not merged" as "still open and healthy" — a closed PR will never merge on
 	// its own no matter how long ReconcilePRPending keeps polling it.
 	IsClosed bool
+	// IsDraft is true when the PR is still marked draft on GitHub. Captured from
+	// the same gh pr view call as everything else on this struct (no second API
+	// call) so callers such as the backlog stuck-item detector (prReadyToMergeSolo)
+	// can gate on it without an extra fetch.
+	IsDraft bool
+	// Mergeable is the raw upper-cased GitHub `mergeable` field ("MERGEABLE",
+	// "CONFLICTING", or "UNKNOWN"). HasConflicts is the belt-and-suspenders
+	// bool derived from this plus mergeStateStatus (see above); Mergeable is
+	// exposed separately for callers (prReadyToMergeSolo) that want the literal
+	// "MERGEABLE" check called out in ADR-001 rather than the inverse-of-conflict
+	// approximation.
+	Mergeable string
+	// ApprovedCount is the number of current non-dismissed APPROVED reviews.
+	ApprovedCount int
+	// ChangesRequestedCount is the number of current non-dismissed
+	// CHANGES_REQUESTED reviews (equivalently, len of the reviews backing
+	// HasBlockingReviews — exposed as a count so callers building a
+	// github.PRInfo-shaped value don't need to re-derive it from the bool).
+	ChangesRequestedCount int
 	// FeedbackText is a combined human-readable summary for the fix agent.
 	FeedbackText string
 
@@ -423,7 +485,7 @@ func (g *GitWorktree) GetPRStatus(prNumber int) (*PRStatus, error) {
 	defer cancel()
 
 	cmd := safeexec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber),
-		"--json", "statusCheckRollup,reviews,comments,mergeable,mergeStateStatus,state")
+		"--json", "statusCheckRollup,reviews,comments,mergeable,mergeStateStatus,state,isDraft")
 	cmd.Dir = g.worktreePath
 	raw, err := g.runCombinedOutput(cmd)
 	if err != nil {
@@ -464,6 +526,7 @@ func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 		Mergeable        string `json:"mergeable"`
 		MergeStateStatus string `json:"mergeStateStatus"`
 		State            string `json:"state"`
+		IsDraft          bool   `json:"isDraft"`
 	}
 	if jsonErr := json.Unmarshal(raw, &payload); jsonErr != nil {
 		return nil, fmt.Errorf("parse pr status: %w", jsonErr)
@@ -471,6 +534,8 @@ func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 
 	status := &PRStatus{}
 	status.IsClosed = strings.ToUpper(payload.State) == "CLOSED"
+	status.IsDraft = payload.IsDraft
+	status.Mergeable = strings.ToUpper(payload.Mergeable)
 
 	// Evaluate mergeability first — a PR that can't even be rebased makes
 	// CI/review feedback moot until it's mergeable again. Check both fields:
@@ -512,9 +577,13 @@ func parsePRStatusPayload(raw []byte) (*PRStatus, error) {
 
 	// Evaluate reviews.
 	for _, r := range payload.Reviews {
-		if strings.ToUpper(r.State) == "CHANGES_REQUESTED" {
+		switch strings.ToUpper(r.State) {
+		case "CHANGES_REQUESTED":
 			status.HasBlockingReviews = true
+			status.ChangesRequestedCount++
 			status.blockingReviews = append(status.blockingReviews, reviewInfo{author: r.Author.Login, body: r.Body})
+		case "APPROVED":
+			status.ApprovedCount++
 		}
 	}
 

@@ -8,21 +8,29 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
 )
 
 // ItemSessionData is the input data for creating a new ItemSession.
 type ItemSessionData struct {
-	ItemID            string // BacklogItem UUID
-	SessionUUID       string
-	SessionRole       string
-	AcSnapshot        AcCriteriaJSON
-	TriageResult      string
-	VerificationNotes string  // Freeform verification evidence reported via request_review
-	EstimatedCostUsd  float64 // Only set for headless sessions where cost is known at creation time
+	ItemID      string // BacklogItem UUID
+	SessionUUID string
+	SessionRole string
+	AcSnapshot  AcCriteriaJSON
+	// PipelineModeSnapshot/PipelineModeSnapshotHash freeze the resolved
+	// PipelineMode slug and its content hash at the moment this session
+	// first starts — see ItemSessionSummary.PipelineModeSnapshot(Hash).
+	PipelineModeSnapshot     string
+	PipelineModeSnapshotHash string
+	TriageResult             string
+	VerificationNotes        string  // Freeform verification evidence reported via request_review
+	EstimatedCostUsd         float64 // Only set for headless sessions where cost is known at creation time
 }
 
 // ReviewVerdictData is the input data for saving a ReviewVerdict.
@@ -54,6 +62,8 @@ func (r *EntRepository) CreateItemSession(ctx context.Context, data ItemSessionD
 		SetSessionRole(data.SessionRole).
 		SetBacklogItemID(parsedItemID).
 		SetNillableAcSnapshot(nilIfEmpty(string(data.AcSnapshot))).
+		SetPipelineModeSnapshot(data.PipelineModeSnapshot).
+		SetPipelineModeSnapshotHash(data.PipelineModeSnapshotHash).
 		SetNillableTriageResult(nilIfEmpty(data.TriageResult)).
 		SetNillableVerificationNotes(nilIfEmpty(data.VerificationNotes))
 	if data.EstimatedCostUsd > 0 {
@@ -385,6 +395,8 @@ func (r *EntRepository) CreateItemSessionWithVerdict(ctx context.Context, isData
 		SetSessionRole(isData.SessionRole).
 		SetBacklogItemID(parsedItemID).
 		SetNillableAcSnapshot(nilIfEmptyJSON(isData.AcSnapshot)).
+		SetPipelineModeSnapshot(isData.PipelineModeSnapshot).
+		SetPipelineModeSnapshotHash(isData.PipelineModeSnapshotHash).
 		SetNillableTriageResult(nilIfEmpty(isData.TriageResult))
 	if isData.EstimatedCostUsd > 0 {
 		isq = isq.SetEstimatedCostUsd(isData.EstimatedCostUsd)
@@ -590,6 +602,77 @@ func (r *EntRepository) BackfillMissingPRNumbers(ctx context.Context) (int, erro
 	return backfilled, nil
 }
 
+// --- BacklogStuckState queries ---
+
+// OpenStuckStateData is a projected, already-filtered (open + un-snoozed)
+// BacklogStuckState row joined with its parent item's rendering-relevant
+// fields. Returned only by FindOpenStuckStates, which applies the "open"
+// (resolved_at IS NULL) and "not currently snoozed" filters at the query
+// boundary — callers never need to re-check ResolvedAt/SnoozedUntil
+// nullability themselves (parse-don't-validate at the repository boundary).
+type OpenStuckStateData struct {
+	ID                  string
+	ItemID              string
+	Reason              domain.StuckReason
+	FirstDetectedAt     time.Time
+	LastCheckedAt       time.Time
+	NotifiedAt          *time.Time
+	Context             string
+	ItemTitle           string
+	ItemStatus          BacklogStatus
+	PrNumber            int
+	PrURL               string
+	RemediationAttempts int32
+	NextRemediationAt   *time.Time
+	GraceBootTime       *time.Time
+}
+
+// FindOpenStuckStates returns every BacklogStuckState row that is currently
+// open (resolved_at IS NULL) and not currently snoozed (snoozed_until IS NULL
+// OR snoozed_until is in the past), eager-loading the parent item so the
+// projection carries title/status/pr_number/pr_url for rendering without a
+// second round trip.
+func (r *EntRepository) FindOpenStuckStates(ctx context.Context) ([]OpenStuckStateData, error) {
+	now := time.Now()
+	rows, err := r.client.BacklogStuckState.Query().
+		Where(
+			backlogstuckstate.ResolvedAtIsNil(),
+			backlogstuckstate.Or(
+				backlogstuckstate.SnoozedUntilIsNil(),
+				backlogstuckstate.SnoozedUntilLT(now),
+			),
+		).
+		WithItem().
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query open stuck states: %w", err)
+	}
+
+	result := make([]OpenStuckStateData, 0, len(rows))
+	for _, row := range rows {
+		data := OpenStuckStateData{
+			ID:                  row.ID.String(),
+			ItemID:              row.ItemID.String(),
+			Reason:              domain.StuckReason(row.Reason),
+			FirstDetectedAt:     row.FirstDetectedAt,
+			LastCheckedAt:       row.LastCheckedAt,
+			NotifiedAt:          row.NotifiedAt,
+			Context:             row.Context,
+			RemediationAttempts: row.RemediationAttempts,
+			NextRemediationAt:   row.NextRemediationAt,
+			GraceBootTime:       row.GraceBootTime,
+		}
+		if item := row.Edges.Item; item != nil {
+			data.ItemTitle = item.Title
+			data.ItemStatus = BacklogStatus(item.Status)
+			data.PrNumber = item.PrNumber
+			data.PrURL = item.PrURL
+		}
+		result = append(result, data)
+	}
+	return result, nil
+}
+
 // --- ReviewVerdict lookup ---
 
 // GetMostRecentReviewVerdictForItem returns the OverallOutcome from the
@@ -621,6 +704,44 @@ func (r *EntRepository) GetMostRecentReviewVerdictForItem(ctx context.Context, i
 		return "", nil
 	}
 	return ReviewOutcome(is.Edges.ReviewVerdict.OverallOutcome), nil
+}
+
+// GetRecentReviewVerdictSummaries returns up to limit ReviewVerdicts for the
+// given BacklogItem UUID, most recent first. Reuses the existing
+// ReviewVerdictSummary DTO (see repository.go) — only OverallOutcome and
+// Summary are populated, since that's all callers (IsRepeatedFailure in
+// stuck_decisions.go) need.
+func (r *EntRepository) GetRecentReviewVerdictSummaries(ctx context.Context, itemID string, limit int) ([]ReviewVerdictSummary, error) {
+	parsedItemID, err := uuid.Parse(itemID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid item id %q: %w", itemID, err)
+	}
+
+	sessions, err := r.client.ItemSession.Query().
+		Where(
+			itemsession.HasBacklogItemWith(backlogitem.ID(parsedItemID)),
+			itemsession.HasReviewVerdict(),
+		).
+		WithReviewVerdict().
+		Order(ent.Desc(itemsession.FieldCreatedAt)).
+		Limit(limit).
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query review verdicts for item %s: %w", itemID, err)
+	}
+
+	result := make([]ReviewVerdictSummary, 0, len(sessions))
+	for _, is := range sessions {
+		if is.Edges.ReviewVerdict == nil {
+			continue
+		}
+		result = append(result, ReviewVerdictSummary{
+			ID:             is.Edges.ReviewVerdict.ID.String(),
+			OverallOutcome: is.Edges.ReviewVerdict.OverallOutcome,
+			Summary:        is.Edges.ReviewVerdict.Summary,
+		})
+	}
+	return result, nil
 }
 
 // --- AC criterion update ---
@@ -666,4 +787,120 @@ func (r *EntRepository) UpdateAcCriterionStatus(ctx context.Context, itemID stri
 		return fmt.Errorf("failed to save AC criteria update for item %s: %w", itemID, err)
 	}
 	return nil
+}
+
+// --- Zombie-session review detection (pre-mortem F3) ---
+
+// FindZombieReviewItems returns backlog items in "review" status that have an
+// active (EndedAt IS NULL) review-or-work ItemSession recorded in the DB —
+// exactly the class FindStuckReviewItems excludes (its "nothing in flight"
+// filter requires no un-ended session at all). Each returned item eager-loads
+// only that active session so the caller can verify, via an injected
+// liveness checker, whether the underlying tmux/CLI process the row claims
+// is active has actually gone away (a zombie: the DB row looks live, the
+// process is gone). Not every returned item is a zombie — the caller must
+// still check liveness per active session.
+func (r *EntRepository) FindZombieReviewItems(ctx context.Context) ([]*ent.BacklogItem, error) {
+	items, err := r.client.BacklogItem.Query().
+		Where(
+			backlogitem.Status(string(BacklogStatusReview)),
+			backlogitem.HasItemSessionsWith(
+				itemsession.EndedAtIsNil(),
+				itemsession.SessionRoleIn(SessionRoleReview, SessionRoleWork),
+			),
+		).
+		WithItemSessions(func(q *ent.ItemSessionQuery) {
+			q.Where(itemsession.EndedAtIsNil(), itemsession.SessionRoleIn(SessionRoleReview, SessionRoleWork))
+		}).
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query zombie-candidate review items: %w", err)
+	}
+	return items, nil
+}
+
+// FindReviewItemsWithUnprocessedVerdict returns backlog items in "review" status
+// whose most recent review-role ItemSession already has a terminal ReviewVerdict
+// recorded. Distinct from FindZombieReviewItems: that detector requires EVERY open
+// review-or-work session on the item to be confirmed dead before acting, but
+// AutoReopenAfterFailedReview's live-session-reuse (a work session intentionally
+// stays open polling for the verdict once the item is back in "review" — see
+// docs/tasks/backlog-feature-improvement.md's "WIP limit now undercounts live
+// sessions" finding) means the item never looks like a full zombie even when the
+// review session itself died with its verdict never actioned (handleReviewSessionExited
+// never fired — a server restart or crash mid-exit, the same class of gap as the
+// crash-resilience fixes elsewhere in this package). Each returned item eager-loads
+// its review-role sessions (most recent first) with their ReviewVerdict, so the
+// caller can act on the newest one without a second round-trip.
+func (r *EntRepository) FindReviewItemsWithUnprocessedVerdict(ctx context.Context) ([]*ent.BacklogItem, error) {
+	items, err := r.client.BacklogItem.Query().
+		Where(
+			backlogitem.Status(string(BacklogStatusReview)),
+			backlogitem.HasItemSessionsWith(
+				itemsession.SessionRole(SessionRoleReview),
+				itemsession.HasReviewVerdict(),
+			),
+		).
+		WithItemSessions(func(q *ent.ItemSessionQuery) {
+			q.Where(itemsession.SessionRole(SessionRoleReview)).
+				WithReviewVerdict().
+				Order(ent.Desc(itemsession.FieldCreatedAt))
+		}).
+		All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query review items with unprocessed verdict: %w", err)
+	}
+	return items, nil
+}
+
+// GetMostRecentStatusEventAt returns the created_at timestamp of the most
+// recent BacklogStatusEvent for itemID whose to_status equals toStatus.
+// Returns (zero time, false, nil) when no such event exists (e.g. an item
+// seeded directly into a status without a recorded transition). Used by the
+// abandoned_review 15-minute grace check (abandonedReview pure fn) so a item
+// that JUST entered review isn't flagged before the reconciler has had a
+// chance to re-spawn a review gate.
+func (r *EntRepository) GetMostRecentStatusEventAt(ctx context.Context, itemID string, toStatus BacklogStatus) (time.Time, bool, error) {
+	parsedID, err := uuid.Parse(itemID)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("invalid item id %q: %w", itemID, err)
+	}
+	ev, err := r.client.BacklogStatusEvent.Query().
+		Where(
+			backlogstatusevent.ItemID(parsedID),
+			backlogstatusevent.ToStatus(string(toStatus)),
+		).
+		Order(ent.Desc(backlogstatusevent.FieldCreatedAt)).
+		First(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("failed to query most recent status event for item %s: %w", itemID, err)
+	}
+	return ev.CreatedAt, true, nil
+}
+
+// --- Bouncing (non-converging cycle) detection ---
+
+// CountReviewCyclesSince counts in_progress->review BacklogStatusEvent
+// transitions for itemID created at or after since — the "round trip" signal
+// the bouncing detector (isBouncing) keys off.
+func (r *EntRepository) CountReviewCyclesSince(ctx context.Context, itemID string, since time.Time) (int, error) {
+	parsedID, err := uuid.Parse(itemID)
+	if err != nil {
+		return 0, fmt.Errorf("invalid item id %q: %w", itemID, err)
+	}
+	n, err := r.client.BacklogStatusEvent.Query().
+		Where(
+			backlogstatusevent.ItemID(parsedID),
+			backlogstatusevent.FromStatus(string(BacklogStatusInProgress)),
+			backlogstatusevent.ToStatus(string(BacklogStatusReview)),
+			backlogstatusevent.CreatedAtGTE(since),
+		).
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count review cycles for item %s: %w", itemID, err)
+	}
+	return n, nil
 }

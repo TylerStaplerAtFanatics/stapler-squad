@@ -60,6 +60,30 @@ export class BacklogPage {
     return this.page.locator('[data-testid="backlog-table-row"]');
   }
 
+  // ---------------------------------------------------------------------------
+  // Sort / group by repository
+  // ---------------------------------------------------------------------------
+
+  getRepositoryColumnHeader(): Locator {
+    return this.page.locator('[data-testid="backlog-col-repo-path"]');
+  }
+
+  getGroupBySelect(): Locator {
+    return this.page.locator('[data-testid="backlog-group-by-select"]');
+  }
+
+  async selectGroupBy(value: 'none' | 'repoPath') {
+    await this.getGroupBySelect().selectOption(value);
+  }
+
+  getGroupHeaders(): Locator {
+    return this.page.locator('[data-testid="backlog-group-header"]');
+  }
+
+  async getRowRepoPaths(): Promise<string[]> {
+    return this.getTableRows().locator('[data-testid="backlog-repo-path-cell"]').allTextContents();
+  }
+
   async openEmptyStateForm() {
     await this.emptyCtaButton.click();
     await this.page.waitForSelector('[data-testid="backlog-empty-form"]', { timeout: 5000 });
@@ -159,6 +183,19 @@ export class BacklogPage {
   async submitNewItemForm() {
     const submitButton = this.page.locator('[data-testid="backlog-form-submit"]');
     await submitButton.click();
+  }
+
+  /**
+   * Selects a pipeline mode option in the new/edit item form's radio group
+   * (Epic 3.2 — BacklogItemForm.tsx). `slug` is the PipelineMode's slug; use
+   * "default" for the built-in default option.
+   */
+  getPipelineModeOption(slug: string): Locator {
+    return this.page.getByTestId(`backlog-pipeline-mode-${slug}`);
+  }
+
+  async selectPipelineMode(slug: string) {
+    await this.getPipelineModeOption(slug).click();
   }
 
   async cancelNewItemForm() {

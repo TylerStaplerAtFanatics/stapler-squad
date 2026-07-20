@@ -313,8 +313,8 @@ func (s *BacklogService) GetBacklogItemDiff(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list item sessions: %w", err))
 	}
 
-	// Use the most recent work session's dedicated worktree and its base SHA so
-	// the diff reflects what the current iteration of work actually changed.
+	// Use the most recent work session's base SHA so the diff reflects what the
+	// current iteration of work actually changed.
 	var mostRecentWorkSession *session.ItemSessionSummary
 	for i := range sessions {
 		is := &sessions[i]
@@ -324,19 +324,42 @@ func (s *BacklogService) GetBacklogItemDiff(
 			}
 		}
 	}
-	diffDir := item.RepoPath
 	diffBaseSHA := "HEAD~1"
+	var headRef string
 	if mostRecentWorkSession != nil {
-		wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, mostRecentWorkSession.SessionUUID)
-		if wtErr == nil && wt.WorktreePath != "" {
-			diffDir = wt.WorktreePath
-			diffBaseSHA = wt.BaseCommitSHA
-		} else if mostRecentWorkSession.LastCommitSha != "" {
-			diffBaseSHA = mostRecentWorkSession.LastCommitSha
+		if wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, mostRecentWorkSession.SessionUUID); wtErr == nil {
+			if wt.BaseCommitSHA != "" {
+				diffBaseSHA = wt.BaseCommitSHA
+			}
+			// Prefer the branch name over the session's LastCommitSha. LastCommitSha
+			// is only ever written once, at session spawn, to the PRE-work base
+			// commit (see AttachSessionToItem / SpawnSessionFromItem step 12b) —
+			// nothing updates it as the agent makes further commits during the
+			// session, so in practice it is usually identical to diffBaseSHA itself,
+			// producing a spurious empty base..head diff ("No changes to display")
+			// for items that genuinely have real, already-reviewed work on their
+			// branch (e.g. a Review-status item with a full Gate Verdict on record).
+			// wt.BranchName always resolves to the branch's actual current tip —
+			// worktrees share one object store, so this works whether or not the
+			// session's own worktree directory still exists — the same fallback
+			// review_gate.go's spawnReviewGate already relies on via
+			// GetGitDiffRef(item.RepoPath, wt.BaseCommitSHA, wt.BranchName).
+			if wt.BranchName != "" {
+				headRef = wt.BranchName
+			} else if mostRecentWorkSession.LastCommitSha != "" {
+				headRef = mostRecentWorkSession.LastCommitSha
+			}
 		}
 	}
 
-	diffContent, _, diffErr := session.GetGitDiff(ctx, diffDir, diffBaseSHA)
+	// Always diff from item.RepoPath (the shared, stable checkout) with an
+	// explicit headRef, never the work session's own worktree path — worktrees
+	// share the same object store, so any commit sha reachable from any
+	// worktree of the repo resolves correctly regardless of dir. This is what
+	// makes the diff work identically whether the work session's worktree
+	// directory still exists or has already been cleaned up (the normal state
+	// once an item is done) — see GetGitDiffRef's doc comment.
+	diffContent, _, diffErr := session.GetGitDiffRef(ctx, item.RepoPath, diffBaseSHA, headRef)
 	if diffErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to compute diff: %w", diffErr))
 	}
