@@ -638,9 +638,7 @@ lint-css-tokens: ## Fail if any component .css.ts file uses hardcoded hex colors
 	@violations=$$(find web-app/src -name '*.css.ts' \
 	  ! -name 'theme.css.ts' \
 	  ! -name 'theme-contract.css.ts' \
-	  ! -name 'Header.css.ts' \
 	  ! -name 'ThemePicker.css.ts' \
-	  ! -name 'ApprovalAnalyticsPanel.css.ts' \
 	  ! -path '*/debug/escape-codes/page.css.ts' \
 	  | while read f; do \
 	    if grep '#[0-9a-fA-F]\{3,8\}' "$$f" 2>/dev/null | grep -qv '//.*#[0-9a-fA-F]\{3,8\}'; then echo "$$f"; fi; \
