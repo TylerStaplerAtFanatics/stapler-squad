@@ -21,6 +21,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
 	"github.com/tstapler/stapler-squad/session/ent/backlogprogressnote"
 	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstuckstate"
 	"github.com/tstapler/stapler-squad/session/ent/classificationanalytics"
 	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
 	"github.com/tstapler/stapler-squad/session/ent/claudesession"
@@ -29,6 +30,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/escapeevent"
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/itemsource"
+	"github.com/tstapler/stapler-squad/session/ent/pipelinemode"
 	"github.com/tstapler/stapler-squad/session/ent/project"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
 	"github.com/tstapler/stapler-squad/session/ent/session"
@@ -55,6 +57,8 @@ type Client struct {
 	BacklogProgressNote *BacklogProgressNoteClient
 	// BacklogStatusEvent is the client for interacting with the BacklogStatusEvent builders.
 	BacklogStatusEvent *BacklogStatusEventClient
+	// BacklogStuckState is the client for interacting with the BacklogStuckState builders.
+	BacklogStuckState *BacklogStuckStateClient
 	// ClassificationAnalytics is the client for interacting with the ClassificationAnalytics builders.
 	ClassificationAnalytics *ClassificationAnalyticsClient
 	// ClaudeMetadata is the client for interacting with the ClaudeMetadata builders.
@@ -71,6 +75,8 @@ type Client struct {
 	ItemSession *ItemSessionClient
 	// ItemSource is the client for interacting with the ItemSource builders.
 	ItemSource *ItemSourceClient
+	// PipelineMode is the client for interacting with the PipelineMode builders.
+	PipelineMode *PipelineModeClient
 	// Project is the client for interacting with the Project builders.
 	Project *ProjectClient
 	// ReviewVerdict is the client for interacting with the ReviewVerdict builders.
@@ -105,6 +111,7 @@ func (c *Client) init() {
 	c.BacklogItem = NewBacklogItemClient(c.config)
 	c.BacklogProgressNote = NewBacklogProgressNoteClient(c.config)
 	c.BacklogStatusEvent = NewBacklogStatusEventClient(c.config)
+	c.BacklogStuckState = NewBacklogStuckStateClient(c.config)
 	c.ClassificationAnalytics = NewClassificationAnalyticsClient(c.config)
 	c.ClaudeMetadata = NewClaudeMetadataClient(c.config)
 	c.ClaudeSession = NewClaudeSessionClient(c.config)
@@ -113,6 +120,7 @@ func (c *Client) init() {
 	c.EscapeEvent = NewEscapeEventClient(c.config)
 	c.ItemSession = NewItemSessionClient(c.config)
 	c.ItemSource = NewItemSourceClient(c.config)
+	c.PipelineMode = NewPipelineModeClient(c.config)
 	c.Project = NewProjectClient(c.config)
 	c.ReviewVerdict = NewReviewVerdictClient(c.config)
 	c.Session = NewSessionClient(c.config)
@@ -219,6 +227,7 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		BacklogItem:             NewBacklogItemClient(cfg),
 		BacklogProgressNote:     NewBacklogProgressNoteClient(cfg),
 		BacklogStatusEvent:      NewBacklogStatusEventClient(cfg),
+		BacklogStuckState:       NewBacklogStuckStateClient(cfg),
 		ClassificationAnalytics: NewClassificationAnalyticsClient(cfg),
 		ClaudeMetadata:          NewClaudeMetadataClient(cfg),
 		ClaudeSession:           NewClaudeSessionClient(cfg),
@@ -227,6 +236,7 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		EscapeEvent:             NewEscapeEventClient(cfg),
 		ItemSession:             NewItemSessionClient(cfg),
 		ItemSource:              NewItemSourceClient(cfg),
+		PipelineMode:            NewPipelineModeClient(cfg),
 		Project:                 NewProjectClient(cfg),
 		ReviewVerdict:           NewReviewVerdictClient(cfg),
 		Session:                 NewSessionClient(cfg),
@@ -260,6 +270,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		BacklogItem:             NewBacklogItemClient(cfg),
 		BacklogProgressNote:     NewBacklogProgressNoteClient(cfg),
 		BacklogStatusEvent:      NewBacklogStatusEventClient(cfg),
+		BacklogStuckState:       NewBacklogStuckStateClient(cfg),
 		ClassificationAnalytics: NewClassificationAnalyticsClient(cfg),
 		ClaudeMetadata:          NewClaudeMetadataClient(cfg),
 		ClaudeSession:           NewClaudeSessionClient(cfg),
@@ -268,6 +279,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		EscapeEvent:             NewEscapeEventClient(cfg),
 		ItemSession:             NewItemSessionClient(cfg),
 		ItemSource:              NewItemSourceClient(cfg),
+		PipelineMode:            NewPipelineModeClient(cfg),
 		Project:                 NewProjectClient(cfg),
 		ReviewVerdict:           NewReviewVerdictClient(cfg),
 		Session:                 NewSessionClient(cfg),
@@ -307,10 +319,11 @@ func (c *Client) Close() error {
 func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
 		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.BacklogProgressNote,
-		c.BacklogStatusEvent, c.ClassificationAnalytics, c.ClaudeMetadata,
-		c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent, c.ItemSession,
-		c.ItemSource, c.Project, c.ReviewVerdict, c.Session, c.SessionGoal, c.Shell,
-		c.SourceSyncEvent, c.Tag, c.Workflow, c.Worktree,
+		c.BacklogStatusEvent, c.BacklogStuckState, c.ClassificationAnalytics,
+		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
+		c.ItemSession, c.ItemSource, c.PipelineMode, c.Project, c.ReviewVerdict,
+		c.Session, c.SessionGoal, c.Shell, c.SourceSyncEvent, c.Tag, c.Workflow,
+		c.Worktree,
 	} {
 		n.Use(hooks...)
 	}
@@ -321,10 +334,11 @@ func (c *Client) Use(hooks ...Hook) {
 func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
 		c.AnalyticsEvent, c.ApprovalRule, c.BacklogItem, c.BacklogProgressNote,
-		c.BacklogStatusEvent, c.ClassificationAnalytics, c.ClaudeMetadata,
-		c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent, c.ItemSession,
-		c.ItemSource, c.Project, c.ReviewVerdict, c.Session, c.SessionGoal, c.Shell,
-		c.SourceSyncEvent, c.Tag, c.Workflow, c.Worktree,
+		c.BacklogStatusEvent, c.BacklogStuckState, c.ClassificationAnalytics,
+		c.ClaudeMetadata, c.ClaudeSession, c.DiffStats, c.ErrorEvent, c.EscapeEvent,
+		c.ItemSession, c.ItemSource, c.PipelineMode, c.Project, c.ReviewVerdict,
+		c.Session, c.SessionGoal, c.Shell, c.SourceSyncEvent, c.Tag, c.Workflow,
+		c.Worktree,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -343,6 +357,8 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.BacklogProgressNote.mutate(ctx, m)
 	case *BacklogStatusEventMutation:
 		return c.BacklogStatusEvent.mutate(ctx, m)
+	case *BacklogStuckStateMutation:
+		return c.BacklogStuckState.mutate(ctx, m)
 	case *ClassificationAnalyticsMutation:
 		return c.ClassificationAnalytics.mutate(ctx, m)
 	case *ClaudeMetadataMutation:
@@ -359,6 +375,8 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.ItemSession.mutate(ctx, m)
 	case *ItemSourceMutation:
 		return c.ItemSource.mutate(ctx, m)
+	case *PipelineModeMutation:
+		return c.PipelineMode.mutate(ctx, m)
 	case *ProjectMutation:
 		return c.Project.mutate(ctx, m)
 	case *ReviewVerdictMutation:
@@ -804,6 +822,22 @@ func (c *BacklogItemClient) QueryStatusEvents(_m *BacklogItem) *BacklogStatusEve
 	return query
 }
 
+// QueryStuckStates queries the stuck_states edge of a BacklogItem.
+func (c *BacklogItemClient) QueryStuckStates(_m *BacklogItem) *BacklogStuckStateQuery {
+	query := (&BacklogStuckStateClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(backlogitem.Table, backlogitem.FieldID, id),
+			sqlgraph.To(backlogstuckstate.Table, backlogstuckstate.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, backlogitem.StuckStatesTable, backlogitem.StuckStatesColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QueryProgressNotes queries the progress_notes edge of a BacklogItem.
 func (c *BacklogItemClient) QueryProgressNotes(_m *BacklogItem) *BacklogProgressNoteQuery {
 	query := (&BacklogProgressNoteClient{config: c.config}).Query()
@@ -1156,6 +1190,155 @@ func (c *BacklogStatusEventClient) mutate(ctx context.Context, m *BacklogStatusE
 		return (&BacklogStatusEventDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown BacklogStatusEvent mutation op: %q", m.Op())
+	}
+}
+
+// BacklogStuckStateClient is a client for the BacklogStuckState schema.
+type BacklogStuckStateClient struct {
+	config
+}
+
+// NewBacklogStuckStateClient returns a client for the BacklogStuckState from the given config.
+func NewBacklogStuckStateClient(c config) *BacklogStuckStateClient {
+	return &BacklogStuckStateClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `backlogstuckstate.Hooks(f(g(h())))`.
+func (c *BacklogStuckStateClient) Use(hooks ...Hook) {
+	c.hooks.BacklogStuckState = append(c.hooks.BacklogStuckState, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `backlogstuckstate.Intercept(f(g(h())))`.
+func (c *BacklogStuckStateClient) Intercept(interceptors ...Interceptor) {
+	c.inters.BacklogStuckState = append(c.inters.BacklogStuckState, interceptors...)
+}
+
+// Create returns a builder for creating a BacklogStuckState entity.
+func (c *BacklogStuckStateClient) Create() *BacklogStuckStateCreate {
+	mutation := newBacklogStuckStateMutation(c.config, OpCreate)
+	return &BacklogStuckStateCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of BacklogStuckState entities.
+func (c *BacklogStuckStateClient) CreateBulk(builders ...*BacklogStuckStateCreate) *BacklogStuckStateCreateBulk {
+	return &BacklogStuckStateCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *BacklogStuckStateClient) MapCreateBulk(slice any, setFunc func(*BacklogStuckStateCreate, int)) *BacklogStuckStateCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &BacklogStuckStateCreateBulk{err: fmt.Errorf("calling to BacklogStuckStateClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*BacklogStuckStateCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &BacklogStuckStateCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for BacklogStuckState.
+func (c *BacklogStuckStateClient) Update() *BacklogStuckStateUpdate {
+	mutation := newBacklogStuckStateMutation(c.config, OpUpdate)
+	return &BacklogStuckStateUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *BacklogStuckStateClient) UpdateOne(_m *BacklogStuckState) *BacklogStuckStateUpdateOne {
+	mutation := newBacklogStuckStateMutation(c.config, OpUpdateOne, withBacklogStuckState(_m))
+	return &BacklogStuckStateUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *BacklogStuckStateClient) UpdateOneID(id uuid.UUID) *BacklogStuckStateUpdateOne {
+	mutation := newBacklogStuckStateMutation(c.config, OpUpdateOne, withBacklogStuckStateID(id))
+	return &BacklogStuckStateUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for BacklogStuckState.
+func (c *BacklogStuckStateClient) Delete() *BacklogStuckStateDelete {
+	mutation := newBacklogStuckStateMutation(c.config, OpDelete)
+	return &BacklogStuckStateDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *BacklogStuckStateClient) DeleteOne(_m *BacklogStuckState) *BacklogStuckStateDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *BacklogStuckStateClient) DeleteOneID(id uuid.UUID) *BacklogStuckStateDeleteOne {
+	builder := c.Delete().Where(backlogstuckstate.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &BacklogStuckStateDeleteOne{builder}
+}
+
+// Query returns a query builder for BacklogStuckState.
+func (c *BacklogStuckStateClient) Query() *BacklogStuckStateQuery {
+	return &BacklogStuckStateQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeBacklogStuckState},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a BacklogStuckState entity by its id.
+func (c *BacklogStuckStateClient) Get(ctx context.Context, id uuid.UUID) (*BacklogStuckState, error) {
+	return c.Query().Where(backlogstuckstate.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *BacklogStuckStateClient) GetX(ctx context.Context, id uuid.UUID) *BacklogStuckState {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryItem queries the item edge of a BacklogStuckState.
+func (c *BacklogStuckStateClient) QueryItem(_m *BacklogStuckState) *BacklogItemQuery {
+	query := (&BacklogItemClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(backlogstuckstate.Table, backlogstuckstate.FieldID, id),
+			sqlgraph.To(backlogitem.Table, backlogitem.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, backlogstuckstate.ItemTable, backlogstuckstate.ItemColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *BacklogStuckStateClient) Hooks() []Hook {
+	return c.hooks.BacklogStuckState
+}
+
+// Interceptors returns the client interceptors.
+func (c *BacklogStuckStateClient) Interceptors() []Interceptor {
+	return c.inters.BacklogStuckState
+}
+
+func (c *BacklogStuckStateClient) mutate(ctx context.Context, m *BacklogStuckStateMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&BacklogStuckStateCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&BacklogStuckStateUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&BacklogStuckStateUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&BacklogStuckStateDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown BacklogStuckState mutation op: %q", m.Op())
 	}
 }
 
@@ -2348,6 +2531,139 @@ func (c *ItemSourceClient) mutate(ctx context.Context, m *ItemSourceMutation) (V
 		return (&ItemSourceDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown ItemSource mutation op: %q", m.Op())
+	}
+}
+
+// PipelineModeClient is a client for the PipelineMode schema.
+type PipelineModeClient struct {
+	config
+}
+
+// NewPipelineModeClient returns a client for the PipelineMode from the given config.
+func NewPipelineModeClient(c config) *PipelineModeClient {
+	return &PipelineModeClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `pipelinemode.Hooks(f(g(h())))`.
+func (c *PipelineModeClient) Use(hooks ...Hook) {
+	c.hooks.PipelineMode = append(c.hooks.PipelineMode, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `pipelinemode.Intercept(f(g(h())))`.
+func (c *PipelineModeClient) Intercept(interceptors ...Interceptor) {
+	c.inters.PipelineMode = append(c.inters.PipelineMode, interceptors...)
+}
+
+// Create returns a builder for creating a PipelineMode entity.
+func (c *PipelineModeClient) Create() *PipelineModeCreate {
+	mutation := newPipelineModeMutation(c.config, OpCreate)
+	return &PipelineModeCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of PipelineMode entities.
+func (c *PipelineModeClient) CreateBulk(builders ...*PipelineModeCreate) *PipelineModeCreateBulk {
+	return &PipelineModeCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *PipelineModeClient) MapCreateBulk(slice any, setFunc func(*PipelineModeCreate, int)) *PipelineModeCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &PipelineModeCreateBulk{err: fmt.Errorf("calling to PipelineModeClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*PipelineModeCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &PipelineModeCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for PipelineMode.
+func (c *PipelineModeClient) Update() *PipelineModeUpdate {
+	mutation := newPipelineModeMutation(c.config, OpUpdate)
+	return &PipelineModeUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *PipelineModeClient) UpdateOne(_m *PipelineMode) *PipelineModeUpdateOne {
+	mutation := newPipelineModeMutation(c.config, OpUpdateOne, withPipelineMode(_m))
+	return &PipelineModeUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *PipelineModeClient) UpdateOneID(id uuid.UUID) *PipelineModeUpdateOne {
+	mutation := newPipelineModeMutation(c.config, OpUpdateOne, withPipelineModeID(id))
+	return &PipelineModeUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for PipelineMode.
+func (c *PipelineModeClient) Delete() *PipelineModeDelete {
+	mutation := newPipelineModeMutation(c.config, OpDelete)
+	return &PipelineModeDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *PipelineModeClient) DeleteOne(_m *PipelineMode) *PipelineModeDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *PipelineModeClient) DeleteOneID(id uuid.UUID) *PipelineModeDeleteOne {
+	builder := c.Delete().Where(pipelinemode.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &PipelineModeDeleteOne{builder}
+}
+
+// Query returns a query builder for PipelineMode.
+func (c *PipelineModeClient) Query() *PipelineModeQuery {
+	return &PipelineModeQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypePipelineMode},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a PipelineMode entity by its id.
+func (c *PipelineModeClient) Get(ctx context.Context, id uuid.UUID) (*PipelineMode, error) {
+	return c.Query().Where(pipelinemode.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *PipelineModeClient) GetX(ctx context.Context, id uuid.UUID) *PipelineMode {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// Hooks returns the client hooks.
+func (c *PipelineModeClient) Hooks() []Hook {
+	return c.hooks.PipelineMode
+}
+
+// Interceptors returns the client interceptors.
+func (c *PipelineModeClient) Interceptors() []Interceptor {
+	return c.inters.PipelineMode
+}
+
+func (c *PipelineModeClient) mutate(ctx context.Context, m *PipelineModeMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&PipelineModeCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&PipelineModeUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&PipelineModeUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&PipelineModeDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown PipelineMode mutation op: %q", m.Op())
 	}
 }
 
@@ -3760,16 +4076,16 @@ func (c *WorktreeClient) mutate(ctx context.Context, m *WorktreeMutation) (Value
 type (
 	hooks struct {
 		AnalyticsEvent, ApprovalRule, BacklogItem, BacklogProgressNote,
-		BacklogStatusEvent, ClassificationAnalytics, ClaudeMetadata, ClaudeSession,
-		DiffStats, ErrorEvent, EscapeEvent, ItemSession, ItemSource, Project,
-		ReviewVerdict, Session, SessionGoal, Shell, SourceSyncEvent, Tag, Workflow,
-		Worktree []ent.Hook
+		BacklogStatusEvent, BacklogStuckState, ClassificationAnalytics, ClaudeMetadata,
+		ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession, ItemSource,
+		PipelineMode, Project, ReviewVerdict, Session, SessionGoal, Shell,
+		SourceSyncEvent, Tag, Workflow, Worktree []ent.Hook
 	}
 	inters struct {
 		AnalyticsEvent, ApprovalRule, BacklogItem, BacklogProgressNote,
-		BacklogStatusEvent, ClassificationAnalytics, ClaudeMetadata, ClaudeSession,
-		DiffStats, ErrorEvent, EscapeEvent, ItemSession, ItemSource, Project,
-		ReviewVerdict, Session, SessionGoal, Shell, SourceSyncEvent, Tag, Workflow,
-		Worktree []ent.Interceptor
+		BacklogStatusEvent, BacklogStuckState, ClassificationAnalytics, ClaudeMetadata,
+		ClaudeSession, DiffStats, ErrorEvent, EscapeEvent, ItemSession, ItemSource,
+		PipelineMode, Project, ReviewVerdict, Session, SessionGoal, Shell,
+		SourceSyncEvent, Tag, Workflow, Worktree []ent.Interceptor
 	}
 )

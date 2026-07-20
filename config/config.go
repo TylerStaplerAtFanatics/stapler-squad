@@ -67,6 +67,43 @@ func IsTestMode() bool {
 	return false
 }
 
+// IsNamedInstance reports whether this process is running as an explicitly
+// named, non-default instance (STAPLER_SQUAD_INSTANCE set to anything other
+// than "" or "shared" — see GetConfigDirForDir's priority hierarchy above).
+// A named instance gets its own isolated DB/config directory but does NOT get
+// its own tmux socket — it shares the default tmux server with every other
+// instance on the machine, including the real production one. IsTestMode()
+// alone doesn't catch this: this repo's own E2E harness (tests/e2e, per
+// CLAUDE.md: "STAPLER_SQUAD_INSTANCE=e2e-local ./stapler-squad
+// --tmux-keep-server") runs the real production binary, not a `go test`
+// binary, so IsTestMode() returns false for it even though it has exactly the
+// same "small, isolated instance list vs. the shared tmux socket" hazard a
+// `go test` binary does. Confirmed live: an e2e-local run's orphan sweep
+// killed 5 unrelated production tmux sessions it had never heard of,
+// including the interactive session this very fix was written in.
+func IsNamedInstance() bool {
+	instanceID := os.Getenv("STAPLER_SQUAD_INSTANCE")
+	return instanceID != "" && instanceID != "shared"
+}
+
+// IsIsolatedInstance reports whether this process's config/DB state is
+// isolated from the shared default (~/.stapler-squad) directory by ANY known
+// mechanism: a `go test` binary (IsTestMode), an explicit named instance
+// (IsNamedInstance), or a STAPLER_SQUAD_TEST_DIR override (GetConfigDirForDir
+// priority 1 — used by --test-mode harnesses like tests/demo/helpers.go's
+// StartDemoServer). Isolated DB state does NOT imply an isolated tmux socket
+// under any of these mechanisms — see IsNamedInstance's doc comment for the
+// confirmed incident that motivated this check. Call sites that could
+// otherwise touch shared, non-isolated resources (like the default tmux
+// socket in ReconcileOrphanedTmuxSessions) must skip when this is true.
+// STAPLER_SQUAD_TEST_DIR was the still-missing case: a demo/test-mode harness
+// process gets a fully isolated DB via GetConfigDirForDir but, before this
+// check existed, its startup orphan sweep still targeted the shared default
+// tmux socket — killing every real production session it didn't recognize.
+func IsIsolatedInstance() bool {
+	return IsTestMode() || IsNamedInstance() || os.Getenv("STAPLER_SQUAD_TEST_DIR") != ""
+}
+
 // GetConfigDir returns the path to the application's configuration directory
 // with hierarchical isolation for safe multi-instance and test execution.
 //
@@ -262,6 +299,13 @@ type Config struct {
 	// MachineEncryptionKey is a base64-encoded 32-byte AES-256-GCM key for local data encryption.
 	// Generated on first run and persisted here. Used to encrypt sensitive token data in ItemSource configs.
 	MachineEncryptionKey string `json:"machine_encryption_key,omitempty"`
+	// MaxAutoReworkIterations caps how many automated work sessions the backlog auto-reopen
+	// loop will spawn for a single item before leaving it for manual review. 0 = use the
+	// default (20). Individual items can also override this via
+	// BacklogItemData.ReworkCapOverride (0 = unlimited for that item, >0 = that item's own
+	// cap) — see effectiveReworkCap in server/services/backlog_service_triage.go.
+	MaxAutoReworkIterations int `json:"max_auto_rework_iterations,omitempty"`
+
 	// AnalyticsMaxRows is the maximum number of analytics events to retain in the database.
 	// When exceeded, the oldest rows are deleted. 0 means no row-count limit.
 	// Default: 100_000.
@@ -473,6 +517,18 @@ func (c *Config) TriageArtifactDirOrDefault() (string, error) {
 	return filepath.Join(home, ".stapler-squad", "triage-artifacts"), nil
 }
 
+// BacklogAttachmentDirOrDefault returns the resolved backlog attachment directory.
+// Uploaded images referenced from backlog item descriptions are stored here,
+// durably (unlike the 24h temp paste dir) since they're linked from persisted
+// markdown text. Always defaults to "~/.stapler-squad/backlog-attachments".
+func (c *Config) BacklogAttachmentDirOrDefault() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot expand home dir: %w", err)
+	}
+	return filepath.Join(home, ".stapler-squad", "backlog-attachments"), nil
+}
+
 // NewProjectBaseDirOrDefault returns the resolved new-project base directory.
 // If NewProjectBaseDir is empty, it defaults to "~/Projects" with ~ expanded.
 func (c *Config) NewProjectBaseDirOrDefault() (string, error) {
@@ -503,6 +559,21 @@ func (c *Config) AnalyticsMaxRowsOrDefault() int {
 		return 100_000
 	}
 	return c.AnalyticsMaxRows
+}
+
+// MaxAutoReworkIterationsOrDefault returns the configured rework-cap ceiling, or 20
+// if not set (zero value) or c is nil (BacklogService's cfg is nil in some test setups).
+// Raised from 3 to 20: 3 was tripping routinely on real, ultimately-fixable items
+// (e.g. a multi-round diff/review-harness flake, or a straightforward merge conflict)
+// well before the work was actually stuck, forcing manual "Reopen for Revision" clicks
+// for otherwise-recoverable items. Genuinely stuck items still get caught — just
+// later — and per-item overrides (BacklogItemData.ReworkCapOverride) exist for cases
+// that need to go further still.
+func (c *Config) MaxAutoReworkIterationsOrDefault() int {
+	if c == nil || c.MaxAutoReworkIterations <= 0 {
+		return 20
+	}
+	return c.MaxAutoReworkIterations
 }
 
 // AnalyticsMaxAgeDaysOrDefault returns the configured max analytics age in days,

@@ -30,6 +30,10 @@ type ItemSession struct {
 	EndedAt *time.Time `json:"ended_at,omitempty"`
 	// JSON []AcCriterion at spawn time
 	AcSnapshot string `json:"ac_snapshot,omitempty"`
+	// The PipelineMode slug resolved and in effect when this session first started — snapshotted so later edits to the item's live pipeline_mode don't retroactively change what this session is shown to have run. Mirrors ac_snapshot's discipline.
+	PipelineModeSnapshot string `json:"pipeline_mode_snapshot,omitempty"`
+	// SHA-256 (hex, truncated to 16 chars) of the resolved mode's 9 raw content-template field values, concatenated in fixed order, computed at the moment this session started. Empty for the default mode (code-backed, can't drift) or an already-unresolved slug. Compared against the live mode's current hash by the "what ran" UI (Story 3.4.1) to detect the referenced mode's content having been edited since — the slug alone cannot detect this.
+	PipelineModeSnapshotHash string `json:"pipeline_mode_snapshot_hash,omitempty"`
 	// JSON triage suggestions
 	TriageResult string `json:"triage_result,omitempty"`
 	// Freeform verification evidence reported via request_review (commands run, manual checks performed) — not visible in the diff
@@ -99,7 +103,7 @@ func (*ItemSession) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullFloat64)
 		case itemsession.FieldCommitCountSinceSpawn:
 			values[i] = new(sql.NullInt64)
-		case itemsession.FieldSessionUUID, itemsession.FieldSessionRole, itemsession.FieldAcSnapshot, itemsession.FieldTriageResult, itemsession.FieldVerificationNotes, itemsession.FieldLastCommitSha, itemsession.FieldLastCommitMessage:
+		case itemsession.FieldSessionUUID, itemsession.FieldSessionRole, itemsession.FieldAcSnapshot, itemsession.FieldPipelineModeSnapshot, itemsession.FieldPipelineModeSnapshotHash, itemsession.FieldTriageResult, itemsession.FieldVerificationNotes, itemsession.FieldLastCommitSha, itemsession.FieldLastCommitMessage:
 			values[i] = new(sql.NullString)
 		case itemsession.FieldStartedAt, itemsession.FieldEndedAt, itemsession.FieldLastCommitAt, itemsession.FieldLastFileTouchAt, itemsession.FieldLastProgressAt, itemsession.FieldCreatedAt:
 			values[i] = new(sql.NullTime)
@@ -159,6 +163,18 @@ func (_m *ItemSession) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field ac_snapshot", values[i])
 			} else if value.Valid {
 				_m.AcSnapshot = value.String
+			}
+		case itemsession.FieldPipelineModeSnapshot:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field pipeline_mode_snapshot", values[i])
+			} else if value.Valid {
+				_m.PipelineModeSnapshot = value.String
+			}
+		case itemsession.FieldPipelineModeSnapshotHash:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field pipeline_mode_snapshot_hash", values[i])
+			} else if value.Valid {
+				_m.PipelineModeSnapshotHash = value.String
 			}
 		case itemsession.FieldTriageResult:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -294,6 +310,12 @@ func (_m *ItemSession) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("ac_snapshot=")
 	builder.WriteString(_m.AcSnapshot)
+	builder.WriteString(", ")
+	builder.WriteString("pipeline_mode_snapshot=")
+	builder.WriteString(_m.PipelineModeSnapshot)
+	builder.WriteString(", ")
+	builder.WriteString("pipeline_mode_snapshot_hash=")
+	builder.WriteString(_m.PipelineModeSnapshotHash)
 	builder.WriteString(", ")
 	builder.WriteString("triage_result=")
 	builder.WriteString(_m.TriageResult)
