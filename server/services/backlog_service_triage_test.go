@@ -1358,3 +1358,175 @@ func TestSpawnSessionFromItem_should_UseDefaultInitialPrompt_When_PipelineModeIs
 	assert.Equal(t, wantPrompt, creator.calls[0].prompt,
 		"default PipelineMode must still produce BuildTokenBudgetedPrompt's unmodified output")
 }
+
+// ─── getWorkSessionDiff / resolveCodebaseWorkDir: worktree-gone false-FAIL regression ──
+//
+// Root cause (confirmed live on the "Backlog History feature Broken" item, PR #173,
+// branch backlog/stapler-squad-fix-backlog-status-audit-trail-r3, 2026-07-20): the
+// review gate's own diff-read path (ReviewGateRunner.Run, session/review_gate.go) is
+// hardened against a gone worktree — it falls back to GetGitDiffRef/RecoverBaseCommitSHA
+// and, failing that, blocks the review with a synthetic FAIL and an operator
+// notification rather than proceeding. TriggerReReview's re-review path
+// (getWorkSessionDiff/resolveCodebaseWorkDir, this file) had no equivalent hardening:
+// getWorkSessionDiff logged a warning and silently returned "", and
+// resolveCodebaseWorkDir hands the reviewer the DB-recorded worktree path without ever
+// checking it still exists on disk. The reviewer is then granted Read/Grep/Glob access
+// scoped to a directory that isn't there, finds no evidence for any criterion, and
+// FAILs/UNVERIFIABLEs everything — even though the real work is sitting on a pushed
+// branch. The two tests below cover both halves of the fix.
+
+// TestGetWorkSessionDiff_should_RecoverViaMergeBase_When_WorktreeGoneAndBaseShaCorrupted
+// mirrors TestReviewGateRunner_DiffComputationFailure_AutoRepairsFromDivergentBranch
+// (session/review_gate_test.go) for the TriggerReReview path: the session's worktree
+// directory is gone AND its recorded base_commit_sha is a well-formed but nonexistent
+// SHA (the same corruption shape as backlog item ae1e2070), but the work branch is real
+// and reachable from repoPath's own object store. getWorkSessionDiff must recover the
+// diff via RecoverBaseCommitSHA's merge-base repair instead of giving up empty the
+// moment the naive branch-ref fallback also fails.
+func TestGetWorkSessionDiff_should_RecoverViaMergeBase_When_WorktreeGoneAndBaseShaCorrupted(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepoWithCommit(t, repoDir)
+	runGitTestCmd(t, repoDir, "branch", "-M", "main")
+
+	const workBranch = "backlog/recover-diff-merge-base"
+	runGitTestCmd(t, repoDir, "branch", workBranch)
+	runGitTestCmd(t, repoDir, "checkout", workBranch)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("real work\n"), 0o644))
+	runGitTestCmd(t, repoDir, "add", "feature.txt")
+	runGitTestCmd(t, repoDir, "commit", "-m", "real fix")
+	runGitTestCmd(t, repoDir, "checkout", "main")
+
+	storage, repo := createTestStorageWithRepo(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+
+	item, err := storage.CreateBacklogItem(context.Background(), session.BacklogItemData{
+		Title:    "Diff auto-repair via TriggerReReview",
+		RepoPath: repoDir,
+		Status:   string(session.BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	const workSessionUUID = "diff-repair-triage-uuid"
+	workIS, err := storage.CreateItemSession(context.Background(), session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: workSessionUUID,
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	require.NoError(t, storage.UpdateItemSessionEnded(context.Background(), workIS.ID, time.Now()))
+
+	// The worktree directory itself no longer exists (simulating cleanup deleting it),
+	// and base_commit_sha is corrupted — both GetGitDiff(worktree) and the naive
+	// GetGitDiffRef(repo fallback) must fail before the merge-base repair kicks in.
+	goneWT := filepath.Join(t.TempDir(), "worktree-that-is-gone")
+	now := time.Now()
+	require.NoError(t, repo.Create(context.Background(), session.InstanceData{
+		Title:      workSessionUUID,
+		UUID:       workSessionUUID,
+		Path:       goneWT,
+		WorkingDir: goneWT,
+		Branch:     workBranch,
+		Status:     session.Paused,
+		Program:    "claude",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Worktree: session.GitWorktreeData{
+			RepoPath:      repoDir,
+			WorktreePath:  goneWT,
+			SessionName:   workSessionUUID,
+			BranchName:    workBranch,
+			BaseCommitSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		},
+	}))
+
+	diff := svc.getWorkSessionDiff(context.Background(), repoDir, &session.ItemSessionSummary{SessionUUID: workSessionUUID})
+	assert.Contains(t, diff, "feature.txt",
+		"must recover the real diff via merge-base auto-repair instead of giving up empty")
+}
+
+// TestTriggerReReview_should_BlockInsteadOfFalseFail_When_WorktreeGoneAndDiffUnrecoverable
+// reproduces the live bug end to end: no diff is recoverable (worktree gone, branch
+// itself unresolvable — simulating a fully torn-down session, the case where even the
+// merge-base repair above cannot help) and resolveCodebaseWorkDir's fallback directory
+// does not exist on disk either. TriggerReReview must block before ever spending a
+// headless call — proven here by a fake pool that would confidently return FAIL if it
+// were ever actually invoked — and must record an explicit UNVERIFIABLE verdict plus an
+// operator notification, never a false FAIL synthesized from reading nothing.
+func TestTriggerReReview_should_BlockInsteadOfFalseFail_When_WorktreeGoneAndDiffUnrecoverable(t *testing.T) {
+	storage, repo := createTestStorageWithRepo(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+	bus := events.NewEventBus(4)
+	svc.SetEventBus(bus)
+	subCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, _ := bus.Subscribe(subCtx)
+
+	// This response would (falsely) confirm the original bug if the pool were ever
+	// actually called — asserting callCount()==0 below proves the fix short-circuits
+	// before spending a headless call, not merely that some downstream heuristic
+	// happens to catch a bad result afterward.
+	//
+	// The pool is wired AFTER setupItemInReview: CreateBacklogItem triggers automatic
+	// triage when a headless pool is already set, which would otherwise consume this
+	// pool's single scripted response before the re-review call under test ever runs
+	// (same ordering setupItemInReview's other callers rely on).
+	repoDir := t.TempDir()
+	initGitRepoWithCommit(t, repoDir)
+
+	itemID := setupItemInReview(t, svc, repoDir)
+
+	pool := &fakeHeadlessPool{response: `{"overall":"FAIL","summary":"no diff exists; codebase shows none of the claimed work","tool_reads":[],"verdicts":[]}`}
+	svc.SetHeadlessPool(pool)
+	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
+
+	const workSessionUUID = "gone-worktree-unrecoverable-uuid"
+	workIS, err := storage.CreateItemSession(context.Background(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: workSessionUUID,
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	require.NoError(t, storage.UpdateItemSessionEnded(context.Background(), workIS.ID, time.Now()))
+
+	goneWT := filepath.Join(t.TempDir(), "worktree-that-is-gone")
+	now := time.Now()
+	require.NoError(t, repo.Create(context.Background(), session.InstanceData{
+		Title:      workSessionUUID,
+		UUID:       workSessionUUID,
+		Path:       goneWT,
+		WorkingDir: goneWT,
+		Branch:     "backlog/gone-branch-nowhere",
+		Status:     session.Paused,
+		Program:    "claude",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Worktree: session.GitWorktreeData{
+			RepoPath:     repoDir,
+			WorktreePath: goneWT,
+			SessionName:  workSessionUUID,
+			// BranchName was never created in repoDir, so it is unresolvable — neither
+			// GetGitDiffRef nor RecoverBaseCommitSHA's merge-base lookup can recover
+			// anything, forcing the empty-diff codebase-read path.
+			BranchName:    "backlog/gone-branch-nowhere",
+			BaseCommitSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		},
+	}))
+
+	resp, err := svc.TriggerReReview(t.Context(), connect.NewRequest(&sessionv1.TriggerReReviewRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.ItemSession)
+
+	assert.Equal(t, 0, pool.callCount(), "must block before ever calling the headless pool")
+
+	outcome, err := storage.GetMostRecentReviewVerdictForItem(t.Context(), itemID)
+	require.NoError(t, err)
+	assert.Equal(t, session.ReviewVerdictUnverifiable, outcome,
+		"must not record a false FAIL when the codebase-read directory does not exist")
+
+	select {
+	case ev := <-ch:
+		assert.Equal(t, events.EventNotification, ev.Type)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an operator notification when the review is blocked")
+	}
+}
