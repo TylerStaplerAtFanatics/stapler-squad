@@ -302,7 +302,7 @@ func (s *ExternalTmuxStreamer) readControlMode(stdout io.ReadCloser) {
 			}
 		} else if strings.HasPrefix(line, "%exit") {
 			log.Info("control mode received %exit for external session", "session", s.tmuxSessionName)
-			return
+			break
 		} else if strings.HasPrefix(line, "%error") {
 			log.Warn("control mode error", "session", s.tmuxSessionName, "line", line)
 		}
