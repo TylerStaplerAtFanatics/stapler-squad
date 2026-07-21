@@ -262,6 +262,121 @@ func TestAutoReopenAfterFailedReview_RepeatedFailure_LeavesInReviewAndNotifies(t
 	assert.Equal(t, domain.StuckReasonBouncing, open[0].Reason, "reuses the bouncing reason — same non-converging-cycle semantics, tripped immediately instead of waiting for the periodic sweep")
 }
 
+// --- Stale-but-alive blocking work session: closes the "zero operator signal" gap ---
+//
+// hasActiveWorkSession's guard (above) is purely liveness-based (EndedAt == nil) and
+// cannot distinguish a session that's genuinely making progress from one that's alive
+// but has produced no output for hours. Confirmed live 2026-07-20 on backlog item
+// 9264efe7: the session manager reported the blocking work session Active with a
+// current last_activity_at, while review_queue_determiner.go's independently-computed
+// staleness detector flagged the SAME session "STALENESS DETECTED ... 6h 35m since
+// last meaningful output" on every reconciliation tick — with nothing ever surfaced to
+// the operator. These two tests cover notifyIfActiveWorkSessionStale, which closes
+// that visibility gap without changing the reopen decision itself (the stale session
+// is never stopped, killed, or bypassed — see that function's doc comment for why).
+
+// TestAutoReopenAfterFailedReview_ActiveStaleWorkSession_NotifiesOperator verifies
+// that when the active work session blocking a reopen attempt is ALSO independently
+// confirmed stale — using the exact same staleness computation and threshold
+// review_queue_determiner.go's own detector uses
+// (Instance.GetTimeSinceLastMeaningfulOutput vs
+// session.DefaultReviewQueuePollerConfig().StalenessThreshold) — an operator
+// notification fires, while the reopen decision itself (item stays in review, no new
+// session spawned, nothing stopped) is unchanged.
+func TestAutoReopenAfterFailedReview_ActiveStaleWorkSession_NotifiesOperator(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+	ctx := context.Background()
+
+	stopper := &mockSessionStopper{
+		liveUUIDs: map[string]bool{"active-work-uuid": true},
+		// Mirrors the live incident's observed staleness (6h 35m), well past
+		// the review queue's own 2-minute StalenessThreshold.
+		staleFor: map[string]time.Duration{"active-work-uuid": 6*time.Hour + 35*time.Minute},
+	}
+	svc.SetSessionStopper(stopper)
+
+	bus := events.NewEventBus(4)
+	svc.SetEventBus(bus)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, _ := bus.Subscribe(subCtx)
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Item with a stale-but-alive blocking work session",
+		Status: string(session.BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "active-work-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	reopenErr := svc.AutoReopenAfterFailedReview(ctx, item.ID)
+	require.NoError(t, reopenErr, "an active work session is an expected 'leave it in place' outcome, not a failure")
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusReview), fetched.Status, "the reopen decision itself must be unchanged — this fix only adds a notification")
+
+	select {
+	case ev := <-ch:
+		assert.Equal(t, events.EventNotification, ev.Type)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an operator notification when the blocking work session is independently stale")
+	}
+}
+
+// TestAutoReopenAfterFailedReview_ActiveFreshWorkSession_NoNotification is the
+// companion negative case: an active work session that is NOT independently flagged
+// stale (idle time well under review_queue_determiner.go's own staleness threshold)
+// must not trigger a notification — this closes the "silent skip" gap only for
+// genuinely stuck sessions, not every routine active-session skip (which would make
+// the notification spam-prone rather than a meaningful signal).
+func TestAutoReopenAfterFailedReview_ActiveFreshWorkSession_NoNotification(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+	ctx := context.Background()
+
+	stopper := &mockSessionStopper{
+		liveUUIDs: map[string]bool{"active-work-uuid": true},
+		staleFor:  map[string]time.Duration{"active-work-uuid": 5 * time.Second},
+	}
+	svc.SetSessionStopper(stopper)
+
+	bus := events.NewEventBus(4)
+	svc.SetEventBus(bus)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, _ := bus.Subscribe(subCtx)
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Item with a genuinely-active blocking work session",
+		Status: string(session.BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "active-work-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	reopenErr := svc.AutoReopenAfterFailedReview(ctx, item.ID)
+	require.NoError(t, reopenErr)
+
+	select {
+	case ev := <-ch:
+		t.Fatalf("expected no notification for a genuinely active (non-stale) session, got %+v", ev)
+	case <-time.After(300 * time.Millisecond):
+		// expected: no notification fired
+	}
+}
+
 // TestAutoRespawnReview_ReworkCapHit_LeavesInReviewAndNotifies is the regression
 // test for the runaway-loop risk this fix introduces if left unbounded: unlike
 // AutoReopenAfterFailedReview/AutoReopenForPRFix, AutoRespawnReview never adds a
