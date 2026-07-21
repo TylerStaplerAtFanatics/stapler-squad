@@ -1966,13 +1966,54 @@ func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Cont
 	// reason once the item leaves 'idea' — i.e. once triage is re-triggered and succeeds.
 }
 
+// mostRecentWorkCommitShippedToMain finds itemID's most recent work-session
+// commit (if any) and reports whether that specific commit has landed on
+// bounceMainBranch. Mirrors BacklogService.isCodeShippedToMain's "keep
+// overwriting while scanning ascending-by-CreatedAt" pattern
+// (server/services/backlog_service_lifecycle.go) for finding the most recent
+// work session's commit, but — unlike that method — deliberately does NOT
+// treat "no commit ever recorded" as shipped: isCodeShippedToMain's caller
+// uses it as a block-a-transition guard, where "nothing to verify" should not
+// block; this caller uses it as a fire-a-transition trigger, where "nothing
+// to verify" must never fire one. Returns ("", false) when there is no
+// work-session commit to check at all.
+func (l *BacklogLifecycleListener) mostRecentWorkCommitShippedToMain(ctx context.Context, itemID, repoPath string) (sha string, shipped bool) {
+	itemSessions, err := l.storage.ListItemSessions(ctx, itemID)
+	if err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] mostRecentWorkCommitShippedToMain ListItemSessions item=%s: %v", itemID, err)
+		return "", false
+	}
+	var lastCommitSha string
+	for _, is := range itemSessions {
+		// ListItemSessions orders ascending by CreatedAt — keep overwriting so
+		// this ends up holding the *most recent* work session's commit.
+		if is.Role == SessionRoleWork && is.LastCommitSha != "" {
+			lastCommitSha = is.LastCommitSha
+		}
+	}
+	if lastCommitSha == "" {
+		return "", false // nothing was ever committed — nothing to confirm shipped
+	}
+	onMain, mainErr := git.IsCommitOnMain(repoPath, bounceMainBranch, lastCommitSha)
+	if mainErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] mostRecentWorkCommitShippedToMain IsCommitOnMain item=%s sha=%s: %v", itemID, lastCommitSha, mainErr)
+		return lastCommitSha, false
+	}
+	return lastCommitSha, onMain
+}
+
 // reconcileBouncingItems flags items that have crossed in_progress->review
 // >= bounceThreshold times within bounceLookback with no recorded PASS
 // verdict — a non-converging rework cycle that never hits the rework cap
 // (root cause #4). Before flagging, it first checks whether the item's
 // linked PR has already merged (including a manual merge outside the app's
 // own ship flow) — a merged item isn't bouncing, it's done, and is
-// transitioned to done instead of being marked stuck. Best-effort:
+// transitioned to done instead of being marked stuck. For an item with no PR
+// number at all (real work committed and merged/pushed straight to main
+// without ever going through a PR — see item 93565fa1, 2026-07-21), it falls
+// back to checking the item's own most recent work-session commit directly
+// against main via mostRecentWorkCommitShippedToMain, so an item isn't left
+// bouncing forever just because it never had a PR to check. Best-effort:
 // query/notify failures are logged, never returned.
 func (l *BacklogLifecycleListener) reconcileBouncingItems(ctx context.Context, er *EntRepository) {
 	// Scan items in the two statuses a bouncing cycle spans; a converged item
@@ -2011,6 +2052,26 @@ func (l *BacklogLifecycleListener) reconcileBouncingItems(ctx context.Context, e
 					// immediately, rather than waiting for the next
 					// selfHealStuck sweep to notice the terminal status.
 					l.resolveStuckLogged(ctx, er, item.ID, domain.StuckReasonBouncing, "reconcileBouncingItems/merged")
+				}
+				continue
+			}
+		} else if item.RepoPath != "" {
+			// No PR was ever linked to this item — check whether the item's own
+			// most recent work-session commit landed on main anyway (a direct
+			// merge/push to main outside the app's ship flow entirely, so
+			// item.PrNumber was never set). Only that specific commit is
+			// checked, never an arbitrary one, so an unrelated commit merged to
+			// main elsewhere can't produce a false positive.
+			if sha, shipped := l.mostRecentWorkCommitShippedToMain(ctx, item.ID, item.RepoPath); shipped {
+				precondition := &BacklogItemPrecondition{ExpectedStatus: item.Status}
+				if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusDone, precondition); transErr != nil {
+					log.WarningLog.Printf("[BacklogLifecycle] reconcileBouncingItems done transition (shipped without PR) item=%s: %v", item.ID, transErr)
+				} else {
+					log.InfoLog.Printf("[BacklogLifecycle] reconcileBouncingItems item=%s → done (commit %s shipped to %s without a PR)", item.ID, sha, bounceMainBranch)
+					// Best-effort: clear any bouncing row from a prior tick
+					// immediately, rather than waiting for the next
+					// selfHealStuck sweep to notice the terminal status.
+					l.resolveStuckLogged(ctx, er, item.ID, domain.StuckReasonBouncing, "reconcileBouncingItems/shipped-no-pr")
 				}
 				continue
 			}
