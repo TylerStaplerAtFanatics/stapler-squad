@@ -1554,7 +1554,39 @@ Do not modify the code. Only write the review verdict.
 	// 9. Headless path — preferred when a headless pool is configured.
 	// This avoids needing tmux and runs the review inline via LLM call.
 	if s.headlessPool != nil {
-		codebaseWorkDir := s.resolveCodebaseWorkDir(ctx, item.RepoPath, mostRecentWorkSession)
+		codebaseWorkDir, codebaseWorkDirExists := s.resolveCodebaseWorkDir(ctx, item.RepoPath, mostRecentWorkSession)
+
+		// codebaseWorkDir only matters on the empty-diff path — BuildReviewCallOptions
+		// never grants directory access when a real diff exists. Block here, before ever
+		// building a prompt or spending a headless call, when that directory doesn't
+		// exist on disk: handing the reviewer Read/Grep/Glob access scoped to a
+		// nonexistent directory produces zero real evidence, which it then (correctly,
+		// given what it was shown) reports as "no diff exists" — a false FAIL that masks
+		// real work sitting on the branch. See resolveCodebaseWorkDir's doc comment for
+		// the confirmed live incident this guards against. Same failure class
+		// ReviewGateRunner.Run (session/review_gate.go) blocks on an unrecoverable diff.
+		if workSessionDiff == "" && !codebaseWorkDirExists {
+			blockedSummary := fmt.Sprintf("Review blocked: no diff could be computed and the codebase-read fallback directory (%s) does not exist on disk. The recorded worktree may have been cleaned up without its DB row being updated — this needs investigation, not rework.", codebaseWorkDir)
+			is, createErr := session.RecordDegradedReviewVerdict(s.storage, item.ID, session.AcCriteriaJSON(acSnapshotJSON), headlessReReviewUUIDPrefix, blockedSummary)
+			if createErr != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save headless re-review blocked verdict: %w", createErr))
+			}
+			log.ErrorLog.Printf("[TriggerReReview] codebase-read work dir %s does not exist for item %s — review blocked, UNVERIFIABLE verdict recorded (session %s)", codebaseWorkDir, item.ID, is.ID)
+			if s.eventBus != nil {
+				// itemID as sessionID — see comment in notifyReworkCapHit above.
+				s.eventBus.Publish(events.NewNotificationEvent(
+					item.ID, "", uuid.New().String(),
+					int32(sessionv1.NotificationType_NOTIFICATION_TYPE_ERROR),
+					int32(sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH),
+					"Review blocked — codebase directory missing",
+					fmt.Sprintf("%s — no diff could be computed and the fallback review directory is gone. Needs investigation.", item.Title),
+					map[string]string{"item_id": item.ID},
+				))
+			}
+			return connect.NewResponse(&sessionv1.TriggerReReviewResponse{
+				ItemSession: itemSessionToProto(is, s.buildCostLookup()),
+			}), nil
+		}
 
 		// Additional context (prior review attempts, full notes history, item goal/status
 		// history, searchable session transcript) is only gathered on the empty-diff
@@ -1941,16 +1973,31 @@ func findMostRecentSessions(sessions []session.ItemSessionSummary) (reviewSessio
 
 // resolveCodebaseWorkDir returns the directory the headless codebase-read review call
 // (BuildReviewCallOptions' empty-diff branch) should be granted Read/Grep/Glob access
-// to. Prefers the work session's dedicated worktree path (freshest, matches the
-// session's actual branch); falls back to repoPath when no worktree is recorded or the
-// lookup fails (directory-mode sessions, or a worktree that's since been cleaned up).
-func (s *BacklogService) resolveCodebaseWorkDir(ctx context.Context, repoPath string, workSession *session.ItemSessionSummary) string {
+// to, and whether that directory actually exists on disk. Prefers the work session's
+// dedicated worktree path (freshest, matches the session's actual branch); falls back
+// to repoPath when no worktree is recorded or the lookup fails (directory-mode
+// sessions, or a worktree that's since been cleaned up).
+//
+// The existence check exists because the DB-recorded worktree row can outlive the
+// worktree directory itself (e.g. cleanup deleted the directory without pruning the
+// row) — see the confirmed live incident on the "Backlog History feature Broken" item
+// (PR #173): get_session_diff reported "worktree path does not exist" for a session
+// whose worktree row still resolved successfully. Handing the reviewer Read/Grep/Glob
+// access scoped to a directory that isn't there produces zero real evidence, which the
+// reviewer then (correctly, given what it was shown) reports as "no diff exists" /
+// "codebase shows none of the claimed work" — a false FAIL that masks real, substantial
+// work sitting on the branch. The caller must check exists before proceeding into
+// codebase-read mode, mirroring ReviewGateRunner.Run's (session/review_gate.go) refusal
+// to hand the reviewer a diff it could not positively compute.
+func (s *BacklogService) resolveCodebaseWorkDir(ctx context.Context, repoPath string, workSession *session.ItemSessionSummary) (dir string, exists bool) {
+	dir = repoPath
 	if workSession != nil {
 		if wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, workSession.SessionUUID); wtErr == nil && wt.WorktreePath != "" {
-			return wt.WorktreePath
+			dir = wt.WorktreePath
 		}
 	}
-	return repoPath
+	info, statErr := os.Stat(dir)
+	return dir, statErr == nil && info.IsDir()
 }
 
 // getWorkSessionDiff returns the git diff for the given work session. It prefers the
@@ -1984,11 +2031,34 @@ func (s *BacklogService) getWorkSessionDiff(ctx context.Context, repoPath string
 		diffBaseSHA = workSession.LastCommitSha
 	}
 	diff, _, diffErr := session.GetGitDiffRef(ctx, diffDir, diffBaseSHA, diffHeadRef)
-	if diffErr != nil {
-		log.WarningLog.Printf("[TriggerReReview] GetGitDiff fallback in %s failed: %v", diffDir, diffErr)
-		return ""
+	if diffErr == nil {
+		return diff
 	}
-	return diff
+	log.WarningLog.Printf("[TriggerReReview] GetGitDiff fallback in %s failed: %v", diffDir, diffErr)
+
+	// Auto-repair: mirror ReviewGateRunner.Run's recovery (session/review_gate.go) for a
+	// stale/corrupted base_commit_sha — the same failure mode found via manual QA on item
+	// ae1e2070 and fixed there first. Only attemptable when a branch ref is known; recompute
+	// the merge-base of repoPath's own checked-out HEAD against the branch and retry once
+	// before giving up on what may just be a recoverable infrastructure hiccup rather than
+	// "no changes were made".
+	if diffHeadRef != "" {
+		if recoveredSHA, recoverErr := session.RecoverBaseCommitSHA(ctx, diffDir, diffHeadRef); recoverErr != nil {
+			log.WarningLog.Printf("[TriggerReReview] RecoverBaseCommitSHA in %s ref=%s failed: %v", diffDir, diffHeadRef, recoverErr)
+		} else if recoveredDiff, _, retryErr := session.GetGitDiffRef(ctx, diffDir, recoveredSHA, diffHeadRef); retryErr != nil {
+			log.WarningLog.Printf("[TriggerReReview] retry with recovered base %s in %s failed: %v", recoveredSHA, diffDir, retryErr)
+		} else if strings.TrimSpace(recoveredDiff) == "" {
+			// A recovered base that produces an empty diff is indistinguishable from
+			// "nothing changed" and just as unsafe to trust as the original failure — see
+			// the identical guard in ReviewGateRunner.Run. Fall through and return "" below
+			// rather than treating this as a successful repair.
+			log.WarningLog.Printf("[TriggerReReview] recovered base %s ref=%s produced an empty diff — not trusting it", recoveredSHA, diffHeadRef)
+		} else {
+			log.InfoLog.Printf("[TriggerReReview] auto-repaired broken base commit ref=%s recovered=%s (recorded=%s)", diffHeadRef, recoveredSHA, diffBaseSHA)
+			return recoveredDiff
+		}
+	}
+	return ""
 }
 
 // resolveACSnapshot returns the acceptance criteria to use for a re-review. It prefers
