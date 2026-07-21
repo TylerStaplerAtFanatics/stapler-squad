@@ -65,6 +65,15 @@ type SessionStopper interface {
 	// the default session list once its backlog item is done/superseded. No-op
 	// (not an error) if the session isn't tracked live or is already archived.
 	ArchiveSessionByUUID(ctx context.Context, sessionUUID string) error
+	// TimeSinceLastMeaningfulOutput returns how long it has been since the live
+	// Instance for sessionUUID last produced meaningful terminal output, backed
+	// by the same Instance.GetTimeSinceLastMeaningfulOutput signal
+	// review_queue_determiner.go's staleness detector uses — so "is this
+	// session stale" has exactly one definition across the codebase instead of
+	// each call site re-deriving its own. ok is false if the session isn't
+	// currently tracked live (same "not live" cases as IsSessionLive); dur is
+	// meaningless when ok is false.
+	TimeSinceLastMeaningfulOutput(sessionUUID string) (dur time.Duration, ok bool)
 }
 
 // itemSourceBackend is a narrow interface for item source persistence; satisfied by *session.Storage.

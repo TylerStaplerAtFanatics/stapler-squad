@@ -155,10 +155,21 @@ type mockSessionStopper struct {
 	killedPaneUUIDs   []string
 	archivedUUIDs     []string
 	archiveErrForUUID map[string]error
+	// staleFor maps a session UUID to the "time since last meaningful output"
+	// TimeSinceLastMeaningfulOutput should report for it. A UUID present in
+	// liveUUIDs but absent here reports (0, true) — live and fresh.
+	staleFor map[string]time.Duration
 }
 
 func (m *mockSessionStopper) IsSessionLive(uuid string) bool {
 	return m.liveUUIDs[uuid]
+}
+
+func (m *mockSessionStopper) TimeSinceLastMeaningfulOutput(uuid string) (time.Duration, bool) {
+	if !m.liveUUIDs[uuid] {
+		return 0, false
+	}
+	return m.staleFor[uuid], true
 }
 
 func (m *mockSessionStopper) StopSessionByUUID(_ context.Context, _ string) error { return nil }
