@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1376,6 +1377,144 @@ func TestReconcileBouncingItems_should_stillFlag_When_LinkedPRNotYetMerged(t *te
 	require.NoError(t, err)
 	require.Len(t, open, 1)
 	assert.Equal(t, domain.StuckReasonBouncing, open[0].Reason, "an item with an unmerged PR must still be flagged bouncing")
+}
+
+// setupBounceMainRepo creates a temporary git repo with a single commit on a
+// branch explicitly renamed to "main" (git's init default branch name isn't
+// guaranteed to be "main" — see session/git/worktree_creation_test.go's
+// setupTestRepo for the same pattern), matching bounceMainBranch. Returns the
+// repo path and the tip commit's SHA.
+func setupBounceMainRepo(t *testing.T) (repoPath, mainSHA string) {
+	t.Helper()
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644))
+	runGitTestCmd(t, dir, "add", "base.txt")
+	runGitTestCmd(t, dir, "commit", "-m", "base commit")
+	runGitTestCmd(t, dir, "branch", "-M", "main")
+	mainSHA = strings.TrimSpace(runGitTestCmd(t, dir, "rev-parse", "HEAD"))
+	return dir, mainSHA
+}
+
+// TestReconcileBouncingItems_should_transitionToDone_When_ShippedWithoutPR
+// verifies the fallback added alongside the PR-merge check above: a bouncing
+// item that never had a PR at all (item.PrNumber == 0) — because its real
+// work was committed and merged/pushed straight to main outside the app's
+// ship flow entirely — is recognized via its own most recent work session's
+// commit and transitioned to done instead of being left bouncing forever.
+// Regression test for the 2026-07-21 live repro: backlog item "Rich File
+// Browser" (93565fa1) had its acceptance-criteria commits verified as
+// ancestors of main via `git merge-base --is-ancestor`, but item.PrNumber was
+// never set (no PR ever existed for those commits), so the PR-merge check
+// added earlier that day never fired and the item kept bouncing/getting
+// flagged stuck indefinitely despite its work already having shipped.
+func TestReconcileBouncingItems_should_transitionToDone_When_ShippedWithoutPR(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	repoPath, mainSHA := setupBounceMainRepo(t)
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:    "Bouncing item shipped without a PR",
+		Status:   string(BacklogStatusInProgress),
+		RepoPath: repoPath,
+	})
+	require.NoError(t, err)
+
+	workIS, err := storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "shipped-no-pr-work-session",
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+	require.NoError(t, storage.UpdateItemSessionGitActivity(ctx, workIS.ID, mainSHA, "shipped straight to main", time.Now(), 1))
+
+	// 3 in_progress->review round trips with no PASS verdict — the exact
+	// shape isBouncing flags.
+	for i := 0; i < 3; i++ {
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusReview, nil)
+		require.NoError(t, err)
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, nil)
+		require.NoError(t, err)
+	}
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcileBouncingItems(ctx, er)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusDone), fetched.Status,
+		"an item with no PR whose most recent work-session commit is already on main must transition to done, not stay bouncing")
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "an item whose code already shipped to main without a PR must never be flagged bouncing")
+	assert.Empty(t, notifier.calls, "no bouncing notification should fire for an already-shipped item")
+}
+
+// TestReconcileBouncingItems_should_stillFlag_When_NoPRAndCommitNotOnMain
+// verifies the new no-PR fallback doesn't suppress detection for a genuinely
+// stuck item: when there's no PR AND the item's most recent work-session
+// commit was never actually merged to main, the item must still be flagged
+// bouncing exactly as before — no regression on the normal (truly stuck) case.
+func TestReconcileBouncingItems_should_stillFlag_When_NoPRAndCommitNotOnMain(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	repoPath, _ := setupBounceMainRepo(t)
+	runGitTestCmd(t, repoPath, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "feature.txt"), []byte("unshipped work\n"), 0o644))
+	runGitTestCmd(t, repoPath, "add", "feature.txt")
+	runGitTestCmd(t, repoPath, "commit", "-m", "work that never merged")
+	featureSHA := strings.TrimSpace(runGitTestCmd(t, repoPath, "rev-parse", "HEAD"))
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:    "Bouncing item with unshipped commit and no PR",
+		Status:   string(BacklogStatusInProgress),
+		RepoPath: repoPath,
+	})
+	require.NoError(t, err)
+
+	workIS, err := storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: "unshipped-no-pr-work-session",
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+	require.NoError(t, storage.UpdateItemSessionGitActivity(ctx, workIS.ID, featureSHA, "work that never merged", time.Now(), 1))
+
+	for i := 0; i < 3; i++ {
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusReview, nil)
+		require.NoError(t, err)
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, nil)
+		require.NoError(t, err)
+	}
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcileBouncingItems(ctx, er)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusInProgress), fetched.Status,
+		"an item with no PR and a commit that never landed on main must not be auto-transitioned to done")
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, domain.StuckReasonBouncing, open[0].Reason,
+		"an item with no PR whose commit isn't on main must still be flagged bouncing, same as before this fix")
 }
 
 // --- Story 2.1.6: push_failed ---
