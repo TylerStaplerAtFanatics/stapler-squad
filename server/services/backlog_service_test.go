@@ -151,12 +151,25 @@ type mockSessionCreator struct {
 
 // mockSessionStopper implements SessionStopper for tests.
 type mockSessionStopper struct {
-	liveUUIDs       map[string]bool
-	killedPaneUUIDs []string
+	liveUUIDs         map[string]bool
+	killedPaneUUIDs   []string
+	archivedUUIDs     []string
+	archiveErrForUUID map[string]error
+	// staleFor maps a session UUID to the "time since last meaningful output"
+	// TimeSinceLastMeaningfulOutput should report for it. A UUID present in
+	// liveUUIDs but absent here reports (0, true) — live and fresh.
+	staleFor map[string]time.Duration
 }
 
 func (m *mockSessionStopper) IsSessionLive(uuid string) bool {
 	return m.liveUUIDs[uuid]
+}
+
+func (m *mockSessionStopper) TimeSinceLastMeaningfulOutput(uuid string) (time.Duration, bool) {
+	if !m.liveUUIDs[uuid] {
+		return 0, false
+	}
+	return m.staleFor[uuid], true
 }
 
 func (m *mockSessionStopper) StopSessionByUUID(_ context.Context, _ string) error { return nil }
@@ -167,6 +180,16 @@ func (m *mockSessionStopper) KillTmuxSessionByTitle(_ context.Context, _ string)
 
 func (m *mockSessionStopper) KillTmuxPaneOnly(_ context.Context, uuid string) error {
 	m.killedPaneUUIDs = append(m.killedPaneUUIDs, uuid)
+	return nil
+}
+
+func (m *mockSessionStopper) ArchiveSessionByUUID(_ context.Context, uuid string) error {
+	if m.archiveErrForUUID != nil {
+		if err, ok := m.archiveErrForUUID[uuid]; ok {
+			return err
+		}
+	}
+	m.archivedUUIDs = append(m.archivedUUIDs, uuid)
 	return nil
 }
 
@@ -223,7 +246,10 @@ func (m *mockSessionCreator) CreateDirectorySession(_ context.Context, title, pa
 	// Path must round-trip: SpawnSessionFromItem writes slash commands and a
 	// context file to inst.Path. An empty Path here makes those writes land in
 	// the test process's working directory instead of a sandbox.
-	inst := &session.Instance{Title: title, Path: path}
+	// UUID must be unique per call — SpawnSessionFromItem's ItemSession row is
+	// keyed on inst.UUID, so archival-tracking tests need distinct values per
+	// spawn to tell rounds apart (see mockSessionStopper.archivedUUIDs).
+	inst := &session.Instance{Title: title, Path: path, UUID: fmt.Sprintf("mock-session-%d", len(m.calls))}
 	m.calls = append(m.calls, mockCreateCall{
 		title:                       title,
 		path:                        path,
@@ -254,7 +280,7 @@ func (m *mockSessionCreator) CreateWorktreeSession(_ context.Context, title, _, 
 		})
 		return nil, m.err
 	}
-	inst := &session.Instance{Title: title, Path: worktreePath}
+	inst := &session.Instance{Title: title, Path: worktreePath, UUID: fmt.Sprintf("mock-session-%d", len(m.calls))}
 	m.calls = append(m.calls, mockCreateCall{
 		title:                       title,
 		path:                        worktreePath,
@@ -549,6 +575,78 @@ func TestListBacklogItems_DoneStatusIsTerminal(t *testing.T) {
 		allTitles = append(allTitles, it.Title)
 	}
 	assert.Contains(t, allTitles, "done item", "done items must appear when includeTerminal=true")
+}
+
+// TestListBacklogItems_DefaultView_ShowsDoneButHidesArchived is the RPC-level
+// regression test for the leak fixed alongside the auto-archive sweep: the
+// backlog page's default fetch (IncludeTerminal:true, IncludeArchived
+// omitted/false) must show "done" items but exclude "archived" ones — before
+// the ExcludeDone/ExcludeArchived split, IncludeTerminal was the only knob
+// and toggling it on to show done items also silently showed archived items,
+// with no way to hide just the latter. IncludeArchived:true must then reveal
+// the archived item.
+func TestListBacklogItems_DefaultView_ShowsDoneButHidesArchived(t *testing.T) {
+	svc := newBacklogService(t)
+
+	create := func(title string) string {
+		resp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+			Title:        title,
+			SkipPlanning: true,
+			AcceptanceCriteria: []*sessionv1.AcCriterion{
+				{Index: 0, Text: "it works", Status: "pending"},
+			},
+		}))
+		require.NoError(t, err)
+		return resp.Msg.Item.Id
+	}
+	transition := func(itemID, to string) {
+		_, err := svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+			ItemId:         itemID,
+			TargetStatus:   to,
+			OverrideReason: "test override",
+		}))
+		require.NoError(t, err, "transition to %s", to)
+	}
+
+	doneID := create("done item for default view")
+	archivedID := create("archived item for default view")
+
+	transition(doneID, "ready")
+	transition(doneID, "in_progress")
+	transition(doneID, "review")
+	transition(doneID, "done")
+
+	transition(archivedID, "ready")
+	transition(archivedID, "in_progress")
+	transition(archivedID, "review")
+	transition(archivedID, "done")
+	transition(archivedID, "archived")
+
+	// The exact request the backlog list page sends by default (Part 2 fix):
+	// include done items, but not archived ones.
+	defaultView, err := svc.ListBacklogItems(t.Context(), connect.NewRequest(&sessionv1.ListBacklogItemsRequest{
+		IncludeTerminal: true,
+		IncludeArchived: false,
+	}))
+	require.NoError(t, err)
+	defaultTitles := make([]string, 0, len(defaultView.Msg.Items))
+	for _, it := range defaultView.Msg.Items {
+		defaultTitles = append(defaultTitles, it.Title)
+	}
+	assert.Contains(t, defaultTitles, "done item for default view", "done items must be visible by default")
+	assert.NotContains(t, defaultTitles, "archived item for default view", "archived items must be hidden by default")
+
+	// The "Show Archived" toggle re-fetches with IncludeArchived:true.
+	withArchived, err := svc.ListBacklogItems(t.Context(), connect.NewRequest(&sessionv1.ListBacklogItemsRequest{
+		IncludeTerminal: true,
+		IncludeArchived: true,
+	}))
+	require.NoError(t, err)
+	archivedTitles := make([]string, 0, len(withArchived.Msg.Items))
+	for _, it := range withArchived.Msg.Items {
+		archivedTitles = append(archivedTitles, it.Title)
+	}
+	assert.Contains(t, archivedTitles, "archived item for default view", "IncludeArchived:true must reveal archived items")
 }
 
 // ─── backlogItemToProto ───────────────────────────────────────────────────────
@@ -974,6 +1072,49 @@ func TestSpawnSessionFromItem_Reopen_ReusesWorktreeInPlace(t *testing.T) {
 	assert.FileExists(t, uncommitted, "reopen must not wipe the existing worktree — the file written before reopen must survive")
 }
 
+// TestSpawnSessionFromItem_Reopen_ArchivesSupersededWorkSession is the regression
+// test for the bug where backlog work sessions accumulated forever because rework
+// respawns never archived the prior round's session — see
+// docs/tasks/backlog-feature-improvement.md and the live-data finding of up to 13
+// unarchived work sessions piled up on a single still-open item. A reopen spawn must
+// archive every prior work-role session it supersedes (but must not touch the
+// brand-new session it just created).
+func TestSpawnSessionFromItem_Reopen_ArchivesSupersededWorkSession(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{}}
+	svc.SetSessionStopper(stopper)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	itemID := createReadyItemForSpawn(t, svc, repoPath, "archive superseded item")
+
+	_, err := svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 1)
+	firstUUID := creator.calls[0].inst.UUID
+
+	// End the work session so the reopen isn't blocked by the active-session guard.
+	sessions, err := storage.ListItemSessions(t.Context(), itemID)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	require.NoError(t, storage.UpdateItemSessionEnded(t.Context(), sessions[0].ID, time.Now()))
+
+	require.Empty(t, stopper.archivedUUIDs, "nothing should be archived before the reopen spawn")
+
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{ItemId: itemID}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 2)
+	secondUUID := creator.calls[1].inst.UUID
+
+	assert.Equal(t, []string{firstUUID}, stopper.archivedUUIDs,
+		"reopen must archive exactly the superseded first-round work session")
+	assert.NotContains(t, stopper.archivedUUIDs, secondUUID,
+		"reopen must not archive the brand-new session it just created")
+}
+
 // currentBranch returns the checked-out branch name at path via the real git CLI.
 func currentBranch(t *testing.T, path string) string {
 	t.Helper()
@@ -1166,6 +1307,91 @@ func TestSpawnSessionFromItem_TombstonesDeadWorkSession_AllowsRespawn(t *testing
 	}
 	assert.True(t, deadEnded, "the dead session must be tombstoned (EndedAt set)")
 	assert.True(t, newOpen, "the newly-spawned work session must be open")
+}
+
+// TestRemediateStaleWorkSession_should_killTombstoneAndRespawn_When_ActiveWorkSessionIsStale
+// is the regression test for the stale_work auto-remediation gap: a work
+// session with no EndedAt whose underlying tmux session/pane are genuinely
+// still alive (mockSessionStopper.liveUUIDs marks it live, mirroring
+// Instance.TmuxAlive()==true / PaneProcessDead()==false for an agent that
+// finished and is idle at an interactive prompt) must still be killed,
+// tombstoned, and replaced with a fresh work session — not left stranded
+// forever just because it isn't a zombie. See
+// session.StaleWorkRemediator/BacklogLifecycleListener.
+// remediateStaleWorkWithBackoffGate (session/backlog_lifecycle.go) for the
+// backoff-gated caller this implements.
+func TestRemediateStaleWorkSession_should_killTombstoneAndRespawn_When_ActiveWorkSessionIsStale(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{"stale-work-session-uuid": true}}
+	svc.SetSessionStopper(stopper)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	itemID := createReadyItemForSpawn(t, svc, repoPath, "item with stale-but-alive work session")
+
+	_, err := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: "stale-work-session-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	_, err = storage.TransitionBacklogItemStatus(t.Context(), itemID, session.BacklogStatusInProgress, nil)
+	require.NoError(t, err)
+
+	remediateErr := svc.RemediateStaleWorkSession(t.Context(), itemID)
+	require.NoError(t, remediateErr)
+
+	assert.Contains(t, stopper.killedPaneUUIDs, "stale-work-session-uuid", "the stale tmux pane must be killed even though it was reported live")
+	require.Len(t, creator.calls, 1, "a fresh work session must be spawned")
+
+	sessions, err := storage.ListItemSessions(t.Context(), itemID)
+	require.NoError(t, err)
+	var staleEnded, newOpen bool
+	for _, is := range sessions {
+		if is.SessionUUID == "stale-work-session-uuid" {
+			staleEnded = is.EndedAt != nil
+		} else if is.Role == string(session.SessionRoleWork) {
+			newOpen = is.EndedAt == nil
+		}
+	}
+	assert.True(t, staleEnded, "the stale session must be tombstoned (EndedAt set)")
+	assert.True(t, newOpen, "the newly-spawned work session must be open")
+}
+
+// TestRemediateStaleWorkSession_should_noop_When_ItemNoLongerInProgress verifies
+// that if the item already moved off in_progress (a human acted manually, or
+// another reconciler beat this call to it) by the time the gated remediation
+// goroutine actually runs, RemediateStaleWorkSession is a no-op — no kill, no
+// spawn.
+func TestRemediateStaleWorkSession_should_noop_When_ItemNoLongerInProgress(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+	stopper := &mockSessionStopper{liveUUIDs: map[string]bool{"stale-work-session-uuid": true}}
+	svc.SetSessionStopper(stopper)
+
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	itemID := createReadyItemForSpawn(t, svc, repoPath, "item that already moved on")
+
+	_, err := storage.CreateItemSession(t.Context(), session.ItemSessionData{
+		ItemID:      itemID,
+		SessionUUID: "stale-work-session-uuid",
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+	// Left in "ready" (createReadyItemForSpawn's terminal status), not
+	// in_progress — simulates the item having already moved on.
+
+	remediateErr := svc.RemediateStaleWorkSession(t.Context(), itemID)
+	require.NoError(t, remediateErr)
+
+	assert.Empty(t, stopper.killedPaneUUIDs, "must not kill anything once the item is no longer in_progress")
+	assert.Empty(t, creator.calls, "must not spawn a new session once the item is no longer in_progress")
 }
 
 // TestSpawnSessionFromItem_LiveWorkSession_StillBlocksSpawn verifies
