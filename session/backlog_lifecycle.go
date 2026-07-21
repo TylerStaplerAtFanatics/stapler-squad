@@ -1969,8 +1969,11 @@ func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Cont
 // reconcileBouncingItems flags items that have crossed in_progress->review
 // >= bounceThreshold times within bounceLookback with no recorded PASS
 // verdict — a non-converging rework cycle that never hits the rework cap
-// (root cause #4). Best-effort: query/notify failures are logged, never
-// returned.
+// (root cause #4). Before flagging, it first checks whether the item's
+// linked PR has already merged (including a manual merge outside the app's
+// own ship flow) — a merged item isn't bouncing, it's done, and is
+// transitioned to done instead of being marked stuck. Best-effort:
+// query/notify failures are logged, never returned.
 func (l *BacklogLifecycleListener) reconcileBouncingItems(ctx context.Context, er *EntRepository) {
 	// Scan items in the two statuses a bouncing cycle spans; a converged item
 	// (done) is handled by the self-heal sweep, not re-flagged here.
@@ -1984,6 +1987,35 @@ func (l *BacklogLifecycleListener) reconcileBouncingItems(ctx context.Context, e
 
 	since := time.Now().Add(-bounceLookback)
 	for _, item := range items {
+		// Before treating this item as failing, check whether its linked PR
+		// already merged — including a PR merged manually, outside the app's
+		// own ship flow (allow_auto_merge is disabled at the repo-settings
+		// level). Without this check, an item whose code already landed on
+		// main keeps bouncing and accumulates further remediation attempts
+		// (worktrees, sessions, tokens) on work that's already done. Reuses
+		// the same prPendingChecker/TransitionBacklogItemStatus path
+		// ReconcilePRPending already uses for its own merge->done transition,
+		// rather than inventing a new one.
+		if item.PrNumber > 0 && item.RepoPath != "" {
+			checker := l.getPRPendingCheckerFactory()(item.RepoPath)
+			merged, mergedErr := checker.IsPRMerged(item.PrNumber)
+			if mergedErr != nil {
+				log.DebugLog.Printf("[BacklogLifecycle] reconcileBouncingItems IsPRMerged item=%s pr=%d: %v", item.ID, item.PrNumber, mergedErr)
+			} else if merged {
+				precondition := &BacklogItemPrecondition{ExpectedStatus: item.Status}
+				if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusDone, precondition); transErr != nil {
+					log.WarningLog.Printf("[BacklogLifecycle] reconcileBouncingItems done transition item=%s: %v", item.ID, transErr)
+				} else {
+					log.InfoLog.Printf("[BacklogLifecycle] reconcileBouncingItems item=%s → done (PR #%d already merged)", item.ID, item.PrNumber)
+					// Best-effort: clear any bouncing row from a prior tick
+					// immediately, rather than waiting for the next
+					// selfHealStuck sweep to notice the terminal status.
+					l.resolveStuckLogged(ctx, er, item.ID, domain.StuckReasonBouncing, "reconcileBouncingItems/merged")
+				}
+				continue
+			}
+		}
+
 		count, countErr := er.CountReviewCyclesSince(ctx, item.ID, since)
 		if countErr != nil {
 			log.WarningLog.Printf("[BacklogLifecycle] reconcileBouncingItems CountReviewCyclesSince item=%s: %v", item.ID, countErr)

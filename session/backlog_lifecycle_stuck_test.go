@@ -1275,6 +1275,109 @@ func TestReconcileBouncingItems_should_notFlag_When_BelowThresholdOrHasPass(t *t
 	assert.Empty(t, open, "an item with fewer than bounceThreshold cycles must not be flagged")
 }
 
+// TestReconcileBouncingItems_should_transitionToDone_When_LinkedPRAlreadyMerged
+// verifies the reconciler recognizes a bouncing item whose linked PR has
+// already merged — including a PR merged manually, outside the app's own
+// ship flow (allow_auto_merge is disabled at the repo-settings level) — and
+// transitions it to done instead of flagging it STUCK_REASON_BOUNCING.
+// Regression test for the 2026-07-20 live repro: backlog item "Add sorting
+// and grouping by repository path" bounced with remediationAttempts: 4 and a
+// remediation scheduled three hours *after* its PR #172 had already merged,
+// because reconcileBouncingItems never checked merge state before MarkStuck.
+func TestReconcileBouncingItems_should_transitionToDone_When_LinkedPRAlreadyMerged(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:    "Bouncing item with merged PR",
+		Status:   string(BacklogStatusInProgress),
+		RepoPath: "/tmp/fake-repo",
+	})
+	require.NoError(t, err)
+	prNumber := 172
+	prURL := "https://github.com/TylerStaplerAtFanatics/stapler-squad/pull/172"
+	_, err = storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{
+		PrURL:    &prURL,
+		PrNumber: &prNumber,
+	}, nil)
+	require.NoError(t, err)
+
+	// 3 in_progress->review round trips with no PASS verdict — the exact
+	// shape isBouncing flags.
+	for i := 0; i < 3; i++ {
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusReview, nil)
+		require.NoError(t, err)
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, nil)
+		require.NoError(t, err)
+	}
+
+	listener := NewBacklogLifecycleListener(storage)
+	overridePRPendingChecker(t, listener, &fakePRPendingChecker{merged: true})
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcileBouncingItems(ctx, er)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusDone), fetched.Status,
+		"an item whose linked PR already merged must transition to done, not stay bouncing")
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "a merged item must never be flagged bouncing")
+	assert.Empty(t, notifier.calls, "no bouncing notification should fire for an already-shipped item")
+}
+
+// TestReconcileBouncingItems_should_stillFlag_When_LinkedPRNotYetMerged verifies
+// the new merge check doesn't suppress detection for a bouncing item whose PR
+// is still open — only an actually-merged PR should short-circuit MarkStuck.
+func TestReconcileBouncingItems_should_stillFlag_When_LinkedPRNotYetMerged(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:    "Bouncing item with open PR",
+		Status:   string(BacklogStatusInProgress),
+		RepoPath: "/tmp/fake-repo",
+	})
+	require.NoError(t, err)
+	prNumber := 173
+	prURL := "https://github.com/TylerStaplerAtFanatics/stapler-squad/pull/173"
+	_, err = storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{
+		PrURL:    &prURL,
+		PrNumber: &prNumber,
+	}, nil)
+	require.NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusReview, nil)
+		require.NoError(t, err)
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, nil)
+		require.NoError(t, err)
+	}
+
+	listener := NewBacklogLifecycleListener(storage)
+	overridePRPendingChecker(t, listener, &fakePRPendingChecker{merged: false})
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcileBouncingItems(ctx, er)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusInProgress), fetched.Status, "an unmerged item must not be auto-transitioned to done")
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, domain.StuckReasonBouncing, open[0].Reason, "an item with an unmerged PR must still be flagged bouncing")
+}
+
 // --- Story 2.1.6: push_failed ---
 
 // TestStayInReviewAndNotify_should_markPushFailedRow_When_PushAndCreatePRFails
