@@ -483,6 +483,26 @@ func (s *SessionService) FindLiveInstance(id string) *session.Instance {
 	return s.reviewQueuePoller.FindInstance(id)
 }
 
+// ArchiveSessionByUUID satisfies the BacklogService.SessionStopper interface and the
+// session.SessionArchiver interface (implemented here so both BacklogService and
+// session.BacklogLifecycleListener can soft-archive backlog work sessions without
+// reinventing the ArchiveSession RPC's logic — see ArchiveSession above).
+// No-op (not an error) if the session isn't tracked live or is already archived, so
+// callers can invoke this unconditionally from a sweep without extra existence checks.
+func (s *SessionService) ArchiveSessionByUUID(ctx context.Context, sessionUUID string) error {
+	inst := s.FindLiveInstance(sessionUUID)
+	if inst == nil {
+		return nil // already gone / never tracked
+	}
+	if !inst.SetArchivedAtIfNil(time.Now()) {
+		return nil // already archived
+	}
+	if err := s.storage.SaveInstances([]*session.Instance{inst}); err != nil {
+		return fmt.Errorf("failed to save archived session %s: %w", sessionUUID, err)
+	}
+	return nil
+}
+
 // StopSessionByUUID satisfies the BacklogService.SessionStopper interface.
 // It kills the live tmux session identified by UUID (best-effort; errors are non-fatal).
 func (s *SessionService) StopSessionByUUID(ctx context.Context, sessionUUID string) error {
@@ -501,6 +521,19 @@ func (s *SessionService) StopSessionByUUID(ctx context.Context, sessionUUID stri
 // It returns true if the session UUID is currently tracked in the live in-memory poller.
 func (s *SessionService) IsSessionLive(sessionUUID string) bool {
 	return s.FindLiveInstance(sessionUUID) != nil
+}
+
+// TimeSinceLastMeaningfulOutput satisfies the BacklogService.SessionStopper
+// interface. It reports how long it has been since sessionUUID's live
+// Instance last produced meaningful terminal output. ok is false when the
+// session isn't currently tracked live (mirrors IsSessionLive's "not found"
+// case) — callers must not use dur in that case.
+func (s *SessionService) TimeSinceLastMeaningfulOutput(sessionUUID string) (time.Duration, bool) {
+	inst := s.FindLiveInstance(sessionUUID)
+	if inst == nil {
+		return 0, false
+	}
+	return inst.GetTimeSinceLastMeaningfulOutput(), true
 }
 
 // KillTmuxPaneOnly satisfies the BacklogService.SessionStopper interface.
