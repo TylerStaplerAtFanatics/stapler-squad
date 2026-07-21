@@ -1847,10 +1847,16 @@ func TestTriggerReReview_HeadlessPassAutoTransitionsToDone(t *testing.T) {
 // pushed or turned into a PR — silently losing the ship step. The item must now
 // stay in review so the "Ship PR" action can recover it.
 func TestTriggerReReview_HeadlessPassWithUnshippedCode_StaysInReviewForShipPR(t *testing.T) {
-	storage := createTestStorage(t)
+	storage, repo := createTestStorageWithRepo(t)
 	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
-	repoDir := t.TempDir()
+	_, repoDir := setupPRFixSyncRepo(t)
 	require.NoError(t, os.WriteFile(repoDir+"/README.md", []byte("hello\n"), 0o644))
+	runGitTestCmd(t, repoDir, "add", "README.md")
+	runGitTestCmd(t, repoDir, "commit", "-m", "add README")
+	runGitTestCmd(t, repoDir, "checkout", "-b", "feature")
+	require.NoError(t, os.WriteFile(repoDir+"/feature.txt", []byte("unshipped work\n"), 0o644))
+	runGitTestCmd(t, repoDir, "add", "feature.txt")
+	runGitTestCmd(t, repoDir, "commit", "-m", "wip")
 	pool := &fakeHeadlessPool{response: `{"overall":"PASS","summary":"looks good","verdicts":[{"criterion_index":0,"outcome":"PASS","evidence":"verified"}],"tool_reads":["README.md"]}`}
 	svc.SetHeadlessPool(pool)
 	svc.SetCapabilityCheck(headless.NewPassedCapabilitySelfCheckForTesting())
@@ -1881,14 +1887,13 @@ func TestTriggerReReview_HeadlessPassWithUnshippedCode_StaysInReviewForShipPR(t 
 	}
 
 	// Seed a work session with committed-but-unpushed code — the scenario the
-	// ErrPRRequired guard (and this replicated check) exists for.
-	workIS, err := storage.CreateItemSession(t.Context(), session.ItemSessionData{
-		ItemID:      itemID,
-		SessionUUID: "work-session-uuid",
-		SessionRole: session.SessionRoleWork,
-	})
+	// ErrPRRequired guard (and this replicated check) exists for. repoDir is
+	// checked out on "feature" right now (the unshipped commit) — use it as
+	// the work session's own worktree path so isCodeShippedToMain resolves
+	// the commit from its live HEAD, not a stale LastCommitSha field.
+	item, err := storage.GetBacklogItem(t.Context(), itemID)
 	require.NoError(t, err)
-	require.NoError(t, storage.UpdateItemSessionGitActivity(t.Context(), workIS.ID, "abc123", "wip", time.Now(), 1))
+	attachPRFixWorkSession(t, storage, repo, item, "work-session-uuid", repoDir, repoDir, "feature")
 
 	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
 		ItemId:       itemID,
