@@ -598,6 +598,82 @@ func hasActiveWorkSession(priorSessions []session.ItemSessionSummary) bool {
 	return false
 }
 
+// notifyIfActiveWorkSessionStale closes the "zero operator signal" half of a
+// live gap: AutoReopenAfterFailedReview's hasActiveWorkSession guard treats
+// any work session with EndedAt == nil as "in flight" and skips reopening
+// so the live agent can pick up the verdict itself (see the guard's own
+// comment above). That check is purely liveness-based — it says nothing
+// about whether the session is actually making progress. A session can be
+// technically alive (tmux pane exists, DB row open) for hours with zero
+// real output, and this guard has no way to tell the difference, so the
+// item silently sits stuck with nothing surfaced to the operator. Confirmed
+// live 2026-07-20 on backlog item 9264efe7: session
+// stapler-squad-fix-backlog-status-audit-trail-r15 reported Active with a
+// current last_activity_at, while review_queue_determiner.go's own,
+// independently-computed staleness detector flagged the same session
+// "STALENESS DETECTED ... 6h 35m since last meaningful output" on every
+// reconciliation tick.
+//
+// This function does NOT change the reopen decision — a live session is
+// never stopped, killed, or bypassed here, regardless of how stale it is.
+// This repo has a deliberate policy against force-stopping a slow-but-alive
+// agent (see docs/tasks/backlog-feature-improvement.md's StuckReasonStaleWork
+// discussion and the stop_session-deletes-branch incident) — killing the
+// session ourselves would just trade one bug for a worse one. All this adds
+// is a notification once the SAME staleness computation and threshold
+// review_queue_determiner.go already uses (Instance.
+// GetTimeSinceLastMeaningfulOutput vs
+// session.DefaultReviewQueuePollerConfig().StalenessThreshold — reused
+// directly rather than inventing a second definition of "stale") confirms
+// the blocking session isn't just idle-but-thinking.
+//
+// Best-effort and silent by design when it can't observe anything: no
+// sessionStopper/eventBus wired, no active work session found (shouldn't
+// happen — the caller already confirmed hasActiveWorkSession), or the
+// session isn't currently tracked live (ok == false) all skip quietly,
+// leaving the existing reconcileBouncingItems/reconcileStaleWorkSessions
+// sweeps as the fallback signal, same as before this function existed.
+//
+// Naturally rate-limited without extra dedup bookkeeping: this only runs
+// from inside AutoReopenAfterFailedReview, which itself is gated by
+// autoReopenWithBackoffGate's RemediationDue backoff (minimum 30 minutes
+// between attempts) once the item has been marked "bouncing" — the exact
+// state this bug report describes.
+func (s *BacklogService) notifyIfActiveWorkSessionStale(itemID, itemTitle string, sessions []session.ItemSessionSummary) {
+	if s.sessionStopper == nil || s.eventBus == nil {
+		return
+	}
+	var active *session.ItemSessionSummary
+	for i := range sessions {
+		if sessions[i].Role == session.SessionRoleWork && sessions[i].EndedAt == nil {
+			active = &sessions[i]
+			break
+		}
+	}
+	if active == nil {
+		return
+	}
+	idle, live := s.sessionStopper.TimeSinceLastMeaningfulOutput(active.SessionUUID)
+	if !live {
+		return
+	}
+	threshold := session.DefaultReviewQueuePollerConfig().StalenessThreshold
+	if idle <= threshold {
+		return
+	}
+	log.WarningLog.Printf("[AutoReopenAfterFailedReview] item %s reopen blocked by active work session %s that is itself stale (%s since last meaningful output, threshold %s)",
+		itemID, active.SessionUUID, idle.Round(time.Second), threshold)
+	// itemID as sessionID — see comment in notifyReworkCapHit above.
+	s.eventBus.Publish(events.NewNotificationEvent(
+		itemID, "", uuid.New().String(),
+		int32(sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING),
+		int32(sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM),
+		"Rework blocked by a stale-but-alive session",
+		fmt.Sprintf("%s — a failed review can't reopen for another rework attempt because its active work session hasn't produced output in over %s. The session is still running, so it will not be stopped automatically; check it manually, or use \"Reopen for Revision\" once you've confirmed it's actually stuck.", itemTitle, idle.Round(time.Second)),
+		map[string]string{"item_id": itemID},
+	))
+}
+
 // hasActiveReviewSession reports whether any of the provided ItemSessions is an
 // open (not yet ended) review-role session. Mirrors hasActiveWorkSession; used by
 // AutoRespawnReview to avoid double-spawning a review pass that is already running.
@@ -687,6 +763,7 @@ func (s *BacklogService) AutoReopenAfterFailedReview(ctx context.Context, itemID
 	// live session instead keeps its conversation (and prompt cache) intact.
 	if hasActiveWorkSession(sessions) {
 		log.InfoLog.Printf("[AutoReopenAfterFailedReview] item %s already has an active work session; leaving it in place to pick up the verdict instead of respawning", itemID)
+		s.notifyIfActiveWorkSessionStale(itemID, item.Title, sessions)
 		return nil
 	}
 
