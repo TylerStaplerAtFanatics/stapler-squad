@@ -607,6 +607,14 @@ message BacklogItemEvent {
     BacklogItemArchivedEvent item_archived = 6;
     BacklogItemRemovedEvent item_removed = 7;
   }
+
+  // Monotonically-increasing sequence number assigned by pkg/events.EventBus
+  // at Publish time, mirroring SessionEvent.seq. Zero means "no sequence
+  // information" — used for the per-item synthetic snapshot events sent on a
+  // fresh (non-replay) connection, which don't correspond to a single
+  // published bus event and must not participate in the frontend's
+  // afterSeq/gap-detection bookkeeping (see useWatchBacklogItems.ts).
+  uint64 seq = 8;
 }
 
 // BacklogItemStatusChangedEvent is emitted when an item's status transitions

@@ -181,6 +181,11 @@ func backlogItemMatchesFilters(item *session.BacklogItemData, msg *sessionv1.Wat
 func snapshotEventForItem(item *session.BacklogItemData, costFor func(tmuxUUID string) float64) *sessionv1.BacklogItemEvent {
 	return &sessionv1.BacklogItemEvent{
 		Timestamp: timestamppb.Now(),
+		// Seq intentionally left at its zero value: this synthetic per-item
+		// snapshot isn't derived from a single published bus event, so it has
+		// no real sequence number. The frontend treats seq == 0 as "no seq
+		// info" and excludes these events from afterSeq/gap-detection
+		// bookkeeping — see BacklogItemEvent.seq's proto doc comment.
 		Event: &sessionv1.BacklogItemEvent_ItemUpdated{
 			ItemUpdated: &sessionv1.BacklogItemUpdatedEvent{
 				ItemId:     item.ID,
@@ -199,6 +204,13 @@ func snapshotEventForItem(item *session.BacklogItemData, costFor func(tmuxUUID s
 func convertEventToBacklogItemEvent(evt *events.Event, costFor func(tmuxUUID string) float64) *sessionv1.BacklogItemEvent {
 	out := &sessionv1.BacklogItemEvent{
 		Timestamp: timestamppb.New(evt.Timestamp),
+		// evt.Seq is assigned by EventBus.Publish (0 means unpublished, which
+		// should never happen here since this is only called for events read
+		// from the subscription channel or EventsSince — both post-Publish).
+		// Threading it through lets the frontend's afterSeq/gap-detection
+		// bookkeeping (useWatchBacklogItems.ts) work for both the live
+		// fan-out path and the after_seq replay path.
+		Seq: evt.Seq,
 	}
 
 	payload := evt.BacklogItemPayload

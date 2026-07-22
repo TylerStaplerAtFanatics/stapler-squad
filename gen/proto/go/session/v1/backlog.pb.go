@@ -4848,7 +4848,14 @@ type BacklogItemEvent struct {
 	//	*BacklogItemEvent_ItemUpdated
 	//	*BacklogItemEvent_ItemArchived
 	//	*BacklogItemEvent_ItemRemoved
-	Event         isBacklogItemEvent_Event `protobuf_oneof:"event"`
+	Event isBacklogItemEvent_Event `protobuf_oneof:"event"`
+	// Monotonically-increasing sequence number assigned by pkg/events.EventBus
+	// at Publish time, mirroring SessionEvent.seq. Zero means "no sequence
+	// information" — used for the per-item synthetic snapshot events sent on a
+	// fresh (non-replay) connection, which don't correspond to a single
+	// published bus event and must not participate in the frontend's
+	// afterSeq/gap-detection bookkeeping (see useWatchBacklogItems.ts).
+	Seq           uint64 `protobuf:"varint,8,opt,name=seq,proto3" json:"seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4949,6 +4956,13 @@ func (x *BacklogItemEvent) GetItemRemoved() *BacklogItemRemovedEvent {
 		}
 	}
 	return nil
+}
+
+func (x *BacklogItemEvent) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
 }
 
 type isBacklogItemEvent_Event interface {
@@ -7675,7 +7689,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x04item\x18\x01 \x01(\v2\x18.session.v1.PipelineModeR\x04item\"\x1a\n" +
 	"\x18ListPipelineModesRequest\"K\n" +
 	"\x19ListPipelineModesResponse\x12.\n" +
-	"\x05items\x18\x01 \x03(\v2\x18.session.v1.PipelineModeR\x05items\"\xbe\x04\n" +
+	"\x05items\x18\x01 \x03(\v2\x18.session.v1.PipelineModeR\x05items\"\xd0\x04\n" +
 	"\x10BacklogItemEvent\x128\n" +
 	"\ttimestamp\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12R\n" +
 	"\x0estatus_changed\x18\x02 \x01(\v2).session.v1.BacklogItemStatusChangedEventH\x00R\rstatusChanged\x12X\n" +
@@ -7683,7 +7697,8 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x10session_attached\x18\x04 \x01(\v2+.session.v1.BacklogItemSessionAttachedEventH\x00R\x0fsessionAttached\x12H\n" +
 	"\fitem_updated\x18\x05 \x01(\v2#.session.v1.BacklogItemUpdatedEventH\x00R\vitemUpdated\x12K\n" +
 	"\ritem_archived\x18\x06 \x01(\v2$.session.v1.BacklogItemArchivedEventH\x00R\fitemArchived\x12H\n" +
-	"\fitem_removed\x18\a \x01(\v2#.session.v1.BacklogItemRemovedEventH\x00R\vitemRemovedB\a\n" +
+	"\fitem_removed\x18\a \x01(\v2#.session.v1.BacklogItemRemovedEventH\x00R\vitemRemoved\x12\x10\n" +
+	"\x03seq\x18\b \x01(\x04R\x03seqB\a\n" +
 	"\x05event\"\xc4\x01\n" +
 	"\x1dBacklogItemStatusChangedEvent\x12\x17\n" +
 	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x1d\n" +
