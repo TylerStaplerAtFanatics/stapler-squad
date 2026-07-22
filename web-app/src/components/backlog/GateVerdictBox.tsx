@@ -5,19 +5,41 @@ import { useEffect, useRef, useState } from "react";
 import * as styles from "./GateVerdictBox.css";
 import { InlineError } from "./InlineError";
 
-interface GateVerdictBoxProps {
+interface GateVerdictBoxBaseProps {
   verdict: "PASS" | "PARTIAL" | "FAIL" | "PENDING" | "UNVERIFIABLE";
   summary: string;
   criteria?: Array<{ label: string; passed: boolean }>;
   elapsedSeconds?: number;
+  actionPending?: boolean;
+}
+
+/**
+ * Story 4.1.2 (Structured Diagnostic): renders this box as a read-only
+ * historical record for a Headless Diagnostic Session (a
+ * `headless-re-review-*` row) — the entire action-button row
+ * (Approve/Reopen/Override/Skip Gate/Re-review), the Reopen and Override
+ * forms, and the Skip Gate confirmation are all omitted from the DOM. The
+ * verdict card and per-criterion outcome list still render. There is no
+ * write-mode callback to fabricate a stand-in for: the readOnly variant
+ * simply has none of them.
+ */
+export interface GateVerdictBoxReadOnlyProps extends GateVerdictBoxBaseProps {
+  readOnly: true;
+}
+
+export interface GateVerdictBoxWriteProps extends GateVerdictBoxBaseProps {
+  readOnly?: false;
   onApprove: () => Promise<void>;
   onReopen: (feedback: string) => Promise<void>;
   onOverride: (reason: string) => Promise<void>;
   onSkipGate: () => Promise<void>;
   onReReview?: () => Promise<void>;
-  actionPending?: boolean;
-  /** When true, the item is in a terminal state (archived/removed) elsewhere — verdict info still displays, but all mutating actions are disabled. */
-  readOnly?: boolean;
+}
+
+export type GateVerdictBoxProps = GateVerdictBoxReadOnlyProps | GateVerdictBoxWriteProps;
+
+function isReadOnlyProps(props: GateVerdictBoxProps): props is GateVerdictBoxReadOnlyProps {
+  return props.readOnly === true;
 }
 
 const MIN_OVERRIDE_REASON_LENGTH = 5;
@@ -60,19 +82,15 @@ const VERDICT_CONFIG = {
   },
 } as const;
 
-export function GateVerdictBox({
-  verdict,
-  summary,
-  criteria,
-  elapsedSeconds,
-  onApprove,
-  onReopen,
-  onOverride,
-  onSkipGate,
-  onReReview,
-  actionPending = false,
-  readOnly = false,
-}: GateVerdictBoxProps) {
+export function GateVerdictBox(props: GateVerdictBoxProps) {
+  const { verdict, summary, criteria, elapsedSeconds, actionPending = false } = props;
+  const readOnly = isReadOnlyProps(props);
+  const onApprove = isReadOnlyProps(props) ? undefined : props.onApprove;
+  const onReopen = isReadOnlyProps(props) ? undefined : props.onReopen;
+  const onOverride = isReadOnlyProps(props) ? undefined : props.onOverride;
+  const onSkipGate = isReadOnlyProps(props) ? undefined : props.onSkipGate;
+  const onReReview = isReadOnlyProps(props) ? undefined : props.onReReview;
+
   const [showOverride, setShowOverride] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
   const [showReopen, setShowReopen] = useState(false);
@@ -128,6 +146,7 @@ export function GateVerdictBox({
   }
 
   async function handleApprove() {
+    if (!onApprove) return;
     setLocalPending(true);
     try {
       await onApprove();
@@ -153,6 +172,7 @@ export function GateVerdictBox({
   }
 
   async function handleReopenSubmit() {
+    if (!onReopen) return;
     setLocalPending(true);
     try {
       await onReopen(reopenFeedback);
@@ -167,6 +187,7 @@ export function GateVerdictBox({
   }
 
   async function handleOverrideSubmit() {
+    if (!onOverride) return;
     setLocalPending(true);
     try {
       await onOverride(overrideReason);
@@ -179,6 +200,7 @@ export function GateVerdictBox({
   }
 
   async function handleSkipGateConfirm() {
+    if (!onSkipGate) return;
     setLocalPending(true);
     try {
       await onSkipGate();
@@ -258,7 +280,11 @@ export function GateVerdictBox({
         <p className={styles.verdictSummary}>{summary}</p>
 
         {showCriteria && (
-          <ul className={styles.criteriaList} aria-label="Criteria results">
+          <>
+            {/* D2 fix: distinguishes this per-criterion review outcome list
+                from AcCriteriaList's "Acceptance Criteria" checklist. */}
+            <p className={styles.criteriaHeading}>Review outcome per criterion</p>
+            <ul className={styles.criteriaList} aria-label="Criteria results">
             {criteria!.map((c, i) => (
               <li key={i} className={styles.criteriaItem}>
                 <span
@@ -270,83 +296,86 @@ export function GateVerdictBox({
                 {c.label}
               </li>
             ))}
-          </ul>
+            </ul>
+          </>
         )}
       </div>
 
-      <div className={styles.actions}>
-        {verdict === "PASS" && (
-          <>
-            <button
-              className={styles.primaryButton}
-              onClick={() => void handleApprove()}
-              disabled={isPending || readOnly}
-            >
-              Approve — Mark Done
-            </button>
-            <button
-              className={styles.secondaryButton}
-              onClick={() => setShowReopen(true)}
-              disabled={isPending || readOnly}
-            >
-              Reopen for Revision
-            </button>
-          </>
-        )}
-
-        {(verdict === "PARTIAL" || verdict === "FAIL") && (
-          <button
-            className={styles.primaryButton}
-            onClick={() => setShowReopen(true)}
-            disabled={isPending || readOnly}
-          >
-            Reopen for Revision
-          </button>
-        )}
-
-        {verdict === "PENDING" && (
-          <>
-            <button
-              className={styles.primaryButton}
-              aria-disabled="true"
-              disabled
-              title="Wait for gate result or use Skip Gate below"
-            >
-              Approve — Mark Done
-            </button>
-            <button
-              className={styles.secondaryButton}
-              onClick={() => setShowReopen(true)}
-              disabled={isPending || readOnly}
-            >
-              Reopen for Revision
-            </button>
-          </>
-        )}
-
-        {verdict === "UNVERIFIABLE" && (
-          <>
-            {onReReview && (
+      {!readOnly && (
+        <div className={styles.actions}>
+          {verdict === "PASS" && (
+            <>
               <button
                 className={styles.primaryButton}
-                onClick={() => void handleReReview()}
-                disabled={isPending || readOnly}
+                onClick={() => void handleApprove()}
+                disabled={isPending}
               >
-                Re-run Gate
+                Approve — Mark Done
               </button>
-            )}
+              <button
+                className={styles.secondaryButton}
+                onClick={() => setShowReopen(true)}
+                disabled={isPending}
+              >
+                Reopen for Revision
+              </button>
+            </>
+          )}
+
+          {(verdict === "PARTIAL" || verdict === "FAIL") && (
             <button
-              className={styles.secondaryButton}
+              className={styles.primaryButton}
               onClick={() => setShowReopen(true)}
               disabled={isPending || readOnly}
             >
               Reopen for Revision
             </button>
-          </>
-        )}
-      </div>
+          )}
 
-      {showReopen && (
+          {verdict === "PENDING" && (
+            <>
+              <button
+                className={styles.primaryButton}
+                aria-disabled="true"
+                disabled
+                title="Wait for gate result or use Skip Gate below"
+              >
+                Approve — Mark Done
+              </button>
+              <button
+                className={styles.secondaryButton}
+                onClick={() => setShowReopen(true)}
+                disabled={isPending}
+              >
+                Reopen for Revision
+              </button>
+            </>
+          )}
+
+          {verdict === "UNVERIFIABLE" && (
+            <>
+              {onReReview && (
+                <button
+                  className={styles.primaryButton}
+                  onClick={() => void handleReReview()}
+                  disabled={isPending}
+                >
+                  Re-run Gate
+                </button>
+              )}
+              <button
+                className={styles.secondaryButton}
+                onClick={() => setShowReopen(true)}
+                disabled={isPending}
+              >
+                Reopen for Revision
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {!readOnly && showReopen && (
         <div
           role="form"
           aria-label="Reopen for revision"

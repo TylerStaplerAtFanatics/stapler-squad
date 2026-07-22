@@ -3,6 +3,9 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
+import type { StuckBacklogItem } from "@/gen/session/v1/backlog_pb";
+import { getStatusLabel } from "@/lib/backlog/status";
+import { BlockerChip } from "./BlockerChip";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import * as styles from "./BacklogItemCard.css";
 
@@ -24,6 +27,12 @@ interface BacklogItemCardProps {
    * of the same "just changed" event (ux.md §7 AC #8).
    */
   forceJustChanged?: boolean;
+  /**
+   * This item's entry from useStuckBacklogItems()'s open list, or undefined
+   * when the item isn't currently flagged stuck. Resolved once at the board
+   * page level (not per-card) and passed down — see board/page.tsx.
+   */
+  stuckItem?: StuckBacklogItem;
 }
 
 interface ActionSpec {
@@ -91,6 +100,7 @@ export const BacklogItemCard = memo(function BacklogItemCard({
   onClick,
   pendingAction = null,
   forceJustChanged = false,
+  stuckItem,
 }: BacklogItemCardProps) {
   const actionSpec = getActionSpec(item);
   const isTriageRunning = item.triageStatus === "running";
@@ -157,6 +167,9 @@ export const BacklogItemCard = memo(function BacklogItemCard({
         >
           {PRIORITY_LABELS[item.priority] ?? "P?"}
         </span>
+        <span className={styles.statusLabel} data-testid="backlog-item-card-status">
+          {getStatusLabel(item.status)}
+        </span>
       </div>
 
       {isTriageRunning && (
@@ -192,6 +205,7 @@ export const BacklogItemCard = memo(function BacklogItemCard({
             actionSpec.label
           )}
         </button>
+        {stuckItem && <BlockerChip variant="compact" item={stuckItem} />}
       </div>
     </div>
   );

@@ -803,6 +803,7 @@ function BacklogPageInner() {
               aria-label="Item detail"
             >
               <BacklogItemDetail
+                key={selectedItemId}
                 itemId={selectedItemId}
                 onClose={handleDetailClose}
               />

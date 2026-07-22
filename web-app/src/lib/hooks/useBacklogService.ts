@@ -366,7 +366,9 @@ function mapPipelineMode(p: PipelineModeProto): PipelineMode {
 // the raw proto BacklogItem their stream/store deals in to this file's mapped
 // domain BacklogItem — the shape BacklogItemCard/BacklogBoard/BacklogItemDetail
 // actually render (acCriteria, gateVerdict, triageStatus, ISO date strings,
-// etc., none of which exist on the raw proto message).
+// etc., none of which exist on the raw proto message). Also exported for
+// direct unit testing of triageStatus derivation — see
+// useBacklogService.test.ts.
 export function mapBacklogItem(p: BacklogItemProto): BacklogItem {
   const linkedSessions = (p.itemSessions ?? []).map(mapItemSession);
 

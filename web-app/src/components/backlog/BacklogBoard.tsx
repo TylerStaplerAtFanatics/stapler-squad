@@ -4,6 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
 import { useWatchBacklogItems } from "@/lib/hooks/useWatchBacklogItems";
+import type { StuckBacklogItem } from "@/gen/session/v1/backlog_pb";
 import { BacklogItemCard } from "./BacklogItemCard";
 import { ConnectionIndicator } from "./ConnectionIndicator";
 import * as styles from "./BacklogBoard.css";
@@ -13,6 +14,11 @@ interface BacklogBoardProps {
   onItemClick: (itemId: string) => void;
   /** itemId -> action key currently in flight for that card. */
   pending?: Record<string, string>;
+  /**
+   * Resolved once (useStuckBacklogItems()) by the page-level caller and
+   * distributed per card by itemId here — not re-fetched per card.
+   */
+  stuckItems?: StuckBacklogItem[];
 }
 
 const COLUMNS: { status: BacklogItemStatus; label: string }[] = [
@@ -51,6 +57,7 @@ function BoardColumn({
   onItemClick,
   isLoading,
   pending,
+  stuckItemsById,
 }: {
   column: { status: BacklogItemStatus; label: string };
   items: BacklogItem[];
@@ -62,6 +69,7 @@ function BoardColumn({
   onItemClick: (itemId: string) => void;
   isLoading: boolean;
   pending: Record<string, string>;
+  stuckItemsById: Map<string, StuckBacklogItem>;
 }) {
   // The column count badge should reflect genuinely present items, not a
   // still-fading departure that's only rendered for the exit transition.
@@ -106,6 +114,7 @@ function BoardColumn({
                   onClick={onItemClick}
                   pendingAction={pending[item.id] ?? null}
                   forceJustChanged={isEntering}
+                  stuckItem={stuckItemsById.get(item.id)}
                 />
               </div>
             );
@@ -120,6 +129,7 @@ export function BacklogBoard({
   onAction,
   onItemClick,
   pending = {},
+  stuckItems = [],
 }: BacklogBoardProps) {
   // Epic 5.2 (backlog-event-driven-updates): the board subscribes to the
   // same live stream/normalized store as the list page (ux.md §2, "no
@@ -261,6 +271,8 @@ export function BacklogBoard({
     };
   }, []);
 
+  const stuckItemsById = new Map(stuckItems.map((s) => [s.itemId, s]));
+
   return (
     <div className={styles.boardWrapper}>
       {/* Task 6.2.1c: one ConnectionIndicator per board, not per column
@@ -297,6 +309,7 @@ export function BacklogBoard({
               onItemClick={onItemClick}
               isLoading={isLoading}
               pending={pending}
+              stuckItemsById={stuckItemsById}
             />
           );
         })}
