@@ -893,3 +893,104 @@ when a pass has budget for the full swarm).
 5. **`sdd:quick` — batch the 3 UX findings above** (duplicate toast dedup, View Changes
    modal diffing the PR/commit instead of only the live worktree, Config Files loading
    state) — small, independent, batchable.
+
+## Update — 2026-07-22: only 1 item actually stuck now (down from 11) — but its root cause is a dead review pane whose exit was never observed
+
+Targeted re-check triggered by "several backlog items look frozen." Good news first: the
+07-19 bounce-loop fix apparently landed — `ListStuckBacklogItems` now returns only **1**
+stuck item (down from 18 rows / 11 items on 07-19). Of the other 2 in-flight items:
+
+- `e99d3f4a` (omnibar hang) is correctly parked at `queued` status by the WIP cap
+  (`maxConcurrentBacklogWorkItems = 2`, `backlog_service_triage.go:72-97`) — working as
+  designed, not a bug. It has a genuinely live, actively-running work session
+  (`stapler-squad-fix-omnibar-async-hang-timeouts-r2`, `Active`, fresh `last_activity_at`)
+  from before the WIP cap parked it, still legitimately mid-rework.
+- `54e5aa1f` (camera dialog) is **not** fine — it's a second, not-yet-flagged instance of the
+  same underlying class of bug as `9264efe7` below, just on the work-spawn side instead of
+  the review-spawn side. Its status flipped `review→in_progress` (rework) at
+  2026-07-22T02:01:47 after its review session (`6b8fc4fc`, tmux `staplersquad_review_54e5aa1f`,
+  same dead-pane pattern: verdict **PARTIAL** submitted, pane died Jul 20 21:23, `endedAt`
+  still `null` in the DB right now) — but **no new work session was ever spawned** for this
+  rework. `search_sessions("camera")` and a `backlog:work`-tagged search of the stelekit repo
+  both return zero live sessions for this item. It has been sitting `in_progress` with
+  nothing actually working on it since the transition. `ListStuckBacklogItems` doesn't catch
+  this yet — its detectors evidently don't have an "`in_progress` with no live/attached work
+  session" condition, only the review-side dead-pane and bounce-count checks. Same repro
+  value as `9264efe7` for the fix below; worth including as a second regression case since it
+  exercises the work-spawn path rather than the review-spawn path.
+
+### The one real stuck item: `9264efe7` "Backlog History feature Broken" (PR #173, still open/unmerged)
+
+`ListStuckBacklogItems` flags it `STUCK_REASON_BOUNCING` ("bounced in_progress<->review 3x
+in 24h, no PASS verdict") and `STUCK_REASON_AUTONOMOUS_STUCK` ("driver stopped after 20
+turns, no DONE signal"). Root-caused via tmux forensics, not just DB inspection:
+
+1. The item's dedicated review `Instance` (tmux session `staplersquad_review_9264efe7`,
+   deterministic title `"review:" + item.ID[:8]` from `SpawnReviewSession`,
+   `server/services/session_service.go:814-821`) ran a real review on 2026-07-19, called
+   `submit_review_verdict` with outcome **FAIL** (verdict correctly persisted — confirmed by
+   reading the pane's captured JSON result), and its underlying process then exited —
+   `tmux capture-pane` on that session today shows **`Pane is dead (status 0, Sun Jul 19
+   11:27:21 2026)`**, i.e. dead for 3 days straight.
+2. Despite that, `get_session`/`list_sessions` **still reports this Instance as `Active`
+   today** — the tmux control-mode exit callback that's supposed to flip `Status→Stopped`
+   and fire `handleReviewSessionExited` (`instanceOnExitCallback`, `session/instance.go:777`)
+   never ran for this pane death. `handleReviewSessionExited` is the *only* place that acts
+   on a FAIL verdict (`server/mcp/tools_backlog.go:509-516`'s explicit "deliberately no status
+   transition here" design) — so a verdict that's saved but never actioned leaves the item
+   parked in `review` forever, which is exactly what's observed.
+3. Two more review-role `item_sessions` rows were created afterward for this same item
+   (`0e8079fc`, created 2026-07-20T20:54, **`endedAt: null` to this moment**; a
+   `headless-re-review` row on 2026-07-22T03:09 that started/ended instantly) — but the
+   `staplersquad_review_9264efe7` tmux session's *creation timestamp* never changed from
+   Jul 19. Whatever `SpawnReviewSession` did for those two later cycles, it did not result in
+   a new live process actually running a review — so `0e8079fc` is an open DB row with
+   nothing behind it, guaranteed to sit there forever.
+4. A crash-recovery sweep already exists for exactly this class of bug —
+   `reconcileUnprocessedReviewVerdicts` (`session/backlog_lifecycle.go:1493-1585`, doc
+   comment literally describes "review session submitted its verdict... but died — crash,
+   OOM, **server restart** — before its exit event ever reached `handleReviewSessionExited`").
+   It is evidently not resolving this item. Two candidate reasons, not yet distinguished
+   (needs a live trace, not just reading): (a) its "verdict belongs to a prior review cycle"
+   guard (line 1558-1562, compares `latest.CreatedAt` against
+   `GetMostRecentStatusEventAt(..., BacklogStatusReview)`) may be excluding the original FAIL
+   verdict because the item has since re-entered "review" status via the later, process-less
+   cycles — a chicken-and-egg exclusion where the fix for reprocessing stale verdicts ends up
+   protecting the very row it should reprocess; or (b) the sweep isn't running on schedule at
+   all for this item.
+5. Corroborating evidence for *why* the exit event was likely dropped in the first place:
+   `~/.stapler-squad/logs/staplersquad*.log` shows at least 2 `"Shutting down HTTP
+   server..."` events today alone (08:08:50 and 08:44:27 local), consistent with repeated
+   `make install-service` restarts during active development (one is visible mid-command in
+   the captured pane scrollback of the `stapler-squad-bklg` session). `--tmux-keep-server`
+   correctly preserves tmux panes across these restarts (confirmed: all 3 review panes
+   examined survived with their pre-restart content intact), but the control-mode exit-watch
+   connection is in-process and does not — a pane that exits in the gap between a restart's
+   shutdown and the reattachment on the next startup has no listener to observe it die,
+   and nothing then rescans "already-dead panes with a saved-but-unactioned verdict" as part
+   of startup, only the periodic `reconcileUnprocessedReviewVerdicts` sweep — which per point
+   4 isn't closing this particular gap.
+
+### Answering "were any sessions marked done prematurely closed?"
+
+No evidence of that — the opposite problem is what's actually happening. No human or
+automated path force-closed anything; PR #173 is still open and unmerged (`gh pr view 173`:
+`state: OPEN`, last updated 2026-07-19, matching the last real push). The two `done→review`
+reversions seen today on unrelated items (`54e5aa1f`, `e99d3f4a`, both around 2026-07-21
+16:20–16:47) are the *review-gate correctly catching and reverting incorrect `done`
+transitions* — the system self-correcting, not premature/incorrect closure. The actual defect
+is sessions that **are** done (verdict submitted, process exited) never getting marked done
+in the backend — they linger as phantom `Active` records indefinitely, which is what
+confuses the reconciler into bouncing the item forever instead of ever reopening it.
+
+### Recommended next action (routing per skill Phase 5)
+
+**`sdd:fix-bug`**, scoped narrowly: "review Instance exit events lost across a service
+restart leave FAIL/PARTIAL verdicts permanently unactioned." Concrete repro is item
+`9264efe7` / PR #173 — use it as the regression case. Start the trace at
+`reconcileUnprocessedReviewVerdicts` (`session/backlog_lifecycle.go:1517`) to determine which
+of the two candidates in point 4 above is actually blocking it, since the fix differs
+(loosen/reorder the "prior review cycle" guard vs. fix the sweep's invocation). This is a
+`bucket 1` reconciliation bug per the skill's routing table — independent of the 07-19
+bounce-loop fix (already shipped) and independent of the 07-19 `autonomous_stuck`-orphaned-row
+fix (#4 above, still open) — can run as its own parallel `sdd:fix-bug` session.
