@@ -104,6 +104,7 @@ func (r *EntRepository) CreateItemSession(ctx context.Context, data ItemSessionD
 	if item, lookupErr := r.GetBacklogItem(ctx, data.ItemID); lookupErr != nil {
 		log.WarningLog.Printf("[EntRepository] CreateItemSession: failed to resolve backlog item %s for publish: %v", data.ItemID, lookupErr)
 	} else {
+		r.attachItemSessionsForPublish(ctx, item)
 		r.publishItemChanged(item, BacklogItemChange{
 			Kind:      ChangeSessionAttached,
 			SessionID: data.SessionUUID,
@@ -255,6 +256,7 @@ func (r *EntRepository) UpdateItemSessionSessionUUID(ctx context.Context, id str
 	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedID); lookupErr != nil {
 		log.WarningLog.Printf("[EntRepository] UpdateItemSessionSessionUUID: failed to resolve owning backlog item for item session %s: %v", id, lookupErr)
 	} else {
+		r.attachItemSessionsForPublish(ctx, item)
 		r.publishItemChanged(item, BacklogItemChange{
 			Kind:      ChangeSessionAttached,
 			SessionID: sessionUUID,
@@ -338,6 +340,7 @@ func (r *EntRepository) UpdateItemSessionTriageResult(ctx context.Context, id st
 	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedID); lookupErr != nil {
 		log.WarningLog.Printf("[EntRepository] UpdateItemSessionTriageResult: failed to resolve owning backlog item for item session %s: %v", id, lookupErr)
 	} else {
+		r.attachItemSessionsForPublish(ctx, item)
 		r.publishItemChanged(item, BacklogItemChange{
 			Kind:          ChangeTriageProgressUpdated,
 			UpdatedFields: []string{"triageResultSummary"},
@@ -438,6 +441,7 @@ func (r *EntRepository) SaveReviewVerdict(ctx context.Context, itemSessionID str
 	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedSessionID); lookupErr != nil {
 		log.WarningLog.Printf("[EntRepository] SaveReviewVerdict: failed to resolve owning backlog item for item session %s: %v", itemSessionID, lookupErr)
 	} else {
+		r.attachItemSessionsForPublish(ctx, item)
 		r.publishItemChanged(item, BacklogItemChange{
 			Kind:    ChangeVerdictRecorded,
 			Verdict: &verdict,
@@ -511,6 +515,7 @@ func (r *EntRepository) CreateItemSessionWithVerdict(ctx context.Context, isData
 	if item, lookupErr := r.GetBacklogItem(ctx, isData.ItemID); lookupErr != nil {
 		log.WarningLog.Printf("[EntRepository] CreateItemSessionWithVerdict: failed to resolve backlog item %s for publish: %v", isData.ItemID, lookupErr)
 	} else {
+		r.attachItemSessionsForPublish(ctx, item)
 		r.publishItemChanged(item, BacklogItemChange{
 			Kind:    ChangeVerdictRecorded,
 			Verdict: &verdict,
@@ -585,6 +590,7 @@ func (r *EntRepository) ReconcileStuckItems(ctx context.Context) (int, error) {
 			continue
 		}
 		result := backlogItemToData(updated)
+		r.attachItemSessionsForPublish(ctx, &result)
 		r.publishItemChanged(&result, BacklogItemChange{
 			Kind:      ChangeStatusTransition,
 			OldStatus: string(BacklogStatusInProgress),
@@ -931,12 +937,27 @@ func (r *EntRepository) UpdateAcCriterionStatus(ctx context.Context, itemID stri
 		return fmt.Errorf("failed to serialize AC criteria: %w", serErr)
 	}
 
-	_, err = r.client.BacklogItem.UpdateOneID(parsedID).
+	updated, err := r.client.BacklogItem.UpdateOneID(parsedID).
 		SetAcceptanceCriteria(string(serialized)).
 		Save(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to save AC criteria update for item %s: %w", itemID, err)
 	}
+
+	// Best-effort publish: never blocks or fails the AC-status update itself.
+	// Found missing by the same Phase 5 spec-compliance sweep that found the
+	// ItemSessions eager-load regression above: this method drove the
+	// "N/M done" acceptance-criteria progress badge but never emitted a
+	// BacklogItemEvent at all, so live viewers never saw AC progress update
+	// until their next full poll/refresh — a real event-system bypass, not
+	// just a blanked field.
+	result := backlogItemToData(updated)
+	r.attachItemSessionsForPublish(ctx, &result)
+	r.publishItemChanged(&result, BacklogItemChange{
+		Kind:          ChangeItemUpdated,
+		UpdatedFields: []string{"acceptanceCriteria"},
+	})
+
 	return nil
 }
 
