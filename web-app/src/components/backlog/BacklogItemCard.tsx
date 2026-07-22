@@ -12,6 +12,18 @@ interface BacklogItemCardProps {
   onClick: (itemId: string) => void;
   /** The action key currently in flight for this card, or null when idle. */
   pendingAction?: string | null;
+  /**
+   * Epic 6.4 (backlog-event-driven-updates): force the "just changed" flash
+   * even though this exact card instance just (re)mounted. Used by
+   * BacklogBoard.tsx when a live status change moves an item into a new
+   * column — the card is a *fresh* mount there (different column/parent),
+   * so this component's own `item.liveVersion` before/after comparison
+   * below can never detect the change on its own (there is no "before").
+   * BacklogBoard tracks the column transition itself and flips this on for
+   * a bounded window so the destination-column entry still reads as part
+   * of the same "just changed" event (ux.md §7 AC #8).
+   */
+  forceJustChanged?: boolean;
 }
 
 interface ActionSpec {
@@ -78,6 +90,7 @@ export const BacklogItemCard = memo(function BacklogItemCard({
   onAction,
   onClick,
   pendingAction = null,
+  forceJustChanged = false,
 }: BacklogItemCardProps) {
   const actionSpec = getActionSpec(item);
   const isTriageRunning = item.triageStatus === "running";
@@ -123,9 +136,11 @@ export const BacklogItemCard = memo(function BacklogItemCard({
     [onAction, item.id],
   );
 
+  const showFlash = justChanged || forceJustChanged;
+
   return (
     <div
-      className={justChanged ? `${styles.card} ${styles.justChanged}` : styles.card}
+      className={showFlash ? `${styles.card} ${styles.justChanged}` : styles.card}
       role="article"
       tabIndex={0}
       data-testid="backlog-item-card"
