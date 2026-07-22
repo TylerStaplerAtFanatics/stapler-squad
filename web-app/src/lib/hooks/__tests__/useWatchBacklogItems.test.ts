@@ -471,4 +471,95 @@ describe("useWatchBacklogItems", () => {
     });
     expect(mockListBacklogItems).toHaveBeenCalledTimes(1);
   });
+
+  // Epic 6.1 / pre-mortem #3: an update to one item must not force an
+  // unrelated item's card to re-render. That guarantee is manufactured here
+  // (mappedItems' per-proto-item-reference cache), not in the component —
+  // BacklogItemCard's React.memo is only as good as this reference
+  // stability, so this is where the real assertion belongs.
+  it("keeps an unrelated item's mapped object referentially stable across another item's live update, and only bumps the changed item's liveVersion", async () => {
+    const stream = makeControllableStream();
+    mockWatchBacklogItems.mockReturnValueOnce(stream.stream);
+    mockWatchBacklogItems.mockReturnValue(makeHangingStream());
+
+    const store = makeStore();
+    const { result } = renderHook(() => useWatchBacklogItems(), { wrapper: makeWrapper(store) });
+
+    await act(async () => {
+      await flush();
+    });
+
+    await act(async () => {
+      stream.emit(
+        makeEvent("itemUpdated", { item: makeItem("item-1"), itemId: "item-1", updatedFields: [], isSnapshot: false }, 1n)
+      );
+      stream.emit(
+        makeEvent("itemUpdated", { item: makeItem("item-2"), itemId: "item-2", updatedFields: [], isSnapshot: false }, 2n)
+      );
+      await flush();
+    });
+
+    const item1First = result.current.items.find((i) => i.id === "item-1");
+    const item2First = result.current.items.find((i) => i.id === "item-2");
+    expect(item1First?.liveVersion).toBe(1);
+    expect(item2First?.liveVersion).toBe(1);
+
+    await act(async () => {
+      stream.emit(
+        makeEvent(
+          "itemUpdated",
+          { item: makeItem("item-1", "review"), itemId: "item-1", updatedFields: [], isSnapshot: false },
+          3n
+        )
+      );
+      await flush();
+    });
+
+    const item1Second = result.current.items.find((i) => i.id === "item-1");
+    const item2Second = result.current.items.find((i) => i.id === "item-2");
+
+    expect(item1Second?.liveVersion).toBe(2);
+    expect(item1Second).not.toBe(item1First);
+    // The unrelated item's mapped domain object keeps its exact identity —
+    // this is what lets a memoized BacklogItemCard skip re-rendering it.
+    expect(item2Second).toBe(item2First);
+  });
+
+  // Epic 6.1 / pre-mortem #4: a replayed/resnapshotted event (forced
+  // is_snapshot: true server-side, see plan.md Task 3.1.1c) must never be
+  // flash-eligible, even though it can legitimately change the item's
+  // fields (e.g. after a disconnect).
+  it("does not bump liveVersion for an is_snapshot event, only for a genuine live one", async () => {
+    const stream = makeControllableStream();
+    mockWatchBacklogItems.mockReturnValueOnce(stream.stream);
+    mockWatchBacklogItems.mockReturnValue(makeHangingStream());
+
+    const store = makeStore();
+    const { result } = renderHook(() => useWatchBacklogItems(), { wrapper: makeWrapper(store) });
+
+    await act(async () => {
+      await flush();
+    });
+
+    await act(async () => {
+      stream.emit(
+        makeEvent("itemUpdated", { item: makeItem("item-1"), itemId: "item-1", updatedFields: [], isSnapshot: false }, 1n)
+      );
+      await flush();
+    });
+    expect(result.current.items.find((i) => i.id === "item-1")?.liveVersion).toBe(1);
+
+    await act(async () => {
+      stream.emit(
+        makeEvent(
+          "itemUpdated",
+          { item: makeItem("item-1", "review"), itemId: "item-1", updatedFields: [], isSnapshot: true },
+          2n
+        )
+      );
+      await flush();
+    });
+    expect(result.current.items.find((i) => i.id === "item-1")?.liveVersion).toBe(1);
+    expect(result.current.items.find((i) => i.id === "item-1")?.status).toBe("review");
+  });
 });

@@ -1,7 +1,7 @@
 "use client";
 // +feature: backlog:item-card
 
-import { useCallback } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
 import { TriageLoadingIndicator } from "./TriageLoadingIndicator";
 import * as styles from "./BacklogItemCard.css";
@@ -68,10 +68,42 @@ const PRIORITY_LABELS: Record<number, string> = {
   5: "P5",
 };
 
-export function BacklogItemCard({ item, onAction, onClick, pendingAction = null }: BacklogItemCardProps) {
+// Epic 6.1 (backlog-event-driven-updates): how long the `.justChanged` flash
+// class stays applied. ux.md §1 calls for "~250ms, fading" (Linear/Jira-
+// style); Story 6.1.1's Given/When/Then uses the same figure.
+const FLASH_DURATION_MS = 250;
+
+export const BacklogItemCard = memo(function BacklogItemCard({
+  item,
+  onAction,
+  onClick,
+  pendingAction = null,
+}: BacklogItemCardProps) {
   const actionSpec = getActionSpec(item);
   const isTriageRunning = item.triageStatus === "running";
   const isActionPending = pendingAction === actionSpec.action;
+
+  // `item.liveVersion` only advances for a genuine live (non-snapshot)
+  // BacklogItemEvent (see useWatchBacklogItems.ts / backlogItemsSlice.ts) —
+  // never for the initial snapshot, a reconnect resync, or a forced-
+  // is_snapshot replay copy (pre-mortem #4). Comparing against the
+  // previously-seen value (not just "did the item prop change") is what
+  // keeps a resnapshot from flashing even though the item's fields did
+  // change while disconnected — and comparing to a ref instead of keying off
+  // `item` reference identity means this never fires on first mount.
+  const prevLiveVersionRef = useRef(item.liveVersion);
+  const [justChanged, setJustChanged] = useState(false);
+
+  useEffect(() => {
+    const prev = prevLiveVersionRef.current;
+    const next = item.liveVersion;
+    prevLiveVersionRef.current = next;
+    if (prev === undefined || next === undefined || next === prev) return;
+
+    setJustChanged(true);
+    const timer = setTimeout(() => setJustChanged(false), FLASH_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [item.liveVersion]);
 
   const handleCardClick = (e: React.MouseEvent) => {
     // Don't open detail if the action button was clicked
@@ -93,7 +125,7 @@ export function BacklogItemCard({ item, onAction, onClick, pendingAction = null 
 
   return (
     <div
-      className={styles.card}
+      className={justChanged ? `${styles.card} ${styles.justChanged}` : styles.card}
       role="article"
       tabIndex={0}
       data-testid="backlog-item-card"
@@ -148,4 +180,4 @@ export function BacklogItemCard({ item, onAction, onClick, pendingAction = null 
       </div>
     </div>
   );
-}
+});
