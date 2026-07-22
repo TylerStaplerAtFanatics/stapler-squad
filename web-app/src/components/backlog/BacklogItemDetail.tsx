@@ -836,8 +836,12 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             </div>
           </div>
         </div>
-        <div className={styles.scrollArea}>
-          {saveConfirmPending ? (
+        {/* Epic 6.4: pinned outside scrollArea so the notice can't scroll out
+            of view while editing a long form (ux.md §6 copy/placement pass —
+            non-blocking, informational styling, matches InlineError's
+            informational variant rather than its assertive/error one). */}
+        {saveConfirmPending ? (
+          <div className={styles.bannerBar}>
             <InlineNotice
               message="Saving will overwrite a change made elsewhere — Reload first?"
               actions={[
@@ -846,14 +850,18 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               ]}
               data-testid="backlog-detail-save-conflict-notice"
             />
-          ) : bufferedItem ? (
+          </div>
+        ) : bufferedItem ? (
+          <div className={styles.bannerBar}>
             <InlineNotice
               message="This item changed elsewhere."
               actions={[{ label: "Reload", onClick: handleReloadBuffered }]}
               onDismiss={() => setBufferedItem(null)}
               data-testid="backlog-detail-buffered-update-notice"
             />
-          ) : null}
+          </div>
+        ) : null}
+        <div className={styles.scrollArea}>
           <BacklogItemForm
             key={`${item.id}:${item.updatedAt ?? ""}`}
             initialValues={item}
