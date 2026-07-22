@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
@@ -16,6 +17,28 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/itemsession"
 	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
 )
+
+// backlogItemForItemSession resolves the BacklogItemData owning the given
+// ItemSession id, for publish hooks that only have an ItemSession id in hand
+// (UpdateItemSessionSessionUUID, UpdateItemSessionTriageResult, SaveReviewVerdict)
+// rather than a BacklogItem id directly. Uses the same backlog_item edge
+// GetItemSession's .WithBacklogItem() query already loads. Callers must treat
+// a returned error as best-effort: log it and skip the publish call rather
+// than failing the mutation that already succeeded.
+func (r *EntRepository) backlogItemForItemSession(ctx context.Context, itemSessionID uuid.UUID) (*BacklogItemData, error) {
+	ownerID, err := r.client.ItemSession.Query().
+		Where(itemsession.ID(itemSessionID)).
+		QueryBacklogItem().
+		OnlyID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve owning backlog item for item session %s: %w", itemSessionID, err)
+	}
+	item, err := r.GetBacklogItem(ctx, ownerID.String())
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
+}
 
 // ItemSessionData is the input data for creating a new ItemSession.
 type ItemSessionData struct {
@@ -76,6 +99,17 @@ func (r *EntRepository) CreateItemSession(ctx context.Context, data ItemSessionD
 	// BacklogItemID is not loaded via edge on create; set it directly from the input.
 	summary := itemSessionToSummary(is)
 	summary.BacklogItemID = data.ItemID
+
+	// Best-effort publish: never blocks or fails session creation itself.
+	if item, lookupErr := r.GetBacklogItem(ctx, data.ItemID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] CreateItemSession: failed to resolve backlog item %s for publish: %v", data.ItemID, lookupErr)
+	} else {
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:      ChangeSessionAttached,
+			SessionID: data.SessionUUID,
+		})
+	}
+
 	return summary, nil
 }
 
@@ -216,6 +250,17 @@ func (r *EntRepository) UpdateItemSessionSessionUUID(ctx context.Context, id str
 	if err != nil {
 		return fmt.Errorf("failed to set session_uuid on item session %s: %w", id, err)
 	}
+
+	// Best-effort publish: never blocks or fails the update itself.
+	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] UpdateItemSessionSessionUUID: failed to resolve owning backlog item for item session %s: %v", id, lookupErr)
+	} else {
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:      ChangeSessionAttached,
+			SessionID: sessionUUID,
+		})
+	}
+
 	return nil
 }
 
@@ -285,6 +330,20 @@ func (r *EntRepository) UpdateItemSessionTriageResult(ctx context.Context, id st
 	if err != nil {
 		return fmt.Errorf("failed to update triage_result on item session %s: %w", id, err)
 	}
+
+	// Best-effort publish: never blocks or fails the triage-result write
+	// itself. The owning item lookup can fail on a legitimate edge case (the
+	// ItemSession row was deleted concurrently) — that's logged and skipped,
+	// not fatal, same "publish is best-effort" guarantee as every other hook.
+	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] UpdateItemSessionTriageResult: failed to resolve owning backlog item for item session %s: %v", id, lookupErr)
+	} else {
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:          ChangeTriageProgressUpdated,
+			UpdatedFields: []string{"triageResultSummary"},
+		})
+	}
+
 	return nil
 }
 
@@ -372,6 +431,19 @@ func (r *EntRepository) SaveReviewVerdict(ctx context.Context, itemSessionID str
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit review verdict transaction: %w", err)
 	}
+
+	// Best-effort publish: never blocks or fails the verdict save itself. The
+	// verdict travels IN the payload (not via a client-side join against
+	// item_sessions) — see BacklogItemChange.Verdict's doc comment.
+	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedSessionID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] SaveReviewVerdict: failed to resolve owning backlog item for item session %s: %v", itemSessionID, lookupErr)
+	} else {
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:    ChangeVerdictRecorded,
+			Verdict: &verdict,
+		})
+	}
+
 	return nil
 }
 
@@ -431,6 +503,20 @@ func (r *EntRepository) CreateItemSessionWithVerdict(ctx context.Context, isData
 	is.Edges.ReviewVerdict = rv
 	summary := itemSessionToSummary(is)
 	summary.BacklogItemID = isData.ItemID
+
+	// Best-effort publish: never blocks or fails the create+verdict itself.
+	// Same ChangeVerdictRecorded kind as SaveReviewVerdict's hook above so both
+	// verdict-recording paths (RPC and MCP submit_review_verdict) converge on
+	// one event kind, each carrying the verdict inline.
+	if item, lookupErr := r.GetBacklogItem(ctx, isData.ItemID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] CreateItemSessionWithVerdict: failed to resolve backlog item %s for publish: %v", isData.ItemID, lookupErr)
+	} else {
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:    ChangeVerdictRecorded,
+			Verdict: &verdict,
+		})
+	}
+
 	return summary, nil
 }
 
