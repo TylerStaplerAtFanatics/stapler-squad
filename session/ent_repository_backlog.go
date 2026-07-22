@@ -596,7 +596,100 @@ func (r *EntRepository) UpdateBacklogItem(ctx context.Context, id string, update
 		return nil, fmt.Errorf("failed to update backlog item %s: %w", id, err)
 	}
 	result := backlogItemToData(item)
+
+	// Best-effort publish: never blocks or fails the update itself.
+	r.publishItemChanged(&result, BacklogItemChange{
+		Kind:          ChangeItemUpdated,
+		UpdatedFields: updatedFieldsFromBacklogItemUpdate(update),
+	})
+
 	return &result, nil
+}
+
+// updatedFieldsFromBacklogItemUpdate computes which fields a BacklogItemUpdate
+// actually sets (non-nil pointer params), for the ChangeItemUpdated publish
+// hook (Story 2.2.1). Field names use lowerCamelCase to match the JSON/proto
+// naming convention used elsewhere on the wire. A call with every field left
+// nil (a no-op update) returns an empty, non-nil slice rather than fabricating
+// any field name.
+func updatedFieldsFromBacklogItemUpdate(update BacklogItemUpdate) []string {
+	fields := make([]string, 0, 24)
+	if update.Title != nil {
+		fields = append(fields, "title")
+	}
+	if update.Description != nil {
+		fields = append(fields, "description")
+	}
+	if update.AcceptanceCriteria != nil {
+		fields = append(fields, "acceptanceCriteria")
+	}
+	if update.Priority != nil {
+		fields = append(fields, "priority")
+	}
+	if update.RepoPath != nil {
+		fields = append(fields, "repoPath")
+	}
+	if update.SkipReviewGate != nil {
+		fields = append(fields, "skipReviewGate")
+	}
+	if update.SkipPlanning != nil {
+		fields = append(fields, "skipPlanning")
+	}
+	if update.AutoSpawnSession != nil {
+		fields = append(fields, "autoSpawnSession")
+	}
+	if update.AutoCreatePR != nil {
+		fields = append(fields, "autoCreatePR")
+	}
+	if update.PipelineMode != nil {
+		fields = append(fields, "pipelineMode")
+	}
+	if update.Notes != nil {
+		fields = append(fields, "notes")
+	}
+	if update.PlanApproved != nil {
+		fields = append(fields, "planApproved")
+	}
+	if update.PlanApprovedAt != nil {
+		fields = append(fields, "planApprovedAt")
+	}
+	if update.QueuedAt != nil {
+		fields = append(fields, "queuedAt")
+	}
+	if update.QueuedAutonomous != nil {
+		fields = append(fields, "queuedAutonomous")
+	}
+	if update.PlanArtifactsPath != nil {
+		fields = append(fields, "planArtifactsPath")
+	}
+	if update.PrURL != nil {
+		fields = append(fields, "prUrl")
+	}
+	if update.PrNumber != nil {
+		fields = append(fields, "prNumber")
+	}
+	if update.ShippedCheckConclusion != nil {
+		fields = append(fields, "shippedCheckConclusion")
+	}
+	if update.ShippedApprovedCount != nil {
+		fields = append(fields, "shippedApprovedCount")
+	}
+	if update.ShippedChangesReqCount != nil {
+		fields = append(fields, "shippedChangesReqCount")
+	}
+	if update.ShippedSnapshotAt != nil {
+		fields = append(fields, "shippedSnapshotAt")
+	}
+	if update.ShippedFileStats != nil {
+		fields = append(fields, "shippedFileStats")
+	}
+	if update.ShippedSnapshotCaptureFailed != nil {
+		fields = append(fields, "shippedSnapshotCaptureFailed")
+	}
+	if update.ReworkCapOverride != nil {
+		fields = append(fields, "reworkCapOverride")
+	}
+	return fields
 }
 
 // ArchiveBacklogItem sets the archived_at timestamp on a backlog item.
@@ -619,6 +712,13 @@ func (r *EntRepository) ArchiveBacklogItem(ctx context.Context, id string) (*Bac
 		return nil, fmt.Errorf("failed to archive backlog item %s: %w", id, err)
 	}
 	result := backlogItemToData(item)
+
+	// Best-effort publish: never blocks or fails the archive itself.
+	r.publishItemChanged(&result, BacklogItemChange{
+		Kind:       ChangeItemArchived,
+		ArchivedAt: result.ArchivedAt,
+	})
+
 	return &result, nil
 }
 
@@ -627,6 +727,17 @@ func (r *EntRepository) DeleteBacklogItem(ctx context.Context, id string) error 
 	parsedID, err := uuid.Parse(id)
 	if err != nil {
 		return fmt.Errorf("%w: invalid id %q: %v", ErrNotFound, id, err)
+	}
+
+	// Fetch the item before deleting so a ChangeItemRemoved event can carry a
+	// snapshot of it — once DeleteOneID succeeds below, the row is gone and
+	// can no longer be read back.
+	existing, err := r.client.BacklogItem.Get(ctx, parsedID)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return fmt.Errorf("%w: backlog item %s", ErrNotFound, id)
+		}
+		return fmt.Errorf("failed to get backlog item %s: %w", id, err)
 	}
 
 	// Resolve item_session IDs first so we can delete their review_verdicts.
@@ -660,6 +771,13 @@ func (r *EntRepository) DeleteBacklogItem(ctx context.Context, id string) error 
 		}
 		return fmt.Errorf("failed to delete backlog item %s: %w", id, err)
 	}
+
+	// Best-effort publish: never blocks or fails the delete itself.
+	result := backlogItemToData(existing)
+	r.publishItemChanged(&result, BacklogItemChange{
+		Kind: ChangeItemRemoved,
+	})
+
 	return nil
 }
 
