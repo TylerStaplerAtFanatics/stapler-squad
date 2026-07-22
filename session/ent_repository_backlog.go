@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/ent"
 	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
@@ -763,7 +764,37 @@ func (r *EntRepository) TransitionBacklogItemStatus(ctx context.Context, id stri
 	}
 
 	result := backlogItemToData(item)
+
+	// Best-effort publish: never blocks or fails the transition itself.
+	r.publishItemChanged(&result, BacklogItemChange{
+		Kind:      ChangeStatusTransition,
+		OldStatus: fromStatus,
+		NewStatus: string(toStatus),
+	})
+
 	return &result, nil
+}
+
+// publishItemChanged is a defense-in-depth wrapper around
+// r.itemChangePublisher.PublishItemChanged: nil-checked (a publisher may not
+// be wired, e.g. in tests or before server/dependencies.go calls
+// SetItemChangePublisher) and recover()-guarded at the call site itself, so a
+// panic can never propagate into a hooked repository method's return path —
+// regardless of whether itemChangePublisher is the real adapter
+// (server/services.BacklogItemEventPublisher, which already recovers inside
+// its own body per Task 1.3.2b) or some other ItemChangePublisher
+// implementation that doesn't. Task 2.1.1d's regression test proves this
+// holds end-to-end even when a raw, unwrapped test double panics.
+func (r *EntRepository) publishItemChanged(item *BacklogItemData, change BacklogItemChange) {
+	if r.itemChangePublisher == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.WarningLog.Printf("[EntRepository] itemChangePublisher.PublishItemChanged panicked (recovered): %v", rec)
+		}
+	}()
+	r.itemChangePublisher.PublishItemChanged(item, change)
 }
 
 // --- BacklogStuckState (durable stuck-state bookkeeping) ---
