@@ -163,7 +163,7 @@ func (h *BacklogDebugMutateHandler) handleTransition(w http.ResponseWriter, r *h
 	}
 
 	ctx := r.Context()
-	if _, err := h.storage.TransitionBacklogItemStatus(ctx, req.ItemID, session.BacklogStatus(req.TargetStatus), nil); err != nil {
+	if _, err := h.storage.TransitionBacklogItemStatus(ctx, req.ItemID, session.BacklogStatus(req.TargetStatus), nil, session.TriggeredBySystem); err != nil {
 		log.Error("backlog debug mutate: transition failed", "err", err)
 		http.Error(w, "failed to transition backlog item: "+err.Error(), http.StatusInternalServerError)
 		return
