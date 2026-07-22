@@ -514,6 +514,73 @@ func TestReconcileUnprocessedReviewVerdicts_should_skipStaleVerdict_When_ItemRee
 		"a verdict from a prior, already-concluded review cycle must not be reprocessed")
 }
 
+// TestReconcileUnprocessedReviewVerdicts_should_invokeAutoReopener_When_NewestReviewSessionHasNoVerdictButIsDead
+// is the regression test for the live 2026-07-19..07-22 incident on backlog
+// item 9264efe7 ("Backlog History feature Broken", PR #173): an older
+// review-role session recorded a FAIL verdict and died, then a further
+// re-review attempt was created afterward (also dying, but without ever
+// calling submit_review_verdict itself). FindReviewItemsWithUnprocessedVerdict
+// eager-loads ALL review-role sessions ordered newest-first and this sweep
+// took element [0] ("latest") as if it were guaranteed to carry the verdict
+// the item-level query matched on — true only when no newer, verdict-less
+// review session exists. Here it doesn't: latest.Edges.ReviewVerdict is nil,
+// and the sweep used to bail out entirely on that ("defensive: query already
+// filters on HasReviewVerdict()" — a false assumption, since that filter is
+// scoped to the item, not to element [0]). The item was invisible to this
+// crash-recovery sweep forever as a result — neither the real older verdict
+// nor a "no verdict, treat as failed" fallback ever ran, so the auto-reopener
+// was never invoked at all. The fix lets a dead, verdict-less latest flow
+// into handleReviewSessionExited, which already re-derives the verdict by
+// SessionUUID and correctly treats "no verdict" as a failed review needing
+// rework. Asserting on the auto-reopener call (rather than a resulting
+// status) matches this package's boundary: AutoReopenAfterFailedReview's real
+// implementation lives in server/services and is exercised via the
+// AutoReopenSpawner interface here, same pattern as
+// TestHandleReviewSessionExited_NoVerdict_NotifiesAndInvokesAutoReopener.
+func TestReconcileUnprocessedReviewVerdicts_should_invokeAutoReopener_When_NewestReviewSessionHasNoVerdictButIsDead(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Older review-role session: recorded a real FAIL verdict, then died.
+	item := newStuckReviewTestItem(t, storage, ReviewVerdictFail, true, false)
+
+	// Newer review-role session, created afterward: no verdict of its own —
+	// the shape of a re-review attempt that never got a live process to
+	// actually run (or crashed before calling submit_review_verdict).
+	newerReviewUUID := "headless-re-review-" + uuid.New().String()
+	_, err := storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: newerReviewUUID,
+		SessionRole: SessionRoleReview,
+	})
+	require.NoError(t, err)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.SetSessionLivenessChecker(func(sessionUUID string) bool { return false }) // everything dead
+	reopener := newFakeAutoReopenSpawner()
+	listener.SetAutoReopener(reopener)
+
+	er := storage.repo.(*EntRepository)
+	listener.reconcileUnprocessedReviewVerdicts(ctx, er)
+
+	select {
+	case gotItemID := <-reopener.called:
+		assert.Equal(t, item.ID, gotItemID,
+			"a dead, verdict-less newest review session must still reach the auto-reopener, not leave the item invisible to this sweep forever")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for AutoReopenAfterFailedReview to be called")
+	}
+
+	sessions, err := storage.ListItemSessions(ctx, item.ID)
+	require.NoError(t, err)
+	for _, is := range sessions {
+		if is.SessionUUID == newerReviewUUID {
+			assert.NotNil(t, is.EndedAt, "the verdict-less newest review session must be tombstoned")
+		}
+	}
+}
+
 // TestReconcileStuckReviewItems_should_resolveAbandonedRow_When_ReviewGateBackInFlightWhileStillReview
 // is the C2 regression test for abandoned_review: when the review gate comes
 // back in flight (a new active session appears) while the item is still
