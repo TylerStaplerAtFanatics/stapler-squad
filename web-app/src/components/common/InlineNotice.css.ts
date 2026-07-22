@@ -18,7 +18,10 @@ export const container = style({
 });
 
 export const icon = style({
-  color: vars.color.primary,
+  // accentText (not primary) — primary fails WCAG AA (4.09:1) against this
+  // component's accentBg background in the light theme; accentText is tuned
+  // per-theme to guarantee >=4.5:1 here. See theme.css.ts's accentText notes.
+  color: vars.color.accentText,
   flexShrink: 0,
   lineHeight: vars.fontSize.lg,
 });
@@ -45,7 +48,8 @@ export const actionButton = style({
   background: "none",
   border: "none",
   cursor: "pointer",
-  color: vars.color.primary,
+  // accentText, not primary — see `icon` above for why.
+  color: vars.color.accentText,
   fontSize: vars.fontSize.sm,
   fontWeight: vars.fontWeight.medium,
   padding: 0,
