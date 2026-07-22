@@ -170,6 +170,38 @@ describe("BacklogItemPanel — live updates (Task 5.4.1b)", () => {
   });
 });
 
+describe("BacklogItemPanel — verdict display (sweep fix, Story 5.4.1 AC / ux.md AC #14)", () => {
+  it("renders a verdict badge and summary when the linked item has a recorded gate verdict", async () => {
+    getBacklogItem.mockResolvedValue(
+      makeItem({ status: "review", gateVerdict: "FAIL", gateVerdictSummary: "2 of 5 criteria did not pass" })
+    );
+
+    await renderOpenPanel();
+
+    await waitFor(() => expect(screen.getByTestId("backlog-panel-verdict")).toBeInTheDocument());
+    expect(screen.getByTestId("backlog-panel-verdict")).toHaveTextContent("FAIL");
+    expect(screen.getByTestId("backlog-panel-verdict")).toHaveTextContent(
+      "2 of 5 criteria did not pass"
+    );
+  });
+
+  it("does not render a verdict badge when no verdict has been recorded", async () => {
+    getBacklogItem.mockResolvedValue(makeItem({ status: "in_progress" }));
+
+    await renderOpenPanel();
+
+    expect(screen.queryByTestId("backlog-panel-verdict")).not.toBeInTheDocument();
+  });
+
+  it("does not render a verdict badge while a verdict is only PENDING", async () => {
+    getBacklogItem.mockResolvedValue(makeItem({ status: "review", gateVerdict: "PENDING" }));
+
+    await renderOpenPanel();
+
+    expect(screen.queryByTestId("backlog-panel-verdict")).not.toBeInTheDocument();
+  });
+});
+
 describe("BacklogItemPanel — terminal state (Task 5.4.1c)", () => {
   it("replaces the View full item action with an InlineNotice when the linked item is archived", async () => {
     getBacklogItem.mockResolvedValue(makeItem());
