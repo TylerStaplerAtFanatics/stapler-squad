@@ -82,7 +82,7 @@ func TestTransitionBacklogItemStatus_should_publishOldAndNewStatus_When_CASSucce
 
 	_, err = repo.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, &session.BacklogItemPrecondition{
 		ExpectedStatus: string(session.BacklogStatusInProgress),
-	})
+	}, session.TriggeredBySystem)
 	require.NoError(t, err)
 
 	select {
@@ -122,7 +122,7 @@ func TestTransitionBacklogItemStatus_should_notPublish_When_CASAffectsZeroRows(t
 	// the CAS WHERE clause matches zero rows.
 	_, err = repo.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, &session.BacklogItemPrecondition{
 		ExpectedStatus: string(session.BacklogStatusReview),
-	})
+	}, session.TriggeredBySystem)
 	require.Error(t, err)
 	require.ErrorIs(t, err, session.ErrPreconditionFailed)
 
@@ -159,7 +159,7 @@ func TestTransitionBacklogItemStatus_should_returnSuccessAndPersistRow_When_Item
 	require.NotPanics(t, func() {
 		updated, transErr := repo.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, &session.BacklogItemPrecondition{
 			ExpectedStatus: string(session.BacklogStatusInProgress),
-		})
+		}, session.TriggeredBySystem)
 		require.NoError(t, transErr)
 		require.NotNil(t, updated)
 	})
@@ -441,7 +441,7 @@ func TestTransitionBacklogItemStatus_should_embedNonEmptyItemSessions_When_ItemH
 		t.Fatal("timed out waiting for SaveReviewVerdict's own BacklogItemChanged event")
 	}
 
-	_, err = repo.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, nil)
+	_, err = repo.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, nil, session.TriggeredBySystem)
 	require.NoError(t, err)
 
 	select {

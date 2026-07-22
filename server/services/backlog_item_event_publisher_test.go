@@ -256,7 +256,7 @@ func TestWorkspaceIsolation_should_holdEndToEnd_When_SimulatingTwoWorkspaceProce
 
 	_, err = repoA.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, &session.BacklogItemPrecondition{
 		ExpectedStatus: string(session.BacklogStatusInProgress),
-	})
+	}, session.TriggeredBySystem)
 	require.NoError(t, err)
 
 	// Positive confirmation: workspace A's own subscriber sees the event.
