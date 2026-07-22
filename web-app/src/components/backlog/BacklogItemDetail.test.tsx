@@ -77,8 +77,16 @@ jest.mock("@/lib/analytics", () => ({
 
 const getBacklogItem = jest.fn();
 const listPipelineModes = jest.fn();
+// Hoisted to module scope (unlike the other jest.fn()s below, which are
+// re-created fresh every render) so Epic 5.3 tests can assert on calls made
+// across a Save/Save-Anyway click, not just within a single render.
+const updateBacklogItem = jest.fn().mockResolvedValue(null);
 
 jest.mock("@/lib/hooks/useBacklogService", () => ({
+  // mapBacklogItem is a real (unmocked) named export — BacklogItemDetail's
+  // Epic 5.3 live-update effect calls it to convert the raw proto item read
+  // off the mocked store below into the domain shape this component renders.
+  ...jest.requireActual("@/lib/hooks/useBacklogService"),
   useBacklogService: () => ({
     getBacklogItem,
     transitionStatus: jest.fn().mockResolvedValue(true),
@@ -92,10 +100,42 @@ jest.mock("@/lib/hooks/useBacklogService", () => ({
     submitManualReview: jest.fn(),
     archiveBacklogItem: jest.fn(),
     deleteBacklogItem: jest.fn(),
-    updateBacklogItem: jest.fn().mockResolvedValue(null),
+    updateBacklogItem,
     listPipelineModes,
     lastError: null,
   }),
+}));
+
+// Epic 5.3 (backlog-event-driven-updates): BacklogItemDetail also subscribes
+// via useWatchBacklogItems + a Redux selector (Task 5.3.1b), and opens its
+// own lightweight raw watch stream for archive/removal terminal-state
+// detection (Task 5.3.1c). Both are controllable per-test via the
+// module-scope `mock*` holders below, reset in `beforeEach`.
+jest.mock("@/lib/hooks/useWatchBacklogItems", () => ({
+  useWatchBacklogItems: () => ({ items: [], connectionState: "live" }),
+}));
+
+let mockLiveItemsMap: Record<string, unknown> = {};
+jest.mock("@/lib/store", () => ({
+  useAppSelector: (selector: (state: unknown) => unknown) =>
+    selector({ backlogItems: { items: mockLiveItemsMap } }),
+}));
+
+// Raw events the terminal-state watch stream (Task 5.3.1c) yields on its next
+// connection — set before render() (the stream is opened once, on mount).
+let mockTerminalStreamEvents: Array<{ event: { case: string; value: { itemId: string } } }> = [];
+jest.mock("@connectrpc/connect", () => ({
+  createClient: () => ({
+    watchBacklogItems: () =>
+      (async function* () {
+        for (const e of mockTerminalStreamEvents) {
+          yield e;
+        }
+      })(),
+  }),
+}));
+jest.mock("@connectrpc/connect-web", () => ({
+  createConnectTransport: jest.fn().mockReturnValue({}),
 }));
 
 // The jest styleMock for `.css.ts` files wraps every export (including plain
@@ -114,6 +154,9 @@ afterAll(() => {
 beforeEach(() => {
   useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
   useBacklogItemShipStatusMock.mockReturnValue({ data: null, loading: false, refetch: jest.fn() });
+  mockLiveItemsMap = {};
+  mockTerminalStreamEvents = [];
+  updateBacklogItem.mockClear().mockResolvedValue(null);
 });
 
 function makeMode(overrides: Partial<PipelineMode> & Pick<PipelineMode, "slug" | "name">): PipelineMode {
@@ -324,5 +367,240 @@ describe("BacklogItemDetail — Story 2.2.3: VcsWidget wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: "Browse files in this worktree" }));
 
     expect(screen.getByTestId("file-browser-modal-stub")).toBeInTheDocument();
+  });
+});
+
+// project_plans/backlog-event-driven-updates Epic 5.3: Story 5.3.1 removes
+// the 5s shouldPoll interval in favor of a live store subscription, and adds
+// terminal-state handling (Task 5.3.1c); Story 5.3.2 adds edit-mode
+// buffering + a warn-before-overwrite confirmation.
+describe("BacklogItemDetail — Story 5.3.1: shouldPoll removal / live updates", () => {
+  it("does not re-fetch on an interval for a triage-running item — the deleted shouldPoll timer never fires", async () => {
+    jest.useFakeTimers();
+    try {
+      getBacklogItem.mockReset().mockResolvedValue({
+        ...makeItem([]),
+        status: "idea",
+        triageStatus: "running",
+      });
+      listPipelineModes.mockReset().mockResolvedValue([]);
+
+      render(<BacklogItemDetail itemId="item-1" />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(getBacklogItem).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(10_000);
+        await Promise.resolve();
+      });
+
+      // Pre-Epic-5.3, `shouldPoll` would have fired twice more (5s, 10s) for
+      // a triage-running item. It's deleted outright — no re-fetch at all.
+      expect(getBacklogItem).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("applies a live update from the shared store to the displayed item when not editing", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    const { rerender } = render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Refactor auth middleware")).toBeInTheDocument();
+
+    // Simulate a BacklogItemUpdatedEvent landing in backlogItemsSlice.
+    mockLiveItemsMap = {
+      "item-1": {
+        id: "item-1",
+        title: "Refactor auth middleware (renamed live)",
+        status: "idea",
+        priority: 3,
+      },
+    };
+
+    await act(async () => {
+      rerender(<BacklogItemDetail itemId="item-1" />);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Refactor auth middleware (renamed live)")).toBeInTheDocument();
+  });
+});
+
+describe("BacklogItemDetail — Story 5.3.2: edit-mode buffering", () => {
+  it("does not apply a buffered event to visible form fields while editMode is true, and applies it on Reload", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    const { rerender } = render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit item" }));
+    expect(screen.getByTestId("backlog-form-submit")).toBeInTheDocument();
+
+    // A live update lands for the open item while the form is open.
+    mockLiveItemsMap = {
+      "item-1": {
+        id: "item-1",
+        title: "Refactor auth middleware (renamed live)",
+        status: "idea",
+        priority: 3,
+        repoPath: "/tmp/repo",
+      },
+    };
+
+    await act(async () => {
+      rerender(<BacklogItemDetail itemId="item-1" />);
+      await Promise.resolve();
+    });
+
+    // Buffered, not applied — the form still shows the original title, and a
+    // non-blocking InlineNotice offers to reload instead of silently
+    // dropping or silently applying the update.
+    expect(screen.getByDisplayValue("Refactor auth middleware")).toBeInTheDocument();
+    expect(screen.getByTestId("backlog-detail-buffered-update-notice")).toHaveTextContent(
+      "This item changed elsewhere."
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+
+    expect(screen.queryByTestId("backlog-detail-buffered-update-notice")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("Refactor auth middleware (renamed live)")).toBeInTheDocument();
+  });
+
+  it("warns before overwriting when Save is clicked while a live update is buffered — Save Anyway proceeds with the original save", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    const { rerender } = render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit item" }));
+
+    mockLiveItemsMap = {
+      "item-1": {
+        id: "item-1",
+        title: "Refactor auth middleware",
+        status: "idea",
+        priority: 3,
+        repoPath: "/tmp/repo",
+      },
+    };
+    await act(async () => {
+      rerender(<BacklogItemDetail itemId="item-1" />);
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByTestId("backlog-form-submit"));
+
+    const conflictNotice = await screen.findByTestId("backlog-detail-save-conflict-notice");
+    expect(conflictNotice).toHaveTextContent("Saving will overwrite a change made elsewhere");
+    expect(updateBacklogItem).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save Anyway" }));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(updateBacklogItem).toHaveBeenCalledTimes(1);
+    expect(updateBacklogItem).toHaveBeenCalledWith("item-1", expect.objectContaining({ title: "Refactor auth middleware" }));
+  });
+
+  it("warns before overwriting when Save is clicked while a live update is buffered — Reload discards the edit and returns to view mode", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    const { rerender } = render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit item" }));
+
+    mockLiveItemsMap = {
+      "item-1": {
+        id: "item-1",
+        title: "Refactor auth middleware (renamed live)",
+        status: "idea",
+        priority: 3,
+        repoPath: "/tmp/repo",
+      },
+    };
+    await act(async () => {
+      rerender(<BacklogItemDetail itemId="item-1" />);
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByTestId("backlog-form-submit"));
+    await screen.findByTestId("backlog-detail-save-conflict-notice");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+
+    expect(updateBacklogItem).not.toHaveBeenCalled();
+    // Returns to view mode (not still editing) with the buffered data applied.
+    expect(screen.getByRole("button", { name: "Edit item" })).toBeInTheDocument();
+    expect(screen.getByText("Refactor auth middleware (renamed live)")).toBeInTheDocument();
+  });
+});
+
+describe("BacklogItemDetail — Task 5.3.1c: terminal-state banner", () => {
+  it("shows an archived banner and hides action buttons when BacklogItemArchivedEvent arrives for the open item", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+    mockTerminalStreamEvents = [{ event: { case: "itemArchived", value: { itemId: "item-1" } } }];
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("backlog-detail-terminal-notice")).toHaveTextContent(
+      "This item was archived elsewhere."
+    );
+    expect(screen.queryByRole("button", { name: "Edit item" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("backlog-action-mark-ready")).not.toBeInTheDocument();
+  });
+
+  it("shows a removed banner when BacklogItemRemovedEvent arrives for the open item", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+    mockTerminalStreamEvents = [{ event: { case: "itemRemoved", value: { itemId: "item-1" } } }];
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("backlog-detail-terminal-notice")).toHaveTextContent(
+      "This item was removed elsewhere."
+    );
+  });
+
+  it("ignores a terminal event for a different item id", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+    mockTerminalStreamEvents = [{ event: { case: "itemArchived", value: { itemId: "some-other-item" } } }];
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId("backlog-detail-terminal-notice")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit item" })).toBeInTheDocument();
   });
 });
