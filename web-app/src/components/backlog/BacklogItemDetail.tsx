@@ -22,6 +22,7 @@ import { selectBacklogItemById } from "@/lib/store/backlogItemsSlice";
 import { VcsWidget } from "@/components/shared/VcsWidget";
 import { fromSessionVcs, fromShipStatus } from "@/lib/vcs/adapters";
 import { InlineNotice } from "@/components/common/InlineNotice";
+import { ConnectionIndicator } from "./ConnectionIndicator";
 import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
 import { SessionMonitor } from "./SessionMonitor";
@@ -255,7 +256,10 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   // below so unrelated item updates elsewhere never cause this component to
   // re-run (selectBacklogItemById only changes reference when THIS item's
   // store entry changes, unlike the hook's fully-remapped `items` array).
-  useWatchBacklogItems();
+  // Task 6.2.1c: connectionState is captured here (previously discarded) to
+  // mount the ConnectionIndicator in this panel's header (ux.md §3 wireframe,
+  // UX AC #20).
+  const { connectionState } = useWatchBacklogItems();
   const liveRawItem = useAppSelector((state) => selectBacklogItemById(state, itemId));
 
   // Buffered-update state (Story 5.3.2): while editMode is true, an incoming
@@ -898,6 +902,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             </div>
           </div>
           <div className={styles.headerActions}>
+            <ConnectionIndicator connectionState={connectionState} />
             {!terminalState && (
               <button
                 className={styles.editButton}

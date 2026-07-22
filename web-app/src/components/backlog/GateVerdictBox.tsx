@@ -227,6 +227,7 @@ export function GateVerdictBox({
     <section
       role="status"
       aria-live="polite"
+      aria-atomic="true"
       aria-label="Gate verdict"
       className={styles.section}
       onKeyDown={handleKeyDown}

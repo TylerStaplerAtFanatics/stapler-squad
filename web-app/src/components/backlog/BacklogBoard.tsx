@@ -4,6 +4,7 @@
 import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
 import { useWatchBacklogItems } from "@/lib/hooks/useWatchBacklogItems";
 import { BacklogItemCard } from "./BacklogItemCard";
+import { ConnectionIndicator } from "./ConnectionIndicator";
 import * as styles from "./BacklogBoard.css";
 
 interface BacklogBoardProps {
@@ -100,23 +101,30 @@ export function BacklogBoard({
   const isLoading = connectionState === "connecting" && items.length === 0;
 
   return (
-    <div
-      className={styles.board}
-      role="region"
-      aria-label="Backlog board"
-      data-testid="backlog-board"
-    >
-      {COLUMNS.map((column) => (
-        <BoardColumn
-          key={column.status}
-          column={column}
-          items={items.filter((i) => i.status === column.status)}
-          onAction={onAction}
-          onItemClick={onItemClick}
-          isLoading={isLoading}
-          pending={pending}
-        />
-      ))}
+    <div className={styles.boardWrapper}>
+      {/* Task 6.2.1c: one ConnectionIndicator per board, not per column
+          (ux.md §2 "Interaction flow" #5, UX AC #9). */}
+      <div className={styles.boardToolbar}>
+        <ConnectionIndicator connectionState={connectionState} />
+      </div>
+      <div
+        className={styles.board}
+        role="region"
+        aria-label="Backlog board"
+        data-testid="backlog-board"
+      >
+        {COLUMNS.map((column) => (
+          <BoardColumn
+            key={column.status}
+            column={column}
+            items={items.filter((i) => i.status === column.status)}
+            onAction={onAction}
+            onItemClick={onItemClick}
+            isLoading={isLoading}
+            pending={pending}
+          />
+        ))}
+      </div>
     </div>
   );
 }

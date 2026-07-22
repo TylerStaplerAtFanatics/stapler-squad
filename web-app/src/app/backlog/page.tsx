@@ -16,6 +16,7 @@ import { VaguenessPromptModal } from "@/components/backlog/VaguenessPromptModal"
 import { BacklogTourModal } from "@/components/backlog/BacklogTourModal";
 import { useBacklogTour } from "@/components/backlog/useBacklogTour";
 import { GitHubIssuePicker } from "@/components/backlog/GitHubIssuePicker";
+import { ConnectionIndicator } from "@/components/backlog/ConnectionIndicator";
 import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
 import { BacklogService } from "@/gen/session/v1/backlog_pb";
 import {
@@ -461,6 +462,7 @@ function BacklogPageInner() {
       <div className={styles.pageHeader}>
         <h1 className={styles.pageTitle}>Backlog</h1>
         <div className={styles.headerActions}>
+          <ConnectionIndicator connectionState={connectionState} />
           <button
             className={styles.helpButton}
             onClick={() => { track({ name: "backlog_open_tour", category: "user_action", component: "BacklogPage" }); resetTour(); }}
