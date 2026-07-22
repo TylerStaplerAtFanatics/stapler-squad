@@ -369,6 +369,16 @@ func TestWatchBacklogItems_should_excludeNonMatchingItems_When_StatusFilterAppli
 // seeded items (1-of-2). This test covers the zero-match edge explicitly —
 // an over-restrictive filter must degrade to an empty (not broken) stream,
 // with no error/panic and a clean shutdown on cancel.
+//
+// NOTE ON DEVIATION FROM THE ORIGINAL ASSERTION: this test originally
+// asserted `assert.Empty(t, sender.Sent(), ...)` — literally zero bytes on
+// the wire for a zero-match connection. That is precisely the hang bug found
+// during the e2e pass (see backlog_service_events.go's watchBacklogItems doc
+// comment on the snapshot-complete marker): a genuinely empty send leaves
+// the client's `for await` loop parked forever, never reaching
+// connectionState "live". The handler now always sends exactly one
+// snapshot_complete marker in this case so the client has *something* to
+// unblock on; this test asserts that corrected behavior instead.
 func TestWatchBacklogItems_should_returnEmptySnapshot_When_StatusFilterMatchesNoItems(t *testing.T) {
 	svc, storage, _ := newTestBacklogServiceWithBus(t)
 	ctx := context.Background()
@@ -382,13 +392,43 @@ func TestWatchBacklogItems_should_returnEmptySnapshot_When_StatusFilterMatchesNo
 	runCtx, cancel := context.WithCancel(ctx)
 	done := runWatchBacklogItems(runCtx, svc, &sessionv1.WatchBacklogItemsRequest{StatusFilter: []string{string(session.BacklogStatusArchived)}}, sender)
 
-	// No seeded item is "archived", so the fresh-snapshot branch must send
-	// zero events. Give it a grace window to (not) happen, then confirm the
-	// handler is still alive and returns cleanly on cancel.
-	time.Sleep(100 * time.Millisecond)
+	// No seeded item is "archived", so the fresh-snapshot branch sends zero
+	// real item events — but the handler must still send exactly one
+	// snapshot_complete marker so the client isn't left hanging.
+	require.Eventually(t, func() bool { return len(sender.Sent()) >= 1 }, 2*time.Second, 10*time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	requireCleanReturn(t, cancel, done)
 
-	assert.Empty(t, sender.Sent(), "a status filter matching no items must produce zero snapshot events, not an error or panic")
+	sent := sender.Sent()
+	require.Len(t, sent, 1, "a status filter matching no items must produce exactly one snapshot-complete marker, no item events, no error/panic")
+	assert.NotNil(t, sent[0].GetSnapshotComplete(), "the sole message must be the synthetic snapshot-complete marker")
+}
+
+// TestWatchBacklogItems_should_sendSnapshotCompleteMarker_When_BacklogIsGenuinelyEmpty
+// covers the exact scenario the e2e pass flagged: no filter at all, zero
+// backlog items in storage (not just zero matching a filter) — the fresh
+// connection branch's ListBacklogItems call itself returns an empty slice.
+// Proves the fix within a bounded time (not "hangs forever"): the handler
+// sends the marker promptly and the stream is otherwise indistinguishable
+// from a healthy connection with real items.
+func TestWatchBacklogItems_should_sendSnapshotCompleteMarker_When_BacklogIsGenuinelyEmpty(t *testing.T) {
+	svc, _, _ := newTestBacklogServiceWithBus(t)
+	ctx := context.Background()
+
+	sender := &fakeBacklogItemEventSender{}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := runWatchBacklogItems(runCtx, svc, &sessionv1.WatchBacklogItemsRequest{}, sender)
+
+	// Bounded wait, not "hangs forever": the whole point of this test is that
+	// a genuinely empty backlog still produces a message promptly.
+	require.Eventually(t, func() bool { return len(sender.Sent()) >= 1 }, 2*time.Second, 10*time.Millisecond,
+		"a genuinely empty backlog must still send a snapshot-complete marker promptly, not hang")
+	time.Sleep(50 * time.Millisecond)
+	requireCleanReturn(t, cancel, done)
+
+	sent := sender.Sent()
+	require.Len(t, sent, 1)
+	assert.NotNil(t, sent[0].GetSnapshotComplete())
 }
 
 func TestWatchBacklogItems_should_excludeNonMatchingItems_When_CategoryFilterAppliedToSnapshot(t *testing.T) {

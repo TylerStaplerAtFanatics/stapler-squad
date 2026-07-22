@@ -315,6 +315,15 @@ export function useWatchBacklogItems(
         case "itemRemoved":
           dispatch(removeItem(event.event.value.itemId));
           break;
+        case "snapshotComplete":
+          // Synthetic, content-free marker (see backlog_service_events.go's
+          // watchBacklogItems) sent when the initial snapshot/replay phase
+          // had nothing else to send — e.g. a genuinely empty backlog. It
+          // carries no item, so there's nothing to dispatch; its only job is
+          // to be *an event at all* so the `for await` loop above advances
+          // past its first iteration and connectionState can reach "live"
+          // even with zero backlog items.
+          break;
         default:
           break;
       }

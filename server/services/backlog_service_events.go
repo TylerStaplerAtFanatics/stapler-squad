@@ -89,6 +89,11 @@ func (s *BacklogService) watchBacklogItems(
 
 	costFor := s.buildCostLookup()
 
+	// Counts events actually sent during the initial phase below (replay or
+	// fresh snapshot) so we can tell whether it sent nothing at all — see the
+	// unconditional-marker send after this if/else-if block.
+	initialPhaseSent := 0
+
 	if msg.GetAfterSeq() > 0 {
 		// Reconnecting client: replay events missed since last disconnect.
 		// This covers the window between disconnect and the new
@@ -115,6 +120,7 @@ func (s *BacklogService) watchBacklogItems(
 			if err := sender.Send(converted); err != nil {
 				return fmt.Errorf("failed to send replayed backlog event: %w", err)
 			}
+			initialPhaseSent++
 		}
 	} else if s.storage != nil {
 		// Fresh connection: send one event per currently-visible item as its
@@ -132,6 +138,24 @@ func (s *BacklogService) watchBacklogItems(
 			if err := sender.Send(snapshotEventForItem(item, costFor)); err != nil {
 				return fmt.Errorf("failed to send initial backlog snapshot: %w", err)
 			}
+			initialPhaseSent++
+		}
+	}
+
+	// A zero-item backlog (or a status_filter/category_filter matching
+	// nothing) means the branch above sent literally zero bytes on the wire.
+	// ConnectRPC's client-side `for await` loop (useWatchBacklogItems.ts)
+	// never resolves past its first iteration until *something* arrives, so
+	// without this the client is stuck at connectionState "connecting"
+	// forever even though the stream is healthy and correctly has nothing to
+	// report. Send an explicit, content-free marker so the client always
+	// receives at least one message and can promptly settle to "live".
+	if initialPhaseSent == 0 {
+		if err := sender.Send(&sessionv1.BacklogItemEvent{
+			Timestamp: timestamppb.Now(),
+			Event:     &sessionv1.BacklogItemEvent_SnapshotComplete{SnapshotComplete: &sessionv1.BacklogSnapshotCompleteEvent{}},
+		}); err != nil {
+			return fmt.Errorf("failed to send snapshot-complete marker: %w", err)
 		}
 	}
 
