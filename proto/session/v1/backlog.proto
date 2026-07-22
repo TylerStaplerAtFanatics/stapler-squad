@@ -583,6 +583,102 @@ message ListPipelineModesResponse {
   repeated PipelineMode items = 1;
 }
 
+// ============================================================================
+// Backlog Item Events (for WatchBacklogItems streaming)
+// ============================================================================
+//
+// Defined here (not in events.proto) because the oneof variants reference
+// BacklogItem and ReviewVerdict, which are defined in this file — importing
+// events.proto from here (or this file from events.proto) would create a
+// circular import between the two proto files.
+
+// BacklogItemEvent represents a real-time change to a backlog item.
+// Used for the WatchBacklogItems streaming RPC.
+message BacklogItemEvent {
+  // Timestamp when the event occurred.
+  google.protobuf.Timestamp timestamp = 1;
+
+  // Event type (one of the following).
+  oneof event {
+    BacklogItemStatusChangedEvent status_changed = 2;
+    BacklogItemVerdictRecordedEvent verdict_recorded = 3;
+    BacklogItemSessionAttachedEvent session_attached = 4;
+    BacklogItemUpdatedEvent item_updated = 5;
+    BacklogItemArchivedEvent item_archived = 6;
+    BacklogItemRemovedEvent item_removed = 7;
+  }
+}
+
+// BacklogItemStatusChangedEvent is emitted when an item's status transitions
+// (e.g. "in_progress" -> "review").
+message BacklogItemStatusChangedEvent {
+  string item_id = 1;
+  string old_status = 2;
+  string new_status = 3;
+  BacklogItem item = 4;
+
+  // Whether this event is part of an initial snapshot (sent on stream
+  // connect/reconnect) rather than a live change. Frontend should not
+  // flash/notify for snapshot events.
+  bool is_snapshot = 5;
+}
+
+// BacklogItemVerdictRecordedEvent is emitted when a review verdict is
+// recorded for one of an item's sessions.
+message BacklogItemVerdictRecordedEvent {
+  string item_id = 1;
+  ReviewVerdict verdict = 2;
+  BacklogItem item = 3;
+  bool is_snapshot = 4;
+}
+
+// BacklogItemSessionAttachedEvent is emitted when a session is spawned from
+// or attached to a backlog item.
+message BacklogItemSessionAttachedEvent {
+  string item_id = 1;
+  string session_id = 2;
+  BacklogItem item = 3;
+  bool is_snapshot = 4;
+}
+
+// BacklogItemUpdatedEvent is emitted when one or more item fields change
+// (title, description, priority, etc.) outside of a status transition.
+message BacklogItemUpdatedEvent {
+  string item_id = 1;
+  repeated string updated_fields = 2;
+  BacklogItem item = 3;
+  bool is_snapshot = 4;
+}
+
+// BacklogItemArchivedEvent is emitted when an item is soft-deleted via
+// ArchiveBacklogItem.
+message BacklogItemArchivedEvent {
+  string item_id = 1;
+  google.protobuf.Timestamp archived_at = 2;
+  bool is_snapshot = 3;
+}
+
+// BacklogItemRemovedEvent is emitted when an item is permanently deleted via
+// DeleteBacklogItem. Never part of a snapshot by definition — a removed item
+// has nothing left to snapshot.
+message BacklogItemRemovedEvent {
+  string item_id = 1;
+  string reason = 2;
+}
+
+// WatchBacklogItemsRequest configures the WatchBacklogItems streaming RPC.
+message WatchBacklogItemsRequest {
+  // Optional: only receive events for items with one of these statuses.
+  repeated string status_filter = 1;
+
+  // Optional: only receive events for items in one of these categories.
+  repeated string category_filter = 2;
+
+  // Optional: resume a stream after this sequence number instead of
+  // receiving a fresh initial snapshot (see pkg/events.EventsSince).
+  uint64 after_seq = 3;
+}
+
 // BacklogService manages backlog items and their lifecycle through AI-assisted
 // planning, implementation, and review workflows.
 service BacklogService {
@@ -732,6 +828,11 @@ service BacklogService {
   // Rejects with an error (rather than silently un-parking) when the row has
   // already exhausted its attempt budget — use ResetStuckRemediation first.
   rpc TriggerRemediationNow(TriggerRemediationNowRequest) returns (TriggerRemediationNowResponse) {}
+
+  // WatchBacklogItems streams real-time backlog item events (status changes,
+  // verdicts, session attachments, updates, archival, removal).
+  // Server-streaming RPC for live backlog updates without polling.
+  rpc WatchBacklogItems(WatchBacklogItemsRequest) returns (stream BacklogItemEvent) {}
 }
 
 message ImportGitHubIssueRequest {
