@@ -235,6 +235,20 @@ func (r *EntRepository) UpdateItemSessionStarted(ctx context.Context, id string,
 	if err != nil {
 		return fmt.Errorf("failed to set started_at on item session %s: %w", id, err)
 	}
+
+	// Best-effort publish: never blocks or fails the update itself. Found
+	// missing by the Phase 5 spec-compliance sweep's follow-up pass over the
+	// remaining publish-hook bypasses (docs/tasks/backlog-feature-improvement.md).
+	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] UpdateItemSessionStarted: failed to resolve owning backlog item for item session %s: %v", id, lookupErr)
+	} else {
+		r.attachItemSessionsForPublish(ctx, item)
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:          ChangeItemUpdated,
+			UpdatedFields: []string{"itemSessions"},
+		})
+	}
+
 	return nil
 }
 
@@ -299,6 +313,20 @@ func (r *EntRepository) UpdateItemSessionGitActivity(ctx context.Context, id str
 	if err != nil {
 		return fmt.Errorf("failed to update git activity on item session %s: %w", id, err)
 	}
+
+	// Best-effort publish: never blocks or fails the update itself. Found
+	// missing by the Phase 5 spec-compliance sweep's follow-up pass over the
+	// remaining publish-hook bypasses (docs/tasks/backlog-feature-improvement.md).
+	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] UpdateItemSessionGitActivity: failed to resolve owning backlog item for item session %s: %v", id, lookupErr)
+	} else {
+		r.attachItemSessionsForPublish(ctx, item)
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:          ChangeItemUpdated,
+			UpdatedFields: []string{"itemSessions"},
+		})
+	}
+
 	return nil
 }
 
@@ -316,6 +344,20 @@ func (r *EntRepository) UpdateItemSessionFileTouch(ctx context.Context, id strin
 	if err != nil {
 		return fmt.Errorf("failed to update file touch on item session %s: %w", id, err)
 	}
+
+	// Best-effort publish: never blocks or fails the update itself. Found
+	// missing by the Phase 5 spec-compliance sweep's follow-up pass over the
+	// remaining publish-hook bypasses (docs/tasks/backlog-feature-improvement.md).
+	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] UpdateItemSessionFileTouch: failed to resolve owning backlog item for item session %s: %v", id, lookupErr)
+	} else {
+		r.attachItemSessionsForPublish(ctx, item)
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:          ChangeItemUpdated,
+			UpdatedFields: []string{"itemSessions"},
+		})
+	}
+
 	return nil
 }
 
@@ -364,6 +406,20 @@ func (r *EntRepository) UpdateItemSessionVerificationNotes(ctx context.Context, 
 	if err != nil {
 		return fmt.Errorf("failed to update verification_notes on item session %s: %w", id, err)
 	}
+
+	// Best-effort publish: never blocks or fails the update itself. Found
+	// missing by the Phase 5 spec-compliance sweep's follow-up pass over the
+	// remaining publish-hook bypasses (docs/tasks/backlog-feature-improvement.md).
+	if item, lookupErr := r.backlogItemForItemSession(ctx, parsedID); lookupErr != nil {
+		log.WarningLog.Printf("[EntRepository] UpdateItemSessionVerificationNotes: failed to resolve owning backlog item for item session %s: %v", id, lookupErr)
+	} else {
+		r.attachItemSessionsForPublish(ctx, item)
+		r.publishItemChanged(item, BacklogItemChange{
+			Kind:          ChangeItemUpdated,
+			UpdatedFields: []string{"itemSessions"},
+		})
+	}
+
 	return nil
 }
 
@@ -751,10 +807,21 @@ func (r *EntRepository) BackfillMissingPRNumbers(ctx context.Context) (int, erro
 		if convErr != nil || num <= 0 {
 			continue
 		}
-		if _, updateErr := r.client.BacklogItem.UpdateOneID(item.ID).SetPrNumber(num).Save(ctx); updateErr != nil {
+		updated, updateErr := r.client.BacklogItem.UpdateOneID(item.ID).SetPrNumber(num).Save(ctx)
+		if updateErr != nil {
 			return backfilled, fmt.Errorf("failed to backfill pr_number for item %s: %w", item.ID, updateErr)
 		}
 		backfilled++
+
+		// Best-effort publish: never blocks or fails the backfill itself. Found
+		// missing by the Phase 5 spec-compliance sweep's follow-up pass over the
+		// remaining publish-hook bypasses (docs/tasks/backlog-feature-improvement.md).
+		result := backlogItemToData(updated)
+		r.attachItemSessionsForPublish(ctx, &result)
+		r.publishItemChanged(&result, BacklogItemChange{
+			Kind:          ChangeItemUpdated,
+			UpdatedFields: []string{"prNumber"},
+		})
 	}
 	return backfilled, nil
 }
