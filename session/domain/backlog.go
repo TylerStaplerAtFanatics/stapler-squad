@@ -65,6 +65,15 @@ const (
 	// ephemeral notification (onAutonomousDriverComplete), invisible to the
 	// Unfinished tab's durable stuck-reason system.
 	StuckReasonAutonomousStuck StuckReason = "autonomous_stuck"
+	// StuckReasonSpawnFailed: AutoReopenAfterFailedReview transitioned an item
+	// to in_progress, then SpawnSessionFromItem failed AND the scoped rollback
+	// to "review" also failed (its precondition no longer matched — something
+	// else touched the item in the interim). Previously this left the item
+	// silently stranded at in_progress with no work session and no visible
+	// error (server/services/backlog_service_triage.go's rollback branch only
+	// logged it) — invisible to every other stuck detector, since none of them
+	// check "in_progress with zero live sessions and no error surfaced."
+	StuckReasonSpawnFailed StuckReason = "spawn_failed"
 )
 
 // AllStuckReasons lists every valid StuckReason constant.
@@ -77,6 +86,7 @@ var AllStuckReasons = []StuckReason{
 	StuckReasonPushFailed,
 	StuckReasonOrphanedTriage,
 	StuckReasonAutonomousStuck,
+	StuckReasonSpawnFailed,
 }
 
 // IsValid reports whether r is a known stuck reason value.
@@ -84,7 +94,7 @@ func (r StuckReason) IsValid() bool {
 	switch r {
 	case StuckReasonPRReadyUnmerged, StuckReasonReworkCap, StuckReasonAbandonedReview,
 		StuckReasonStaleWork, StuckReasonBouncing, StuckReasonPushFailed, StuckReasonOrphanedTriage,
-		StuckReasonAutonomousStuck:
+		StuckReasonAutonomousStuck, StuckReasonSpawnFailed:
 		return true
 	}
 	return false
