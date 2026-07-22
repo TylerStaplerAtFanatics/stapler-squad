@@ -363,6 +363,34 @@ func TestWatchBacklogItems_should_excludeNonMatchingItems_When_StatusFilterAppli
 	assert.Equal(t, matching.ID, sent[0].GetItemUpdated().GetItemId())
 }
 
+// TestWatchBacklogItems_should_returnEmptySnapshot_When_StatusFilterMatchesNoItems
+// closes the Epic 7.4 (plan.md) / validation.md R9 error-path coverage gap:
+// the existing filter tests above only exercise a filter matching SOME of N
+// seeded items (1-of-2). This test covers the zero-match edge explicitly —
+// an over-restrictive filter must degrade to an empty (not broken) stream,
+// with no error/panic and a clean shutdown on cancel.
+func TestWatchBacklogItems_should_returnEmptySnapshot_When_StatusFilterMatchesNoItems(t *testing.T) {
+	svc, storage, _ := newTestBacklogServiceWithBus(t)
+	ctx := context.Background()
+
+	_, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{Title: "In progress item", Status: string(session.BacklogStatusInProgress)})
+	require.NoError(t, err)
+	_, err = storage.CreateBacklogItem(ctx, session.BacklogItemData{Title: "Done item", Status: string(session.BacklogStatusDone)})
+	require.NoError(t, err)
+
+	sender := &fakeBacklogItemEventSender{}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := runWatchBacklogItems(runCtx, svc, &sessionv1.WatchBacklogItemsRequest{StatusFilter: []string{string(session.BacklogStatusArchived)}}, sender)
+
+	// No seeded item is "archived", so the fresh-snapshot branch must send
+	// zero events. Give it a grace window to (not) happen, then confirm the
+	// handler is still alive and returns cleanly on cancel.
+	time.Sleep(100 * time.Millisecond)
+	requireCleanReturn(t, cancel, done)
+
+	assert.Empty(t, sender.Sent(), "a status filter matching no items must produce zero snapshot events, not an error or panic")
+}
+
 func TestWatchBacklogItems_should_excludeNonMatchingItems_When_CategoryFilterAppliedToSnapshot(t *testing.T) {
 	svc, storage, _ := newTestBacklogServiceWithBus(t)
 	ctx := context.Background()
