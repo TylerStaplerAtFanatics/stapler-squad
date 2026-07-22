@@ -68,7 +68,7 @@ export function CronScheduleInput({ value, onChange, id = "wf-cron" }: CronSched
   }
 
   return (
-    <div className={styles.wrapper}>
+    <div className={styles.wrapper} role="group" aria-labelledby={`${id}-label`}>
       <div className={styles.modeGroup} role="radiogroup" aria-label="Schedule input mode">
         <button
           type="button"
@@ -169,6 +169,7 @@ export function CronScheduleInput({ value, onChange, id = "wf-cron" }: CronSched
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="0 9 * * 1-5"
+          aria-labelledby={`${id}-label`}
           aria-describedby="cron-explanation"
         />
       )}

@@ -119,9 +119,12 @@ export function WorkflowForm({ existing, onSubmit, onCancel }: WorkflowFormProps
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (formData.cronEnabled && !validateCron(formData.cronExpression ?? "").valid) {
-      setError(validateCron(formData.cronExpression ?? "").error ?? "Invalid cron expression");
-      return;
+    if (formData.cronEnabled) {
+      const cronResult = validateCron(formData.cronExpression ?? "");
+      if (!cronResult.valid) {
+        setError(cronResult.error ?? "Invalid cron expression");
+        return;
+      }
     }
     setSubmitting(true);
     setError(null);
@@ -139,7 +142,7 @@ export function WorkflowForm({ existing, onSubmit, onCancel }: WorkflowFormProps
         <h2 className={styles.formTitle}>{isEdit ? "Edit Workflow" : "New Workflow"}</h2>
       </div>
 
-      {error && <div className={styles.errorBanner}>{error}</div>}
+      {error && <div className={styles.errorBanner} data-testid="workflow-form-error">{error}</div>}
 
       <div className={styles.row}>
         <div className={styles.fieldGroup}>
@@ -282,7 +285,7 @@ export function WorkflowForm({ existing, onSubmit, onCancel }: WorkflowFormProps
 
       <div className={styles.row}>
         <div className={styles.fieldGroup}>
-          <label className={styles.label} htmlFor="wf-cron">Cron Expression</label>
+          <span className={styles.label} id="wf-cron-label">Cron Expression</span>
           <CronScheduleInput
             id="wf-cron"
             value={formData.cronExpression ?? ""}

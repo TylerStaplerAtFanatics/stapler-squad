@@ -55,7 +55,7 @@ describe("CronScheduleInput", () => {
   it("shows an inline alert for an invalid Advanced expression", () => {
     render(<Wrapper initial="0 9 * * *" />);
     fireEvent.click(screen.getByTestId("cron-mode-advanced"));
-    fireEvent.change(screen.getByTestId("cron-advanced-input"), { target: { value: "0 9 ? * *" } });
+    fireEvent.change(screen.getByTestId("cron-advanced-input"), { target: { value: "0 9 L * *" } });
     const explanation = screen.getByTestId("cron-explanation");
     expect(explanation).toHaveAttribute("role", "alert");
     expect(explanation).toHaveTextContent("Invalid cron expression");
@@ -68,6 +68,21 @@ describe("CronScheduleInput", () => {
     expect(screen.getByTestId("cron-fallback-notice")).toBeInTheDocument();
     expect(screen.getByTestId("cron-mode-advanced")).toHaveAttribute("aria-checked", "true");
     expect(screen.getByTestId("cron-advanced-input")).toHaveValue("*/15 9-17 * * 1-5");
+  });
+
+  it("Advanced -> Simple toggle repopulates the builder for a representable expression", () => {
+    // Start on a non-representable expression so the component boots in Advanced mode, then
+    // edit it in place to something representable before switching — exercises the SUCCESS
+    // branch of selectMode("simple"), not just the failure/fallback-notice branch.
+    render(<Wrapper initial="*/15 9-17 * * 1-5" />);
+    expect(screen.getByTestId("cron-mode-advanced")).toHaveAttribute("aria-checked", "true");
+    fireEvent.change(screen.getByTestId("cron-advanced-input"), { target: { value: "0 9 * * 3" } });
+    fireEvent.click(screen.getByTestId("cron-mode-simple"));
+    expect(screen.queryByTestId("cron-fallback-notice")).not.toBeInTheDocument();
+    expect(screen.getByTestId("cron-mode-simple")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("cron-simple-frequency")).toHaveValue("weekly");
+    expect(screen.getByTestId("cron-simple-dow")).toHaveValue("3");
+    expect(screen.getByTestId("cron-simple-time")).toHaveValue("09:00");
   });
 
   it("Simple -> Advanced toggle preserves the exact builder-computed cron string", () => {
@@ -83,5 +98,15 @@ describe("CronScheduleInput", () => {
   it("shows a server-local timezone label", () => {
     render(<Wrapper initial="" />);
     expect(screen.getByTestId("cron-timezone-label")).toHaveTextContent(/server/i);
+  });
+
+  it("exposes an accessible group name via aria-labelledby regardless of mode (regression: id was only applied to the Advanced-mode input, leaving Simple mode unlabeled)", () => {
+    render(
+      <>
+        <span id="wf-cron-label">Cron Expression</span>
+        <Wrapper initial="" />
+      </>,
+    );
+    expect(screen.getByRole("group", { name: "Cron Expression" })).toBeInTheDocument();
   });
 });

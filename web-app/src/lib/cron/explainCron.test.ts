@@ -26,8 +26,12 @@ describe("validateCron", () => {
     expect(result.error).toMatch(/5 fields/);
   });
 
-  it("rejects Quartz-only tokens", () => {
-    expect(validateCron("0 9 ? * *").valid).toBe(false);
+  it("accepts `?` as a synonym for `*` (robfig/cron/v3 treats it unconditionally as a wildcard, not gated behind Quartz/Descriptor)", () => {
+    expect(validateCron("0 9 ? * *").valid).toBe(true);
+    expect(validateCron("0 9 * * ?").valid).toBe(true);
+  });
+
+  it("rejects Quartz-only tokens that robfig/cron/v3 does NOT special-case", () => {
     expect(validateCron("0 9 L * *").valid).toBe(false);
     expect(validateCron("0 9 * * 5W").valid).toBe(false);
     expect(validateCron("0 9 * * 5#3").valid).toBe(false);
@@ -39,6 +43,16 @@ describe("validateCron", () => {
     expect(validateCron("0 9 32 * *").valid).toBe(false);
     expect(validateCron("0 9 * 13 *").valid).toBe(false);
     expect(validateCron("0 9 * * 7").valid).toBe(false);
+  });
+
+  it("rejects a zero or negative step", () => {
+    expect(validateCron("*/0 9 * * *").valid).toBe(false);
+    expect(validateCron("0 9 * * *").valid).toBe(true); // sanity: a valid neighbor still passes
+  });
+
+  it("rejects a reversed range (start > end), matching robfig/cron/v3's rejection", () => {
+    expect(validateCron("0 17-9 * * *").valid).toBe(false);
+    expect(validateCron("0 9-17 * * *").valid).toBe(true); // sanity: forward range still passes
   });
 
   it("rejects empty input", () => {
@@ -57,7 +71,7 @@ describe("explainCron", () => {
   });
 
   it("returns an error for malformed input without throwing", () => {
-    const result = explainCron("0 9 ? * *");
+    const result = explainCron("0 9 L * *");
     expect(result.status).toBe("error");
   });
 
@@ -87,11 +101,12 @@ describe("explainCron", () => {
     }
   });
 
-  it("explains step values", () => {
+  it("explains step values without duplicating 'every' (regression: was rendering 'every every 15')", () => {
     const result = explainCron("*/15 9-17 * * 1-5");
     expect(result.status).toBe("ok");
     if (result.status === "ok") {
       expect(result.text).toContain("every 15");
+      expect(result.text).not.toContain("every every");
       expect(result.text).toContain("9 to 17");
       expect(result.text).toContain("Monday to Friday");
     }
@@ -103,6 +118,43 @@ describe("explainCron", () => {
     if (result.status === "ok") {
       expect(result.text).toContain("9, 13, 17");
     }
+  });
+
+  it("explains `?` the same as `*` (both are wildcards to robfig/cron/v3)", () => {
+    expect(explainCron("0 9 ? * *")).toEqual(explainCron("0 9 * * *"));
+  });
+});
+
+// Golden fixture list cross-checked directly against the vendored robfig/cron/v3@v3.0.1 source
+// (parser.go's getRange/getField) to catch any future divergence between this hand-written
+// grammar and the real backend parser server/workflows/scheduler.go builds on. This is the parity
+// guard that would have caught the `?`-rejection and start>end bugs found in review.
+describe("validateCron parity with robfig/cron/v3 (server/workflows/scheduler.go's actual parser)", () => {
+  const VALID = [
+    "0 9 * * *",
+    "0 9 ? * *", // `?` is an unconditional synonym for `*` (parser.go:262) — not Quartz-gated
+    "* * * * ?",
+    "0 9 1,15 * *",
+    "*/5 * * * *",
+    "0 9-17/2 * * *",
+    "0 9 * * MON-FRI",
+  ];
+  const INVALID = [
+    "@daily", // Descriptor bit not set on the app's parser
+    "0 0 9 * * *", // 6 fields (seconds) not accepted
+    "0 9 * * 5L", // Quartz `L` unsupported
+    "0 9 * * 5#3", // Quartz `#` unsupported
+    "0 17-9 * * *", // reversed range: parser.go:310-312 rejects start > end
+    "*/0 9 * * *", // zero step rejected
+    "60 9 * * *", // out of bounds
+  ];
+
+  it.each(VALID)("accepts %s", (expr) => {
+    expect(validateCron(expr).valid).toBe(true);
+  });
+
+  it.each(INVALID)("rejects %s", (expr) => {
+    expect(validateCron(expr).valid).toBe(false);
   });
 });
 

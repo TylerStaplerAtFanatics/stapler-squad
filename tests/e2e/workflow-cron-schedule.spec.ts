@@ -47,13 +47,16 @@ test.describe("workflow-cron-schedule", () => {
     await fillCommonFields(page, slug);
 
     await page.getByTestId("cron-mode-advanced").click();
-    await page.getByTestId("cron-advanced-input").fill("0 9 ? * *");
+    // "L" is a Quartz-only token robfig/cron/v3 does not accept (unlike "?", which robfig treats
+    // as a plain synonym for "*" and is therefore valid — see explainCron.ts's grammar comment).
+    await page.getByTestId("cron-advanced-input").fill("0 9 L * *");
     await page.getByLabel("Enable scheduled runs").check();
 
     await page.getByRole("button", { name: "Create Workflow" }).click();
 
     // Form stays open with an inline error — no workflow row is created.
     await expect(page.getByRole("heading", { name: "New Workflow" })).toBeVisible();
+    await expect(page.getByTestId("workflow-form-error")).toContainText(/Invalid/);
     await expect(page.locator(`tr:has-text("@${slug}")`)).toHaveCount(0);
   });
 

@@ -2,7 +2,10 @@
 // `cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow` (server/workflows/scheduler.go).
 // That parser bitmask omits `cron.Descriptor`, so `@daily`/`@every` etc. are rejected by the
 // server despite being valid robfig syntax in general — this validator rejects them too.
-// Quartz-only tokens (`?`, `L`, `W`, `#`) and a seconds field are also unsupported here.
+// `?` IS accepted here, unconditionally treated as a synonym for `*` in every field — verified
+// against robfig/cron/v3@v3.0.1's getRange (parser.go:262), which special-cases `?` the same as
+// `*` regardless of parser options (it is not gated behind the Descriptor/Quartz bit). `L`, `W`,
+// `#` and a seconds field remain unsupported — robfig has no special-casing for those tokens.
 
 const MONTH_NAMES: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
@@ -31,14 +34,24 @@ function validateSingle(token: string, min: number, max: number, names?: Record<
   return n >= min && n <= max;
 }
 
+function resolveValue(token: string, names?: Record<string, number>): number {
+  const lower = token.toLowerCase();
+  if (names && lower in names) return names[lower];
+  return Number(token);
+}
+
 function validateRangePart(part: string, min: number, max: number, names?: Record<string, number>): boolean {
   const [base, step, extra] = part.split("/");
   if (extra !== undefined) return false; // more than one "/"
   if (step !== undefined && (!/^\d+$/.test(step) || Number(step) <= 0)) return false;
-  if (base === "*") return true;
+  if (base === "*" || base === "?") return true;
   const bounds = base.split("-");
   if (bounds.length === 1) return validateSingle(bounds[0], min, max, names);
-  if (bounds.length === 2) return validateSingle(bounds[0], min, max, names) && validateSingle(bounds[1], min, max, names);
+  if (bounds.length === 2) {
+    if (!validateSingle(bounds[0], min, max, names) || !validateSingle(bounds[1], min, max, names)) return false;
+    // robfig/cron/v3 rejects wrap-around ranges (parser.go: "beginning of range beyond end of range").
+    return resolveValue(bounds[0], names) <= resolveValue(bounds[1], names);
+  }
   return false;
 }
 
@@ -78,10 +91,14 @@ function describeGeneric(field: string, namesRev?: string[]): string {
     const bounds = base.split("-");
     const name = (n: string) => (namesRev && isExact(n) ? namesRev[Number(n)] ?? n : n);
     let text: string;
-    if (base === "*") text = "every";
-    else if (bounds.length === 2) text = `${name(bounds[0])} to ${name(bounds[1])}`;
-    else text = name(bounds[0]);
-    if (step !== undefined) text += ` every ${step}`;
+    if (base === "*" || base === "?") text = step !== undefined ? `every ${step}` : "every";
+    else if (bounds.length === 2) {
+      text = `${name(bounds[0])} to ${name(bounds[1])}`;
+      if (step !== undefined) text += ` every ${step}`;
+    } else {
+      text = name(bounds[0]);
+      if (step !== undefined) text += ` every ${step}`;
+    }
     return text;
   };
   return field.split(",").map(describeToken).join(", ");
@@ -96,9 +113,9 @@ function describeMinuteHour(minute: string, hour: string): string {
 
 function describeSchedule(minute: string, hour: string, dom: string, month: string, dow: string): string {
   const time = describeMinuteHour(minute, hour);
-  const domAny = dom === "*";
-  const dowAny = dow === "*";
-  const monthAny = month === "*";
+  const domAny = dom === "*" || dom === "?";
+  const dowAny = dow === "*" || dow === "?";
+  const monthAny = month === "*" || month === "?";
 
   let schedulePart: string;
   if (domAny && dowAny) {
@@ -162,7 +179,11 @@ export function buildCronFromSimple(s: SimpleSchedule): string {
 // rather than guessing, so an Advanced→Simple switch never silently mangles the expression.
 export function parseCronToSimple(expr: string): SimpleSchedule | null {
   if (!validateCron(expr).valid) return null;
-  const [minute, hour, dom, month, dow] = expr.trim().split(/\s+/);
+  const [minute, hour, domRaw, monthRaw, dowRaw] = expr.trim().split(/\s+/);
+  // "?" is a synonym for "*" in robfig/cron/v3 — normalize before checking representability.
+  const dom = domRaw === "?" ? "*" : domRaw;
+  const month = monthRaw === "?" ? "*" : monthRaw;
+  const dow = dowRaw === "?" ? "*" : dowRaw;
   if (!isExact(minute) || !isExact(hour) || month !== "*") return null;
   const m = Number(minute);
   const h = Number(hour);
