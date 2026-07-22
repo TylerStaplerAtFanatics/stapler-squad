@@ -58,7 +58,7 @@ func TestEntRepository_should_noOpPublish_When_ItemChangePublisherIsNil(t *testi
 
 	updated, err := repo.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusDone, &BacklogItemPrecondition{
 		ExpectedStatus: string(BacklogStatusReview),
-	})
+	}, TriggeredBySystem)
 	require.NoError(t, err, "transition must succeed even though no ItemChangePublisher is wired")
 	assert.Equal(t, string(BacklogStatusDone), updated.Status)
 }
