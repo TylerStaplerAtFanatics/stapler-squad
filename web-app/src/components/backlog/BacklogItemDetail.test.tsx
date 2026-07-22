@@ -14,12 +14,13 @@
  */
 
 import React from "react";
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { render, screen, act, fireEvent, within } from "@testing-library/react";
 import { create } from "@bufbuild/protobuf";
+import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { BacklogItemDetail } from "./BacklogItemDetail";
 import type { BacklogItem, LinkedSession, PipelineMode } from "@/lib/hooks/useBacklogService";
 import { VCSStatusSchema } from "@/gen/session/v1/types_pb";
-import { BacklogItemShipStatusSchema } from "@/gen/session/v1/backlog_pb";
+import { BacklogItemShipStatusSchema, StuckReason, type StuckBacklogItem } from "@/gen/session/v1/backlog_pb";
 
 // Heavy children pull their own hooks/timers; stub them out so this test is
 // focused on BacklogItemDetail's own render behavior.
@@ -52,6 +53,16 @@ jest.mock("@/lib/hooks/useBacklogItemShipStatus", () => ({
   useBacklogItemShipStatus: (...args: unknown[]) => useBacklogItemShipStatusMock(...args),
 }));
 
+// BacklogItemDetail calls useStuckBacklogItems() once and passes the
+// resolved StuckBacklogItem down to LifecycleSummary as a prop — stub it so
+// this suite never attempts a real ConnectRPC call. Individual tests that
+// care about BlockerChip behavior override this per-case; everything else
+// gets a stable "nothing stuck" default.
+const useStuckBacklogItemsMock = jest.fn();
+jest.mock("@/lib/hooks/useStuckBacklogItems", () => ({
+  useStuckBacklogItems: (...args: unknown[]) => useStuckBacklogItemsMock(...args),
+}));
+
 // The edit-mode branch renders BacklogItemForm -> RepoPathInput, which uses
 // useSessionRepoPaths (Redux) and usePathCompletions (RPC). Stub both so this
 // test doesn't need a Redux store or ConnectRPC transport. Not exercised by
@@ -81,6 +92,10 @@ const listPipelineModes = jest.fn();
 // re-created fresh every render) so Epic 5.3 tests can assert on calls made
 // across a Save/Save-Anyway click, not just within a single render.
 const updateBacklogItem = jest.fn().mockResolvedValue(null);
+// Hoisted (like getBacklogItem/listPipelineModes above) so individual tests
+// can control resolution timing — needed for the actionLoading polling-
+// suspend regression test (Story 3.1.3, Task 3.1.3c).
+const overrideVerdict = jest.fn();
 
 jest.mock("@/lib/hooks/useBacklogService", () => ({
   // mapBacklogItem is a real (unmocked) named export — BacklogItemDetail's
@@ -94,7 +109,7 @@ jest.mock("@/lib/hooks/useBacklogService", () => ({
     cancelTriage: jest.fn(),
     spawnSessionFromItem: jest.fn(),
     approvePlan: jest.fn(),
-    overrideVerdict: jest.fn(),
+    overrideVerdict,
     triggerReReview: jest.fn(),
     triggerShipPR: jest.fn(),
     submitManualReview: jest.fn(),
@@ -157,6 +172,13 @@ beforeEach(() => {
   mockLiveItemsMap = {};
   mockTerminalStreamEvents = [];
   updateBacklogItem.mockClear().mockResolvedValue(null);
+  useStuckBacklogItemsMock.mockReturnValue({ items: [], isLoading: false, error: null });
+  overrideVerdict.mockReset();
+  // Story 3.1.4's per-section expand state (useSectionExpandState) and
+  // "Show N more" state (useShowMore) both persist to localStorage keyed
+  // by itemId — clear between tests so one test's expand/collapse
+  // interactions never leak into the next test reusing the same itemId.
+  localStorage.clear();
 });
 
 function makeMode(overrides: Partial<PipelineMode> & Pick<PipelineMode, "slug" | "name">): PipelineMode {
@@ -283,15 +305,25 @@ describe("BacklogItemDetail — Epic 3.4 'what ran' Pipeline surface", () => {
 // status change with no verdict change produced zero screen-reader
 // announcement. Mirrors GateVerdictBox.tsx's role="status" aria-live="polite"
 // aria-atomic="true" live-region pattern (Epic 6.2).
+//
+// PR #208's progressive-disclosure redesign replaced the old standalone
+// status-label badge with StageTracker (part of LifecycleSummary, D1 dedup)
+// — "Idea" is now rendered as a label span nested inside StageTracker's
+// tracker <ol>, not as the direct content of the live-region element itself.
+// The live-region role/aria-live/aria-atomic now live on StageTracker's own
+// container (data-testid="stage-tracker"), which is what actually gets
+// re-announced on a status change — assert there instead of on the raw text
+// node.
 describe("BacklogItemDetail — AC #12/#32: status-label live region", () => {
-  it("marks the status-label badge as a polite, atomic live region", async () => {
+  it("marks the StageTracker container as a polite, atomic live region", async () => {
     const session = makeSession({});
     await renderWithSession(session, []);
 
-    const statusLabel = screen.getByText("Idea");
-    expect(statusLabel).toHaveAttribute("role", "status");
-    expect(statusLabel).toHaveAttribute("aria-live", "polite");
-    expect(statusLabel).toHaveAttribute("aria-atomic", "true");
+    expect(screen.getByText("Idea")).toBeInTheDocument();
+    const stageTracker = screen.getByTestId("stage-tracker");
+    expect(stageTracker).toHaveAttribute("role", "status");
+    expect(stageTracker).toHaveAttribute("aria-live", "polite");
+    expect(stageTracker).toHaveAttribute("aria-atomic", "true");
   });
 });
 
@@ -318,6 +350,10 @@ describe("BacklogItemDetail — Story 2.2.3: VcsWidget wiring", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+
+    // VersionControlSection (Story 3.1.4) is collapsed by default for an
+    // "idea"-status item — expand it before asserting on its contents.
+    fireEvent.click(screen.getByTestId("collapsible-header-version-control"));
 
     expect(screen.getByText("Shipped")).toBeInTheDocument();
 
@@ -352,6 +388,10 @@ describe("BacklogItemDetail — Story 2.2.3: VcsWidget wiring", () => {
       await Promise.resolve();
     });
 
+    // VersionControlSection (Story 3.1.4) is collapsed by default for an
+    // "idea"-status item — expand it before asserting on its contents.
+    fireEvent.click(screen.getByTestId("collapsible-header-version-control"));
+
     // Live vcsStatus wins over the historical shipStatus when both resolve non-null.
     expect(screen.getByText("feat/live-branch")).toBeInTheDocument();
     expect(screen.queryByText("feat/historical-branch")).not.toBeInTheDocument();
@@ -378,6 +418,10 @@ describe("BacklogItemDetail — Story 2.2.3: VcsWidget wiring", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+
+    // VersionControlSection (Story 3.1.4) is collapsed by default for an
+    // "idea"-status item — expand it before asserting on its contents.
+    fireEvent.click(screen.getByTestId("collapsible-header-version-control"));
 
     expect(screen.queryByTestId("file-browser-modal-stub")).not.toBeInTheDocument();
 
@@ -619,5 +663,533 @@ describe("BacklogItemDetail — Task 5.3.1c: terminal-state banner", () => {
 
     expect(screen.queryByTestId("backlog-detail-terminal-notice")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit item" })).toBeInTheDocument();
+  });
+});
+
+describe("BacklogItemDetail — Story 1.1.2: current work session selector (D3)", () => {
+  it("BacklogItemDetail_should_ReturnIdenticalWorkSessionAcrossAllCallSites_When_MultipleWorkSessionsLinked", async () => {
+    useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
+    useBacklogItemShipStatusMock.mockReturnValue({ data: null, loading: false, refetch: jest.fn() });
+
+    const sessions = [
+      makeSession({ entityId: "s1", sessionId: "session-older", role: "work", startedAt: "2026-07-01T00:00:00Z" }),
+      makeSession({ entityId: "s2", sessionId: "session-newer", role: "work", startedAt: "2026-07-02T00:00:00Z" }),
+    ];
+
+    // Actions-section call site: item.status === "in_progress".
+    getBacklogItem.mockReset().mockResolvedValue({ ...makeItem(sessions), status: "in_progress" });
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Header call site: useVcsStatus is called with the current work session's id.
+    expect(useVcsStatusMock).toHaveBeenCalledWith("session-newer", expect.anything());
+
+    // Actions-section call site: "View Session" link targets the same session.
+    expect(screen.getByTestId("backlog-action-view-session")).toHaveAttribute(
+      "href",
+      "/?session=session-newer"
+    );
+  });
+
+  it("BacklogItemDetail_should_ReturnIdenticalWorkSessionAcrossAllCallSites_When_StatusIsReview", async () => {
+    useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
+    useBacklogItemShipStatusMock.mockReturnValue({ data: null, loading: false, refetch: jest.fn() });
+
+    const sessions = [
+      makeSession({ entityId: "s1", sessionId: "session-older", role: "work", startedAt: "2026-07-01T00:00:00Z" }),
+      makeSession({ entityId: "s2", sessionId: "session-newer", role: "work", startedAt: "2026-07-02T00:00:00Z" }),
+    ];
+
+    // Reviewing-section call site: item.status === "review".
+    getBacklogItem.mockReset().mockResolvedValue({ ...makeItem(sessions), status: "review" });
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Header call site: useVcsStatus is called with the current work session's id.
+    expect(useVcsStatusMock).toHaveBeenCalledWith("session-newer", expect.anything());
+
+    // Reviewing-section call site: the "Work session" link targets the same session.
+    const reviewingHeading = screen.getByText("Reviewing");
+    const reviewingSection = reviewingHeading.closest("div") as HTMLElement;
+    expect(within(reviewingSection).getByText("session-newer")).toBeInTheDocument();
+    expect(within(reviewingSection).queryByText("session-older")).not.toBeInTheDocument();
+  });
+});
+
+describe("BacklogItemDetail — Story 1.1.3: session kind classifier wired into the Sessions row", () => {
+  it("renders a manual-review- session as a non-clickable span, not a dead <a href> link", async () => {
+    useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
+    useBacklogItemShipStatusMock.mockReturnValue({ data: null, loading: false, refetch: jest.fn() });
+
+    const session = makeSession({
+      entityId: "s1",
+      sessionId: "manual-review-a1b2c3d4-1721577600000000000",
+      role: "review",
+    });
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([session]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.queryByRole("link", { name: /manual-review-a1b2c3d4/ })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("manual-review-a1b2c3d4-1721577600000000000")).toBeInTheDocument();
+  });
+
+  it("renders a diff-error- session as a non-clickable span, not a dead <a href> link", async () => {
+    useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
+    useBacklogItemShipStatusMock.mockReturnValue({ data: null, loading: false, refetch: jest.fn() });
+
+    const session = makeSession({
+      entityId: "s1",
+      sessionId: "diff-error-a1b2c3d4",
+      role: "review",
+    });
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([session]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("link", { name: /diff-error-a1b2c3d4/ })).not.toBeInTheDocument();
+    expect(screen.getByText("diff-error-a1b2c3d4")).toBeInTheDocument();
+  });
+
+  it("still renders a normal work session as a clickable link", async () => {
+    useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
+    useBacklogItemShipStatusMock.mockReturnValue({ data: null, loading: false, refetch: jest.fn() });
+
+    const session = makeSession({
+      entityId: "s1",
+      sessionId: "a1b2c3d4-e5f6-7890-abcd-1234567890ab",
+      role: "work",
+    });
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([session]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.getByRole("link", { name: /a1b2c3d4-e5f6-7890-abcd-1234567890ab/ })
+    ).toHaveAttribute("href", "/?session=a1b2c3d4-e5f6-7890-abcd-1234567890ab");
+  });
+});
+
+describe("BacklogItemDetail — Story 2.1.4: LifecycleSummary replaces the old status badge", () => {
+  it("BacklogItemDetail_should_NotRenderLegacyStatusBadgeMarkup_When_LifecycleSummaryReplacesIt", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The old standalone status badge (`styles.statusBadge`, previously at
+    // BacklogItemDetail.tsx:700-716) is gone entirely — LifecycleSummary is
+    // the sole authoritative status display (D1 duplication regression guard).
+    expect(screen.queryByLabelText(/^Status: /)).not.toBeInTheDocument();
+    expect(screen.getByTestId("lifecycle-summary")).toBeInTheDocument();
+  });
+
+  it("BacklogItemDetail_should_RenderLifecycleSummaryFromLoadedItem_When_GetBacklogItemResolves", async () => {
+    const item = makeItem([]);
+    getBacklogItem.mockReset().mockResolvedValue({ ...item, status: "review" });
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const summary = screen.getByTestId("lifecycle-summary");
+    expect(summary).toBeInTheDocument();
+    expect(screen.getByTestId("stage-node-review")).toHaveAttribute("aria-current", "step");
+  });
+
+  it("BacklogItemDetail_should_PassMatchingStuckItemToLifecycleSummary_When_UseStuckBacklogItemsReturnsMatchingItemId", async () => {
+    // Regression guard for the MAJOR finding on PR #208: BacklogItemDetail
+    // (not LifecycleSummary) must own the single useStuckBacklogItems() call
+    // and resolve the `.find(i => i.itemId === item.id)` lookup itself,
+    // passing the result down as a plain `stuckItem` prop.
+    const stuckItem: StuckBacklogItem = {
+      itemId: "item-1",
+      title: "Refactor auth middleware",
+      status: "in_progress",
+      reason: StuckReason.STALE_WORK,
+      firstDetectedAt: timestampFromDate(new Date(Date.now() - 4 * 60 * 60 * 1000)),
+      lastCheckedAt: timestampFromDate(new Date()),
+      prNumber: 0,
+      prUrl: "",
+      context: "",
+    } as StuckBacklogItem;
+    useStuckBacklogItemsMock.mockReturnValue({ items: [stuckItem], isLoading: false, error: null });
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("blocker-chip")).toBeInTheDocument();
+  });
+
+  it("BacklogItemDetail_should_NotPassStuckItemToLifecycleSummary_When_UseStuckBacklogItemsReturnsNoMatchingItemId", async () => {
+    const stuckItem: StuckBacklogItem = {
+      itemId: "some-other-item",
+      title: "Unrelated item",
+      status: "in_progress",
+      reason: StuckReason.STALE_WORK,
+      firstDetectedAt: timestampFromDate(new Date(Date.now() - 4 * 60 * 60 * 1000)),
+      lastCheckedAt: timestampFromDate(new Date()),
+      prNumber: 0,
+      prUrl: "",
+      context: "",
+    } as StuckBacklogItem;
+    useStuckBacklogItemsMock.mockReturnValue({ items: [stuckItem], isLoading: false, error: null });
+    getBacklogItem.mockReset().mockResolvedValue(makeItem([]));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId("blocker-chip")).not.toBeInTheDocument();
+  });
+});
+
+describe("BacklogItemDetail — Story 3.1.3: polling suspends for manual-review + in-flight actions", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  function makeReviewItem(overrides: Partial<BacklogItem> = {}): BacklogItem {
+    return {
+      ...makeItem([]),
+      status: "review",
+      gateVerdict: "PENDING",
+      ...overrides,
+    };
+  }
+
+  it("BacklogItemDetail_should_SuspendPollingLoad_When_ShowManualReviewIsTrueEvenWithEditModeFalse", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeReviewItem());
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getBacklogItem).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("backlog-action-manual-review"));
+    expect(screen.getByTestId("manual-review-form")).toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    // showManualReview === true, editMode === false — the poll must still be
+    // suspended (extends the existing editMode-only guard, Task 3.1.3c).
+    expect(getBacklogItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("BacklogItemDetail_should_NotClobberManualReviewDraftText_When_PollTickFiresWhileFormOpen", async () => {
+    getBacklogItem.mockReset().mockResolvedValue(makeReviewItem());
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByTestId("backlog-action-manual-review"));
+    fireEvent.change(screen.getByTestId("manual-review-summary"), {
+      target: { value: "Verified the fix locally" },
+    });
+
+    await act(async () => {
+      jest.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+
+    expect(getBacklogItem).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("manual-review-summary")).toHaveValue("Verified the fix locally");
+  });
+
+  it("BacklogItemDetail_should_SuspendPollingAndPreservePendingState_When_ActionLoadingIsNonNull", async () => {
+    const reviewSession = makeSession({
+      entityId: "review-session-1",
+      sessionId: "session-1",
+      role: "review",
+    });
+    getBacklogItem.mockReset().mockResolvedValue(makeReviewItem({ linkedSessions: [reviewSession] }));
+    listPipelineModes.mockReset().mockResolvedValue([]);
+    // Never resolves — keeps actionLoading non-null for the duration of this test.
+    overrideVerdict.mockReturnValue(new Promise(() => {}));
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getBacklogItem).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("backlog-action-override-done"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("backlog-action-override-done")).toHaveAttribute("aria-busy", "true");
+
+    await act(async () => {
+      jest.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    // actionLoading !== null — the poll must be suspended (pre-mortem P1 #4,
+    // Task 3.1.3c), and the pending button's state must survive untouched
+    // (no unmount, no double-submit risk).
+    expect(getBacklogItem).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("backlog-action-override-done")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByTestId("backlog-action-override-done")).toBeDisabled();
+  });
+});
+
+describe("BacklogItemDetail — Story 3.1.4 Task 3.1.4i/3.1.4j: shared CollapsibleGroup keyboard nav", () => {
+  it("BacklogItemDetail_should_MoveFocusBetweenAllSiblingSectionHeaders_When_ArrowKeyPressedInSharedCollapsibleGroup", async () => {
+    const session = makeSession({ entityId: "s1", sessionId: "session-1", role: "work" });
+    getBacklogItem.mockReset().mockResolvedValue({
+      ...makeItem([session]),
+      status: "in_progress",
+      planArtifactsPath: "/tmp/plans/item-1.md",
+      notes: "some notes",
+    });
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Full composed tree — not an isolated 2-section fixture (that's
+    // Collapsible.test.tsx's unit-level proof) — asserting the real
+    // sibling sections wired into one CollapsibleGroup (Task 3.1.4i)
+    // actually deliver ADR-027's cross-header keyboard-nav benefit.
+    const descriptionHeader = screen.getByTestId("collapsible-header-description");
+    const planArtifactsHeader = screen.getByTestId("collapsible-header-plan-artifacts");
+
+    descriptionHeader.focus();
+    expect(descriptionHeader).toHaveFocus();
+
+    fireEvent.keyDown(descriptionHeader, { key: "ArrowDown", code: "ArrowDown" });
+
+    expect(planArtifactsHeader).toHaveFocus();
+  });
+});
+
+describe("BacklogItemDetail — Story 3.1.5: auto-expand-on-status-change, first-render-only", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  it("BacklogItemDetail_should_ExpandVersionControlSectionOnFirstMount_When_ItemStatusIsInProgress", async () => {
+    useVcsStatusMock.mockReturnValue({
+      data: create(VCSStatusSchema, { branch: "feat/x", isClean: true }),
+      loading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+    const session = makeSession({ entityId: "s1", sessionId: "session-1", role: "work" });
+    getBacklogItem.mockReset().mockResolvedValue({ ...makeItem([session]), status: "in_progress" });
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("collapsible-header-version-control")).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("BacklogItemDetail_should_KeepSectionCollapsed_When_ALiveUpdateReturnsAFreshItemAfterUserManuallyCollapsedIt", async () => {
+    useVcsStatusMock.mockReturnValue({
+      data: create(VCSStatusSchema, { branch: "feat/x", isClean: true }),
+      loading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+    const session = makeSession({ entityId: "s1", sessionId: "session-1", role: "work" });
+    getBacklogItem.mockReset().mockResolvedValue({ ...makeItem([session]), status: "in_progress" });
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    const { rerender } = render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Default-expanded (per the in_progress rule) — user manually collapses it.
+    const vcsHeader = screen.getByTestId("collapsible-header-version-control");
+    expect(vcsHeader).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(vcsHeader);
+    expect(vcsHeader).toHaveAttribute("aria-expanded", "false");
+
+    // Epic 5.3 replaced the 5s poll with a live store subscription — simulate
+    // a fresh live update for the same item/status landing in the shared
+    // store instead of advancing a (now-deleted) poll timer.
+    mockLiveItemsMap = {
+      "item-1": {
+        id: "item-1",
+        title: "Refactor auth middleware",
+        status: "in_progress",
+        priority: 3,
+        itemSessions: [
+          { id: "s1", sessionUuid: "session-1", sessionRole: "work", estimatedCostUsd: 0 },
+        ],
+      },
+    };
+    await act(async () => {
+      rerender(<BacklogItemDetail itemId="item-1" />);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("collapsible-header-version-control")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("BacklogItemDetail_should_NotReapplyDefaultExpand_When_StatusTransitionsViaALiveUpdateWithoutItemIdChange", async () => {
+    getBacklogItem.mockReset().mockResolvedValue({ ...makeItem([]), status: "idea" });
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    const { rerender } = render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByTestId("collapsible-header-reviewing")).not.toBeInTheDocument();
+
+    // Epic 5.3 replaced the 5s poll with a live store subscription — a live
+    // update arrives for the same item transitioning it to "review",
+    // ReviewingSection becomes newly relevant mid-session without an
+    // itemId/key change.
+    mockLiveItemsMap = {
+      "item-1": {
+        id: "item-1",
+        title: "Refactor auth middleware",
+        status: "review",
+        priority: 3,
+      },
+    };
+    await act(async () => {
+      rerender(<BacklogItemDetail itemId="item-1" />);
+      await Promise.resolve();
+    });
+
+    // ReviewingSection now exists (status is "review"), but its one-shot
+    // mount-time default was already consumed by the *first* load (when
+    // status was "idea") — it must not retroactively open just because it
+    // only became relevant after that.
+    expect(screen.getByTestId("collapsible-header-reviewing")).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("BacklogItemDetail — regression: Collapsible's defaultExpanded-in-group dev warning", () => {
+  it("BacklogItemDetail_should_NotWarn_When_AllGroupedSectionsRenderWithTheirOwnDefaultExpanded", async () => {
+    // 1d8b6cd1 added a dev-mode console.warn in Collapsible.tsx for any
+    // CollapsibleSection inside a CollapsibleGroup that receives a truthy
+    // defaultExpanded — but every one of this component's 8 grouped
+    // sections legitimately passes defaultExpanded={<sectionKey>Expanded},
+    // the same state that also feeds the group's own `value` prop via
+    // sectionExpandEntries/openSectionKeys. That's redundant, not
+    // misuse — Collapsible.tsx must only warn on a genuine divergence
+    // between defaultExpanded and the group's actual state for that
+    // section, never on this component's own correct, consistent usage.
+    // Use "review" status so every optional section (Reviewing,
+    // Plan Artifacts, Version Control) also mounts, maximizing the
+    // number of grouped sections rendered in one pass. VersionControlSection
+    // additionally requires non-null VCS/ship-status data to render at all.
+    useVcsStatusMock.mockReturnValue({
+      data: create(VCSStatusSchema, { branch: "feat/live-branch", isClean: true }),
+      loading: false,
+      error: null,
+      refetch: jest.fn(),
+    });
+    const session = makeSession({ entityId: "s1", sessionId: "session-1", role: "review" });
+    getBacklogItem.mockReset().mockResolvedValue({
+      ...makeItem([session]),
+      status: "review",
+      planArtifactsPath: "/tmp/plans/item-1.md",
+      notes: "some notes",
+    });
+    listPipelineModes.mockReset().mockResolvedValue([]);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    render(<BacklogItemDetail itemId="item-1" />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Sanity check: the grouped sections this test cares about actually
+    // mounted, so a passing assertion below isn't just "nothing rendered".
+    expect(screen.getByTestId("collapsible-header-reviewing")).toBeInTheDocument();
+    expect(screen.getByTestId("collapsible-header-plan-artifacts")).toBeInTheDocument();
+    expect(screen.getByTestId("collapsible-header-version-control")).toBeInTheDocument();
+    expect(screen.getByTestId("collapsible-header-sessions")).toBeInTheDocument();
+    expect(screen.getByTestId("collapsible-header-notes")).toBeInTheDocument();
+
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    // Toggling a section keeps defaultExpanded and the group's value in
+    // lockstep (both driven by the same useSectionExpandState setter via
+    // handleGroupValueChange) — must still not warn after a re-render.
+    fireEvent.click(screen.getByTestId("collapsible-header-notes"));
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
   });
 });

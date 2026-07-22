@@ -5,9 +5,20 @@
  */
 
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { BacklogItemDetail } from "./BacklogItemDetail";
 import type { BacklogItem } from "@/lib/hooks/useBacklogService";
+
+/**
+ * DescriptionSection (Story 3.1.3) is collapsed by default — its content is
+ * removed from the DOM (not just hidden) until the header is expanded, per
+ * CollapsibleSection's contract. Expand it before asserting on rendered
+ * description content.
+ */
+async function expandDescription() {
+  const header = await screen.findByTestId("collapsible-header-description");
+  fireEvent.click(header);
+}
 
 jest.mock("./SessionMonitor", () => ({ SessionMonitor: () => null }));
 jest.mock("./GateVerdictBox", () => ({ GateVerdictBox: () => null }));
@@ -46,6 +57,13 @@ jest.mock("@connectrpc/connect", () => ({
 }));
 jest.mock("@connectrpc/connect-web", () => ({
   createConnectTransport: jest.fn().mockReturnValue({}),
+}));
+
+// BacklogItemDetail calls useStuckBacklogItems() once and passes the
+// resolved StuckBacklogItem down to LifecycleSummary as a prop — stub it so
+// this suite never attempts a real ConnectRPC call.
+jest.mock("@/lib/hooks/useStuckBacklogItems", () => ({
+  useStuckBacklogItems: () => ({ items: [], isLoading: false, error: null }),
 }));
 
 const getBacklogItem = jest.fn();
@@ -94,6 +112,10 @@ const baseItem: BacklogItem = {
 describe("BacklogItemDetail — description markdown rendering", () => {
   beforeEach(() => {
     getBacklogItem.mockReset();
+    // Story 3.1.4's useSectionExpandState persists collapse state to
+    // localStorage keyed by itemId — clear between tests so one test's
+    // expand click never leaks into the next test reusing "item-1".
+    localStorage.clear();
   });
 
   it("renders bold text and links instead of literal markdown syntax", async () => {
@@ -103,6 +125,7 @@ describe("BacklogItemDetail — description markdown rendering", () => {
     });
 
     render(<BacklogItemDetail itemId="item-1" />);
+    await expandDescription();
 
     const rendered = await screen.findByTestId("backlog-description-rendered");
     expect(rendered.querySelector("strong")).toHaveTextContent("bold");
@@ -118,6 +141,7 @@ describe("BacklogItemDetail — description markdown rendering", () => {
     });
 
     render(<BacklogItemDetail itemId="item-1" />);
+    await expandDescription();
 
     const rendered = await screen.findByTestId("backlog-description-rendered");
     const img = rendered.querySelector("img");
@@ -131,6 +155,7 @@ describe("BacklogItemDetail — description markdown rendering", () => {
     });
 
     render(<BacklogItemDetail itemId="item-1" />);
+    await expandDescription();
 
     const rendered = await screen.findByTestId("backlog-description-rendered");
     expect(rendered.querySelector("script")).not.toBeInTheDocument();

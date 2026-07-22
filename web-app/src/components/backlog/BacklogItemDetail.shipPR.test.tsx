@@ -56,6 +56,14 @@ jest.mock("@connectrpc/connect-web", () => ({
   createConnectTransport: jest.fn().mockReturnValue({}),
 }));
 
+// BacklogItemDetail calls useStuckBacklogItems() once and passes the
+// resolved StuckBacklogItem down to LifecycleSummary as a prop — stub it so
+// this suite never attempts a real ConnectRPC call.
+jest.mock("@/lib/hooks/useStuckBacklogItems", () => ({
+  useStuckBacklogItems: () => ({ items: [], isLoading: false, error: null }),
+}));
+
+
 const getBacklogItem = jest.fn();
 const listPipelineModes = jest.fn().mockResolvedValue([]);
 const triggerShipPR = jest.fn().mockResolvedValue({ prUrl: "https://github.com/example/repo/pull/42" });
@@ -133,6 +141,10 @@ function makeReviewItem(overrides: Partial<BacklogItem> = {}): BacklogItem {
 async function renderItem(item: BacklogItem) {
   getBacklogItem.mockReset().mockResolvedValue(item);
   triggerShipPR.mockClear();
+  // Story 3.1.4's useSectionExpandState persists collapse state to
+  // localStorage keyed by itemId — clear so one test's expand/collapse
+  // interactions never leak into the next test reusing the same itemId.
+  localStorage.clear();
 
   render(<BacklogItemDetail itemId={item.id} />);
 
