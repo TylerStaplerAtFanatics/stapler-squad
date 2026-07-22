@@ -167,6 +167,99 @@ function PriorityFilterChips({
   );
 }
 
+// Sweep fix (backlog-event-driven-updates Phase 5 compliance sweep,
+// 2026-07-22): ux.md UX AC #6 requires the list row itself to play "a
+// background flash that fades within ~1 second" on a genuine live update —
+// the page previously only tracked `item.liveVersion` for the Epic 6.3 exit
+// transition, never applying the Epic 6.1 in-place flash BacklogItemCard.tsx
+// (used by the Kanban board) already has. Extracted into its own component,
+// mirroring BacklogItemCard's exact flash-tracking hook, since a plain row
+// function has no hook of its own to track the previous liveVersion.
+function BacklogTableRow({
+  item,
+  isActive,
+  isExiting,
+  onRowClick,
+}: {
+  item: BacklogItem;
+  isActive: boolean;
+  isExiting: boolean;
+  onRowClick: (itemId: string) => void;
+}) {
+  const acDone = item.acCriteria.filter((c) => c.status === "done").length;
+
+  const prevLiveVersionRef = useRef(item.liveVersion);
+  const [justChanged, setJustChanged] = useState(false);
+
+  useEffect(() => {
+    const prev = prevLiveVersionRef.current;
+    const next = item.liveVersion;
+    prevLiveVersionRef.current = next;
+    if (prev === undefined || next === undefined || next === prev) return;
+
+    setJustChanged(true);
+    const timer = setTimeout(() => setJustChanged(false), 250);
+    return () => clearTimeout(timer);
+  }, [item.liveVersion]);
+
+  return (
+    <tr
+      className={`${styles.tableRow} ${isActive ? styles.tableRowActive : ""} ${isExiting ? styles.tableRowExiting : ""} ${justChanged ? styles.tableRowJustChanged : ""}`}
+      tabIndex={isExiting ? -1 : 0}
+      role="row"
+      aria-selected={isActive}
+      aria-hidden={isExiting || undefined}
+      data-testid="backlog-table-row"
+      data-item-id={item.id}
+      data-exiting={isExiting ? "true" : undefined}
+      onClick={() => {
+        if (isExiting) return;
+        onRowClick(item.id);
+      }}
+      onKeyDown={(e) => {
+        if (isExiting) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onRowClick(item.id);
+        }
+      }}
+    >
+      <td className={`${styles.tableCell} ${styles.titleCell}`}>
+        {item.title}
+      </td>
+      <td className={styles.tableCell}>
+        <span
+          className={`${styles.statusBadge} ${getStatusClass(item.status)}`}
+          aria-label={`Status: ${getStatusLabel(item.status)}`}
+          data-testid={item.status === "queued" ? "backlog-status-queued" : undefined}
+        >
+          {getStatusLabel(item.status)}
+        </span>
+      </td>
+      <td className={styles.tableCell}>
+        <span
+          className={styles.priorityBadge}
+          data-testid="priority-badge"
+          aria-label={`Priority: ${PRIORITY_LABELS[item.priority] ?? "Unknown"}`}
+        >
+          {PRIORITY_LABELS[item.priority] ?? "P?"}
+        </span>
+      </td>
+      <td className={`${styles.tableCell} ${styles.acProgressCell}`}>
+        {item.acCriteria.length > 0
+          ? `${acDone}/${item.acCriteria.length}`
+          : "—"}
+      </td>
+      <td className={styles.tableCell} style={{ whiteSpace: "nowrap" }}>
+        {formatDateShort(item.updatedAt)}
+      </td>
+      <td className={`${styles.tableCell} ${styles.repoPathCell}`} data-testid="backlog-repo-path-cell">
+        {item.repoPath || "—"}
+      </td>
+    </tr>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -505,65 +598,16 @@ function BacklogPageInner() {
   };
 
   const renderItemRow = (item: BacklogItem) => {
-    const acDone = item.acCriteria.filter((c) => c.status === "done").length;
     const isActive = selectedItemId === item.id;
     const isExiting = exitingItems.has(item.id);
     return (
-      <tr
+      <BacklogTableRow
         key={item.id}
-        className={`${styles.tableRow} ${isActive ? styles.tableRowActive : ""} ${isExiting ? styles.tableRowExiting : ""}`}
-        tabIndex={isExiting ? -1 : 0}
-        role="row"
-        aria-selected={isActive}
-        aria-hidden={isExiting || undefined}
-        data-testid="backlog-table-row"
-        data-item-id={item.id}
-        data-exiting={isExiting ? "true" : undefined}
-        onClick={() => {
-          if (isExiting) return;
-          handleRowClick(item.id);
-        }}
-        onKeyDown={(e) => {
-          if (isExiting) return;
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            handleRowClick(item.id);
-          }
-        }}
-      >
-        <td className={`${styles.tableCell} ${styles.titleCell}`}>
-          {item.title}
-        </td>
-        <td className={styles.tableCell}>
-          <span
-            className={`${styles.statusBadge} ${getStatusClass(item.status)}`}
-            aria-label={`Status: ${getStatusLabel(item.status)}`}
-            data-testid={item.status === "queued" ? "backlog-status-queued" : undefined}
-          >
-            {getStatusLabel(item.status)}
-          </span>
-        </td>
-        <td className={styles.tableCell}>
-          <span
-            className={styles.priorityBadge}
-            data-testid="priority-badge"
-            aria-label={`Priority: ${PRIORITY_LABELS[item.priority] ?? "Unknown"}`}
-          >
-            {PRIORITY_LABELS[item.priority] ?? "P?"}
-          </span>
-        </td>
-        <td className={`${styles.tableCell} ${styles.acProgressCell}`}>
-          {item.acCriteria.length > 0
-            ? `${acDone}/${item.acCriteria.length}`
-            : "—"}
-        </td>
-        <td className={styles.tableCell} style={{ whiteSpace: "nowrap" }}>
-          {formatDateShort(item.updatedAt)}
-        </td>
-        <td className={`${styles.tableCell} ${styles.repoPathCell}`} data-testid="backlog-repo-path-cell">
-          {item.repoPath || "—"}
-        </td>
-      </tr>
+        item={item}
+        isActive={isActive}
+        isExiting={isExiting}
+        onRowClick={handleRowClick}
+      />
     );
   };
 
