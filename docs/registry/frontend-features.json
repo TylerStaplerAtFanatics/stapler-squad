@@ -246,7 +246,8 @@
         "routes a manual-review-* session to BlockedNotice with the identical treatment as blocked_guardrail",
         "routes a review-blocked-* session to BlockedNotice too",
         "uses role=status for the one-line summary and never role=log",
-        "never renders nothing for malformed/partial headless_diagnostic data"
+        "never renders nothing for malformed/partial headless_diagnostic data",
+        "backlog item detail redesign > reveals the synthetic session row's TriageReviewPanel readOnly summary when expanded"
       ],
       "lastModified": "2026-07-21T00:00:00Z"
     },
@@ -266,7 +267,8 @@
         "LifecycleSummary_should_RetainLastKnownBlockerChip_When_UseStuckBacklogItemsReturnsError",
         "LifecycleSummary_should_RenderDataTestIdWithStageTrackerActive_When_ComposedFromAllThreeChildren",
         "LifecycleSummary_should_RenderPipelineBadge_When_PipelineModeResolvedAndNotDefault",
-        "LifecycleSummary_should_OmitPipelineBadge_When_PipelineModeIsDefault"
+        "LifecycleSummary_should_OmitPipelineBadge_When_PipelineModeIsDefault",
+        "backlog item detail redesign > shows the Lifecycle Summary with zero prior clicks"
       ],
       "lastModified": "2026-07-21T00:00:00Z"
     },
@@ -1069,6 +1071,32 @@
         "VcsWidget_should_RenderAggregateStatsAndCommitsWithNoPerFileRows_When_CompactModeExpanded"
       ],
       "lastModified": "2026-07-18T00:00:00Z"
+    },
+    {
+      "id": "workflow-cron-schedule-input",
+      "type": "frontend",
+      "frontend": {
+        "component": "CronScheduleInput",
+        "path": "web-app/src/components/workflows/CronScheduleInput.tsx",
+        "markerLine": 2
+      },
+      "tested": true,
+      "testIds": [
+        "CronScheduleInput > starts in Simple mode for an empty value and shows the empty-state explanation",
+        "CronScheduleInput > Simple mode: daily frequency + time produces the correct cron string",
+        "CronScheduleInput > Simple mode: weekly frequency exposes a day-of-week select and produces the correct cron string",
+        "CronScheduleInput > Simple mode: weekdays frequency produces a 1-5 range",
+        "CronScheduleInput > Simple mode: monthly frequency exposes a day-of-month input",
+        "CronScheduleInput > shows an inline alert for an invalid Advanced expression",
+        "CronScheduleInput > starts in Advanced mode for an expression the builder can't represent, and toggling to Simple shows a fallback notice instead of switching",
+        "CronScheduleInput > Simple -> Advanced toggle preserves the exact builder-computed cron string",
+        "CronScheduleInput > shows a server-local timezone label",
+        "workflow-cron-schedule > Advanced mode: raw cron entry still works unchanged for power users",
+        "workflow-cron-schedule > blocks submission client-side when the Advanced cron expression is invalid",
+        "workflow-cron-schedule > Simple mode: building a weekly schedule via dropdowns creates the expected cron string",
+        "workflow-cron-schedule > has no critical or serious Axe violations in Simple or Advanced mode"
+      ],
+      "lastModified": "2026-07-22T00:00:00Z"
     }
   ]
 }

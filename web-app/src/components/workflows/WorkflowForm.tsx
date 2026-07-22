@@ -10,6 +10,8 @@ import { useSlashCommands } from "@/lib/hooks/useSlashCommands";
 import { useSlashCommandSuggestions } from "@/lib/hooks/useSlashCommandSuggestions";
 import { useAvailablePrograms } from "@/lib/hooks/useAvailablePrograms";
 import { CLAUDE_MODELS } from "@/lib/constants/programs";
+import { CronScheduleInput } from "./CronScheduleInput";
+import { validateCron } from "@/lib/cron/explainCron";
 import * as styles from "./WorkflowForm.css";
 
 interface WorkflowFormProps {
@@ -117,6 +119,10 @@ export function WorkflowForm({ existing, onSubmit, onCancel }: WorkflowFormProps
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (formData.cronEnabled && !validateCron(formData.cronExpression ?? "").valid) {
+      setError(validateCron(formData.cronExpression ?? "").error ?? "Invalid cron expression");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -277,15 +283,11 @@ export function WorkflowForm({ existing, onSubmit, onCancel }: WorkflowFormProps
       <div className={styles.row}>
         <div className={styles.fieldGroup}>
           <label className={styles.label} htmlFor="wf-cron">Cron Expression</label>
-          <input
+          <CronScheduleInput
             id="wf-cron"
-            className={styles.input}
-            type="text"
             value={formData.cronExpression ?? ""}
-            onChange={(e) => setField("cronExpression", e.target.value)}
-            placeholder="0 9 * * 1-5"
+            onChange={(v) => setField("cronExpression", v)}
           />
-          <span className={styles.hint}>Standard 5-field cron syntax</span>
         </div>
 
         <div className={styles.fieldGroup}>
