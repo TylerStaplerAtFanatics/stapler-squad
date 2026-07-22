@@ -566,3 +566,246 @@ func TestReconcileStuckItems_should_publishStatusChangedEvent_When_ItemTransitio
 		t.Fatal("timed out waiting for BacklogItemChanged event from ReconcileStuckItems")
 	}
 }
+
+// TestUpdateItemSessionStarted_should_publishItemUpdatedEvent_When_StartedAtIsSet
+// is a regression test for the Phase 5 spec-compliance sweep's follow-up pass:
+// UpdateItemSessionStarted mutated started_at on an ItemSession with zero
+// publish call at all — a real event-system bypass, exactly the same shape as
+// the already-fixed UpdateAcCriterionStatus/UpdateItemSessionTriageResult
+// bypasses. Asserts a subscriber now receives a ChangeItemUpdated event after
+// the started_at write.
+func TestUpdateItemSessionStarted_should_publishItemUpdatedEvent_When_StartedAtIsSet(t *testing.T) {
+	repo, cleanup := newTestEntRepositoryForEvents(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bus := pkgevents.NewEventBus(10)
+	repo.SetItemChangePublisher(&services.BacklogItemEventPublisher{Bus: bus})
+
+	sub, subID := bus.Subscribe(ctx)
+	defer bus.Unsubscribe(subID)
+
+	item, err := repo.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "item for UpdateItemSessionStarted publish regression test",
+		Status: string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	is, err := repo.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: uuid.NewString(),
+		SessionRole: "work",
+	})
+	require.NoError(t, err)
+
+	// Drain CreateItemSession's own event — it is a different call site from
+	// the one under test below.
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CreateItemSession's own BacklogItemChanged event")
+	}
+
+	err = repo.UpdateItemSessionStarted(ctx, is.ID, time.Now())
+	require.NoError(t, err)
+
+	select {
+	case ev := <-sub:
+		require.NotNil(t, ev.BacklogItemPayload)
+		assert.Equal(t, pkgevents.BacklogChangeItemUpdated, ev.BacklogItemPayload.Kind)
+		assert.Contains(t, ev.BacklogItemPayload.UpdatedFields, "itemSessions")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for BacklogItemChanged event from UpdateItemSessionStarted")
+	}
+}
+
+// TestUpdateItemSessionGitActivity_should_publishItemUpdatedEvent_When_CommitIsRecorded
+// is the same-shaped regression test for UpdateItemSessionGitActivity, which
+// recorded commit sha/message/count with zero publish call.
+func TestUpdateItemSessionGitActivity_should_publishItemUpdatedEvent_When_CommitIsRecorded(t *testing.T) {
+	repo, cleanup := newTestEntRepositoryForEvents(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bus := pkgevents.NewEventBus(10)
+	repo.SetItemChangePublisher(&services.BacklogItemEventPublisher{Bus: bus})
+
+	sub, subID := bus.Subscribe(ctx)
+	defer bus.Unsubscribe(subID)
+
+	item, err := repo.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "item for UpdateItemSessionGitActivity publish regression test",
+		Status: string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	is, err := repo.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: uuid.NewString(),
+		SessionRole: "work",
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CreateItemSession's own BacklogItemChanged event")
+	}
+
+	err = repo.UpdateItemSessionGitActivity(ctx, is.ID, "abc1234", "commit message", time.Now(), 1)
+	require.NoError(t, err)
+
+	select {
+	case ev := <-sub:
+		require.NotNil(t, ev.BacklogItemPayload)
+		assert.Equal(t, pkgevents.BacklogChangeItemUpdated, ev.BacklogItemPayload.Kind)
+		assert.Contains(t, ev.BacklogItemPayload.UpdatedFields, "itemSessions")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for BacklogItemChanged event from UpdateItemSessionGitActivity")
+	}
+}
+
+// TestUpdateItemSessionFileTouch_should_publishItemUpdatedEvent_When_FileTouchIsRecorded
+// is the same-shaped regression test for UpdateItemSessionFileTouch, which
+// recorded the last-file-touch timestamp with zero publish call.
+func TestUpdateItemSessionFileTouch_should_publishItemUpdatedEvent_When_FileTouchIsRecorded(t *testing.T) {
+	repo, cleanup := newTestEntRepositoryForEvents(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bus := pkgevents.NewEventBus(10)
+	repo.SetItemChangePublisher(&services.BacklogItemEventPublisher{Bus: bus})
+
+	sub, subID := bus.Subscribe(ctx)
+	defer bus.Unsubscribe(subID)
+
+	item, err := repo.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "item for UpdateItemSessionFileTouch publish regression test",
+		Status: string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	is, err := repo.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: uuid.NewString(),
+		SessionRole: "work",
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CreateItemSession's own BacklogItemChanged event")
+	}
+
+	err = repo.UpdateItemSessionFileTouch(ctx, is.ID, time.Now())
+	require.NoError(t, err)
+
+	select {
+	case ev := <-sub:
+		require.NotNil(t, ev.BacklogItemPayload)
+		assert.Equal(t, pkgevents.BacklogChangeItemUpdated, ev.BacklogItemPayload.Kind)
+		assert.Contains(t, ev.BacklogItemPayload.UpdatedFields, "itemSessions")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for BacklogItemChanged event from UpdateItemSessionFileTouch")
+	}
+}
+
+// TestUpdateItemSessionVerificationNotes_should_publishItemUpdatedEvent_When_NotesAreSaved
+// is the same-shaped regression test for UpdateItemSessionVerificationNotes,
+// which saved request_review's verification evidence with zero publish call.
+func TestUpdateItemSessionVerificationNotes_should_publishItemUpdatedEvent_When_NotesAreSaved(t *testing.T) {
+	repo, cleanup := newTestEntRepositoryForEvents(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bus := pkgevents.NewEventBus(10)
+	repo.SetItemChangePublisher(&services.BacklogItemEventPublisher{Bus: bus})
+
+	sub, subID := bus.Subscribe(ctx)
+	defer bus.Unsubscribe(subID)
+
+	item, err := repo.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "item for UpdateItemSessionVerificationNotes publish regression test",
+		Status: string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	is, err := repo.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: uuid.NewString(),
+		SessionRole: "review",
+	})
+	require.NoError(t, err)
+
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CreateItemSession's own BacklogItemChanged event")
+	}
+
+	err = repo.UpdateItemSessionVerificationNotes(ctx, is.ID, "ran make ci; verified manually in browser")
+	require.NoError(t, err)
+
+	select {
+	case ev := <-sub:
+		require.NotNil(t, ev.BacklogItemPayload)
+		assert.Equal(t, pkgevents.BacklogChangeItemUpdated, ev.BacklogItemPayload.Kind)
+		assert.Contains(t, ev.BacklogItemPayload.UpdatedFields, "itemSessions")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for BacklogItemChanged event from UpdateItemSessionVerificationNotes")
+	}
+}
+
+// TestBackfillMissingPRNumbers_should_publishItemUpdatedEvent_When_PrNumberIsBackfilled
+// is the same-shaped regression test for BackfillMissingPRNumbers, which
+// persisted a parsed pr_number with zero publish call, so a live viewer never
+// saw a pr_pending item become visible to FindPRPendingItems' polling loop
+// until their next full poll/refresh.
+func TestBackfillMissingPRNumbers_should_publishItemUpdatedEvent_When_PrNumberIsBackfilled(t *testing.T) {
+	repo, cleanup := newTestEntRepositoryForEvents(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bus := pkgevents.NewEventBus(10)
+	repo.SetItemChangePublisher(&services.BacklogItemEventPublisher{Bus: bus})
+
+	sub, subID := bus.Subscribe(ctx)
+	defer bus.Unsubscribe(subID)
+
+	item, err := repo.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:              "item for BackfillMissingPRNumbers publish regression test",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(session.BacklogStatusPRPending),
+		RepoPath:           "/tmp/fake-repo",
+	})
+	require.NoError(t, err)
+
+	prURL := "https://github.com/tstapler/stapler-squad/pull/148"
+	_, err = repo.UpdateBacklogItem(ctx, item.ID, session.BacklogItemUpdate{PrURL: &prURL}, nil)
+	require.NoError(t, err)
+
+	// Drain UpdateBacklogItem's own event — it is a different call site from
+	// the one under test below.
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for UpdateBacklogItem's own BacklogItemChanged event")
+	}
+
+	n, err := repo.BackfillMissingPRNumbers(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	select {
+	case ev := <-sub:
+		require.NotNil(t, ev.BacklogItemPayload)
+		assert.Equal(t, pkgevents.BacklogChangeItemUpdated, ev.BacklogItemPayload.Kind)
+		assert.Contains(t, ev.BacklogItemPayload.UpdatedFields, "prNumber")
+		require.NotNil(t, ev.BacklogItemPayload.Item)
+		assert.Equal(t, 148, ev.BacklogItemPayload.Item.PrNumber)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for BacklogItemChanged event from BackfillMissingPRNumbers")
+	}
+}
