@@ -376,3 +376,61 @@ func TestDeleteBacklogItem_should_publishRemovedNotUpdated_When_ExistingItemIsDe
 		t.Fatal("timed out waiting for BacklogItemChanged event")
 	}
 }
+
+// TestReconcileStuckItems_should_publishStatusChangedEvent_When_ItemTransitionsToReview
+// is a sweep-discovered fix (Phase 5 spec-compliance sweep, backlog-event-driven-updates):
+// ReconcileStuckItems mutates status via a raw ent transaction (session/storage_backlog.go)
+// rather than going through TransitionBacklogItemStatus, so it originally bypassed the
+// publish hook entirely — exactly the "missed call site" failure mode requirements.md's
+// Feasibility Risks section warns about for internal reconcilers that touch storage
+// directly (mirroring reconcileBouncingItems/ReconcilePRPending, which already go through
+// TransitionBacklogItemStatus and were unaffected). This asserts the fix: a subscriber
+// receives a BacklogItemStatusChangedEvent (in_progress -> review) after the sweep.
+func TestReconcileStuckItems_should_publishStatusChangedEvent_When_ItemTransitionsToReview(t *testing.T) {
+	repo, cleanup := newTestEntRepositoryForEvents(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bus := pkgevents.NewEventBus(10)
+	repo.SetItemChangePublisher(&services.BacklogItemEventPublisher{Bus: bus})
+
+	sub, subID := bus.Subscribe(ctx)
+	defer bus.Unsubscribe(subID)
+
+	item, err := repo.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "stuck item for reconcile publish test",
+		Status: string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	is, err := repo.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: uuid.NewString(),
+		SessionRole: "work",
+	})
+	require.NoError(t, err)
+
+	// Drain the session-attach event published by CreateItemSession itself so
+	// it doesn't get mistaken for ReconcileStuckItems' own event below.
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CreateItemSession's own BacklogItemChanged event")
+	}
+
+	require.NoError(t, repo.UpdateItemSessionEnded(ctx, is.ID, time.Now().Add(-5*time.Minute)))
+
+	count, err := repo.ReconcileStuckItems(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	select {
+	case ev := <-sub:
+		require.NotNil(t, ev.BacklogItemPayload)
+		assert.Equal(t, pkgevents.BacklogChangeStatusTransition, ev.BacklogItemPayload.Kind)
+		assert.Equal(t, string(session.BacklogStatusInProgress), ev.BacklogItemPayload.OldStatus)
+		assert.Equal(t, string(session.BacklogStatusReview), ev.BacklogItemPayload.NewStatus)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for BacklogItemChanged event from ReconcileStuckItems")
+	}
+}
