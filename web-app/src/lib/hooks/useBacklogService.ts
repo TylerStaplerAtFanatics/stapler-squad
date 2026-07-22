@@ -352,7 +352,12 @@ function mapPipelineMode(p: PipelineModeProto): PipelineMode {
   };
 }
 
-function mapBacklogItem(p: BacklogItemProto): BacklogItem {
+// Exported so other real-time consumers (useWatchBacklogItems) can convert
+// the raw proto BacklogItem their stream/store deals in to this file's mapped
+// domain BacklogItem — the shape BacklogItemCard/BacklogBoard/BacklogItemDetail
+// actually render (acCriteria, gateVerdict, triageStatus, ISO date strings,
+// etc., none of which exist on the raw proto message).
+export function mapBacklogItem(p: BacklogItemProto): BacklogItem {
   const linkedSessions = (p.itemSessions ?? []).map(mapItemSession);
 
   // Extract gate verdict from the most recent session (for review status)

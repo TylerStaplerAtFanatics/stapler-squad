@@ -23,6 +23,18 @@
 //    reads via a Redux selector), no Epic 4.2 task lists backlogItemsSlice.ts
 //    as a touched file for connectionState, and Task 4.2.1a's signature
 //    returns connectionState directly from the hook's own return value.
+//
+// 3. Epic 5.2 fix (found blocking Phase 5 consumer wiring, both this board
+//    and the /backlog list page): backlogItemsSlice stores the raw proto
+//    BacklogItem (from @/gen/session/v1/backlog_pb) — acceptanceCriteria,
+//    autoCreatePr, proto Timestamp fields — but every rendering consumer
+//    (BacklogItemCard, BacklogBoard, BacklogItemDetail) is written against
+//    useBacklogService.ts's mapped domain BacklogItem (acCriteria,
+//    gateVerdict, triageStatus derived from itemSessions, ISO date strings).
+//    Neither type is assignable to the other. This hook now maps through
+//    useBacklogService's mapBacklogItem before returning items, so the
+//    normalized store itself stays proto-shaped (unaffected) while every
+//    consumer of this hook gets the domain shape it actually renders.
 export type BacklogConnectionState =
   | "connecting"
   | "live"
@@ -38,6 +50,8 @@ import { BacklogService } from "@/gen/session/v1/backlog_pb";
 import type { BacklogItem, BacklogItemEvent } from "@/gen/session/v1/backlog_pb";
 import { useAppDispatch, useAppSelector } from "@/lib/store";
 import { upsertItem, removeItem, selectAllBacklogItems } from "@/lib/store/backlogItemsSlice";
+import { mapBacklogItem } from "@/lib/hooks/useBacklogService";
+import type { BacklogItem as MappedBacklogItem } from "@/lib/hooks/useBacklogService";
 
 const MAX_RETRIES = 5;
 const FALLBACK_POLL_INTERVAL_MS = 30_000;
@@ -51,7 +65,7 @@ export interface UseWatchBacklogItemsFilters {
 }
 
 export interface UseWatchBacklogItemsReturn {
-  items: BacklogItem[];
+  items: MappedBacklogItem[];
   connectionState: BacklogConnectionState;
 }
 
@@ -373,5 +387,11 @@ export function useWatchBacklogItems(
     };
   }, []);
 
-  return useMemo(() => ({ items, connectionState }), [items, connectionState]);
+  // Map proto -> domain shape at the hook boundary (see file header, note 3)
+  // so every consumer gets the same fields useBacklogService.listBacklogItems
+  // already produces, rather than each render component reimplementing
+  // (and risking drift from) mapBacklogItem's derivation logic.
+  const mappedItems = useMemo(() => items.map(mapBacklogItem), [items]);
+
+  return useMemo(() => ({ items: mappedItems, connectionState }), [mappedItems, connectionState]);
 }

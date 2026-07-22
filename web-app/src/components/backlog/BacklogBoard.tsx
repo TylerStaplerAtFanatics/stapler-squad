@@ -2,14 +2,13 @@
 // +feature: backlog:board
 
 import type { BacklogItem, BacklogItemStatus } from "@/lib/hooks/useBacklogService";
+import { useWatchBacklogItems } from "@/lib/hooks/useWatchBacklogItems";
 import { BacklogItemCard } from "./BacklogItemCard";
 import * as styles from "./BacklogBoard.css";
 
 interface BacklogBoardProps {
-  items: BacklogItem[];
   onAction: (action: string, itemId: string) => void;
   onItemClick: (itemId: string) => void;
-  isLoading?: boolean;
   /** itemId -> action key currently in flight for that card. */
   pending?: Record<string, string>;
 }
@@ -85,12 +84,21 @@ function BoardColumn({
 }
 
 export function BacklogBoard({
-  items,
   onAction,
   onItemClick,
-  isLoading = false,
   pending = {},
 }: BacklogBoardProps) {
+  // Epic 5.2 (backlog-event-driven-updates): the board subscribes to the
+  // same live stream/normalized store as the list page (ux.md §2, "no
+  // board-specific fetch") rather than receiving items as props — a status-
+  // change event moves an item's column membership purely by this filter
+  // re-evaluating on the updated item, no board-specific refetch involved.
+  const { items, connectionState } = useWatchBacklogItems();
+  // Only show the skeleton on a genuinely empty first paint — a disconnect/
+  // reconnect must keep showing last-known state, not blank/spinner-out
+  // (ux.md §1 "Error / edge cases", shared by this surface per §2).
+  const isLoading = connectionState === "connecting" && items.length === 0;
+
   return (
     <div
       className={styles.board}

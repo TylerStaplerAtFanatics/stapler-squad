@@ -12,6 +12,16 @@ import { render, screen } from "@testing-library/react";
 import { BacklogItemCard } from "./BacklogItemCard";
 import { BacklogBoard } from "./BacklogBoard";
 import type { BacklogItem } from "@/lib/hooks/useBacklogService";
+import { useWatchBacklogItems } from "@/lib/hooks/useWatchBacklogItems";
+
+// BacklogBoard (Epic 5.2, backlog-event-driven-updates) now sources its items
+// from the live useWatchBacklogItems stream/store directly instead of an
+// `items` prop — mock the hook so the "BacklogBoard" describe block below can
+// still feed it fixture items without a real Redux store/ConnectRPC client.
+jest.mock("@/lib/hooks/useWatchBacklogItems", () => ({
+  useWatchBacklogItems: jest.fn(),
+}));
+const mockUseWatchBacklogItems = useWatchBacklogItems as jest.Mock;
 
 function makeItem(overrides: Partial<BacklogItem> = {}): BacklogItem {
   return {
@@ -65,10 +75,10 @@ describe("BacklogBoard — cross-card independence", () => {
       makeItem({ id: "item-1", title: "First item" }),
       makeItem({ id: "item-2", title: "Second item" }),
     ];
+    mockUseWatchBacklogItems.mockReturnValue({ items, connectionState: "live" });
 
     render(
       <BacklogBoard
-        items={items}
         onAction={jest.fn()}
         onItemClick={jest.fn()}
         pending={{ "item-1": "mark_ready" }}
