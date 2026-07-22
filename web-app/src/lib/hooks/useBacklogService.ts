@@ -136,6 +136,16 @@ export interface BacklogItem {
    * this item's own cap, replacing the global value.
    */
   reworkCapOverride?: number;
+  /**
+   * Live-update generation counter (Epic 6.1, backlog-event-driven-updates).
+   * Populated only by `useWatchBacklogItems` — incremented once per genuine
+   * live (non-snapshot) `BacklogItemEvent` for this item, so
+   * `BacklogItemCard` can flash on a real change without ever flashing on
+   * the initial snapshot or a reconnect/poll resync. Undefined for items
+   * obtained via a one-shot RPC call (`listBacklogItems`, `getBacklogItem`,
+   * etc.) rather than the watch stream.
+   */
+  liveVersion?: number;
 }
 
 /**

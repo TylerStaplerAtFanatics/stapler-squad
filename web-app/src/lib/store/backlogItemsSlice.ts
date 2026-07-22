@@ -6,10 +6,22 @@ import type { RootState } from "./store";
 interface BacklogItemsState {
   /** Normalized map of backlog items, keyed by item id. */
   items: Record<string, BacklogItem>;
+  /**
+   * Per-item counter, incremented only when `upsertItem` is applied for a
+   * genuine live (non-snapshot) event — never for the initial REST snapshot,
+   * a reconnect resync/poll, or the forced-`is_snapshot` replay-branch copy
+   * the server sends to close the double-delivery race (ADR-001; plan.md
+   * Task 3.1.1c). `BacklogItemCard`'s flash-on-update treatment (Epic 6.1)
+   * watches this counter change, not the item's content, so a resnapshot
+   * that legitimately changes an item's fields while the client was
+   * disconnected never triggers a flash (pre-mortem #4).
+   */
+  liveVersion: Record<string, number>;
 }
 
 const initialState: BacklogItemsState = {
   items: {},
+  liveVersion: {},
 };
 
 /** Returns the epoch-ms value of a proto Timestamp, or 0 if unset (oldest possible). */
@@ -27,14 +39,27 @@ const backlogItemsSlice = createSlice({
      * item strictly older than the currently-stored item for the same id is
      * dropped, so out-of-order event delivery (e.g. concurrent publishers,
      * stream replay) can never regress the store to older data.
+     *
+     * `isSnapshot` (default `true`) drives `liveVersion` bookkeeping only —
+     * pass `false` exclusively for a genuine live `BacklogItemEvent` (i.e.
+     * `event.isSnapshot === false`) so Epic 6.1's flash treatment can tell a
+     * real-time change apart from a snapshot/replay/poll refresh.
      */
-    upsertItem(state, action: PayloadAction<BacklogItem>) {
-      const incoming = action.payload;
-      const existing = state.items[incoming.id];
-      if (existing && timestampMs(incoming.updatedAt) < timestampMs(existing.updatedAt)) {
-        return;
-      }
-      state.items[incoming.id] = incoming;
+    upsertItem: {
+      reducer(state, action: PayloadAction<{ item: BacklogItem; isSnapshot: boolean }>) {
+        const { item: incoming, isSnapshot } = action.payload;
+        const existing = state.items[incoming.id];
+        if (existing && timestampMs(incoming.updatedAt) < timestampMs(existing.updatedAt)) {
+          return;
+        }
+        state.items[incoming.id] = incoming;
+        if (!isSnapshot) {
+          state.liveVersion[incoming.id] = (state.liveVersion[incoming.id] ?? 0) + 1;
+        }
+      },
+      prepare(item: BacklogItem, isSnapshot: boolean = true) {
+        return { payload: { item, isSnapshot } };
+      },
     },
     /** Deletes an item from the map entirely (BacklogItemRemovedEvent — permanent delete, not upsert). */
     removeItem(state, action: PayloadAction<string>) {
@@ -49,6 +74,13 @@ export const { upsertItem, removeItem } = backlogItemsSlice.actions;
 export const selectBacklogItemsMap = (state: RootState) => state.backlogItems.items;
 export const selectBacklogItemById = (state: RootState, id: string): BacklogItem | undefined =>
   state.backlogItems.items[id];
+/**
+ * Raw `liveVersion` map — returned directly (like `selectBacklogItemsMap`)
+ * rather than via `createSelector`: Immer already gives it the same
+ * structural-sharing guarantee (unrelated keys keep their prior value
+ * across an unrelated item's update), so no extra memoization is needed.
+ */
+export const selectBacklogItemsLiveVersionMap = (state: RootState) => state.backlogItems.liveVersion;
 
 // Memoized selectors: list-shaped reads off backlogItemsSlice must not allocate
 // a new array/object on every call, or every consumer (e.g. BacklogItemCard)

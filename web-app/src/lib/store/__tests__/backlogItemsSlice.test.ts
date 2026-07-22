@@ -12,6 +12,7 @@ import backlogItemsReducer, {
   selectBacklogItemById,
   selectBacklogItemsMap,
   selectBacklogItemsTotal,
+  selectBacklogItemsLiveVersionMap,
   makeSelectBacklogItemsByStatus,
 } from "../backlogItemsSlice";
 import { BacklogItem, BacklogItemSchema } from "@/gen/session/v1/backlog_pb";
@@ -109,6 +110,52 @@ describe("backlogItemsSlice", () => {
       store.dispatch(upsertItem(makeItem("item-1", "review", t1)));
       const state = store.getState() as any;
       expect(selectBacklogItemById(state, "item-1")?.status).toBe("in_progress");
+    });
+  });
+
+  // Epic 6.1 (backlog-event-driven-updates): liveVersion is the signal
+  // BacklogItemCard's flash treatment watches — it must advance only for a
+  // genuine live (isSnapshot: false) event, never for the default/snapshot
+  // path, and never for an unrelated item.
+  describe("upsertItem — liveVersion (Epic 6.1)", () => {
+    it("does not bump liveVersion when isSnapshot is omitted (defaults to true)", () => {
+      const store = makeStore();
+      store.dispatch(upsertItem(makeItem("item-1", "in_progress", "2026-07-21T10:00:00Z")));
+      const state = store.getState() as any;
+      expect(selectBacklogItemsLiveVersionMap(state)["item-1"]).toBeUndefined();
+    });
+
+    it("does not bump liveVersion when isSnapshot is explicitly true", () => {
+      const store = makeStore();
+      store.dispatch(upsertItem(makeItem("item-1", "in_progress", "2026-07-21T10:00:00Z"), true));
+      const state = store.getState() as any;
+      expect(selectBacklogItemsLiveVersionMap(state)["item-1"]).toBeUndefined();
+    });
+
+    it("bumps liveVersion once per genuine live (isSnapshot: false) upsert", () => {
+      const store = makeStore();
+      store.dispatch(upsertItem(makeItem("item-1", "in_progress", "2026-07-21T10:00:00Z"), false));
+      store.dispatch(upsertItem(makeItem("item-1", "review", "2026-07-21T10:00:05Z"), false));
+      const state = store.getState() as any;
+      expect(selectBacklogItemsLiveVersionMap(state)["item-1"]).toBe(2);
+    });
+
+    it("leaves an unrelated item's liveVersion untouched", () => {
+      const store = makeStore();
+      store.dispatch(upsertItem(makeItem("item-1", "in_progress", "2026-07-21T10:00:00Z"), false));
+      store.dispatch(upsertItem(makeItem("item-2", "review", "2026-07-21T10:00:00Z"), false));
+      store.dispatch(upsertItem(makeItem("item-1", "done", "2026-07-21T10:05:00Z"), false));
+      const state = store.getState() as any;
+      expect(selectBacklogItemsLiveVersionMap(state)["item-1"]).toBe(2);
+      expect(selectBacklogItemsLiveVersionMap(state)["item-2"]).toBe(1);
+    });
+
+    it("does not bump liveVersion when a stale (out-of-order) live event is dropped", () => {
+      const store = makeStore();
+      store.dispatch(upsertItem(makeItem("item-1", "review", "2026-07-21T10:00:05Z"), false));
+      store.dispatch(upsertItem(makeItem("item-1", "in_progress", "2026-07-21T10:00:02Z"), false));
+      const state = store.getState() as any;
+      expect(selectBacklogItemsLiveVersionMap(state)["item-1"]).toBe(1);
     });
   });
 

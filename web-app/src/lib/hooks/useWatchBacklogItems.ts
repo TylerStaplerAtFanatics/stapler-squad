@@ -49,7 +49,12 @@ import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
 import { BacklogService } from "@/gen/session/v1/backlog_pb";
 import type { BacklogItem, BacklogItemEvent } from "@/gen/session/v1/backlog_pb";
 import { useAppDispatch, useAppSelector } from "@/lib/store";
-import { upsertItem, removeItem, selectAllBacklogItems } from "@/lib/store/backlogItemsSlice";
+import {
+  upsertItem,
+  removeItem,
+  selectAllBacklogItems,
+  selectBacklogItemsLiveVersionMap,
+} from "@/lib/store/backlogItemsSlice";
 import { mapBacklogItem } from "@/lib/hooks/useBacklogService";
 import type { BacklogItem as MappedBacklogItem } from "@/lib/hooks/useBacklogService";
 
@@ -88,6 +93,7 @@ export function useWatchBacklogItems(
 
   const dispatch = useAppDispatch();
   const items = useAppSelector(selectAllBacklogItems);
+  const liveVersions = useAppSelector(selectBacklogItemsLiveVersionMap);
   const [connectionState, setConnectionState] = useState<BacklogConnectionState>("connecting");
 
   const clientRef = useRef<ReturnType<typeof createClient<typeof BacklogService>> | null>(null);
@@ -217,7 +223,11 @@ export function useWatchBacklogItems(
         case "sessionAttached":
         case "itemUpdated": {
           const item = event.event.value.item;
-          if (item) dispatch(upsertItem(item));
+          // Epic 6.1: thread this event's own is_snapshot flag through so
+          // the store only bumps liveVersion (flash-eligible) for a genuine
+          // live event — never for the initial snapshot or a forced-
+          // is_snapshot replay-branch copy (pre-mortem #4).
+          if (item) dispatch(upsertItem(item, event.event.value.isSnapshot));
           break;
         }
         case "itemArchived":
@@ -391,7 +401,34 @@ export function useWatchBacklogItems(
   // so every consumer gets the same fields useBacklogService.listBacklogItems
   // already produces, rather than each render component reimplementing
   // (and risking drift from) mapBacklogItem's derivation logic.
-  const mappedItems = useMemo(() => items.map(mapBacklogItem), [items]);
+  //
+  // Cached per source proto-item reference (not just per useMemo call) —
+  // Epic 6.1's render-count guarantee (pre-mortem #3) needs each *unrelated*
+  // item's mapped object to keep the same identity across a store update,
+  // so a memoized consumer (BacklogItemCard, wrapped in React.memo) actually
+  // skips re-rendering it. selectAllBacklogItems must return a brand-new
+  // array whenever ANY item changes (see its own doc comment), but thanks to
+  // Immer's structural sharing, an unrelated item's *element* reference
+  // inside that array is untouched — plain `.map(mapBacklogItem)` would
+  // still call the mapper (and allocate a fresh object) for every element on
+  // every call, throwing that stability away. This WeakMap keyed on the
+  // proto item reference restores it: only items whose proto reference
+  // actually changed (i.e. were upserted) get remapped, and that's exactly
+  // where the fresh `liveVersion` value belongs too.
+  const mappedItemCacheRef = useRef(new WeakMap<BacklogItem, MappedBacklogItem>());
+  const mappedItems = useMemo(() => {
+    const cache = mappedItemCacheRef.current;
+    return items.map((protoItem) => {
+      const cached = cache.get(protoItem);
+      if (cached) return cached;
+      const mapped: MappedBacklogItem = {
+        ...mapBacklogItem(protoItem),
+        liveVersion: liveVersions[protoItem.id],
+      };
+      cache.set(protoItem, mapped);
+      return mapped;
+    });
+  }, [items, liveVersions]);
 
   return useMemo(() => ({ items: mappedItems, connectionState }), [mappedItems, connectionState]);
 }

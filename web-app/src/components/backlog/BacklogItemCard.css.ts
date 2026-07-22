@@ -38,6 +38,33 @@ export const card = style({
   },
 });
 
+// Epic 6.1 (backlog-event-driven-updates): brief background-tint pulse when
+// a genuine live event updates this card's item (ux.md §1 — "Linear/Jira-
+// style", ~250ms, fading). Composed with `card` at the call site the same
+// way `actionButtonDone` overrides `actionButton` above — a later-declared
+// single-class rule, so its `backgroundColor` wins over `card`'s.
+const flashKeyframes = keyframes({
+  "0%": { backgroundColor: vars.color.accentHover },
+  "100%": { backgroundColor: vars.color.cardBackground },
+});
+
+export const justChanged = style({
+  "@media": {
+    "(prefers-reduced-motion: no-preference)": {
+      animationName: flashKeyframes,
+      animationDuration: "250ms",
+      animationTimingFunction: "ease-out",
+      animationFillMode: "forwards",
+    },
+    // Reduced motion: no animation/transition — just an instant, flat tint.
+    // The class itself is still removed by BacklogItemCard's timeout, so
+    // the background still "sets then clears," just without a keyframe.
+    "(prefers-reduced-motion: reduce)": {
+      backgroundColor: vars.color.accentHover,
+    },
+  },
+});
+
 export const cardHeader = style({
   display: "flex",
   alignItems: "flex-start",
