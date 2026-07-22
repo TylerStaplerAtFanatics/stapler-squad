@@ -12,6 +12,7 @@ import { selectBacklogItemById } from "@/lib/store/backlogItemsSlice";
 import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
 import { BacklogService } from "@/gen/session/v1/backlog_pb";
 import { InlineNotice } from "@/components/common/InlineNotice";
+import { ConnectionIndicator } from "./ConnectionIndicator";
 import * as styles from "./BacklogItemPanel.css";
 
 interface BacklogItemPanelProps {
@@ -65,7 +66,12 @@ export function BacklogItemPanel({
   // below via selectBacklogItemById, so unrelated item updates elsewhere
   // never cause this panel (or the surrounding SessionDetail it's embedded
   // in) to re-render.
-  useWatchBacklogItems();
+  // Task 6.2.1c: connectionState is captured here (previously discarded) to
+  // mount this panel's own ConnectionIndicator. Task 5.4.1a's discovery pass
+  // (plan.md) confirmed SessionDetail/SessionDetailView/SessionDetailBar have
+  // no existing session-level "Live" indicator to reuse instead, so this
+  // panel needs its own (ux.md §4 UX AC #15/#20).
+  const { connectionState } = useWatchBacklogItems();
   const liveRawItem = useAppSelector((state) => selectBacklogItemById(state, backlogItemId));
 
   useEffect(() => {
@@ -154,6 +160,7 @@ export function BacklogItemPanel({
                 <span className={styles.statusChip}>
                   {item.status.replace(/_/g, " ")}
                 </span>
+                <ConnectionIndicator connectionState={connectionState} />
               </div>
               <AppLink
                 href={`/backlog?item=${item.id}`}
