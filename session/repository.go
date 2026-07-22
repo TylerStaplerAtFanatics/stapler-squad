@@ -169,7 +169,9 @@ type Repository interface {
 	// DeleteBacklogItem permanently removes an item and all its child records.
 	DeleteBacklogItem(ctx context.Context, id string) error
 	// TransitionBacklogItemStatus changes the status of a backlog item with optional precondition.
-	TransitionBacklogItemStatus(ctx context.Context, id string, toStatus BacklogStatus, precondition *BacklogItemPrecondition) (*BacklogItemData, error)
+	// triggeredBy records who/what caused the transition (TriggeredByUser or TriggeredBySystem)
+	// in the resulting BacklogStatusEvent audit row.
+	TransitionBacklogItemStatus(ctx context.Context, id string, toStatus BacklogStatus, precondition *BacklogItemPrecondition, triggeredBy string) (*BacklogItemData, error)
 	// GetAllItemSessionsWithBacklogInfo returns all item sessions joined with their parent backlog item metadata.
 	// Used by the Insights dashboard to annotate sessions with backlog context.
 	GetAllItemSessionsWithBacklogInfo(ctx context.Context) ([]ItemSessionBacklogEntry, error)
@@ -380,12 +382,20 @@ type BacklogItemData struct {
 	PlanApproved      bool
 	PlanApprovedAt    *time.Time
 	PlanArtifactsPath string
-	Notes             string
-	ExternalID        string
-	ArchivedAt        *time.Time
-	SourceID          string
-	PrURL             string
-	PrNumber          int
+	// QueuedAt is set when a fresh spawn hit the concurrency cap and the item
+	// was transitioned to "queued" instead of rejected. Nil unless Status ==
+	// BacklogStatusQueued (or the item was previously queued). Drives FIFO
+	// dequeue ordering.
+	QueuedAt *time.Time
+	// QueuedAutonomous preserves the Autonomous flag from the spawn request
+	// that got queued, so dequeue replays it faithfully.
+	QueuedAutonomous bool
+	Notes            string
+	ExternalID       string
+	ArchivedAt       *time.Time
+	SourceID         string
+	PrURL            string
+	PrNumber         int
 	// ShippedCheckConclusion holds the durable GitHub CI-conclusion snapshot
 	// captured at ship time — genuine GitHub CI-conclusion values only, never
 	// a capture-failure sentinel. See ShippedSnapshotCaptureFailed.
@@ -495,8 +505,12 @@ type BacklogItemUpdate struct {
 	PlanApproved      *bool
 	PlanApprovedAt    *time.Time
 	PlanArtifactsPath *string
-	PrURL             *string
-	PrNumber          *int
+	// QueuedAt and QueuedAutonomous follow the same partial-update-presence
+	// convention as PlanApprovedAt: nil means "leave untouched".
+	QueuedAt         *time.Time
+	QueuedAutonomous *bool
+	PrURL            *string
+	PrNumber         *int
 	// ShippedCheckConclusion, ShippedApprovedCount, ShippedChangesReqCount,
 	// ShippedSnapshotAt, ShippedFileStats, and ShippedSnapshotCaptureFailed
 	// are pointers for partial-update presence, following the existing
