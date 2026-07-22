@@ -550,7 +550,7 @@ func (r *EntRepository) ReconcileStuckItems(ctx context.Context) (int, error) {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	count := 0
+	var transitionedIDs []uuid.UUID
 	now := time.Now()
 	for _, item := range items {
 		note := item.Notes
@@ -566,13 +566,33 @@ func (r *EntRepository) ReconcileStuckItems(ctx context.Context) (int, error) {
 		if updateErr != nil {
 			continue
 		}
-		count++
+		transitionedIDs = append(transitionedIDs, item.ID)
 	}
 
 	if err = tx.Commit(); err != nil {
 		return 0, fmt.Errorf("failed to commit reconcile transaction: %w", err)
 	}
-	return count, nil
+
+	// Best-effort publish: this reconciler mutates status via a raw
+	// transaction rather than going through TransitionBacklogItemStatus, so
+	// without this it would silently bypass the live-event stream — exactly
+	// the "missed call site" failure mode requirements.md's Feasibility Risks
+	// section calls out for internal reconcilers that touch storage directly.
+	for _, id := range transitionedIDs {
+		updated, getErr := r.client.BacklogItem.Get(ctx, id)
+		if getErr != nil {
+			log.WarningLog.Printf("[EntRepository] ReconcileStuckItems: failed to reload item %s for publish: %v", id, getErr)
+			continue
+		}
+		result := backlogItemToData(updated)
+		r.publishItemChanged(&result, BacklogItemChange{
+			Kind:      ChangeStatusTransition,
+			OldStatus: string(BacklogStatusInProgress),
+			NewStatus: string(BacklogStatusReview),
+		})
+	}
+
+	return len(transitionedIDs), nil
 }
 
 // FindReviewItemsWithoutGate returns backlog items in "review" status that have
