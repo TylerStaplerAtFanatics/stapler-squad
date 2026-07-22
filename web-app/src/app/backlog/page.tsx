@@ -1,7 +1,7 @@
 "use client";
 // +feature: backlog:list-page
 
-import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { resizeHandle as resizeHandleCss } from "@/styles/pane/resizeHandle.css";
@@ -64,6 +64,12 @@ const STATUS_CSS: Record<string, string> = {
 };
 
 const getStatusClass = (s: string): string => STATUS_CSS[s] ?? styles.statusArchived;
+
+// Epic 6.3 (backlog-event-driven-updates): how long a row's fade-out plays
+// before it's removed from the DOM after dropping out of the active filter
+// (ux.md §7 — "~200ms"). Under `prefers-reduced-motion: reduce` this is
+// bypassed to 0ms (instant removal) at the call site.
+const EXIT_TRANSITION_MS = 200;
 
 const PRIORITY_LABELS: Record<number, string> = {
   1: "P1",
@@ -288,8 +294,106 @@ function BacklogPageInner() {
     });
   }, [items, search, statusFilter, priorityFilter, showArchived]);
 
+  // Epic 6.3 (backlog-event-driven-updates): when an item's fields change
+  // such that it no longer matches the active filter, keep rendering it
+  // briefly with a fade-out instead of letting it vanish in the same render
+  // the filter re-evaluates (ux.md §7 "reads as moved, not vanished"). Only
+  // genuinely live, one-at-a-time departures animate — gated on
+  // `item.liveVersion` advancing (the same signal BacklogItemCard's flash
+  // uses), so a bulk resnapshot on reconnect (liveVersion never advances for
+  // a snapshot-flagged event, per backlogItemsSlice.ts) or the user simply
+  // toggling a filter chip (no liveVersion change at all) both fall through
+  // to an ordinary instant removal, matching ux.md's edge cases.
+  const [exitingItems, setExitingItems] = useState<Map<string, BacklogItem>>(new Map());
+  const exitingMapRef = useRef<Map<string, BacklogItem>>(new Map());
+  const prevMatchedIdsRef = useRef<Set<string> | null>(null);
+  const prevLiveVersionsRef = useRef<Map<string, number | undefined>>(new Map());
+  const exitTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const reducedMotionRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    reducedMotionRef.current = mq.matches;
+    const onChange = () => {
+      reducedMotionRef.current = mq.matches;
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  // useLayoutEffect (not useEffect): runs before the browser paints, so a
+  // departing row is re-added to the exiting set within the same commit it
+  // was excluded from `filteredItems` — no visible blank frame in between.
+  useLayoutEffect(() => {
+    const currentMatchedIds = new Set(filteredItems.map((i) => i.id));
+    const prevMatchedIds = prevMatchedIdsRef.current;
+    const itemsById = new Map(items.map((i) => [i.id, i]));
+    const exitingMap = exitingMapRef.current;
+    let changed = false;
+
+    if (prevMatchedIds) {
+      // Flap protection: if a pending exit's item re-matches the filter
+      // before its timer fires, cancel the exit and let it settle back to a
+      // normal in-place row (ux.md §7 "Error / edge cases").
+      for (const id of Array.from(exitingMap.keys())) {
+        if (currentMatchedIds.has(id)) {
+          const timer = exitTimersRef.current.get(id);
+          if (timer) clearTimeout(timer);
+          exitTimersRef.current.delete(id);
+          exitingMap.delete(id);
+          changed = true;
+        }
+      }
+
+      for (const id of prevMatchedIds) {
+        if (currentMatchedIds.has(id) || exitingMap.has(id)) continue;
+        const fullItem = itemsById.get(id);
+        if (!fullItem) continue; // item removed entirely -- not a filter departure
+
+        const prevVersion = prevLiveVersionsRef.current.get(id);
+        const isGenuineLiveChange =
+          fullItem.liveVersion !== undefined && fullItem.liveVersion !== prevVersion;
+        if (!isGenuineLiveChange) continue; // bulk resnapshot / manual filter change -> instant
+
+        exitingMap.set(id, fullItem);
+        changed = true;
+        const duration = reducedMotionRef.current ? 0 : EXIT_TRANSITION_MS;
+        const timer = setTimeout(() => {
+          if (exitingMapRef.current.delete(id)) {
+            setExitingItems(new Map(exitingMapRef.current));
+          }
+          exitTimersRef.current.delete(id);
+        }, duration);
+        exitTimersRef.current.set(id, timer);
+      }
+    }
+
+    prevMatchedIdsRef.current = currentMatchedIds;
+    for (const item of items) {
+      prevLiveVersionsRef.current.set(item.id, item.liveVersion);
+    }
+    if (changed) setExitingItems(new Map(exitingMap));
+  }, [filteredItems, items]);
+
+  // Clear any in-flight exit timers on unmount.
+  useEffect(() => {
+    return () => {
+      for (const timer of exitTimersRef.current.values()) clearTimeout(timer);
+    };
+  }, []);
+
+  // Re-merge still-fading items into the visible set so they keep sorting
+  // into a natural position instead of jumping to the end of the list.
+  const visibleItems = useMemo(() => {
+    if (exitingItems.size === 0) return filteredItems;
+    const presentIds = new Set(filteredItems.map((i) => i.id));
+    const extra = Array.from(exitingItems.values()).filter((i) => !presentIds.has(i.id));
+    return extra.length === 0 ? filteredItems : [...filteredItems, ...extra];
+  }, [filteredItems, exitingItems]);
+
   // Sort items client-side
-  const sortedItems = [...filteredItems].sort((a, b) => {
+  const sortedItems = [...visibleItems].sort((a, b) => {
     let cmp = 0;
     if (sortCol === "title") {
       cmp = a.title.localeCompare(b.title);
@@ -403,17 +507,24 @@ function BacklogPageInner() {
   const renderItemRow = (item: BacklogItem) => {
     const acDone = item.acCriteria.filter((c) => c.status === "done").length;
     const isActive = selectedItemId === item.id;
+    const isExiting = exitingItems.has(item.id);
     return (
       <tr
         key={item.id}
-        className={`${styles.tableRow} ${isActive ? styles.tableRowActive : ""}`}
-        tabIndex={0}
+        className={`${styles.tableRow} ${isActive ? styles.tableRowActive : ""} ${isExiting ? styles.tableRowExiting : ""}`}
+        tabIndex={isExiting ? -1 : 0}
         role="row"
         aria-selected={isActive}
+        aria-hidden={isExiting || undefined}
         data-testid="backlog-table-row"
         data-item-id={item.id}
-        onClick={() => handleRowClick(item.id)}
+        data-exiting={isExiting ? "true" : undefined}
+        onClick={() => {
+          if (isExiting) return;
+          handleRowClick(item.id);
+        }}
         onKeyDown={(e) => {
+          if (isExiting) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             handleRowClick(item.id);
