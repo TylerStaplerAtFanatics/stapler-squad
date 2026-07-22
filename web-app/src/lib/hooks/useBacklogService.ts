@@ -19,7 +19,7 @@ import {
 // Domain types exposed to UI (mapped from proto, but without Message<> noise)
 // ---------------------------------------------------------------------------
 
-export type KnownBacklogStatus = "idea" | "refining" | "ready" | "in_progress" | "review" | "pr_pending" | "done" | "archived";
+export type KnownBacklogStatus = "idea" | "refining" | "ready" | "queued" | "in_progress" | "review" | "pr_pending" | "done" | "archived";
 // (string & {}) preserves autocomplete for KnownBacklogStatus values while still
 // accepting unknown statuses returned by newer server versions.
 export type BacklogItemStatus = KnownBacklogStatus | (string & {});
@@ -136,6 +136,16 @@ export interface BacklogItem {
    * this item's own cap, replacing the global value.
    */
   reworkCapOverride?: number;
+  /**
+   * Live-update generation counter (Epic 6.1, backlog-event-driven-updates).
+   * Populated only by `useWatchBacklogItems` — incremented once per genuine
+   * live (non-snapshot) `BacklogItemEvent` for this item, so
+   * `BacklogItemCard` can flash on a real change without ever flashing on
+   * the initial snapshot or a reconnect/poll resync. Undefined for items
+   * obtained via a one-shot RPC call (`listBacklogItems`, `getBacklogItem`,
+   * etc.) rather than the watch stream.
+   */
+  liveVersion?: number;
 }
 
 /**
@@ -352,7 +362,14 @@ function mapPipelineMode(p: PipelineModeProto): PipelineMode {
   };
 }
 
-function mapBacklogItem(p: BacklogItemProto): BacklogItem {
+// Exported so other real-time consumers (useWatchBacklogItems) can convert
+// the raw proto BacklogItem their stream/store deals in to this file's mapped
+// domain BacklogItem — the shape BacklogItemCard/BacklogBoard/BacklogItemDetail
+// actually render (acCriteria, gateVerdict, triageStatus, ISO date strings,
+// etc., none of which exist on the raw proto message). Also exported for
+// direct unit testing of triageStatus derivation — see
+// useBacklogService.test.ts.
+export function mapBacklogItem(p: BacklogItemProto): BacklogItem {
   const linkedSessions = (p.itemSessions ?? []).map(mapItemSession);
 
   // Extract gate verdict from the most recent session (for review status)
@@ -491,7 +508,7 @@ interface UseBacklogServiceReturn {
     toStatus: BacklogItemStatus,
     precondition?: BacklogItemStatus
   ) => Promise<BacklogItem | null>;
-  spawnSessionFromItem: (id: string, options?: { autonomous?: boolean; force?: boolean }) => Promise<{ sessionUuid: string } | null>;
+  spawnSessionFromItem: (id: string, options?: { autonomous?: boolean; force?: boolean }) => Promise<{ sessionUuid: string; queued: boolean } | null>;
   triggerTriage: (id: string, feedback?: string) => Promise<{ itemSessionId: string } | null>;
   cancelTriage: (id: string) => Promise<boolean>;
   approvePlan: (id: string) => Promise<BacklogItem | null>;
@@ -691,7 +708,7 @@ export function useBacklogService(): UseBacklogServiceReturn {
   );
 
   const spawnSessionFromItem = useCallback(
-    async (id: string, options?: { autonomous?: boolean; force?: boolean }): Promise<{ sessionUuid: string } | null> => {
+    async (id: string, options?: { autonomous?: boolean; force?: boolean }): Promise<{ sessionUuid: string; queued: boolean } | null> => {
       if (!clientRef.current) return null;
       try {
         setLastError(null);
@@ -700,7 +717,7 @@ export function useBacklogService(): UseBacklogServiceReturn {
           autonomous: options?.autonomous ?? false,
           force: options?.force ?? false,
         });
-        return { sessionUuid: resp.sessionUuid };
+        return { sessionUuid: resp.sessionUuid, queued: resp.queued };
       } catch (err) {
         console.error("[useBacklogService] spawnSessionFromItem:", err);
         setLastError(err instanceof Error ? err : new Error(String(err)));

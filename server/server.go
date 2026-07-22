@@ -524,14 +524,24 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 	cbHandler.RegisterRoutes(srv.mux)
 	log.Info("Registered Circuit Breaker debug handler at /api/debug/circuit-breakers")
 
-	// Register the backlog stuck-item debug seed endpoint ONLY for the e2e
-	// test server (STAPLER_SQUAD_INSTANCE=e2e-local) — lets the Playwright
-	// suite seed BacklogStuckState rows directly, bypassing the reconciler's
-	// real thresholds. Never registered outside that instance.
+	// Register the backlog debug seed endpoints ONLY for the e2e test server
+	// (STAPLER_SQUAD_INSTANCE=e2e-local) — lets the Playwright suite seed
+	// BacklogStuckState rows and queued backlog items directly, bypassing the
+	// reconciler's real thresholds and the real WIP-cap spawn flow. Never
+	// registered outside that instance.
 	if os.Getenv("STAPLER_SQUAD_INSTANCE") == "e2e-local" && deps.Storage != nil {
 		backlogSeedHandler := services.NewBacklogDebugSeedHandler(deps.Storage)
 		backlogSeedHandler.RegisterRoutes(srv.mux)
-		log.Info("Registered backlog stuck-item debug seed handler at /api/debug/backlog/seed-stuck (e2e-local only)")
+		log.Info("Registered backlog debug seed handlers at /api/debug/backlog/seed-stuck, /api/debug/backlog/seed-queued, and /api/debug/backlog/seed-headless-triage-session (e2e-local only)")
+
+		// Registered for project_plans/backlog-event-driven-updates's Playwright
+		// e2e layer — lets tests mutate a backlog item directly through the
+		// storage layer (create/transition/update/archive/delete), simulating a
+		// second actor (reconciler, another tab) without walking a real
+		// TransitionBacklogItemStatus RPC through its engine/gate checks.
+		backlogMutateHandler := services.NewBacklogDebugMutateHandler(deps.Storage)
+		backlogMutateHandler.RegisterRoutes(srv.mux)
+		log.Info("Registered backlog debug mutate handlers at /api/debug/backlog/mutate-* (e2e-local only)")
 	}
 
 	// Wire analytics provider: SQLite when DB client is available, log-only fallback otherwise.
