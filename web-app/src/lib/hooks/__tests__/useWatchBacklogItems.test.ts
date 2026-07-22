@@ -562,4 +562,136 @@ describe("useWatchBacklogItems", () => {
     expect(result.current.items.find((i) => i.id === "item-1")?.liveVersion).toBe(1);
     expect(result.current.items.find((i) => i.id === "item-1")?.status).toBe("review");
   });
+
+  // Phase 5 spec-compliance sweep regression (backlog-event-driven-updates):
+  // the backend previously never eager-loaded itemSessions before publishing,
+  // so every event's embedded item carried an empty itemSessions array. Since
+  // gateVerdict/triageStatus (mapBacklogItem, useBacklogService.ts) derive
+  // entirely from itemSessions, and backlogItemsSlice's upsertItem does a
+  // wholesale replace (not a field merge), a second live event for the same
+  // item would blank a verdict that was correctly present after the first.
+  // With the backend eager-load fix in place, every event snapshot is always
+  // complete — this asserts that contract holds across two successive live
+  // events, i.e. the wholesale-replace reducer does not regress gateVerdict
+  // as long as the events it receives are complete.
+  it("does not blank gateVerdict/gateVerdictSummary across two successive live events that both carry full itemSessions", async () => {
+    const stream = makeControllableStream();
+    mockWatchBacklogItems.mockReturnValueOnce(stream.stream);
+    mockWatchBacklogItems.mockReturnValue(makeHangingStream());
+
+    const store = makeStore();
+    const { result } = renderHook(() => useWatchBacklogItems(), { wrapper: makeWrapper(store) });
+
+    await act(async () => {
+      await flush();
+    });
+
+    const fullyPopulatedItem = (id: string) =>
+      ({
+        id,
+        status: "review",
+        itemSessions: [
+          {
+            id: `${id}-session-1`,
+            sessionUuid: `${id}-uuid-1`,
+            sessionRole: "review",
+            reviewVerdict: { overallOutcome: "PASS", summary: "first verdict", perCriterion: [] },
+          },
+        ],
+      }) as any;
+
+    await act(async () => {
+      stream.emit(
+        makeEvent(
+          "verdictRecorded",
+          {
+            item: fullyPopulatedItem("item-1"),
+            itemId: "item-1",
+            verdict: { overallOutcome: "PASS", summary: "first verdict", perCriterion: [] },
+            isSnapshot: false,
+          },
+          1n
+        )
+      );
+      await flush();
+    });
+
+    expect(result.current.items.find((i) => i.id === "item-1")?.gateVerdict).toBe("PASS");
+
+    // Second, unrelated live event for the same item (e.g. a notes edit) —
+    // still carrying the same full itemSessions snapshot, exactly what the
+    // eager-load fix guarantees on every publish hook.
+    await act(async () => {
+      stream.emit(
+        makeEvent(
+          "itemUpdated",
+          {
+            item: fullyPopulatedItem("item-1"),
+            itemId: "item-1",
+            updatedFields: ["notes"],
+            isSnapshot: false,
+          },
+          2n
+        )
+      );
+      await flush();
+    });
+
+    const item1 = result.current.items.find((i) => i.id === "item-1");
+    expect(item1?.gateVerdict).toBe("PASS");
+    expect(item1?.gateVerdictSummary).toBe("first verdict");
+  });
+
+  // Frontend defense-in-depth (Phase 5 sweep): BacklogItemVerdictRecordedEvent
+  // carries the just-saved verdict inline, independent of the embedded item
+  // snapshot. This proves applyInlineVerdict actually patches it onto the
+  // embedded item's most recent review session when the two disagree — a
+  // second, independent path to a correct gateVerdict even if the embedded
+  // item's own eager-load has a gap.
+  it("patches the embedded item's review session with the event's inline verdict when the embedded snapshot lacks it", async () => {
+    const stream = makeControllableStream();
+    mockWatchBacklogItems.mockReturnValueOnce(stream.stream);
+    mockWatchBacklogItems.mockReturnValue(makeHangingStream());
+
+    const store = makeStore();
+    const { result } = renderHook(() => useWatchBacklogItems(), { wrapper: makeWrapper(store) });
+
+    await act(async () => {
+      await flush();
+    });
+
+    // Simulates an eager-load gap: a review-role session is present, but its
+    // reviewVerdict field is empty even though a verdict was just recorded.
+    const staleEmbeddedItem = {
+      id: "item-1",
+      status: "review",
+      itemSessions: [
+        {
+          id: "item-1-session-1",
+          sessionUuid: "item-1-uuid-1",
+          sessionRole: "review",
+        },
+      ],
+    } as any;
+
+    await act(async () => {
+      stream.emit(
+        makeEvent(
+          "verdictRecorded",
+          {
+            item: staleEmbeddedItem,
+            itemId: "item-1",
+            verdict: { overallOutcome: "FAIL", summary: "inline verdict wins", perCriterion: [] },
+            isSnapshot: false,
+          },
+          1n
+        )
+      );
+      await flush();
+    });
+
+    const item1 = result.current.items.find((i) => i.id === "item-1");
+    expect(item1?.gateVerdict).toBe("FAIL");
+    expect(item1?.gateVerdictSummary).toBe("inline verdict wins");
+  });
 });

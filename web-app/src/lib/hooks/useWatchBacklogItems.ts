@@ -47,7 +47,7 @@ import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
 import { BacklogService } from "@/gen/session/v1/backlog_pb";
-import type { BacklogItem, BacklogItemEvent } from "@/gen/session/v1/backlog_pb";
+import type { BacklogItem, BacklogItemEvent, ReviewVerdict } from "@/gen/session/v1/backlog_pb";
 import { useAppDispatch, useAppSelector } from "@/lib/store";
 import {
   upsertItem,
@@ -72,6 +72,43 @@ export interface UseWatchBacklogItemsFilters {
 export interface UseWatchBacklogItemsReturn {
   items: MappedBacklogItem[];
   connectionState: BacklogConnectionState;
+}
+
+/**
+ * Defense-in-depth patch for the verdict_recorded event (see the switch case
+ * below): finds the most recent review-role ItemSession in `item.itemSessions`
+ * — the same session mapBacklogItem's own "most recent review session" logic
+ * (useBacklogService.ts) reads gateVerdict/gateVerdictSummary from — and, if
+ * its embedded reviewVerdict doesn't already match, overwrites it with the
+ * event's inline `verdict` field. Returns `item` unchanged (same reference)
+ * when there is nothing to patch, so callers that don't need this stay cheap.
+ *
+ * Deliberately does NOT fabricate a review session when none exists in the
+ * embedded item — that gap is deeper than a missing verdict field, and
+ * inventing session metadata (id, sessionUuid, startedAt, ...) this hook has
+ * no visibility into would be worse than leaving it to the primary
+ * (server-side eager-load) fix path.
+ */
+function applyInlineVerdict(item: BacklogItem, verdict: ReviewVerdict | undefined): BacklogItem {
+  if (!verdict) return item;
+  const sessions = item.itemSessions;
+  let lastReviewIdx = -1;
+  for (let i = 0; i < sessions.length; i++) {
+    if (sessions[i].sessionRole === "review") lastReviewIdx = i;
+  }
+  if (lastReviewIdx === -1) return item;
+
+  const existing = sessions[lastReviewIdx];
+  if (
+    existing.reviewVerdict?.overallOutcome === verdict.overallOutcome &&
+    existing.reviewVerdict?.summary === verdict.summary
+  ) {
+    return item;
+  }
+
+  const patchedSessions = sessions.slice();
+  patchedSessions[lastReviewIdx] = { ...existing, reviewVerdict: verdict };
+  return { ...item, itemSessions: patchedSessions };
 }
 
 /**
@@ -218,8 +255,24 @@ export function useWatchBacklogItems(
       }
 
       switch (event.event.case) {
+        case "verdictRecorded": {
+          // Defense-in-depth (Phase 5 spec-compliance sweep,
+          // backlog-event-driven-updates): BacklogItemVerdictRecordedEvent
+          // carries the just-saved verdict inline (`verdict`), populated
+          // directly from the ReviewVerdictData the backend just wrote —
+          // independent of whether the embedded `item.itemSessions` snapshot
+          // was eager-loaded correctly (the root-cause fix for that lives
+          // server-side, session/ent_repository_backlog.go's
+          // attachItemSessionsForPublish). Patch the inline verdict onto the
+          // most recent review-role session in the embedded item before
+          // dispatching, so gateVerdict/gateVerdictSummary (mapBacklogItem,
+          // useBacklogService.ts) get a second, independent path to
+          // correctness even if that primary path has a gap.
+          const { item, verdict, isSnapshot } = event.event.value;
+          if (item) dispatch(upsertItem(applyInlineVerdict(item, verdict), isSnapshot));
+          break;
+        }
         case "statusChanged":
-        case "verdictRecorded":
         case "sessionAttached":
         case "itemUpdated": {
           const item = event.event.value.item;

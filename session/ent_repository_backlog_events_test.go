@@ -377,6 +377,138 @@ func TestDeleteBacklogItem_should_publishRemovedNotUpdated_When_ExistingItemIsDe
 	}
 }
 
+// TestTransitionBacklogItemStatus_should_embedNonEmptyItemSessions_When_ItemHasReviewVerdict
+// is the regression test for the Phase 5 spec-compliance sweep's confirmed
+// blanking bug: backlogItemToData never copied the item_sessions edge, and
+// none of the ~10 publish-hook call sites (including TransitionBacklogItemStatus,
+// exercised here) eager-loaded it before publishing — so every live
+// BacklogItemEvent shipped an empty ItemSessions slice even when the item had
+// real linked sessions/verdicts, silently blanking gateVerdict/
+// gateVerdictSummary/triageStatus on every frontend consumer (which derives
+// them entirely from itemSessions, see web-app/src/lib/hooks/
+// useBacklogService.ts's mapBacklogItem) — actively worse than the
+// pre-event-driven REST-poll baseline that always fetched the full item.
+// This proves attachItemSessionsForPublish (session/ent_repository_backlog.go)
+// actually closes the gap: the item has a real review-role ItemSession with a
+// saved verdict, and the event published by a subsequent
+// TransitionBacklogItemStatus call — a totally different code path from the
+// one that created the session/verdict — must still carry that session (with
+// its verdict inline) in Item.ItemSessions.
+func TestTransitionBacklogItemStatus_should_embedNonEmptyItemSessions_When_ItemHasReviewVerdict(t *testing.T) {
+	repo, cleanup := newTestEntRepositoryForEvents(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bus := pkgevents.NewEventBus(10)
+	repo.SetItemChangePublisher(&services.BacklogItemEventPublisher{Bus: bus})
+
+	sub, subID := bus.Subscribe(ctx)
+	defer bus.Unsubscribe(subID)
+
+	item, err := repo.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "item for embedded-itemSessions regression test",
+		Status: string(session.BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	is, err := repo.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: uuid.NewString(),
+		SessionRole: "review",
+	})
+	require.NoError(t, err)
+
+	// Drain CreateItemSession's own event — it is a different call site from
+	// the one under test below.
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CreateItemSession's own BacklogItemChanged event")
+	}
+
+	err = repo.SaveReviewVerdict(ctx, is.ID, session.ReviewVerdictData{
+		OverallOutcome: session.ReviewOutcomePass,
+		Summary:        "looks good",
+	})
+	require.NoError(t, err)
+
+	// Drain SaveReviewVerdict's own event too — the assertion below exercises
+	// TransitionBacklogItemStatus specifically, a completely separate publish
+	// call site, to prove the fix isn't accidentally scoped to just one hook.
+	select {
+	case <-sub:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for SaveReviewVerdict's own BacklogItemChanged event")
+	}
+
+	_, err = repo.TransitionBacklogItemStatus(ctx, item.ID, session.BacklogStatusDone, nil)
+	require.NoError(t, err)
+
+	select {
+	case ev := <-sub:
+		require.NotNil(t, ev.BacklogItemPayload)
+		require.NotNil(t, ev.BacklogItemPayload.Item)
+		require.Len(t, ev.BacklogItemPayload.Item.ItemSessions, 1,
+			"embedded item snapshot must carry the item's real ItemSessions, not an empty slice (the blanking regression)")
+		embedded := ev.BacklogItemPayload.Item.ItemSessions[0]
+		assert.Equal(t, is.ID, embedded.ID)
+		assert.Equal(t, "review", embedded.Role)
+		require.NotNil(t, embedded.ReviewVerdict, "embedded session's ReviewVerdict must be populated, not blanked")
+		assert.Equal(t, string(session.ReviewOutcomePass), embedded.ReviewVerdict.OverallOutcome)
+		assert.Equal(t, "looks good", embedded.ReviewVerdict.Summary)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for BacklogItemChanged event from TransitionBacklogItemStatus")
+	}
+}
+
+// TestUpdateAcCriterionStatus_should_publishItemUpdatedEvent_When_CriterionStatusChanges
+// is the regression test for the second Phase 5 sweep finding: UpdateAcCriterionStatus
+// (used for the "N/M done" acceptance-criteria progress badge) mutated AC status
+// with zero publish call at all — a real event-system bypass, not just a blanked
+// field. Asserts a subscriber now receives a ChangeItemUpdated event carrying the
+// updated acceptance criteria JSON after a criterion's status changes.
+func TestUpdateAcCriterionStatus_should_publishItemUpdatedEvent_When_CriterionStatusChanges(t *testing.T) {
+	repo, cleanup := newTestEntRepositoryForEvents(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bus := pkgevents.NewEventBus(10)
+	repo.SetItemChangePublisher(&services.BacklogItemEventPublisher{Bus: bus})
+
+	sub, subID := bus.Subscribe(ctx)
+	defer bus.Unsubscribe(subID)
+
+	ac, err := session.SerializeAcCriteria([]session.AcCriterion{
+		{Index: 0, Text: "First criterion", Status: session.AcStatusPending},
+		{Index: 1, Text: "Second criterion", Status: session.AcStatusPending},
+	})
+	require.NoError(t, err)
+
+	item, err := repo.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:              "item for AC-status publish regression test",
+		Status:             string(session.BacklogStatusInProgress),
+		AcceptanceCriteria: ac,
+	})
+	require.NoError(t, err)
+
+	err = repo.UpdateAcCriterionStatus(ctx, item.ID, 0, string(session.AcStatusDone), "")
+	require.NoError(t, err)
+
+	select {
+	case ev := <-sub:
+		require.NotNil(t, ev.BacklogItemPayload)
+		assert.Equal(t, pkgevents.BacklogChangeItemUpdated, ev.BacklogItemPayload.Kind)
+		assert.Contains(t, ev.BacklogItemPayload.UpdatedFields, "acceptanceCriteria")
+		require.NotNil(t, ev.BacklogItemPayload.Item)
+		criteria, parseErr := session.ParseAcCriteria(ev.BacklogItemPayload.Item.AcceptanceCriteria)
+		require.NoError(t, parseErr)
+		require.Len(t, criteria, 2)
+		assert.Equal(t, session.AcStatusDone, criteria[0].Status)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for BacklogItemChanged event from UpdateAcCriterionStatus")
+	}
+}
+
 // TestReconcileStuckItems_should_publishStatusChangedEvent_When_ItemTransitionsToReview
 // is a sweep-discovered fix (Phase 5 spec-compliance sweep, backlog-event-driven-updates):
 // ReconcileStuckItems mutates status via a raw ent transaction (session/storage_backlog.go)
