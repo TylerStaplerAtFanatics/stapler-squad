@@ -1,7 +1,9 @@
 "use client";
 // +feature: backlog:list-page
 
-import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
+import { createClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
 import { resizeHandle as resizeHandleCss } from "@/styles/pane/resizeHandle.css";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAnalytics } from "@/lib/analytics";
@@ -14,12 +16,17 @@ import { VaguenessPromptModal } from "@/components/backlog/VaguenessPromptModal"
 import { BacklogTourModal } from "@/components/backlog/BacklogTourModal";
 import { useBacklogTour } from "@/components/backlog/useBacklogTour";
 import { GitHubIssuePicker } from "@/components/backlog/GitHubIssuePicker";
+import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
+import { BacklogService } from "@/gen/session/v1/backlog_pb";
 import {
   useBacklogService,
   type BacklogItem,
   type BacklogItemStatus,
   type BacklogItemInput,
 } from "@/lib/hooks/useBacklogService";
+import { useWatchBacklogItems } from "@/lib/hooks/useWatchBacklogItems";
+import { useAppDispatch } from "@/lib/store";
+import { upsertItem } from "@/lib/store/backlogItemsSlice";
 import { getStatusLabel } from "@/lib/backlog/status";
 import { compareByRepoPath, groupByRepoPath } from "@/lib/backlog/sortGroup";
 import * as styles from "./backlog.css";
@@ -160,22 +167,35 @@ function PriorityFilterChips({
 function BacklogPageInner() {
   usePageView();
   const { track } = useAnalytics();
-  const { listBacklogItems, createBacklogItem, importGitHubIssue, triggerTriage } = useBacklogService();
+  const { createBacklogItem, importGitHubIssue, triggerTriage } = useBacklogService();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const dispatch = useAppDispatch();
 
   const selectedItemId = searchParams.get("item");
 
-  const [items, setItems] = useState<BacklogItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Epic 5.1 (backlog-event-driven-updates): live-updating list, replacing
+  // the former fetch-once-on-mount pattern. useWatchBacklogItems streams
+  // every backlog item unfiltered — per design/ux.md Surface 1's interaction
+  // flow ("subscribes ... unfiltered ... then filters client-side same as
+  // today") — so status/priority/search/archived filtering below is purely
+  // client-side and never tears down/reconnects the stream when a filter
+  // chip changes. The hook already returns domain-shaped BacklogItem[]
+  // (mapped internally, see useWatchBacklogItems.ts's file-header note 3),
+  // so no further proto->domain mapping is needed here.
+  const { items, connectionState } = useWatchBacklogItems();
+  // Only the very first connect (before any items have ever loaded) shows a
+  // loading state — a reconnect must keep showing last-known data, not blank
+  // or spinner out (design/ux.md Surface 1 "Error / edge cases").
+  const loading = connectionState === "connecting" && items.length === 0;
 
   // Filters
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<BacklogItemStatus[]>([]);
   const [priorityFilter, setPriorityFilter] = useState<number[]>([]);
-  // showArchived: archived items are excluded server-side by default (only
-  // "done" is shown by default); enabling this re-fetches with
-  // includeArchived=true. Mirrors SessionList's "Show Archived" toggle.
+  // showArchived: archived items are excluded client-side by default (Epic
+  // 5.1 — see filteredItems below); enabling this reveals them from the
+  // already-loaded live store. Mirrors SessionList's "Show Archived" toggle.
   const [showArchived, setShowArchived] = useState(false);
 
   // Sort
@@ -219,28 +239,56 @@ function BacklogPageInner() {
   // Vagueness prompt modal state
   const [vaguenessItem, setVaguenessItem] = useState<BacklogItem | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await listBacklogItems({
-        statuses: statusFilter.length > 0 ? statusFilter : undefined,
-        priorities: priorityFilter.length > 0 ? priorityFilter : undefined,
-        search: search.trim() || undefined,
-        includeTerminal: true, // show done items by default; user can filter them out
-        includeArchived: showArchived, // archived items are hidden by default — see the "Show Archived" toggle
-      });
-      setItems(result);
-    } finally {
-      setLoading(false);
-    }
-  }, [listBacklogItems, statusFilter, priorityFilter, search, showArchived]);
-
+  // Raw (unmapped) ConnectRPC client — used only to hydrate a just-created
+  // item into the shared backlogItemsSlice store immediately. The
+  // WatchBacklogItems event stream (Phases 1-3) has no "item created" oneof
+  // variant (see plan.md's BacklogItemEvent oneof: status_changed /
+  // verdict_recorded / session_attached / item_updated / item_archived /
+  // item_removed only), so a freshly created/imported item would not
+  // otherwise appear in this live list until some other event touches it.
+  // This is a known gap in the event proto's scope, not something Epic 5.1
+  // can fix on its own — flagged here rather than silently worked around by
+  // re-adding a full listBacklogItems fetch-on-every-mutation path.
+  const rawClientRef = useRef<ReturnType<typeof createClient<typeof BacklogService>> | null>(null);
   useEffect(() => {
-    void load();
-  }, [load]);
+    const transport = createConnectTransport({
+      baseUrl: getApiBaseUrl(),
+      interceptors: [createAuthInterceptor()],
+    });
+    rawClientRef.current = createClient(BacklogService, transport);
+  }, []);
+
+  const hydrateItemIntoStore = useCallback(
+    async (itemId: string) => {
+      if (!rawClientRef.current) return;
+      try {
+        const resp = await rawClientRef.current.getBacklogItem({ itemId });
+        if (resp.item) dispatch(upsertItem(resp.item));
+      } catch (err) {
+        console.error("[BacklogPage] failed to hydrate newly created item into the live store:", err);
+      }
+    },
+    [dispatch]
+  );
+
+  // Epic 5.1: client-side filtering (search/status/priority/archived),
+  // mirroring what the server-side listBacklogItems filter used to do before
+  // this page moved to the shared live stream (design/ux.md Surface 1).
+  const filteredItems = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return items.filter((item) => {
+      if (!showArchived && item.status === "archived") return false;
+      if (statusFilter.length > 0 && !statusFilter.includes(item.status)) return false;
+      if (priorityFilter.length > 0 && !priorityFilter.includes(item.priority)) return false;
+      if (q && !item.title.toLowerCase().includes(q) && !(item.description ?? "").toLowerCase().includes(q)) {
+        return false;
+      }
+      return true;
+    });
+  }, [items, search, statusFilter, priorityFilter, showArchived]);
 
   // Sort items client-side
-  const sortedItems = [...items].sort((a, b) => {
+  const sortedItems = [...filteredItems].sort((a, b) => {
     let cmp = 0;
     if (sortCol === "title") {
       cmp = a.title.localeCompare(b.title);
@@ -286,21 +334,22 @@ function BacklogPageInner() {
     async (data: BacklogItemInput) => {
       const result = await createBacklogItem(data);
       setShowForm(false);
-      await load();
+      if (!result) return;
+      await hydrateItemIntoStore(result.item.id);
       // Show vagueness prompt if item was created with skip_triage=true
-      if (result && data.skipTriage) {
+      if (data.skipTriage) {
         setVaguenessItem(result.item);
         // Navigate to the new item
         const params = new URLSearchParams(searchParams.toString());
         params.set("item", result.item.id);
         router.push(`/backlog?${params.toString()}`);
-      } else if (result) {
+      } else {
         const params = new URLSearchParams(searchParams.toString());
         params.set("item", result.item.id);
         router.push(`/backlog?${params.toString()}`);
       }
     },
-    [createBacklogItem, load, router, searchParams]
+    [createBacklogItem, hydrateItemIntoStore, router, searchParams]
   );
 
   const handleImportGitHubIssue = useCallback(
@@ -314,7 +363,7 @@ function BacklogPageInner() {
         if (result) {
           setShowForm(false);
           setGithubIssueUrl("");
-          await load();
+          await hydrateItemIntoStore(result.item.id);
           const params = new URLSearchParams(searchParams.toString());
           params.set("item", result.item.id);
           router.push(`/backlog?${params.toString()}`);
@@ -327,7 +376,7 @@ function BacklogPageInner() {
         setGithubImporting(false);
       }
     },
-    [githubIssueUrl, importGitHubIssue, load, router, searchParams]
+    [githubIssueUrl, importGitHubIssue, hydrateItemIntoStore, router, searchParams]
   );
 
   const handlePickerSelect = useCallback(
@@ -336,13 +385,13 @@ function BacklogPageInner() {
       setShowForm(false);
       const result = await importGitHubIssue(url.trim());
       if (result) {
-        await load();
+        await hydrateItemIntoStore(result.item.id);
         const params = new URLSearchParams(searchParams.toString());
         params.set("item", result.item.id);
         router.push(`/backlog?${params.toString()}`);
       }
     },
-    [importGitHubIssue, load, router, searchParams]
+    [importGitHubIssue, hydrateItemIntoStore, router, searchParams]
   );
 
   const sortIndicator = (col: SortColumn) => {
@@ -463,8 +512,8 @@ function BacklogPageInner() {
         />
         <StatusFilterChips selected={statusFilter} onChange={setStatusFilter} />
         <PriorityFilterChips selected={priorityFilter} onChange={setPriorityFilter} />
-        {/* Archived items are excluded from the default view server-side;
-            enabling this re-fetches with includeArchived=true. */}
+        {/* Archived items are excluded from the default view client-side
+            (Epic 5.1); enabling this re-includes them from the live store. */}
         <label className={styles.showArchivedLabel}>
           <input
             type="checkbox"
@@ -576,7 +625,7 @@ function BacklogPageInner() {
               )}
             </table>
           )}
-          {items.length > 0 && !items.some((i) => i.status === "in_progress") && <FooterNudge />}
+          {filteredItems.length > 0 && !filteredItems.some((i) => i.status === "in_progress") && <FooterNudge />}
         </div>
 
         {/* Detail pane */}
