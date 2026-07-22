@@ -38,6 +38,7 @@ const (
 	StuckReason_STUCK_REASON_PUSH_FAILED       StuckReason = 6
 	StuckReason_STUCK_REASON_ORPHANED_TRIAGE   StuckReason = 7
 	StuckReason_STUCK_REASON_AUTONOMOUS_STUCK  StuckReason = 8
+	StuckReason_STUCK_REASON_SPAWN_FAILED      StuckReason = 9
 )
 
 // Enum value maps for StuckReason.
@@ -52,6 +53,7 @@ var (
 		6: "STUCK_REASON_PUSH_FAILED",
 		7: "STUCK_REASON_ORPHANED_TRIAGE",
 		8: "STUCK_REASON_AUTONOMOUS_STUCK",
+		9: "STUCK_REASON_SPAWN_FAILED",
 	}
 	StuckReason_value = map[string]int32{
 		"STUCK_REASON_UNSPECIFIED":       0,
@@ -63,6 +65,7 @@ var (
 		"STUCK_REASON_PUSH_FAILED":       6,
 		"STUCK_REASON_ORPHANED_TRIAGE":   7,
 		"STUCK_REASON_AUTONOMOUS_STUCK":  8,
+		"STUCK_REASON_SPAWN_FAILED":      9,
 	}
 )
 
@@ -7931,7 +7934,7 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12/\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x17.session.v1.StuckReasonR\x06reason\"=\n" +
 	"\x1dTriggerRemediationNowResponse\x12\x1c\n" +
-	"\ttriggered\x18\x01 \x01(\bR\ttriggered*\xaa\x02\n" +
+	"\ttriggered\x18\x01 \x01(\bR\ttriggered*\xc9\x02\n" +
 	"\vStuckReason\x12\x1c\n" +
 	"\x18STUCK_REASON_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSTUCK_REASON_PR_READY_UNMERGED\x10\x01\x12\x1b\n" +
@@ -7941,7 +7944,8 @@ const file_session_v1_backlog_proto_rawDesc = "" +
 	"\x15STUCK_REASON_BOUNCING\x10\x05\x12\x1c\n" +
 	"\x18STUCK_REASON_PUSH_FAILED\x10\x06\x12 \n" +
 	"\x1cSTUCK_REASON_ORPHANED_TRIAGE\x10\a\x12!\n" +
-	"\x1dSTUCK_REASON_AUTONOMOUS_STUCK\x10\b2\xa0 \n" +
+	"\x1dSTUCK_REASON_AUTONOMOUS_STUCK\x10\b\x12\x1d\n" +
+	"\x19STUCK_REASON_SPAWN_FAILED\x10\t2\xa0 \n" +
 	"\x0eBacklogService\x12b\n" +
 	"\x11CreateBacklogItem\x12$.session.v1.CreateBacklogItemRequest\x1a%.session.v1.CreateBacklogItemResponse\"\x00\x12Y\n" +
 	"\x0eGetBacklogItem\x12!.session.v1.GetBacklogItemRequest\x1a\".session.v1.GetBacklogItemResponse\"\x00\x12w\n" +

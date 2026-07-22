@@ -115,6 +115,57 @@ func TestNotifyReworkCapHit_should_persistRowSurvivingRestart_When_CapHit(t *tes
 	assert.Equal(t, domain.StuckReasonReworkCap, open[0].Reason)
 }
 
+// --- BUG-030: AutoReopenAfterFailedReview's swallowed rollback failure ---
+
+// TestNotifySpawnAndRollbackFailed_should_markStuckAndNotify_When_Called is the
+// regression test for BUG-030: live incident on backlog item 54e5aa1f
+// ("The camera dialog freezes forever on picture capture") — AutoReopenAfterFailedReview
+// transitioned the item review->in_progress, its SpawnSessionFromItem call then
+// failed, and the scoped rollback to "review" ALSO failed (its precondition no
+// longer matched). Before this fix, that double failure was only
+// log.ErrorLog.Printf'd — the item was left silently stranded in_progress with
+// no work session and no operator-visible signal anywhere, invisible to every
+// stuck detector (none of them check "in_progress with zero live sessions").
+// notifySpawnAndRollbackFailed is the fix: a durable StuckReasonSpawnFailed row
+// plus an operator notification, mirroring notifyReworkCapHit's structure.
+func TestNotifySpawnAndRollbackFailed_should_markStuckAndNotify_When_Called(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Camera dialog freezes test item",
+		Status: string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	svc := NewBacklogService(storage, nil, nil, nil, nil, nil)
+	bus := events.NewEventBus(4)
+	svc.SetEventBus(bus)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, _ := bus.Subscribe(subCtx)
+
+	svc.notifySpawnAndRollbackFailed(ctx, item.ID, item.Title,
+		fmt.Errorf("failed to spawn session: worktree setup failed"),
+		fmt.Errorf("precondition failed: item already updated"))
+
+	open, err := storage.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, domain.StuckReasonSpawnFailed, open[0].Reason,
+		"the item must be durably marked stuck, not left silently stranded in_progress with no session")
+	assert.Equal(t, item.ID, open[0].ItemID)
+	assert.Contains(t, open[0].Context, "rework session failed to spawn")
+	assert.NotNil(t, open[0].NotifiedAt, "dedup must be pre-set since the notification already fired")
+
+	select {
+	case ev := <-ch:
+		assert.Equal(t, events.EventNotification, ev.Type)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an operator-facing notification when spawn and rollback both fail")
+	}
+}
+
 // --- Backlog work-item queue: DequeueNextQueuedItems ---
 
 // TestDequeueNextQueuedItems_SpawnsOldestQueuedItemFirst verifies that once a
