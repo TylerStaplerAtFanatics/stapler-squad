@@ -63,6 +63,13 @@ const FALLBACK_POLL_INTERVAL_MS = 30_000;
 const BACKSTOP_INTERVAL_MS = 30_000;
 const STALE_THRESHOLD_MS = 15_000;
 const VISIBILITY_DEBOUNCE_MS = 200;
+// AC #19 (project_plans/backlog-event-driven-updates/design/ux.md,
+// ConnectionIndicator's "Rapid connect/disconnect flapping" edge case): only
+// the reconnecting -> live transition is debounced by a "few hundred ms"
+// hold, never connected -> reconnecting (that must announce trouble
+// immediately). A flaky connection that reconnects and drops again within
+// this window never visibly flickers back to "Live".
+const LIVE_TRANSITION_DEBOUNCE_MS = 300;
 
 export interface UseWatchBacklogItemsFilters {
   statusFilter?: string[];
@@ -154,6 +161,12 @@ export function useWatchBacklogItems(
   const streamRetriesRef = useRef(0);
   const streamDeadRef = useRef(false);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // AC #19: pending reconnecting -> live debounce (see
+  // LIVE_TRANSITION_DEBOUNCE_MS above). Re-armed on every successful
+  // (re)connect/resync; the scheduled flip to "live" only actually commits if
+  // the stream is still connected once the timer fires, so a flap that drops
+  // again mid-hold never shows "Live" at all.
+  const liveTransitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Set by the main watch effect on every run; called by the fallback-poll,
   // backstop, and visibility/online effects to force a reconnect without
   // needing `connect` in their own dependency arrays.
@@ -205,6 +218,19 @@ export function useWatchBacklogItems(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilterKey]);
 
+  // AC #19: debounce the reconnecting -> live transition only (never
+  // connected -> reconnecting, which must show immediately elsewhere in this
+  // hook). Cancels any previously scheduled flip and re-arms the hold, so
+  // repeated flapping keeps deferring "Live" until the connection has been
+  // stable for the full window rather than flickering it on and off.
+  const scheduleLiveTransition = useCallback(() => {
+    if (liveTransitionTimerRef.current) clearTimeout(liveTransitionTimerRef.current);
+    liveTransitionTimerRef.current = setTimeout(() => {
+      liveTransitionTimerRef.current = null;
+      if (isConnectedRef.current) setConnectionState("live");
+    }, LIVE_TRANSITION_DEBOUNCE_MS);
+  }, []);
+
   // Gap-detected resync: briefly reflect a "reconnecting" state while the
   // refetch is in flight, then return to "live" if the stream is still up.
   const triggerResync = useCallback(async () => {
@@ -215,9 +241,9 @@ export function useWatchBacklogItems(
       await refresh();
     } finally {
       resyncInFlightRef.current = false;
-      if (isConnectedRef.current) setConnectionState("live");
+      if (isConnectedRef.current) scheduleLiveTransition();
     }
-  }, [refresh]);
+  }, [refresh, scheduleLiveTransition]);
 
   // Apply after_seq bookkeeping (Story 4.2.2) then dispatch to the store.
   const handleEvent = useCallback(
@@ -333,7 +359,7 @@ export function useWatchBacklogItems(
             backstopTriggeredRef.current = false;
             streamRetriesRef.current = 0;
             streamDeadRef.current = false;
-            setConnectionState("live");
+            scheduleLiveTransition();
             // Story 4.2.3: a backstop- or visibility-triggered reconnect's
             // success path issues a full refetch, even if zero
             // BacklogItemEvents were ever received during the whole idle
@@ -379,9 +405,13 @@ export function useWatchBacklogItems(
       reconnectRef.current = null;
       abortController.abort();
       isConnectedRef.current = false;
+      if (liveTransitionTimerRef.current) {
+        clearTimeout(liveTransitionTimerRef.current);
+        liveTransitionTimerRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilterKey, categoryFilterKey, handleEvent, refresh]);
+  }, [statusFilterKey, categoryFilterKey, handleEvent, refresh, scheduleLiveTransition]);
 
   // REST fallback polling (Task 4.2.1d): once retries are exhausted, poll
   // periodically; a successful poll that finds the stream dead attempts

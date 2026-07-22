@@ -888,6 +888,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               <span
                 className={`${styles.statusBadge} ${getStatusClass(item.status)}`}
                 aria-label={`Status: ${getStatusLabel(item.status)}`}
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
               >
                 {getStatusLabel(item.status)}
               </span>

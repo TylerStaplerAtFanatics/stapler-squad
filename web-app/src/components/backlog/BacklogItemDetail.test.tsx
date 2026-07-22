@@ -278,6 +278,23 @@ describe("BacklogItemDetail — Epic 3.4 'what ran' Pipeline surface", () => {
   });
 });
 
+// AC #12/#32 (Phase 5 spec-compliance sweep, backlog-event-driven-updates):
+// the header status-label badge had no aria-live/aria-atomic, so a plain
+// status change with no verdict change produced zero screen-reader
+// announcement. Mirrors GateVerdictBox.tsx's role="status" aria-live="polite"
+// aria-atomic="true" live-region pattern (Epic 6.2).
+describe("BacklogItemDetail — AC #12/#32: status-label live region", () => {
+  it("marks the status-label badge as a polite, atomic live region", async () => {
+    const session = makeSession({});
+    await renderWithSession(session, []);
+
+    const statusLabel = screen.getByText("Idea");
+    expect(statusLabel).toHaveAttribute("role", "status");
+    expect(statusLabel).toHaveAttribute("aria-live", "polite");
+    expect(statusLabel).toHaveAttribute("aria-atomic", "true");
+  });
+});
+
 describe("BacklogItemDetail — Story 2.2.3: VcsWidget wiring", () => {
   it("BacklogItemDetail_should_RenderShippedPillWithViewDiff_When_VcsStatusNullAndShipStatusShipped", async () => {
     useVcsStatusMock.mockReturnValue({ data: null, loading: false, error: null, refetch: jest.fn() });
