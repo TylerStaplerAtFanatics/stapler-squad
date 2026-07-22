@@ -4,17 +4,24 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { createClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
 import type { BacklogItem, AcCriterion, BacklogItemInput, LinkedSession, PipelineMode } from "@/lib/hooks/useBacklogService";
-import { useBacklogService } from "@/lib/hooks/useBacklogService";
+import { useBacklogService, mapBacklogItem } from "@/lib/hooks/useBacklogService";
 import { useSessionService } from "@/lib/hooks/useSessionService";
 import { useNotifications } from "@/lib/contexts/NotificationContext";
 import { useAnalytics } from "@/lib/analytics";
 import { getStatusLabel } from "@/lib/backlog/status";
 import { useVcsStatus } from "@/lib/hooks/useVcsStatus";
 import { useBacklogItemShipStatus } from "@/lib/hooks/useBacklogItemShipStatus";
-import { getApiBaseUrl } from "@/lib/config";
+import { useWatchBacklogItems } from "@/lib/hooks/useWatchBacklogItems";
+import { getApiBaseUrl, createAuthInterceptor } from "@/lib/config";
+import { BacklogService } from "@/gen/session/v1/backlog_pb";
+import { useAppSelector } from "@/lib/store";
+import { selectBacklogItemById } from "@/lib/store/backlogItemsSlice";
 import { VcsWidget } from "@/components/shared/VcsWidget";
 import { fromSessionVcs, fromShipStatus } from "@/lib/vcs/adapters";
+import { InlineNotice } from "@/components/common/InlineNotice";
 import { BacklogItemForm } from "./BacklogItemForm";
 import { AcCriteriaList } from "./AcCriteriaList";
 import { SessionMonitor } from "./SessionMonitor";
@@ -239,14 +246,109 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     };
   }, [listPipelineModes]);
 
-  // Poll for updated item data while triage is running or while in review (waiting for gate verdict).
-  // Suspend polling while the edit form is open so a background refresh can't clobber unsaved edits.
+  // Epic 5.3 (Story 5.3.1): live updates replace the old 5s poll entirely.
+  // Subscribed unfiltered (no status/category filter) so this panel keeps
+  // showing the item's current state even if a list/board filter elsewhere
+  // would have excluded it (design/ux.md §3). The hook's own return value is
+  // unused here — it exists only to keep the shared store hydrated/connected;
+  // this panel reads the single item it cares about straight off the store
+  // below so unrelated item updates elsewhere never cause this component to
+  // re-run (selectBacklogItemById only changes reference when THIS item's
+  // store entry changes, unlike the hook's fully-remapped `items` array).
+  useWatchBacklogItems();
+  const liveRawItem = useAppSelector((state) => selectBacklogItemById(state, itemId));
+
+  // Buffered-update state (Story 5.3.2): while editMode is true, an incoming
+  // live update is NOT applied to the visible item/form — it's stashed here
+  // and offered via an InlineNotice "Reload" action instead, so it can't
+  // silently clobber an in-progress edit.
+  const [bufferedItem, setBufferedItem] = useState<BacklogItem | null>(null);
+  // A Save was attempted while a buffered update was pending — show the
+  // warn-before-overwrite confirmation instead of calling the save RPC.
+  const [saveConfirmPending, setSaveConfirmPending] = useState(false);
+  const [pendingSaveData, setPendingSaveData] = useState<BacklogItemInput | null>(null);
+
+  // Terminal-state (Task 5.3.1c): set when an ArchivedEvent/RemovedEvent
+  // arrives for this item from the separate raw watch below.
+  const [terminalState, setTerminalState] = useState<"archived" | "removed" | null>(null);
+
   useEffect(() => {
-    const shouldPoll = (item?.triageStatus === "running" || (item?.status === "review" && (!item?.gateVerdict || item.gateVerdict === "PENDING")) || item?.status === "pr_pending") && !editMode;
-    if (!shouldPoll) return;
-    const interval = setInterval(() => { void load(); }, 5_000);
-    return () => clearInterval(interval);
-  }, [item?.triageStatus, item?.status, item?.gateVerdict, editMode, load]); // item.status covers pr_pending polling
+    if (!liveRawItem) return;
+    const mapped = mapBacklogItem(liveRawItem);
+    if (editMode) {
+      setBufferedItem(mapped);
+      return;
+    }
+    setItem(mapped);
+    setNotesValue(mapped.notes ?? "");
+    // editMode is read from the closure at the time this effect actually
+    // fires (i.e. whenever liveRawItem changes) — it deliberately does NOT
+    // belong in the dependency array. Depending on it would re-run this
+    // effect on every editMode toggle even when no new live item arrived,
+    // which would re-apply a possibly-stale `liveRawItem` right as edit mode
+    // closes and momentarily stomp a just-completed save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveRawItem]);
+
+  // Once editMode flips back to false (Cancel, or a completed Save), apply
+  // any update that was buffered while editing — design/ux.md §6's "or exits
+  // edit mode" path.
+  const prevEditModeRef = useRef(editMode);
+  useEffect(() => {
+    if (prevEditModeRef.current && !editMode && bufferedItem) {
+      setItem(bufferedItem);
+      setNotesValue(bufferedItem.notes ?? "");
+      setBufferedItem(null);
+    }
+    prevEditModeRef.current = editMode;
+  }, [editMode, bufferedItem]);
+
+  // Task 5.3.1c: a separate, item-scoped raw event subscription dedicated to
+  // detecting BacklogItemArchivedEvent/BacklogItemRemovedEvent for this item.
+  // useWatchBacklogItems.ts intentionally does NOT dispatch itemArchived into
+  // backlogItemsSlice (see that hook's file header, note 1) — item_archived
+  // carries no full BacklogItem payload, so there is nothing meaningful to
+  // upsert, and the design defers this to component-level handling. There is
+  // also no server-side item-id filter on WatchBacklogItemsRequest, so this
+  // watches unfiltered and matches events against `itemId` client-side. This
+  // is a lightweight, single-purpose stream — unlike useWatchBacklogItems.ts
+  // it does not implement exponential-backoff reconnect/afterSeq replay; a
+  // dropped connection simply stops detecting further archive/removal for
+  // this item until the component remounts.
+  useEffect(() => {
+    setTerminalState(null);
+    const abortController = new AbortController();
+
+    const watchTerminal = async () => {
+      try {
+        const transport = createConnectTransport({
+          baseUrl: getApiBaseUrl(),
+          interceptors: [createAuthInterceptor()],
+        });
+        const client = createClient(BacklogService, transport);
+        const stream = client.watchBacklogItems(
+          { statusFilter: [], categoryFilter: [], afterSeq: 0n },
+          { signal: abortController.signal }
+        );
+        for await (const event of stream) {
+          if (event.event.case === "itemArchived" && event.event.value.itemId === itemId) {
+            setTerminalState("archived");
+          } else if (event.event.case === "itemRemoved" && event.event.value.itemId === itemId) {
+            setTerminalState("removed");
+          }
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
+        if (abortController.signal.aborted) return;
+        console.error("[BacklogItemDetail] terminal-state watch stream error:", err);
+      }
+    };
+
+    void watchTerminal();
+    return () => {
+      abortController.abort();
+    };
+  }, [itemId]);
 
   // Track triage progress: increment elapsed time while triageStatus === "running"
   useEffect(() => {
@@ -396,6 +498,53 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     },
     [item, updateBacklogItem]
   );
+
+  // Task 5.3.2c: the form's Save button submits through this wrapper instead
+  // of calling handleUpdateItem directly. If a live update landed while
+  // editing (bufferedItem is set), the save is intercepted — the real save
+  // RPC is not called until the user explicitly picks "Save Anyway" or
+  // "Reload" on the warn-before-overwrite banner below.
+  const handleFormSubmit = useCallback(
+    async (data: BacklogItemInput) => {
+      if (bufferedItem) {
+        setPendingSaveData(data);
+        setSaveConfirmPending(true);
+        return;
+      }
+      await handleUpdateItem(data);
+    },
+    [bufferedItem, handleUpdateItem]
+  );
+
+  /** "Save Anyway" on the warn-before-overwrite banner: proceeds with the original save, discarding the buffered server-side change. */
+  const handleSaveAnyway = useCallback(async () => {
+    if (!pendingSaveData) return;
+    const data = pendingSaveData;
+    setPendingSaveData(null);
+    setSaveConfirmPending(false);
+    setBufferedItem(null);
+    await handleUpdateItem(data);
+  }, [pendingSaveData, handleUpdateItem]);
+
+  /** Plain "Reload" on the buffered-update banner (Task 5.3.2b) — applies the buffered update but stays in edit mode with the refreshed values. */
+  const handleReloadBuffered = useCallback(() => {
+    if (!bufferedItem) return;
+    setItem(bufferedItem);
+    setNotesValue(bufferedItem.notes ?? "");
+    setBufferedItem(null);
+  }, [bufferedItem]);
+
+  /** "Reload" on the warn-before-overwrite banner (Task 5.3.2c) — discards the in-progress edit, applies the buffered update, and returns to view mode without saving. */
+  const handleConfirmReload = useCallback(() => {
+    if (bufferedItem) {
+      setItem(bufferedItem);
+      setNotesValue(bufferedItem.notes ?? "");
+    }
+    setBufferedItem(null);
+    setPendingSaveData(null);
+    setSaveConfirmPending(false);
+    setEditMode(false);
+  }, [bufferedItem]);
 
   const handleCancelTriage = useCallback(async () => {
     if (!item) return;
@@ -684,9 +833,27 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
           </div>
         </div>
         <div className={styles.scrollArea}>
+          {saveConfirmPending ? (
+            <InlineNotice
+              message="Saving will overwrite a change made elsewhere — Reload first?"
+              actions={[
+                { label: "Save Anyway", onClick: () => void handleSaveAnyway(), variant: "primary" },
+                { label: "Reload", onClick: handleConfirmReload },
+              ]}
+              data-testid="backlog-detail-save-conflict-notice"
+            />
+          ) : bufferedItem ? (
+            <InlineNotice
+              message="This item changed elsewhere."
+              actions={[{ label: "Reload", onClick: handleReloadBuffered }]}
+              onDismiss={() => setBufferedItem(null)}
+              data-testid="backlog-detail-buffered-update-notice"
+            />
+          ) : null}
           <BacklogItemForm
+            key={`${item.id}:${item.updatedAt ?? ""}`}
             initialValues={item}
-            onSubmit={handleUpdateItem}
+            onSubmit={handleFormSubmit}
             onCancel={() => setEditMode(false)}
           />
         </div>
@@ -731,14 +898,16 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             </div>
           </div>
           <div className={styles.headerActions}>
-            <button
-              className={styles.editButton}
-              onClick={() => setEditMode(true)}
-              aria-label="Edit item"
-              data-testid="backlog-detail-edit"
-            >
-              Edit
-            </button>
+            {!terminalState && (
+              <button
+                className={styles.editButton}
+                onClick={() => setEditMode(true)}
+                aria-label="Edit item"
+                data-testid="backlog-detail-edit"
+              >
+                Edit
+              </button>
+            )}
             {onClose && (
               <button
                 className={styles.closeButton}
@@ -890,6 +1059,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
                   onSkipGate={handleGateSkip}
                   onReReview={() => triggerReReview(item.id).then(() => load())}
                   actionPending={actionLoading !== null}
+                  readOnly={terminalState !== null}
                 />
               </div>
 
@@ -948,7 +1118,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               <button
                 className={styles.actionButton}
                 onClick={() => handleAction("mark_done")}
-                disabled={actionLoading !== null}
+                disabled={actionLoading !== null || terminalState !== null}
                 aria-busy={actionLoading === "mark_done"}
                 title="Mark done manually (if PR already merged)"
                 data-testid="backlog-action-mark-done"
@@ -983,6 +1153,17 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
         <div className={styles.section}>
           <h3 className={styles.sectionTitle}>Actions</h3>
           <div className={styles.actionsPanel} role="group" aria-label="Item actions">
+            {terminalState ? (
+              <InlineNotice
+                message={
+                  terminalState === "archived"
+                    ? "This item was archived elsewhere."
+                    : "This item was removed elsewhere."
+                }
+                data-testid="backlog-detail-terminal-notice"
+              />
+            ) : (
+              <>
             {item.status === "idea" && (
               <>
                 <button
@@ -1273,6 +1454,8 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
             >
               <ActionButtonLabel pending={actionLoading === "delete"} label="Delete" />
             </button>
+              </>
+            )}
           </div>
         </div>
 
