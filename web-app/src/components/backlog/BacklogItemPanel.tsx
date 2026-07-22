@@ -20,6 +20,21 @@ interface BacklogItemPanelProps {
   sessionId: string;
 }
 
+// Sweep fix (backlog-event-driven-updates Phase 5 compliance sweep,
+// 2026-07-22): Story 5.4.1's own acceptance criterion ("a verdict recorded
+// shortly after ... BacklogItemPanel reflects the new status and verdict")
+// and ux.md UX AC #14 both require the verdict to surface here — the
+// original implementation only ever rendered status/priority/AC criteria,
+// never gateVerdict. Mirrors BacklogItemCard.tsx's VERDICT_BADGE_CONFIG;
+// PENDING is intentionally left unbadged there too (it just means a review
+// is running, not a signal worth a badge).
+const VERDICT_BADGE_CONFIG: Partial<Record<NonNullable<BacklogItem["gateVerdict"]>, { label: string; className: string }>> = {
+  PASS: { label: "✓ PASS", className: styles.verdictBadgePass },
+  PARTIAL: { label: "◑ PARTIAL", className: styles.verdictBadgePartial },
+  FAIL: { label: "✗ FAIL", className: styles.verdictBadgeFail },
+  UNVERIFIABLE: { label: "? UNVERIFIABLE", className: styles.verdictBadgeUnverifiable },
+};
+
 export function BacklogItemPanel({
   backlogItemId,
   sessionId,
@@ -169,6 +184,17 @@ export function BacklogItemPanel({
               >
                 {item.title}
               </AppLink>
+
+              {item.gateVerdict && VERDICT_BADGE_CONFIG[item.gateVerdict] && (
+                <div className={styles.header} data-testid="backlog-panel-verdict">
+                  <span className={VERDICT_BADGE_CONFIG[item.gateVerdict]!.className} title="Last review result">
+                    {VERDICT_BADGE_CONFIG[item.gateVerdict]!.label}
+                  </span>
+                  {item.gateVerdictSummary && (
+                    <span className={styles.verdictSummary}>{item.gateVerdictSummary}</span>
+                  )}
+                </div>
+              )}
 
               {item.acCriteria.length > 0 && (
                 <div className={styles.criteriaSection}>
