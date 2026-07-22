@@ -453,6 +453,49 @@ describe("useWatchBacklogItems", () => {
     expect(selectAllBacklogItems(store.getState() as any)).toHaveLength(1);
   });
 
+  // Proves the empty-backlog hang (found in the e2e pass) is fixed: a
+  // genuinely empty backlog sends zero real item events, but the server now
+  // sends a synthetic `snapshotComplete` marker (see
+  // backlog_service_events.go's watchBacklogItems) specifically so the
+  // client's `for await` loop advances past its first iteration. Without
+  // that marker this test would time out at "connecting" forever — a
+  // hanging stream (`makeHangingStream`) mimics exactly that broken
+  // behavior, so this also documents the contrast.
+  it("reaches connectionState 'live' with zero items when the stream immediately reports snapshot-complete on an empty backlog", async () => {
+    jest.useFakeTimers();
+    const stream = makeControllableStream();
+    mockWatchBacklogItems.mockReturnValueOnce(stream.stream);
+    mockWatchBacklogItems.mockReturnValue(makeHangingStream());
+    mockListBacklogItems.mockResolvedValue({ items: [] });
+
+    const store = makeStore();
+    const { result } = renderHook(() => useWatchBacklogItems(), { wrapper: makeWrapper(store) });
+
+    await act(async () => {
+      await flush();
+    });
+
+    // Confirm it is NOT yet live before the marker arrives — otherwise this
+    // test would trivially pass regardless of whether the fix is present.
+    expect(result.current.connectionState).toBe("connecting");
+
+    await act(async () => {
+      stream.emit(makeEvent("snapshotComplete", {}, 0n));
+      await flush();
+    });
+
+    // The live transition still respects the debounce window.
+    expect(result.current.connectionState).not.toBe("live");
+
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await flush();
+    });
+
+    expect(result.current.connectionState).toBe("live");
+    expect(result.current.items).toHaveLength(0);
+  });
+
   // Story 4.2.3 — pre-mortem.md P2 #1's explicit requirement.
   it("30s idle backstop forces a reconnect and a full refetch after simulated silence past the timeout", async () => {
     jest.useFakeTimers();
