@@ -87,6 +87,8 @@ const baseItem: BacklogItem = {
   statusEvents: [],
   totalEstimatedCostUsd: 0,
   progressNotes: [],
+  autoSpawnSession: false,
+  autoCreatePR: false,
 };
 
 describe("BacklogItemDetail — description markdown rendering", () => {
