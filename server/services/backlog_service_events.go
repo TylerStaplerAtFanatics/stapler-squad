@@ -40,6 +40,18 @@ type backlogItemEventSender interface {
 	Send(*sessionv1.BacklogItemEvent) error
 }
 
+// testAfterSubscribeHook, when non-nil, is invoked immediately after
+// s.eventBus.Subscribe(ctx) below, before the after_seq branch's
+// EventsSince(afterSeq) read. Production code never sets this — it exists
+// solely so Epic 3.2's tests can deterministically land a Publish() call
+// inside the narrow race window between Subscribe() and EventsSince()
+// described in the forceIsSnapshot call site's comment (pre-mortem P2 #4):
+// without a seam here, reproducing that specific interleaving depends on
+// non-deterministic goroutine scheduling, which cannot be turned into a
+// reliable regression test. See backlog_service_events_test.go's
+// race-window test for the only caller.
+var testAfterSubscribeHook func()
+
 // WatchBacklogItems streams real-time backlog item events. Sends an initial
 // snapshot (or, on reconnect via after_seq, a replay of buffered events)
 // followed by live fan-out, filtered by status_filter/category_filter.
@@ -70,6 +82,10 @@ func (s *BacklogService) watchBacklogItems(
 	// WatchSessions ordering-safety comment.
 	eventCh, subID := s.eventBus.Subscribe(ctx)
 	defer s.eventBus.Unsubscribe(subID)
+
+	if testAfterSubscribeHook != nil {
+		testAfterSubscribeHook()
+	}
 
 	costFor := s.buildCostLookup()
 
