@@ -222,6 +222,76 @@ describe("useWatchBacklogItems", () => {
     expect(mockWatchBacklogItems).toHaveBeenCalledTimes(1);
   });
 
+  // AC #19 (project_plans/backlog-event-driven-updates/design/ux.md's
+  // ConnectionIndicator "Rapid connect/disconnect flapping" edge case): only
+  // the reconnecting -> live transition is debounced — a connection that
+  // drops again before the hold elapses must never visibly flicker to
+  // "Live" in between.
+  it("debounces the reconnecting -> live transition so a fast reconnect/drop never flickers to Live", async () => {
+    jest.useFakeTimers();
+    const first = makeControllableStream();
+    const second = makeControllableStream();
+    mockWatchBacklogItems.mockReturnValueOnce(first.stream);
+    mockWatchBacklogItems.mockReturnValueOnce(second.stream);
+    mockWatchBacklogItems.mockReturnValue(makeHangingStream());
+
+    const store = makeStore();
+    const { result } = renderHook(() => useWatchBacklogItems(), { wrapper: makeWrapper(store) });
+
+    await act(async () => {
+      await flush();
+    });
+
+    // First connection succeeds (receives an event) — the live transition is
+    // scheduled but must not be committed yet.
+    await act(async () => {
+      first.emit(makeEvent("itemUpdated", { item: makeItem("item-1"), itemId: "item-1", updatedFields: [] }, 1n));
+      await flush();
+    });
+    expect(result.current.connectionState).not.toBe("live");
+
+    // The connection drops again before the 300ms debounce window elapses —
+    // the scheduled flip to "live" must never fire.
+    await act(async () => {
+      jest.advanceTimersByTime(100);
+      first.fail(new Error("flap"));
+      await flush();
+    });
+    expect(result.current.connectionState).toBe("reconnecting");
+
+    // Advance past the original 300ms window (started at the first
+    // connection, 100ms of which already elapsed above): connectionState
+    // must still not be "live" since the stream is currently down.
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await flush();
+    });
+    expect(result.current.connectionState).not.toBe("live");
+
+    // Reconnect fires after the remaining backoff delay (1000ms total since
+    // the failure; 300ms of it already advanced above).
+    await act(async () => {
+      jest.advanceTimersByTime(700);
+      await flush();
+    });
+
+    // Second connection succeeds — the live transition is scheduled again,
+    // but still must not commit immediately.
+    await act(async () => {
+      second.emit(makeEvent("itemUpdated", { item: makeItem("item-1"), itemId: "item-1", updatedFields: [] }, 2n));
+      await flush();
+    });
+    expect(result.current.connectionState).not.toBe("live");
+
+    // Once the connection has been stable for the full debounce window,
+    // "Live" finally commits.
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await flush();
+    });
+    expect(result.current.connectionState).toBe("live");
+  });
+
   // R12 happy — Task 4.2.2a
   it("passes lastSeq as after_seq on reconnect", async () => {
     jest.useFakeTimers();
@@ -425,6 +495,14 @@ describe("useWatchBacklogItems", () => {
       await flush();
     });
     expect(mockListBacklogItems).toHaveBeenCalledTimes(1);
+    // AC #19: the reconnecting -> live transition is debounced by a few
+    // hundred ms (LIVE_TRANSITION_DEBOUNCE_MS) so a flapping connection never
+    // visibly flickers back to "Live" — advance past that hold before
+    // asserting the state actually flips.
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await flush();
+    });
     expect(result.current.connectionState).toBe("live");
   });
 
