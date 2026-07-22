@@ -22,6 +22,19 @@ import (
 	"github.com/tstapler/stapler-squad/session/ent/sourcesyncevent"
 )
 
+// SetItemChangePublisher wires an ItemChangePublisher into this repository so
+// its backlog mutation methods (TransitionBacklogItemStatus, UpdateBacklogItem,
+// ArchiveBacklogItem, DeleteBacklogItem, SaveReviewVerdict,
+// CreateItemSessionWithVerdict, CreateItemSession,
+// UpdateItemSessionSessionUUID, UpdateItemSessionTriageResult) can publish a
+// best-effort change notification after each successful mutation. Called via
+// Storage.SetItemChangePublisher's forwarding method (session/storage.go),
+// which is the only entry point server/dependencies.go has since it holds a
+// *Storage, not a concrete *EntRepository.
+func (r *EntRepository) SetItemChangePublisher(p ItemChangePublisher) {
+	r.itemChangePublisher = p
+}
+
 // --- converters ---
 
 // reviewVerdictToSummary maps an *ent.ReviewVerdict to a ReviewVerdictSummary DTO.
