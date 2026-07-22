@@ -43,6 +43,13 @@ jest.mock("@/lib/analytics", () => ({
   useAnalytics: () => ({ track: jest.fn() }),
 }));
 
+// BacklogItemDetail calls useStuckBacklogItems() once and passes the
+// resolved StuckBacklogItem down to LifecycleSummary as a prop — stub it so
+// this suite never attempts a real ConnectRPC call.
+jest.mock("@/lib/hooks/useStuckBacklogItems", () => ({
+  useStuckBacklogItems: () => ({ items: [], isLoading: false, error: null }),
+}));
+
 const getBacklogItem = jest.fn();
 // Epic 3.4: BacklogItemDetail now fetches the mode list on mount for the
 // "what ran" surface, via a `useEffect` keyed on `listPipelineModes`. This
@@ -95,10 +102,36 @@ const baseItem: BacklogItem = {
   totalEstimatedCostUsd: 0,
 };
 
+function makeReviewItem(id: string, overrides: Partial<BacklogItem> = {}): BacklogItem {
+  return {
+    ...baseItem,
+    id,
+    title: `Review item ${id}`,
+    status: "review",
+    triageStatus: undefined,
+    gateVerdict: "PENDING",
+    ...overrides,
+  };
+}
+
+/**
+ * Test harness mirroring the fix in web-app/src/app/backlog/page.tsx:
+ * `<BacklogItemDetail key={itemId} itemId={itemId} .../>` — the `key` is
+ * what forces a full remount when the selected item changes (Story 3.1.1,
+ * Task 3.1.1a).
+ */
+function Harness({ itemId }: { itemId: string }) {
+  return <BacklogItemDetail key={itemId} itemId={itemId} />;
+}
+
 describe("BacklogItemDetail — background refresh must not unmount the view", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     getBacklogItem.mockReset();
+    // Story 3.1.4's useSectionExpandState persists collapse state to
+    // localStorage keyed by itemId — clear between tests so one test's
+    // expand/collapse interactions never leak into the next.
+    localStorage.clear();
   });
   afterEach(() => {
     jest.runOnlyPendingTimers();
@@ -162,5 +195,75 @@ describe("BacklogItemDetail — background refresh must not unmount the view", (
 
     expect(getBacklogItem).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("backlog-criterion-text-1")).toHaveValue("Encode Fix Version");
+  });
+});
+
+describe("BacklogItemDetail — Story 3.1.1: itemId state-reset fix", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    getBacklogItem.mockReset();
+    // Story 3.1.4's useSectionExpandState persists collapse state to
+    // localStorage keyed by itemId — clear between tests so one test's
+    // expand/collapse interactions never leak into the next.
+    localStorage.clear();
+  });
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  it("BacklogItemDetail_should_RemountAndCloseManualReviewForm_When_KeyedItemIdChangesFromAToB", async () => {
+    const itemA = makeReviewItem("itm_a");
+    const itemB = makeReviewItem("itm_b");
+    getBacklogItem.mockImplementation((id: string) =>
+      Promise.resolve(id === "itm_a" ? itemA : itemB)
+    );
+
+    const { rerender } = render(<Harness itemId="itm_a" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByTestId("backlog-action-manual-review"));
+    expect(screen.getByTestId("manual-review-form")).toBeInTheDocument();
+
+    rerender(<Harness itemId="itm_b" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId("manual-review-form")).not.toBeInTheDocument();
+  });
+
+  it("BacklogItemDetail_should_PreserveManualReviewFormOpen_When_SameItemIdRerendersWithFreshPollData", async () => {
+    let pollCount = 0;
+    getBacklogItem.mockImplementation(() => {
+      pollCount += 1;
+      return Promise.resolve(makeReviewItem("itm_a", { updatedAt: `2026-07-01T00:0${pollCount}:00Z` }));
+    });
+
+    const { rerender } = render(<Harness itemId="itm_a" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByTestId("backlog-action-manual-review"));
+    expect(screen.getByTestId("manual-review-form")).toBeInTheDocument();
+
+    // Same itemId → same `key` → React keeps the existing instance mounted
+    // (proving the remount fix doesn't over-trigger on unrelated
+    // re-renders). Note: since Story 3.1.3, polling is itself suspended
+    // while the manual-review form is open (Task 3.1.3c) — the poll tick
+    // below is a no-op for that reason, which only reinforces the form
+    // staying open; the parent-level rerender is what this test is
+    // actually proving doesn't reset local component state.
+    rerender(<Harness itemId="itm_a" />);
+    await act(async () => {
+      jest.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    expect(pollCount).toBe(1);
+    expect(screen.getByTestId("manual-review-form")).toBeInTheDocument();
   });
 });
