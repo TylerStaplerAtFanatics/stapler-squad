@@ -172,6 +172,7 @@ type SessionArchiver interface {
 type prPendingChecker interface {
 	IsPRMerged(prNumber int) (bool, error)
 	GetPRStatus(prNumber int) (*git.PRStatus, error)
+	ClosePR(prNumber int, comment string) error
 }
 
 // prCreator is the subset of GitWorktree's push/PR-creation behavior that
@@ -645,7 +646,11 @@ func (il *instanceBacklogListener) OnLifecycleEvent(event LifecycleEvent, _ stri
 	switch event {
 	case EventStarted:
 		go il.parent.onSessionStarted(il.instanceUUID)
-	case EventExited:
+	case EventExited, EventStopped:
+		// A deliberate operator stop (stop_session, DeleteSession, backlog
+		// stale-work remediation) ends the session exactly as much as an
+		// unexpected exit does — the ItemSession bookkeeping and downstream
+		// reconciliation must not depend on which one happened. See BUG-027.
 		go il.parent.onSessionExited(il.instanceUUID)
 	}
 }
@@ -1352,6 +1357,14 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 		l.reconcileOrphanedTriageItems(ctx, er)
 	})
 
+	// Flag queued items DequeueNextQueuedItems' planning gate refuses to ever
+	// claim (plan not approved, skip_planning not set) — otherwise silent
+	// forever except for a per-tick WARNING log. See reconcilePlanNotApprovedItems'
+	// doc comment (BUG-038).
+	l.runStuckDetector("plan_not_approved", &okNames, &panickedNames, func() {
+		l.reconcilePlanNotApprovedItems(ctx, er)
+	})
+
 	// Self-heal sweep: resolve any open stuck row whose reason's expected
 	// status no longer matches the item's current status (Task 2.1.5d).
 	l.runStuckDetector("self_heal", &okNames, &panickedNames, func() {
@@ -1513,6 +1526,23 @@ func (l *BacklogLifecycleListener) reconcileStuckReviewItems(ctx context.Context
 // Acts on the most recent review-role session only, once it is confirmed not
 // still wrapping up on its own (EndedAt already set, or the liveness checker
 // says it's dead) — a session that's merely slow to exit is left alone.
+//
+// latest is deliberately NOT required to carry its own ReviewVerdict. The
+// query's HasReviewVerdict() filter only guarantees the ITEM has some
+// review-role session with a verdict somewhere in its history — it says
+// nothing about whether the newest one does. Live 2026-07-22 on backlog item
+// 9264efe7 (PR #173): an older review session recorded a FAIL verdict and
+// died, then two further re-review attempts were created (also dying, never
+// writing a verdict of their own) before the item was ever unstuck. Bailing
+// out here whenever latest lacked a verdict ("defensive: query already
+// filters on HasReviewVerdict()" — that comment was wrong, the filter is
+// item-scoped, not latest-scoped) skipped the item entirely on every tick,
+// because the newest session is what this sweep always inspects. The correct
+// behavior for a dead, verdict-less latest session is exactly
+// handleReviewSessionExited's existing "review session exited without a
+// verdict" branch (auto-reopen for rework) — so let it flow through instead
+// of returning early; handleReviewSessionExited already looks the session's
+// own verdict up again by SessionUUID and handles both shapes correctly.
 // Best-effort: query/tombstone failures are logged, never returned.
 func (l *BacklogLifecycleListener) reconcileUnprocessedReviewVerdicts(ctx context.Context, er *EntRepository) {
 	items, err := er.FindReviewItemsWithUnprocessedVerdict(ctx)
@@ -1526,9 +1556,6 @@ func (l *BacklogLifecycleListener) reconcileUnprocessedReviewVerdicts(ctx contex
 			continue
 		}
 		latest := item.Edges.ItemSessions[0] // most recent review-role session (query orders desc)
-		if latest.Edges.ReviewVerdict == nil {
-			continue // defensive: query already filters on HasReviewVerdict()
-		}
 
 		dead := latest.EndedAt != nil
 		if !dead && checker != nil {
@@ -1567,8 +1594,13 @@ func (l *BacklogLifecycleListener) reconcileUnprocessedReviewVerdicts(ctx contex
 			}
 		}
 
-		log.WarningLog.Printf("[BacklogLifecycle] item %s: review session %s has an unprocessed %s verdict — applying it now",
-			item.ID, latest.SessionUUID, latest.Edges.ReviewVerdict.OverallOutcome)
+		if latest.Edges.ReviewVerdict != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] item %s: review session %s has an unprocessed %s verdict — applying it now",
+				item.ID, latest.SessionUUID, latest.Edges.ReviewVerdict.OverallOutcome)
+		} else {
+			log.WarningLog.Printf("[BacklogLifecycle] item %s: review session %s (the most recent review attempt) exited without ever writing a verdict — processing as a failed review now",
+				item.ID, latest.SessionUUID)
+		}
 		// forcePush=true: this is the crash-recovery sweep for a review session that
 		// died before its exit event ever reached handleReviewSessionExited normally
 		// — it cannot tell a genuinely-live work session apart from a zombie that will
@@ -2023,6 +2055,79 @@ func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Cont
 	// reason once the item leaves 'idea' — i.e. once triage is re-triggered and succeeds.
 }
 
+// planApprovalStaleness is how long a queued item may sit blocked by
+// DequeueNextQueuedItems' planning gate before this detector flags it — a
+// short buffer (not the multi-hour/day thresholds used elsewhere in this
+// file) since, unlike a running session, there is no legitimate "still
+// working" explanation for this condition: it is a pure configuration gap
+// that will never self-resolve without a human action.
+const planApprovalStaleness = 5 * time.Minute
+
+// reconcilePlanNotApprovedItems flags queued items DequeueNextQueuedItems'
+// planning gate (SkipPlanning=false, PlanApproved=false) has refused to claim
+// — by that function's own design, this happens silently forever: the gate
+// logs one WARNING per 60s tick and leaves the item queued, with no durable,
+// human-visible signal and (as of this detector's introduction) no "Approve
+// Plan" UI action reachable for items using the default pipeline. Confirmed
+// live 2026-07-22: three items (including the one this fix was written
+// against) sat queued for days this way, invisible on the kanban board
+// (BUG-037, fixed alongside this) and structurally un-unblockable by a user.
+// Detection + notification only, mirroring reconcileOrphanedTriageItems —
+// resolving *how* an item should get its plan approved (auto-approve for
+// items with prior completed work sessions? build the missing UI action? is
+// the gate even correct for the "default" pipeline mode?) is a product/
+// architecture question out of scope for this fix; see BUG-038.
+func (l *BacklogLifecycleListener) reconcilePlanNotApprovedItems(ctx context.Context, er *EntRepository) {
+	items, err := l.storage.ListBacklogItems(ctx, BacklogItemFilter{
+		Statuses: []string{string(BacklogStatusQueued)},
+	})
+	if err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] reconcilePlanNotApprovedItems list error: %v", err)
+		return
+	}
+
+	for _, item := range items {
+		if item.SkipPlanning || item.PlanApproved {
+			continue
+		}
+		if item.QueuedAt == nil || time.Since(*item.QueuedAt) <= planApprovalStaleness {
+			continue // still plausibly about to be approved/dequeued
+		}
+
+		applied, markErr := er.MarkStuck(ctx, item.ID, domain.StuckReasonPlanNotApproved, BacklogStatusQueued,
+			"queued item blocked by DequeueNextQueuedItems' planning gate (plan not approved, skip_planning not set)")
+		if markErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePlanNotApprovedItems MarkStuck item=%s: %v", item.ID, markErr)
+			continue
+		}
+		if !applied {
+			continue
+		}
+		rows, findErr := er.FindOpenStuckStates(ctx)
+		if findErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePlanNotApprovedItems FindOpenStuckStates item=%s: %v", item.ID, findErr)
+			continue
+		}
+		row, ok := findOpenStuckStateFor(rows, item.ID, domain.StuckReasonPlanNotApproved)
+		if !ok || row.NotifiedAt != nil {
+			continue
+		}
+
+		log.WarningLog.Printf("[BacklogLifecycle] item %s queued but blocked by unapproved plan", item.ID)
+		l.notify(item.ID,
+			"Queued item blocked by unapproved plan",
+			fmt.Sprintf("%s — this item cannot be dequeued until its plan is approved (or skip_planning is set). Approve the plan or update the item to unblock it.", item.Title),
+			8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
+			2, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
+		)
+		if _, notifyErr := er.MarkStuckNotified(ctx, item.ID, domain.StuckReasonPlanNotApproved); notifyErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePlanNotApprovedItems MarkStuckNotified item=%s: %v", item.ID, notifyErr)
+		}
+	}
+	// No resolve pass needed here: selfHealStuck (status-anchored) clears this
+	// reason once the item leaves 'queued' (dequeued, manually reopened, etc.).
+}
+
 // resolveLatestWorkCommit returns the true current tip commit of the work
 // session identified by sessionUUID — never ItemSessionSummary.LastCommitSha,
 // which is only ever seeded once at session spawn with the pre-work base SHA
@@ -2100,6 +2205,26 @@ func (l *BacklogLifecycleListener) mostRecentWorkCommitShippedToMain(ctx context
 	sha = l.resolveLatestWorkCommit(ctx, lastWorkSessionUUID, repoPath)
 	if sha == "" {
 		return "", false // nothing resolvable — nothing to confirm shipped
+	}
+	// A freshly spawned worktree's HEAD is, by construction, its own base
+	// commit until the agent makes its first commit — and a base commit is
+	// always an ancestor of main (that is literally where the branch came
+	// from), so the IsCommitOnMain check below would trivially return true
+	// here even though zero work has happened yet. Confirmed live 2026-07-22:
+	// item e1fb6825, spawned 55 seconds earlier with zero commits, was
+	// auto-marked done citing its own base commit as "shipped to main
+	// without a PR" — the same false-positive shape resolveLatestWorkCommit's
+	// doc comment already fixed for the *stale-field* case (2026-07-21), but
+	// not for a live-resolved SHA that happens to equal its own base. Guard
+	// explicitly: on a distinct feature branch, sha == base means no new
+	// commits exist yet, so there's nothing to have shipped. Scoped to
+	// non-main branches only — a work session whose branch IS bounceMainBranch
+	// (work committed directly to main, no separate feature branch ever used)
+	// legitimately has sha == base == "shipped" by construction; that case
+	// must still fall through to the IsCommitOnMain check below unchanged.
+	if wt, wtErr := l.storage.GetWorktreeDataBySessionUUID(ctx, lastWorkSessionUUID); wtErr == nil &&
+		wt.BranchName != bounceMainBranch && wt.BaseCommitSHA != "" && sha == wt.BaseCommitSHA {
+		return sha, false // no new commits yet on this branch — nothing to have shipped
 	}
 	onMain, mainErr := git.IsCommitOnMain(repoPath, bounceMainBranch, sha)
 	if mainErr != nil {
@@ -2326,6 +2451,8 @@ func (l *BacklogLifecycleListener) selfHealStuck(ctx context.Context, er *EntRep
 			resolve = row.ItemStatus != BacklogStatusInProgress && row.ItemStatus != BacklogStatusReview
 		case domain.StuckReasonOrphanedTriage:
 			resolve = row.ItemStatus != BacklogStatusIdea
+		case domain.StuckReasonPlanNotApproved:
+			resolve = row.ItemStatus != BacklogStatusQueued
 		default:
 			// autonomous_stuck, push_failed, rework_cap, and any future reason
 			// with no non-terminal anchor: stays open until the blanket
@@ -3191,6 +3318,22 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 		// loop below would poll it forever. Clear the cached PR fields so the next
 		// pushAndCreatePR call creates a fresh PR instead of reusing the closed one.
 		if prStatus.IsClosed {
+			// Before assuming a closed-without-merging PR means the item's own
+			// code needs fixing, check whether its work already landed on main
+			// through some other path — the same BUG-032 shape, recurring: a PR
+			// can be closed (by a human, or by an autonomous session itself,
+			// e.g. running `gh pr close` directly from the worktree, bypassing
+			// this reconciler entirely) specifically because it was already
+			// superseded, not because it's broken. Without this check here,
+			// AutoReopenForPRFix below would spawn a wasted rework cycle for
+			// work that's already shipped — exactly the waste BUG-032 fixed for
+			// the CI-failing/blocked/conflicting branch below, but missed for
+			// this sibling "closed" branch. See BUG-036.
+			supersededItemData := backlogItemToData(item)
+			if superseded := l.closeIfSupersededByMain(ctx, g, &supersededItemData); superseded {
+				continue
+			}
+
 			closedPrURL, closedPrNum := item.PrURL, item.PrNumber
 			emptyURL, zeroNum := "", 0
 			if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
@@ -3250,6 +3393,20 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 		// sweep structurally cannot see.
 		l.resolveStuckLogged(ctx, er, item.ID.String(), domain.StuckReasonPRReadyUnmerged, "ReconcilePRPending/unhealthy")
 
+		// 2c. Before spawning another "fix the PR" rework cycle, check whether this
+		// item's own work already landed on main through some other path (BUG-032:
+		// live incident where a PR kept failing CI/showing conflicts purely because
+		// it had drifted stale behind an already-shipped fix — not because its own
+		// code was wrong — and each "fix" cycle wasted a full rework+review round
+		// against an empty/irrelevant diff before a human-equivalent check finally
+		// caught it). Reuses the same IsCommitOnMain trust boundary
+		// GetBacklogItemShipStatus already relies on elsewhere in this codebase for
+		// "did this item's code actually ship" — not a new, less-verified standard.
+		supersededItemData := backlogItemToData(item)
+		if superseded := l.closeIfSupersededByMain(ctx, g, &supersededItemData); superseded {
+			continue
+		}
+
 		// 3. CI failure, review changes requested, or merge conflict → spawn fix session.
 		if fixSpawner == nil {
 			log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s: CI/review issues found but no PRFixSpawner configured", item.ID)
@@ -3262,6 +3419,93 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 			log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending AutoReopenForPRFix item=%s: %v", item.ID, fixErr)
 		}
 	}
+}
+
+// closeIfSupersededByMain checks whether item's last known work-session commit
+// has already landed on mainBranch through some other path (BUG-032: live
+// incident where a PR kept failing CI/showing conflicts purely because it had
+// drifted stale behind an already-shipped fix — not because its own code was
+// wrong — and each "fix" cycle wasted a full rework+review round against an
+// empty/irrelevant diff before a manual check finally caught it). Reuses the
+// same IsCommitOnMain trust boundary GetBacklogItemShipStatus already relies
+// on elsewhere in this codebase for "did this item's code actually ship" —
+// this is not a new, less-verified standard, just a new call site for an
+// existing one.
+//
+// Returns true if the item was closed out this way (caller should skip its
+// own CI-fix-spawn handling for this item this tick). Returns false — the
+// caller proceeds with its normal path — whenever this can't be determined:
+// no work session, no recorded commit SHA, an IsCommitOnMain error, or the
+// commit genuinely isn't on main yet. Best-effort throughout: secondary
+// failures (the GitHub close call, the field clear) are logged, never block
+// the done transition, which is the one write that actually matters once the
+// commit is confirmed shipped.
+func (l *BacklogLifecycleListener) closeIfSupersededByMain(ctx context.Context, checker prPendingChecker, item *BacklogItemData) bool {
+	sessions, sessErr := l.storage.ListItemSessions(ctx, item.ID)
+	if sessErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] closeIfSupersededByMain ListItemSessions item=%s: %v", item.ID, sessErr)
+		return false
+	}
+	var lastWork *ItemSessionSummary
+	for i := range sessions {
+		// Ascending by CreatedAt (ListItemSessions' query order) — keep
+		// overwriting so this ends up holding the *most recent* work session,
+		// mirroring the identical pattern elsewhere in this file.
+		if sessions[i].Role == SessionRoleWork {
+			lastWork = &sessions[i]
+		}
+	}
+	if lastWork == nil || lastWork.LastCommitSha == "" {
+		return false
+	}
+
+	onMain, mainErr := git.IsCommitOnMain(item.RepoPath, bounceMainBranch, lastWork.LastCommitSha)
+	if mainErr != nil {
+		log.DebugLog.Printf("[BacklogLifecycle] closeIfSupersededByMain IsCommitOnMain item=%s sha=%s: %v", item.ID, lastWork.LastCommitSha, mainErr)
+		return false
+	}
+	if !onMain {
+		return false
+	}
+
+	log.WarningLog.Printf("[BacklogLifecycle] closeIfSupersededByMain item=%s: last commit %s is already on %s — PR #%d is superseded, closing instead of spawning another fix cycle",
+		item.ID, lastWork.LastCommitSha, bounceMainBranch, item.PrNumber)
+
+	closeComment := fmt.Sprintf(
+		"Closing as superseded: this branch's last known commit (%s) is already present on %s, so this item's work has already shipped through another path. No further fix is needed here.",
+		lastWork.LastCommitSha, bounceMainBranch)
+	if closeErr := checker.ClosePR(item.PrNumber, closeComment); closeErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] closeIfSupersededByMain ClosePR item=%s pr=%d: %v", item.ID, item.PrNumber, closeErr)
+		// Still proceed — the item's code is on main regardless of whether the
+		// close-comment API call itself succeeded.
+	}
+
+	closedPrNum := item.PrNumber
+	emptyURL, zeroNum := "", 0
+	if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{
+		PrURL:    &emptyURL,
+		PrNumber: &zeroNum,
+	}, nil); updateErr != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] closeIfSupersededByMain clear PR fields item=%s: %v", item.ID, updateErr)
+	}
+
+	precondition := &BacklogItemPrecondition{
+		ExpectedStatus: string(BacklogStatusPRPending),
+		Note: fmt.Sprintf("self-heal: PR #%d closed as superseded — commit %s already on %s",
+			closedPrNum, lastWork.LastCommitSha, bounceMainBranch),
+	}
+	if _, transErr := l.storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusDone, precondition, TriggeredBySystem); transErr != nil {
+		log.ErrorLog.Printf("[BacklogLifecycle] closeIfSupersededByMain done transition item=%s: %v", item.ID, transErr)
+		return false
+	}
+
+	l.notify(item.ID,
+		"Backlog item already shipped — stale PR closed",
+		fmt.Sprintf("%s — PR #%d had fallen behind an already-shipped fix; closed as superseded and marked done automatically.", item.Title, closedPrNum),
+		10, // sessionv1.NotificationType_NOTIFICATION_TYPE_INFO
+		1,  // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_LOW
+	)
+	return true
 }
 
 // markPRReadyUnmerged marks/refreshes the durable pr_ready_unmerged row for
