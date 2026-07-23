@@ -2206,6 +2206,26 @@ func (l *BacklogLifecycleListener) mostRecentWorkCommitShippedToMain(ctx context
 	if sha == "" {
 		return "", false // nothing resolvable — nothing to confirm shipped
 	}
+	// A freshly spawned worktree's HEAD is, by construction, its own base
+	// commit until the agent makes its first commit — and a base commit is
+	// always an ancestor of main (that is literally where the branch came
+	// from), so the IsCommitOnMain check below would trivially return true
+	// here even though zero work has happened yet. Confirmed live 2026-07-22:
+	// item e1fb6825, spawned 55 seconds earlier with zero commits, was
+	// auto-marked done citing its own base commit as "shipped to main
+	// without a PR" — the same false-positive shape resolveLatestWorkCommit's
+	// doc comment already fixed for the *stale-field* case (2026-07-21), but
+	// not for a live-resolved SHA that happens to equal its own base. Guard
+	// explicitly: on a distinct feature branch, sha == base means no new
+	// commits exist yet, so there's nothing to have shipped. Scoped to
+	// non-main branches only — a work session whose branch IS bounceMainBranch
+	// (work committed directly to main, no separate feature branch ever used)
+	// legitimately has sha == base == "shipped" by construction; that case
+	// must still fall through to the IsCommitOnMain check below unchanged.
+	if wt, wtErr := l.storage.GetWorktreeDataBySessionUUID(ctx, lastWorkSessionUUID); wtErr == nil &&
+		wt.BranchName != bounceMainBranch && wt.BaseCommitSHA != "" && sha == wt.BaseCommitSHA {
+		return sha, false // no new commits yet on this branch — nothing to have shipped
+	}
 	onMain, mainErr := git.IsCommitOnMain(repoPath, bounceMainBranch, sha)
 	if mainErr != nil {
 		log.WarningLog.Printf("[BacklogLifecycle] mostRecentWorkCommitShippedToMain IsCommitOnMain item=%s sha=%s: %v", itemID, sha, mainErr)
