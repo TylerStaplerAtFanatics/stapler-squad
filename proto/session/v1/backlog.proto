@@ -316,7 +316,19 @@ message ListBacklogItemsRequest {
   repeated string status = 1;
   repeated int32 priority = 2;
   string sort_by = 3;
+  // include_terminal, when true, includes items with status "done" in the
+  // default (no explicit `status` filter) result set. Independent of
+  // include_archived below — this field no longer also controls "archived"
+  // visibility (see include_archived's doc comment for why that split
+  // exists).
   bool include_terminal = 4;
+  // include_archived, when true, includes items with status "archived" in
+  // the default (no explicit `status` filter) result set. Split out from
+  // include_terminal so a client can show "done" items by default while
+  // still hiding "archived" ones unless the user opts in (mirrors the
+  // session list's "Show Archived" toggle). Ignored when `status` is set
+  // explicitly — an explicit status filter always wins.
+  bool include_archived = 5;
 }
 
 message ListBacklogItemsResponse {
@@ -389,6 +401,10 @@ message SpawnSessionFromItemRequest {
 message SpawnSessionFromItemResponse {
   string session_uuid = 1;
   ItemSession item_session = 2;
+  // True if the spawn hit the concurrency cap and the item was transitioned to
+  // "queued" instead of spawning a session. session_uuid/item_session are empty
+  // in that case.
+  bool queued = 3;
 }
 
 message AttachSessionToItemRequest {
@@ -567,6 +583,127 @@ message ListPipelineModesResponse {
   repeated PipelineMode items = 1;
 }
 
+// ============================================================================
+// Backlog Item Events (for WatchBacklogItems streaming)
+// ============================================================================
+//
+// Defined here (not in events.proto) because the oneof variants reference
+// BacklogItem and ReviewVerdict, which are defined in this file — importing
+// events.proto from here (or this file from events.proto) would create a
+// circular import between the two proto files.
+
+// BacklogItemEvent represents a real-time change to a backlog item.
+// Used for the WatchBacklogItems streaming RPC.
+message BacklogItemEvent {
+  // Timestamp when the event occurred.
+  google.protobuf.Timestamp timestamp = 1;
+
+  // Event type (one of the following).
+  oneof event {
+    BacklogItemStatusChangedEvent status_changed = 2;
+    BacklogItemVerdictRecordedEvent verdict_recorded = 3;
+    BacklogItemSessionAttachedEvent session_attached = 4;
+    BacklogItemUpdatedEvent item_updated = 5;
+    BacklogItemArchivedEvent item_archived = 6;
+    BacklogItemRemovedEvent item_removed = 7;
+    // Synthetic marker (no corresponding bus event) sent exactly once, at the
+    // end of WatchBacklogItems' initial phase (fresh snapshot or after_seq
+    // replay), but ONLY when that phase sent zero other events — e.g. a
+    // genuinely empty backlog, or a status_filter/category_filter matching
+    // nothing. Without it, a zero-item connection produces zero bytes on the
+    // wire, and the client's `for await` loop never resolves past its first
+    // iteration — permanently stuck at connectionState "connecting" even
+    // though the stream is healthy and correctly has nothing to report. See
+    // useWatchBacklogItems.ts's handling (falls through to a no-op case) and
+    // backlog_service_events.go's watchBacklogItems doc comment.
+    BacklogSnapshotCompleteEvent snapshot_complete = 9;
+  }
+
+  // Monotonically-increasing sequence number assigned by pkg/events.EventBus
+  // at Publish time, mirroring SessionEvent.seq. Zero means "no sequence
+  // information" — used for the per-item synthetic snapshot events sent on a
+  // fresh (non-replay) connection, which don't correspond to a single
+  // published bus event and must not participate in the frontend's
+  // afterSeq/gap-detection bookkeeping (see useWatchBacklogItems.ts).
+  uint64 seq = 8;
+}
+
+// BacklogItemStatusChangedEvent is emitted when an item's status transitions
+// (e.g. "in_progress" -> "review").
+message BacklogItemStatusChangedEvent {
+  string item_id = 1;
+  string old_status = 2;
+  string new_status = 3;
+  BacklogItem item = 4;
+
+  // Whether this event is part of an initial snapshot (sent on stream
+  // connect/reconnect) rather than a live change. Frontend should not
+  // flash/notify for snapshot events.
+  bool is_snapshot = 5;
+}
+
+// BacklogItemVerdictRecordedEvent is emitted when a review verdict is
+// recorded for one of an item's sessions.
+message BacklogItemVerdictRecordedEvent {
+  string item_id = 1;
+  ReviewVerdict verdict = 2;
+  BacklogItem item = 3;
+  bool is_snapshot = 4;
+}
+
+// BacklogItemSessionAttachedEvent is emitted when a session is spawned from
+// or attached to a backlog item.
+message BacklogItemSessionAttachedEvent {
+  string item_id = 1;
+  string session_id = 2;
+  BacklogItem item = 3;
+  bool is_snapshot = 4;
+}
+
+// BacklogItemUpdatedEvent is emitted when one or more item fields change
+// (title, description, priority, etc.) outside of a status transition.
+message BacklogItemUpdatedEvent {
+  string item_id = 1;
+  repeated string updated_fields = 2;
+  BacklogItem item = 3;
+  bool is_snapshot = 4;
+}
+
+// BacklogItemArchivedEvent is emitted when an item is soft-deleted via
+// ArchiveBacklogItem.
+message BacklogItemArchivedEvent {
+  string item_id = 1;
+  google.protobuf.Timestamp archived_at = 2;
+  bool is_snapshot = 3;
+}
+
+// BacklogItemRemovedEvent is emitted when an item is permanently deleted via
+// DeleteBacklogItem. Never part of a snapshot by definition — a removed item
+// has nothing left to snapshot.
+message BacklogItemRemovedEvent {
+  string item_id = 1;
+  string reason = 2;
+}
+
+// BacklogSnapshotCompleteEvent carries no data — it exists purely so the
+// stream has sent at least one message by the time the initial phase
+// (fresh snapshot or after_seq replay) finishes with zero real events to
+// report. See BacklogItemEvent.snapshot_complete's doc comment.
+message BacklogSnapshotCompleteEvent {}
+
+// WatchBacklogItemsRequest configures the WatchBacklogItems streaming RPC.
+message WatchBacklogItemsRequest {
+  // Optional: only receive events for items with one of these statuses.
+  repeated string status_filter = 1;
+
+  // Optional: only receive events for items in one of these categories.
+  repeated string category_filter = 2;
+
+  // Optional: resume a stream after this sequence number instead of
+  // receiving a fresh initial snapshot (see pkg/events.EventsSince).
+  uint64 after_seq = 3;
+}
+
 // BacklogService manages backlog items and their lifecycle through AI-assisted
 // planning, implementation, and review workflows.
 service BacklogService {
@@ -692,6 +829,35 @@ service BacklogService {
   // SnoozeStuckItem suppresses a stuck row from the active view and from
   // re-notification until the given time.
   rpc SnoozeStuckItem(SnoozeStuckItemRequest) returns (SnoozeStuckItemResponse) {}
+
+  // ResetStuckRemediation clears the automated-remediation counters
+  // (remediation_attempts, next_remediation_at, notified_at) on a single open
+  // stuck row, letting a fresh automated attempt/notification cycle fire
+  // immediately instead of waiting on stale backoff/dedup state. Distinct
+  // from TriggerRemediationNow: this never itself invokes a remediation
+  // action, it only un-parks the row.
+  rpc ResetStuckRemediation(ResetStuckRemediationRequest) returns (ResetStuckRemediationResponse) {}
+
+  // BulkResetStuckRemediation applies ResetStuckRemediation's reset to every
+  // open stuck row matching the optional reason filter — the "something
+  // upstream broke a batch of these, give them all a fresh shot" admin
+  // action, e.g. after an OOM-restart storm inflated attempt counts across
+  // many items at once.
+  rpc BulkResetStuckRemediation(BulkResetStuckRemediationRequest) returns (BulkResetStuckRemediationResponse) {}
+
+  // TriggerRemediationNow immediately runs the reason-specific remediation
+  // action for a single open stuck row, bypassing only the next_remediation_at
+  // backoff timer — every other safety gate (the 5-attempt cap, the wrapped
+  // action's own circuit breaker) still applies, and this attempt still
+  // counts toward remediation_attempts like any dispatcher-triggered one.
+  // Rejects with an error (rather than silently un-parking) when the row has
+  // already exhausted its attempt budget — use ResetStuckRemediation first.
+  rpc TriggerRemediationNow(TriggerRemediationNowRequest) returns (TriggerRemediationNowResponse) {}
+
+  // WatchBacklogItems streams real-time backlog item events (status changes,
+  // verdicts, session attachments, updates, archival, removal).
+  // Server-streaming RPC for live backlog updates without polling.
+  rpc WatchBacklogItems(WatchBacklogItemsRequest) returns (stream BacklogItemEvent) {}
 }
 
 message ImportGitHubIssueRequest {
@@ -855,6 +1021,17 @@ message StuckBacklogItem {
   // fetching and populating it. Unset means "not fetched / unknown", not
   // "auto-merge disabled".
   optional bool allow_auto_merge = 11;
+  // remediation_attempts is how many automated (or operator-triggered via
+  // TriggerRemediationNow) remediation attempts have been made for this open
+  // row. remediation_attempts >= 5 means the row is "parked" — automated
+  // remediation has stopped until ResetStuckRemediation is called.
+  int32 remediation_attempts = 12;
+  // next_remediation_at is when this row becomes eligible for the next
+  // automated remediation attempt. Unset means either no attempt has been
+  // made yet (remediation_attempts == 0, eligible immediately) or the row is
+  // parked (remediation_attempts >= 5) — check remediation_attempts to tell
+  // the two apart.
+  optional google.protobuf.Timestamp next_remediation_at = 13;
 }
 
 message ListStuckBacklogItemsRequest {}
@@ -873,4 +1050,50 @@ message SnoozeStuckItemResponse {
   // applied is true when an open row matching (item_id, reason) was found
   // and snoozed; false when no such open row exists (not an error).
   bool applied = 1;
+}
+
+message ResetStuckRemediationRequest {
+  string item_id = 1;
+  StuckReason reason = 2;
+}
+
+message ResetStuckRemediationResponse {
+  // applied is true when an open row matching (item_id, reason) was found
+  // and reset; false when no such open row exists (not an error).
+  bool applied = 1;
+}
+
+message BulkResetStuckRemediationRequest {
+  // reason filters to a single stuck reason; unset (STUCK_REASON_UNSPECIFIED)
+  // resets matching rows across every reason.
+  StuckReason reason = 1;
+  // only_parked restricts the reset to rows that actually hit the 5-attempt
+  // cap. Defaults to true at the RPC layer when unset — see
+  // only_parked_explicitly_set.
+  bool only_parked = 2;
+  // only_parked_explicitly_set distinguishes "only_parked=false because the
+  // caller wants every open row regardless of attempt count" from "the field
+  // was left at its zero value" — proto3 bool fields cannot otherwise tell
+  // "explicitly false" apart from "unset". Set true whenever the caller
+  // deliberately supplied only_parked (either value).
+  bool only_parked_explicitly_set = 3;
+}
+
+message BulkResetStuckRemediationResponse {
+  // reset_count is how many rows were reset by this call.
+  int32 reset_count = 1;
+}
+
+message TriggerRemediationNowRequest {
+  string item_id = 1;
+  StuckReason reason = 2;
+}
+
+message TriggerRemediationNowResponse {
+  // triggered is true when the remediation action was invoked. False is
+  // never returned on success — a row that cannot be remediated (no open
+  // row, already parked, no action registered for this reason yet) is
+  // reported as an RPC error instead, so the frontend can show a specific
+  // reason rather than a bare "nothing happened".
+  bool triggered = 1;
 }

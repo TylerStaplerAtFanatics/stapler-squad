@@ -169,7 +169,9 @@ type Repository interface {
 	// DeleteBacklogItem permanently removes an item and all its child records.
 	DeleteBacklogItem(ctx context.Context, id string) error
 	// TransitionBacklogItemStatus changes the status of a backlog item with optional precondition.
-	TransitionBacklogItemStatus(ctx context.Context, id string, toStatus BacklogStatus, precondition *BacklogItemPrecondition) (*BacklogItemData, error)
+	// triggeredBy records who/what caused the transition (TriggeredByUser or TriggeredBySystem)
+	// in the resulting BacklogStatusEvent audit row.
+	TransitionBacklogItemStatus(ctx context.Context, id string, toStatus BacklogStatus, precondition *BacklogItemPrecondition, triggeredBy string) (*BacklogItemData, error)
 	// GetAllItemSessionsWithBacklogInfo returns all item sessions joined with their parent backlog item metadata.
 	// Used by the Insights dashboard to annotate sessions with backlog context.
 	GetAllItemSessionsWithBacklogInfo(ctx context.Context) ([]ItemSessionBacklogEntry, error)
@@ -380,12 +382,20 @@ type BacklogItemData struct {
 	PlanApproved      bool
 	PlanApprovedAt    *time.Time
 	PlanArtifactsPath string
-	Notes             string
-	ExternalID        string
-	ArchivedAt        *time.Time
-	SourceID          string
-	PrURL             string
-	PrNumber          int
+	// QueuedAt is set when a fresh spawn hit the concurrency cap and the item
+	// was transitioned to "queued" instead of rejected. Nil unless Status ==
+	// BacklogStatusQueued (or the item was previously queued). Drives FIFO
+	// dequeue ordering.
+	QueuedAt *time.Time
+	// QueuedAutonomous preserves the Autonomous flag from the spawn request
+	// that got queued, so dequeue replays it faithfully.
+	QueuedAutonomous bool
+	Notes            string
+	ExternalID       string
+	ArchivedAt       *time.Time
+	SourceID         string
+	PrURL            string
+	PrNumber         int
 	// ShippedCheckConclusion holds the durable GitHub CI-conclusion snapshot
 	// captured at ship time — genuine GitHub CI-conclusion values only, never
 	// a capture-failure sentinel. See ShippedSnapshotCaptureFailed.
@@ -458,8 +468,17 @@ type BacklogItemFilter struct {
 	Priorities []int
 	// SortBy controls ordering ("priority", "updated_at"). Empty means default ordering.
 	SortBy string
-	// ExcludeTerminal, when true, excludes items with status "done" or "archived".
-	ExcludeTerminal bool
+	// ExcludeDone, when true and Statuses is empty, excludes items with status
+	// "done". Independent of ExcludeArchived — split into two flags (rather
+	// than one combined "ExcludeTerminal") so a caller can show done items by
+	// default while still hiding archived ones. Renamed from ExcludeTerminal,
+	// which used to combine both; verified via grep that ListBacklogItems and
+	// ListBacklogItemSummaries were the only two callers of the old field, so
+	// the rename is safe (no silent behavior change for any other caller).
+	ExcludeDone bool
+	// ExcludeArchived, when true and Statuses is empty, excludes items with
+	// status "archived". Independent of ExcludeDone — see its doc comment.
+	ExcludeArchived bool
 	// Limit caps the number of results returned. 0 means use the default safety cap (1000).
 	Limit int
 	// Offset skips the first N results (for pagination). Only applied when Limit > 0.
@@ -486,8 +505,12 @@ type BacklogItemUpdate struct {
 	PlanApproved      *bool
 	PlanApprovedAt    *time.Time
 	PlanArtifactsPath *string
-	PrURL             *string
-	PrNumber          *int
+	// QueuedAt and QueuedAutonomous follow the same partial-update-presence
+	// convention as PlanApprovedAt: nil means "leave untouched".
+	QueuedAt         *time.Time
+	QueuedAutonomous *bool
+	PrURL            *string
+	PrNumber         *int
 	// ShippedCheckConclusion, ShippedApprovedCount, ShippedChangesReqCount,
 	// ShippedSnapshotAt, ShippedFileStats, and ShippedSnapshotCaptureFailed
 	// are pointers for partial-update presence, following the existing

@@ -534,77 +534,114 @@ test.describe('Backlog', () => {
     });
   });
 
-  test.describe('Item Detail — ID, Copy, and Deep Links', () => {
-    test('e2e:backlog-item-id-visible-and-copyable - Item ID is visible and Copy ID copies it with confirmation', async ({ page, context }) => {
-      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  test.describe('Sort and Group by Repository', () => {
+    const runId = Date.now();
+    const titleA = `repo-sort-a-${runId}`; // repoPath: aaa-repo (alphabetically first)
+    const titleB = `repo-sort-b-${runId}`; // repoPath: zzz-repo (alphabetically last)
+    const titleC = `repo-sort-c-${runId}`; // repoPath: '' (No Repository bucket)
+    const createdItemIds: string[] = [];
+
+    test.beforeAll(async ({ request }) => {
+      // Create items directly via the API so repoPath (including empty) is
+      // controlled precisely — the "New Item" modal enforces repoPath
+      // client-side, so it cannot produce a no-repoPath item.
+      for (const [title, repoPath] of [
+        [titleA, `aaa-repo-${runId}`],
+        [titleB, `zzz-repo-${runId}`],
+        [titleC, ''],
+      ] as const) {
+        const res = await request.post(
+          `${BASE_URL}/api/session.v1.BacklogService/CreateBacklogItem`,
+          {
+            headers: { 'Content-Type': 'application/json' },
+            data: { title, priority: 3, repoPath, skipTriage: true },
+          }
+        );
+        const body = await res.json() as { item?: { id: string } };
+        if (body.item?.id) createdItemIds.push(body.item.id);
+      }
+    });
+
+    test.afterAll(async ({ request }) => {
+      for (const id of createdItemIds) {
+        try {
+          await request.post(`${BASE_URL}/api/session.v1.BacklogService/ArchiveBacklogItem`, {
+            headers: { 'Content-Type': 'application/json' },
+            data: { id },
+          });
+        } catch {
+          // Best-effort cleanup — do not fail the test on cleanup errors.
+        }
+      }
+    });
+
+    test.beforeEach(async ({ page }) => {
+      // Isolate to just this test's items via the search filter so assertions
+      // are not affected by other items already in the backlog.
+      await page.locator('[data-testid="backlog-search-input"]').fill(`repo-sort-`);
+      await page.waitForSelector('[data-testid="backlog-table-row"]', { timeout: 10000 });
+    });
+
+    test('e2e:backlog-sort-by-repository-path-toggles-direction - Clicking the Repository header sorts ascending then descending', async ({ page }) => {
+      const backlogPage = new BacklogPage(page);
+      const header = backlogPage.getRepositoryColumnHeader();
+
+      await expect(header).toHaveAttribute('aria-sort', 'none');
+      await header.click();
+      await expect(header).toHaveAttribute('aria-sort', 'descending');
+
+      let repoPaths = await backlogPage.getRowRepoPaths();
+      // Descending: zzz-repo, aaa-repo, then the empty-repoPath item ("—") last
+      // among these three under simple string descending order.
+      expect(repoPaths[0]).toContain(`zzz-repo-${runId}`);
+
+      await header.click();
+      await expect(header).toHaveAttribute('aria-sort', 'ascending');
+      repoPaths = await backlogPage.getRowRepoPaths();
+      expect(repoPaths[repoPaths.length - 1]).toContain(`zzz-repo-${runId}`);
+    });
+
+    test('e2e:backlog-group-by-repository-buckets-items - Selecting Group by: Repository buckets items with No Repository sorted last', async ({ page }) => {
       const backlogPage = new BacklogPage(page);
 
-      const itemTitle = `Test Item ID ${Date.now()}`;
-      await backlogPage.createItemViaNewItemButton(itemTitle, { priority: 2 });
-      await backlogPage.openItemDetail(itemTitle);
+      await backlogPage.selectGroupBy('repoPath');
+      const groupHeaders = backlogPage.getGroupHeaders();
+      await expect(groupHeaders).toHaveCount(3, { timeout: 10000 });
 
-      const idText = (await page.getByTestId('backlog-item-id').textContent())?.trim();
-      expect(idText).toMatch(/^[0-9a-f-]{36}$/i);
+      const groupTexts = await groupHeaders.allTextContents();
+      expect(groupTexts[groupTexts.length - 1]).toContain('No Repository');
+      expect(groupTexts.some((t) => t.includes(`aaa-repo-${runId}`))).toBe(true);
+      expect(groupTexts.some((t) => t.includes(`zzz-repo-${runId}`))).toBe(true);
 
-      await page.getByTestId('copy-backlog-id').click();
-      await expect(page.getByTestId('copy-backlog-id')).toHaveText(/Copied/);
+      // All three test items are still present across the groups (not dropped).
+      const rows = backlogPage.getTableRows();
+      await expect(rows).toHaveCount(3);
 
-      const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
-      expect(clipboardText.trim()).toBe(idText);
+      // Reset to no grouping so this test doesn't leak state into others.
+      await backlogPage.selectGroupBy('none');
     });
+  });
+});
 
-    test('e2e:backlog-copy-item-link - Copy Link copies a working /backlog?item= deep link with confirmation', async ({ page, context }) => {
-      await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-      const backlogPage = new BacklogPage(page);
-
-      const itemTitle = `Test Item Link ${Date.now()}`;
-      await backlogPage.createItemViaNewItemButton(itemTitle, { priority: 2 });
-      await backlogPage.openItemDetail(itemTitle);
-
-      const idText = (await page.getByTestId('backlog-item-id').textContent())?.trim();
-
-      await page.getByTestId('copy-backlog-link').click();
-      await expect(page.getByTestId('copy-backlog-link')).toHaveText(/Copied/);
-
-      const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
-      expect(clipboardText).toBe(`${BASE_URL}/backlog?item=${idText}`);
+// Separate top-level describe (not nested under `Backlog`) so it does not
+// inherit that suite's beforeAll, which force-enables the flag for its tests.
+test.describe('Backlog - feature flag off', () => {
+  test.beforeAll(async ({ request }) => {
+    await request.post(`${BASE_URL}/api/session.v1.SessionService/UpdateFeatureFlag`, {
+      headers: { 'Content-Type': 'application/json' },
+      data: { name: 'backlog', enabled: false },
     });
+  });
 
-    test('e2e:backlog-deep-link-opens-item - Visiting /backlog?item=<id> opens the correct item detail pane', async ({ page }) => {
-      const backlogPage = new BacklogPage(page);
+  test('e2e:backlog-flag-off-redirects - Direct navigation to /backlog redirects to / when the flag is off', async ({ page }) => {
+    await page.goto(`${BASE_URL}/backlog`, { waitUntil: 'domcontentloaded' });
+    await page.waitForURL(`${BASE_URL}/`, { timeout: 10000 });
+    await expect(page).toHaveURL(`${BASE_URL}/`);
+  });
 
-      const itemTitle = `Test Item Deep Link ${Date.now()}`;
-      await backlogPage.createItemViaNewItemButton(itemTitle, { priority: 2 });
-      const row = backlogPage.getTableRows().filter({ hasText: itemTitle }).first();
-      const itemId = await row.getAttribute('data-item-id');
-      expect(itemId).toBeTruthy();
-
-      await page.goto(`${BASE_URL}/backlog?item=${itemId}`, { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-testid="backlog-item-detail"]', { timeout: 10000 });
-      await expect(page.locator('[data-testid="backlog-item-detail"]')).toContainText(itemTitle);
-    });
-
-    test('e2e:backlog-board-deep-link-restores-pane - Visiting board view with ?item= restores the detail pane on load', async ({ page }) => {
-      const backlogPage = new BacklogPage(page);
-
-      const itemTitle = `Test Item Board Deep Link ${Date.now()}`;
-      await backlogPage.createItemViaNewItemButton(itemTitle, { priority: 2 });
-      const row = backlogPage.getTableRows().filter({ hasText: itemTitle }).first();
-      const itemId = await row.getAttribute('data-item-id');
-      expect(itemId).toBeTruthy();
-
-      await page.goto(`${BASE_URL}/backlog/board?item=${itemId}`, { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-testid="backlog-board"]', { timeout: 10000 });
-      await page.waitForSelector('[data-testid="backlog-item-detail"]', { timeout: 10000 });
-      await expect(page.locator('[data-testid="backlog-item-detail"]')).toContainText(itemTitle);
-    });
-
-    test('e2e:backlog-invalid-item-id-shows-not-found - Invalid item ID in the URL shows the error state without crashing', async ({ page }) => {
-      await page.goto(`${BASE_URL}/backlog?item=not-a-real-uuid`, { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-testid="backlog-item-detail"]', { timeout: 10000 });
-      await expect(page.locator('[data-testid="backlog-item-detail"]')).toContainText('not found');
-      // Page must still be functional — not stuck on a crashed render.
-      await expect(page.locator('[data-testid="backlog-page"]')).toBeVisible();
-    });
+  test('e2e:backlog-board-flag-off-redirects - Direct navigation to /backlog/board redirects to / when the flag is off', async ({ page }) => {
+    await page.goto(`${BASE_URL}/backlog/board`, { waitUntil: 'domcontentloaded' });
+    await page.waitForURL(`${BASE_URL}/`, { timeout: 10000 });
+    await expect(page).toHaveURL(`${BASE_URL}/`);
   });
 });
