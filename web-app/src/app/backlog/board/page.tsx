@@ -2,13 +2,13 @@
 "use client";
 // +feature: backlog:board-page
 
-import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { useState, useCallback, useRef, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { BacklogBoard } from "@/components/backlog/BacklogBoard";
 import { BacklogItemDetail } from "@/components/backlog/BacklogItemDetail";
 import { useBacklogService } from "@/lib/hooks/useBacklogService";
-import type { BacklogItem } from "@/lib/hooks/useBacklogService";
 import { useNotifications } from "@/lib/contexts/NotificationContext";
+import { useStuckBacklogItems } from "@/lib/hooks/useStuckBacklogItems";
 import { routes } from "@/lib/routes";
 import * as detailStyles from "@/app/backlog/backlog.css";
 
@@ -20,16 +20,16 @@ const ACTION_SUCCESS_MESSAGES: Record<string, string> = {
 };
 
 function BacklogBoardPageInner() {
-  const { listBacklogItems, transitionStatus, triggerTriage, spawnSessionFromItem, cancelTriage } =
-    useBacklogService();
+  const { transitionStatus, triggerTriage, spawnSessionFromItem, cancelTriage } = useBacklogService();
   const { showActionToast } = useNotifications();
   const router = useRouter();
   const searchParams = useSearchParams();
   const selectedItemId = searchParams.get("item");
-  const [items, setItems] = useState<BacklogItem[]>([]);
-  const [loading, setLoading] = useState(true);
   /** itemId -> action key currently in flight for that card. */
   const [pending, setPending] = useState<Record<string, string>>({});
+  // Called once here (not per-card) so every card shares one poll instead of
+  // N independent 60s polls — see plan.md Task 5.1.1a.
+  const { items: stuckItems } = useStuckBacklogItems();
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -39,28 +39,15 @@ function BacklogBoardPageInner() {
     };
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await listBacklogItems();
-      if (mountedRef.current) setItems(result);
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }, [listBacklogItems]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
   const handleAction = useCallback(
     async (action: string, itemId: string) => {
       if (action === "view_session" || action === "view_review") {
-        router.push(`${routes.backlogBoard}?item=${itemId}`);
+        router.push(routes.backlogItem(itemId));
         return;
       }
       setPending((prev) => ({ ...prev, [itemId]: action }));
       const toastKey = `${itemId}:${action}`;
+      let successMessage = ACTION_SUCCESS_MESSAGES[action] ?? "Done.";
       try {
         switch (action) {
           case "mark_ready":
@@ -69,17 +56,22 @@ function BacklogBoardPageInner() {
           case "trigger_triage":
             await triggerTriage(itemId);
             break;
-          case "spawn_session":
-            await spawnSessionFromItem(itemId);
+          case "spawn_session": {
+            const resp = await spawnSessionFromItem(itemId);
+            if (resp?.queued) successMessage = "At capacity — item queued, will start automatically.";
             break;
+          }
           case "cancel_triage":
             await cancelTriage(itemId);
             break;
           default:
             return;
         }
-        showActionToast(ACTION_SUCCESS_MESSAGES[action] ?? "Done.", "success", toastKey);
-        await load();
+        // No manual refetch: the mutation's server-side effect publishes a
+        // BacklogItemEvent that the board's live useWatchBacklogItems stream
+        // picks up and applies to the shared store, so the card/column
+        // updates itself once that event arrives (Epic 5.2).
+        showActionToast(successMessage, "success", toastKey);
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Action failed.";
         showActionToast(msg, "error", toastKey);
@@ -93,12 +85,12 @@ function BacklogBoardPageInner() {
         }
       }
     },
-    [transitionStatus, triggerTriage, spawnSessionFromItem, cancelTriage, load, router, showActionToast]
+    [transitionStatus, triggerTriage, spawnSessionFromItem, cancelTriage, router, showActionToast]
   );
 
   const handleItemClick = useCallback(
     (itemId: string) => {
-      router.push(`${routes.backlogBoard}?item=${itemId}`);
+      router.push(routes.backlogItem(itemId));
     },
     [router]
   );
@@ -112,16 +104,15 @@ function BacklogBoardPageInner() {
       <div className={detailStyles.contentArea}>
         <div className={detailStyles.listPane}>
           <BacklogBoard
-            items={items}
             onAction={handleAction}
             onItemClick={handleItemClick}
-            isLoading={loading}
             pending={pending}
+            stuckItems={stuckItems}
           />
         </div>
         {selectedItemId && (
           <aside className={detailStyles.detailPane} style={{ width: 420 }} aria-label="Item detail">
-            <BacklogItemDetail itemId={selectedItemId} onClose={handleDetailClose} />
+            <BacklogItemDetail key={selectedItemId} itemId={selectedItemId} onClose={handleDetailClose} />
           </aside>
         )}
       </div>
