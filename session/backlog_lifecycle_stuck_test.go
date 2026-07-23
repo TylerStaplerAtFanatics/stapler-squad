@@ -1686,6 +1686,131 @@ func TestReconcileBouncingItems_should_stillFlag_When_LastCommitShaIsStaleBaseSe
 		"the item must still be flagged bouncing based on the worktree's real HEAD, not the stale LastCommitSha")
 }
 
+// TestReconcileBouncingItems_should_notTreatFreshBranchBaseAsShipped_When_ZeroCommitsYet
+// is the regression test for BUG-039: a freshly spawned work session's
+// worktree HEAD is, by construction, its own base commit until the agent's
+// first commit — and a base commit is always an ancestor of main (that's
+// literally where the branch came from), so mostRecentWorkCommitShippedToMain
+// treated it as "shipped" and reconcileBouncingItems auto-marked the item
+// done within the first reconcile tick after spawn, despite zero actual work
+// having happened. Confirmed live 2026-07-22: items e1fb6825 and 12981e9d
+// were both auto-marked done ~1 minute after being dequeued, citing their own
+// base commit ("5d77b70b...") as evidence of having "shipped to main without
+// a PR" — one of them had a live work session still actively producing real
+// work at the moment it happened. Distinct from the 2026-07-21 stale-field
+// bug (TestReconcileBouncingItems_should_stillFlag_When_LastCommitShaIsStaleBaseSeed):
+// this is a live-resolved, genuinely-current SHA that simply hasn't diverged
+// from its own branch point yet — resolveLatestWorkCommit's existing fix
+// doesn't help here, since the function IS correctly returning the true HEAD.
+func TestReconcileBouncingItems_should_notTreatFreshBranchBaseAsShipped_When_ZeroCommitsYet(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	repoPath, mainSHA := setupBounceMainRepo(t)
+	// A feature branch created from main's tip with zero commits of its own —
+	// exactly the state of a worktree in the first moments after spawn.
+	runGitTestCmd(t, repoPath, "checkout", "-b", "backlog/fresh-feature")
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:    "Freshly spawned item with zero commits",
+		Status:   string(BacklogStatusInProgress),
+		RepoPath: repoPath,
+	})
+	require.NoError(t, err)
+
+	workSessionUUID := "fresh-branch-work-session"
+	_, err = storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: workSessionUUID,
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	// repoPath's checked-out HEAD is the fresh branch's tip — identical to
+	// mainSHA, since no commits have been made on it yet. baseCommitSHA is
+	// also mainSHA, matching what a real spawn records.
+	inst := newTestInstance("fresh-branch-instance")
+	inst.UUID = workSessionUUID
+	inst.gitManager.worktree = git.NewGitWorktreeFromStorage(repoPath, repoPath, "fresh-branch-instance", "backlog/fresh-feature", mainSHA)
+	require.NoError(t, storage.SaveInstances([]*Instance{inst}))
+
+	for i := 0; i < 3; i++ {
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusReview, nil, TriggeredBySystem)
+		require.NoError(t, err)
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, nil, TriggeredBySystem)
+		require.NoError(t, err)
+	}
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcileBouncingItems(ctx, er)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusInProgress), fetched.Status,
+		"a fresh branch with zero commits (HEAD == base) must never be treated as 'shipped to main' just because its unchanged base is trivially an ancestor of main")
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1, "the item must still go through normal bouncing detection instead of being silently marked done")
+	assert.Equal(t, domain.StuckReasonBouncing, open[0].Reason)
+}
+
+// TestReconcileBouncingItems_should_stillTransitionToDone_When_WorkCommittedDirectlyToMainBranch
+// verifies BUG-039's fix doesn't regress the legitimate case
+// TestReconcileBouncingItems_should_transitionToDone_When_ShippedWithoutPR
+// already covers: when the work session's own branch IS bounceMainBranch
+// (work happened directly on main, no separate feature branch ever used),
+// sha == base is not "zero commits yet" — main's tip literally is the shipped
+// state — so the new guard must not suppress that transition.
+func TestReconcileBouncingItems_should_stillTransitionToDone_When_WorkCommittedDirectlyToMainBranch(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	repoPath, mainSHA := setupBounceMainRepo(t)
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:    "Work committed directly to main, no feature branch",
+		Status:   string(BacklogStatusInProgress),
+		RepoPath: repoPath,
+	})
+	require.NoError(t, err)
+
+	workSessionUUID := "direct-to-main-work-session"
+	_, err = storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: workSessionUUID,
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	inst := newTestInstance("direct-to-main-instance")
+	inst.UUID = workSessionUUID
+	inst.gitManager.worktree = git.NewGitWorktreeFromStorage(repoPath, repoPath, "direct-to-main-instance", "main", mainSHA)
+	require.NoError(t, storage.SaveInstances([]*Instance{inst}))
+
+	for i := 0; i < 3; i++ {
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusReview, nil, TriggeredBySystem)
+		require.NoError(t, err)
+		_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, nil, TriggeredBySystem)
+		require.NoError(t, err)
+	}
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.reconcileBouncingItems(ctx, er)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusDone), fetched.Status,
+		"work committed directly to the main branch (no feature branch) must still be recognized as shipped")
+}
+
 // --- Story 2.1.6: push_failed ---
 
 // TestStayInReviewAndNotify_should_markPushFailedRow_When_PushAndCreatePRFails
