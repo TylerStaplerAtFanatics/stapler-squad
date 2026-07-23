@@ -23,6 +23,7 @@ export const STUCK_REASON_LABELS: Record<StuckReason, string> = {
   [StuckReason.ORPHANED_TRIAGE]: "Triage session ended without finishing",
   [StuckReason.AUTONOMOUS_STUCK]: "Autonomous mode stopped without finishing",
   [StuckReason.SPAWN_FAILED]: "Rework session failed to start",
+  [StuckReason.PLAN_NOT_APPROVED]: "Waiting on plan approval",
 };
 
 /** Decorative icon glyph for every StuckReason (never the sole signal — text label always accompanies it). */
@@ -37,6 +38,7 @@ export const STUCK_REASON_ICONS: Record<StuckReason, string> = {
   [StuckReason.ORPHANED_TRIAGE]: "🟡",
   [StuckReason.AUTONOMOUS_STUCK]: "🟡",
   [StuckReason.SPAWN_FAILED]: "⛔",
+  [StuckReason.PLAN_NOT_APPROVED]: "🟡",
 };
 
 /** vanilla-extract class per StuckReason (design/ux.md Surface 7 chip legend). */
@@ -51,6 +53,7 @@ export const STUCK_REASON_CLASS: Record<StuckReason, string> = {
   [StuckReason.ORPHANED_TRIAGE]: styles.chipOrphanedTriage,
   [StuckReason.AUTONOMOUS_STUCK]: styles.chipAutonomousStuck,
   [StuckReason.SPAWN_FAILED]: styles.chipSpawnFailed,
+  [StuckReason.PLAN_NOT_APPROVED]: styles.chipPlanNotApproved,
 };
 
 /** Derived (not stored) reason label/class for a stale GitHub-status check (design/ux.md Surface 8). */
