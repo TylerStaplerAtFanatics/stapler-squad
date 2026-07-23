@@ -262,7 +262,6 @@ type BacklogLifecycleListener struct {
 	// any test/caller that hasn't wired it.
 	oneShotShipRunner OneShotShipRunner
 
-
 	// prPendingCheckerMu guards prPendingCheckerFactory for concurrent Set/get access.
 	prPendingCheckerMu      sync.RWMutex
 	prPendingCheckerFactory func(repoPath string) prPendingChecker
@@ -464,7 +463,6 @@ func (l *BacklogLifecycleListener) getOneShotShipRunner() OneShotShipRunner {
 	defer l.oneShotShipRunnerMu.RUnlock()
 	return l.oneShotShipRunner
 }
-
 
 // SetPRPendingCheckerFactory overrides the factory used to construct the
 // PR-status checker for ReconcilePRPending. Overridable in tests (mirrors the
@@ -1397,6 +1395,17 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 		l.reconcileDriftedPRItems(ctx, er)
 	})
 
+	// Flag pr_pending items with no PR reference at all (pr_number == 0) — a
+	// permanent dead end otherwise invisible to FindPRPendingItems'
+	// PrNumberGT(0) filter and everything downstream of it, including
+	// ReconcilePRPending itself (BUG-040). Registered immediately before
+	// pr_ready+merge_detection, mirroring pr_drift_recovery's placement, so a
+	// drift-recovered item that still somehow lacks a pr_number is caught in
+	// the same tick.
+	l.runStuckDetector("pr_pending_no_pr", &okNames, &panickedNames, func() {
+		l.reconcilePRPendingWithoutPRItems(ctx, er)
+	})
+
 	// Poll pr_pending items: auto-transition to done when the PR is merged,
 	// and (Story 2.1.1) flag/resolve pr_ready_unmerged.
 	l.runStuckDetector("pr_ready+merge_detection", &okNames, &panickedNames, func() {
@@ -2128,6 +2137,72 @@ func (l *BacklogLifecycleListener) reconcilePlanNotApprovedItems(ctx context.Con
 	// reason once the item leaves 'queued' (dequeued, manually reopened, etc.).
 }
 
+// reconcilePRPendingWithoutPRItems is the pr_pending_no_pr detector (BUG-040):
+// flags any item stuck in pr_pending status with no PR reference at all
+// (pr_number == 0). This shape is otherwise structurally invisible: every
+// downstream reconciler, including ReconcilePRPending itself, is gated by
+// FindPRPendingItems' PrNumberGT(0) filter, so an item that reaches pr_pending
+// with pr_number still 0 has nothing left in this codebase that will ever
+// touch it again. Two write-ordering bugs that produced exactly this shape —
+// pushAndCreatePR's best-effort field persist, and ReconcilePRPending's
+// closed-PR branch clearing fields before confirming a reopen succeeded —
+// were found and fixed alongside this detector; this function is the
+// structural backstop so any *future* mistake with the same shape is still
+// visible and retryable from /unfinished instead of a silent permanent
+// stall. Detection + notification only: there is no known-safe automated
+// remediation here (the item's PR history is gone), so unlike most other
+// reasons this one has no wired TriggerRemediationNow action — a human has
+// to decide whether to push a fresh PR or investigate further. Best-effort:
+// query/notify failures are logged, never returned.
+func (l *BacklogLifecycleListener) reconcilePRPendingWithoutPRItems(ctx context.Context, er *EntRepository) {
+	items, err := l.storage.ListBacklogItems(ctx, BacklogItemFilter{
+		Statuses: []string{string(BacklogStatusPRPending)},
+	})
+	if err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] reconcilePRPendingWithoutPRItems list error: %v", err)
+		return
+	}
+
+	for _, item := range items {
+		if item.PrNumber != 0 {
+			continue
+		}
+
+		applied, markErr := er.MarkStuck(ctx, item.ID, domain.StuckReasonPRPendingNoPR, BacklogStatusPRPending,
+			"item is pr_pending but has no PR reference (pr_number=0) — every downstream reconciler requires PrNumber, so this item is otherwise invisible and permanently stuck")
+		if markErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePRPendingWithoutPRItems MarkStuck item=%s: %v", item.ID, markErr)
+			continue
+		}
+		if !applied {
+			continue
+		}
+		rows, findErr := er.FindOpenStuckStates(ctx)
+		if findErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePRPendingWithoutPRItems FindOpenStuckStates item=%s: %v", item.ID, findErr)
+			continue
+		}
+		row, ok := findOpenStuckStateFor(rows, item.ID, domain.StuckReasonPRPendingNoPR)
+		if !ok || row.NotifiedAt != nil {
+			continue
+		}
+
+		log.WarningLog.Printf("[BacklogLifecycle] item %s is pr_pending with no PR reference", item.ID)
+		l.notify(item.ID,
+			"Backlog item stuck: pr_pending with no PR",
+			fmt.Sprintf("%s — this item is marked pr_pending but has no PR number or URL on record, so it cannot be polled or auto-recovered. Use /unfinished to retry it manually.", item.Title),
+			8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
+			3, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH
+		)
+		if _, notifyErr := er.MarkStuckNotified(ctx, item.ID, domain.StuckReasonPRPendingNoPR); notifyErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePRPendingWithoutPRItems MarkStuckNotified item=%s: %v", item.ID, notifyErr)
+		}
+	}
+	// No resolve pass needed here: selfHealStuck (status-anchored) clears this
+	// reason once the item leaves 'pr_pending' (successfully reopened for a
+	// fresh attempt, or manually recovered).
+}
+
 // resolveLatestWorkCommit returns the true current tip commit of the work
 // session identified by sessionUUID — never ItemSessionSummary.LastCommitSha,
 // which is only ever seeded once at session spawn with the pre-work base SHA
@@ -2453,6 +2528,8 @@ func (l *BacklogLifecycleListener) selfHealStuck(ctx context.Context, er *EntRep
 			resolve = row.ItemStatus != BacklogStatusIdea
 		case domain.StuckReasonPlanNotApproved:
 			resolve = row.ItemStatus != BacklogStatusQueued
+		case domain.StuckReasonPRPendingNoPR:
+			resolve = row.ItemStatus != BacklogStatusPRPending
 		default:
 			// autonomous_stuck, push_failed, rework_cap, and any future reason
 			// with no non-terminal anchor: stays open until the blanket
@@ -2710,14 +2787,27 @@ func (l *BacklogLifecycleListener) pushAndCreatePR(ctx context.Context, item *Ba
 			stayInReviewAndNotify("PR creation failed", prErr)
 			return
 		}
-		// Cache PR URL + number on the item so the reconciler and UI can use them.
+		// Cache PR URL + number on the item so the reconciler and UI can use
+		// them. This persist is load-bearing, not best-effort (BUG-040): every
+		// downstream reconciler (ReconcilePRPending's FindPRPendingItems query,
+		// EnablePRAutoMerge below) requires a real PrNumber/PrURL on the STORED
+		// item, not just the local prURL/prNumber variables here. Previously a
+		// failure here was only logged, and pushAndCreatePR proceeded
+		// unconditionally to resolveToPRPending below — landing the item in
+		// pr_pending with pr_number=0/pr_url="", permanently invisible to
+		// FindPRPendingItems' PrNumberGT(0) filter and everything downstream of
+		// it, with nothing left to retry. Treat a persist failure exactly like
+		// a push/PR-creation failure: stay in review so a human (or the next
+		// TriggerReReview) can retry, rather than silently entering that dead
+		// end.
 		prURLCopy := prURL
 		prNumCopy := prNumber
 		if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{
 			PrURL:    &prURLCopy,
 			PrNumber: &prNumCopy,
 		}, nil); updateErr != nil {
-			log.WarningLog.Printf("[BacklogLifecycle] pushAndCreatePR store PR fields item=%s: %v", item.ID, updateErr)
+			stayInReviewAndNotify(fmt.Sprintf("failed to persist new PR #%d fields", prNumber), updateErr)
+			return
 		}
 	}
 
@@ -3335,17 +3425,11 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 			}
 
 			closedPrURL, closedPrNum := item.PrURL, item.PrNumber
-			emptyURL, zeroNum := "", 0
-			if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
-				PrURL:    &emptyURL,
-				PrNumber: &zeroNum,
-			}, nil); updateErr != nil {
-				log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending clear closed PR fields item=%s: %v", item.ID, updateErr)
-			}
 			// A closed-without-merging PR can never be pr_ready_unmerged again
-			// under this pr_number; resolve immediately (self-heal would also
-			// catch this once/if the status moves off pr_pending, but that may
-			// not happen if no PRFixSpawner is configured below).
+			// under this pr_number; resolve immediately regardless of whether
+			// the reopen below succeeds (self-heal would also catch this
+			// once/if the status moves off pr_pending, but that may not
+			// happen if no PRFixSpawner is configured below).
 			l.resolveStuckLogged(ctx, er, item.ID.String(), domain.StuckReasonPRReadyUnmerged, "ReconcilePRPending/closed")
 			if fixSpawner == nil {
 				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s: PR #%d closed without merging but no PRFixSpawner configured", item.ID, closedPrNum)
@@ -3354,7 +3438,43 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 			fixCtx := fmt.Sprintf("PR #%d (%s) was closed without merging. Investigate why, address any concerns, and open a fresh PR.", closedPrNum, closedPrURL)
 			log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s → in_progress: PR #%d closed without merging", item.ID, closedPrNum)
 			if fixErr := fixSpawner.AutoReopenForPRFix(ctx, item.ID.String(), fixCtx); fixErr != nil {
+				// Do NOT clear the PR fields below — see BUG-040. A failed
+				// reopen leaves the item in pr_pending; keeping the closed
+				// PR's fields intact means the item is still visible/retryable
+				// (and, once the pr_pending_no_pr detector below lands, would
+				// have been caught even if this ordering fix regressed).
 				log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending AutoReopenForPRFix (closed) item=%s: %v", item.ID, fixErr)
+				continue
+			}
+
+			// BUG-040: only clear the stale PR reference once AutoReopenForPRFix
+			// is confirmed to have actually transitioned the item off
+			// pr_pending. AutoReopenForPRFix has legitimate no-op paths (an
+			// active work session already running, the rework cap) that return
+			// nil without transitioning anything — clearing unconditionally
+			// here (the pre-fix behavior) produced exactly this bug's dead end:
+			// pr_pending with no PR reference and nothing left to retry, since
+			// FindPRPendingItems' PrNumberGT(0) filter then excludes the item
+			// from every future tick of this very function.
+			refreshed, refreshErr := l.storage.GetBacklogItem(ctx, item.ID.String())
+			if refreshErr != nil {
+				log.WarningLog.Printf("[BacklogLifecycle] ReconcilePRPending re-fetch after AutoReopenForPRFix (closed) item=%s: %v", item.ID, refreshErr)
+				continue
+			}
+			if BacklogStatus(refreshed.Status) == BacklogStatusPRPending {
+				// A no-op guard fired inside AutoReopenForPRFix — leave the
+				// closed PR reference in place so this is retried on a later
+				// tick instead of being silently lost.
+				log.InfoLog.Printf("[BacklogLifecycle] ReconcilePRPending item=%s: AutoReopenForPRFix (closed) left item in pr_pending; not clearing PR fields", item.ID)
+				continue
+			}
+
+			emptyURL, zeroNum := "", 0
+			if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
+				PrURL:    &emptyURL,
+				PrNumber: &zeroNum,
+			}, nil); updateErr != nil {
+				log.ErrorLog.Printf("[BacklogLifecycle] ReconcilePRPending clear closed PR fields item=%s: %v", item.ID, updateErr)
 			}
 			continue
 		}
