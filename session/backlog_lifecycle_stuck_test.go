@@ -2565,3 +2565,133 @@ func TestArchiveStaleDoneItems_should_DisappearFromDefaultBacklogView_When_AutoA
 	assert.NotContains(t, afterIDs, staleDone.ID, "the auto-archived item must disappear from the default (archived-excluded) backlog view")
 	assert.Contains(t, afterIDs, recentDone.ID, "the still-recent done item must remain visible in the default view")
 }
+
+// newQueuedPlanNotApprovedTestItem creates a queued item blocked by
+// DequeueNextQueuedItems' planning gate (SkipPlanning=false, PlanApproved=
+// false), with QueuedAt backdated by queuedAgo.
+func newQueuedPlanNotApprovedTestItem(t *testing.T, storage *Storage, queuedAgo time.Duration) *BacklogItemData {
+	t.Helper()
+	ctx := context.Background()
+
+	queuedAt := time.Now().Add(-queuedAgo)
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Plan-not-approved test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusQueued),
+		QueuedAt:           &queuedAt,
+		SkipPlanning:       false,
+		PlanApproved:       false,
+	})
+	require.NoError(t, err)
+	return item
+}
+
+// TestReconcilePlanNotApprovedItems_should_writeDurableRowNotifyOnce_When_QueuedItemStale
+// is the BUG-038 regression test: a queued item blocked by the planning gate
+// must get a durable, human-visible stuck row instead of silently retrying
+// forever with only a per-tick WARNING log.
+func TestReconcilePlanNotApprovedItems_should_writeDurableRowNotifyOnce_When_QueuedItemStale(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item := newQueuedPlanNotApprovedTestItem(t, storage, 10*time.Minute) // beyond planApprovalStaleness (5m)
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcilePlanNotApprovedItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, item.ID, open[0].ItemID)
+	assert.Equal(t, domain.StuckReasonPlanNotApproved, open[0].Reason)
+	assert.Equal(t, []string{"Queued item blocked by unapproved plan"}, notifier.titles())
+
+	// Repeat tick must not re-notify (DB-backed notify-once dedup).
+	listener.reconcilePlanNotApprovedItems(ctx, er)
+	assert.Len(t, notifier.calls, 1)
+}
+
+// TestReconcilePlanNotApprovedItems_should_notFlag_When_QueuedRecently verifies
+// the staleness buffer: an item queued moments ago must not be flagged —
+// it's plausibly about to be approved/dequeued.
+func TestReconcilePlanNotApprovedItems_should_notFlag_When_QueuedRecently(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	newQueuedPlanNotApprovedTestItem(t, storage, 1*time.Minute) // within planApprovalStaleness (5m)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.reconcilePlanNotApprovedItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "a just-queued item must not be flagged yet")
+}
+
+// TestReconcilePlanNotApprovedItems_should_notFlag_When_SkipPlanningTrue verifies
+// the detector doesn't over-trigger for items that legitimately bypass planning.
+func TestReconcilePlanNotApprovedItems_should_notFlag_When_SkipPlanningTrue(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	queuedAt := time.Now().Add(-10 * time.Minute)
+	_, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Skip-planning queued test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusQueued),
+		QueuedAt:           &queuedAt,
+		SkipPlanning:       true,
+		PlanApproved:       false,
+	})
+	require.NoError(t, err)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.reconcilePlanNotApprovedItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "an item with skip_planning=true is never blocked by this gate and must not be flagged")
+}
+
+// TestSelfHealSweep_should_resolvePlanNotApprovedRow_When_ItemLeavesQueued verifies
+// the status-anchored self-heal sweep clears this reason once the item is no
+// longer queued (e.g. manually approved and dequeued to in_progress).
+func TestSelfHealSweep_should_resolvePlanNotApprovedRow_When_ItemLeavesQueued(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item := newQueuedPlanNotApprovedTestItem(t, storage, 10*time.Minute)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.reconcilePlanNotApprovedItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1, "row must be open before the item leaves queued")
+
+	approved := true
+	_, err = storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{PlanApproved: &approved}, nil)
+	require.NoError(t, err)
+	precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusQueued)}
+	_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, precondition, TriggeredBySystem)
+	require.NoError(t, err)
+
+	listener.selfHealStuck(ctx, er)
+
+	open, err = er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "leaving queued must resolve the plan_not_approved row via the status-anchored self-heal sweep")
+}

@@ -1357,6 +1357,14 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 		l.reconcileOrphanedTriageItems(ctx, er)
 	})
 
+	// Flag queued items DequeueNextQueuedItems' planning gate refuses to ever
+	// claim (plan not approved, skip_planning not set) — otherwise silent
+	// forever except for a per-tick WARNING log. See reconcilePlanNotApprovedItems'
+	// doc comment (BUG-038).
+	l.runStuckDetector("plan_not_approved", &okNames, &panickedNames, func() {
+		l.reconcilePlanNotApprovedItems(ctx, er)
+	})
+
 	// Self-heal sweep: resolve any open stuck row whose reason's expected
 	// status no longer matches the item's current status (Task 2.1.5d).
 	l.runStuckDetector("self_heal", &okNames, &panickedNames, func() {
@@ -2047,6 +2055,79 @@ func (l *BacklogLifecycleListener) reconcileOrphanedTriageItems(ctx context.Cont
 	// reason once the item leaves 'idea' — i.e. once triage is re-triggered and succeeds.
 }
 
+// planApprovalStaleness is how long a queued item may sit blocked by
+// DequeueNextQueuedItems' planning gate before this detector flags it — a
+// short buffer (not the multi-hour/day thresholds used elsewhere in this
+// file) since, unlike a running session, there is no legitimate "still
+// working" explanation for this condition: it is a pure configuration gap
+// that will never self-resolve without a human action.
+const planApprovalStaleness = 5 * time.Minute
+
+// reconcilePlanNotApprovedItems flags queued items DequeueNextQueuedItems'
+// planning gate (SkipPlanning=false, PlanApproved=false) has refused to claim
+// — by that function's own design, this happens silently forever: the gate
+// logs one WARNING per 60s tick and leaves the item queued, with no durable,
+// human-visible signal and (as of this detector's introduction) no "Approve
+// Plan" UI action reachable for items using the default pipeline. Confirmed
+// live 2026-07-22: three items (including the one this fix was written
+// against) sat queued for days this way, invisible on the kanban board
+// (BUG-037, fixed alongside this) and structurally un-unblockable by a user.
+// Detection + notification only, mirroring reconcileOrphanedTriageItems —
+// resolving *how* an item should get its plan approved (auto-approve for
+// items with prior completed work sessions? build the missing UI action? is
+// the gate even correct for the "default" pipeline mode?) is a product/
+// architecture question out of scope for this fix; see BUG-038.
+func (l *BacklogLifecycleListener) reconcilePlanNotApprovedItems(ctx context.Context, er *EntRepository) {
+	items, err := l.storage.ListBacklogItems(ctx, BacklogItemFilter{
+		Statuses: []string{string(BacklogStatusQueued)},
+	})
+	if err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] reconcilePlanNotApprovedItems list error: %v", err)
+		return
+	}
+
+	for _, item := range items {
+		if item.SkipPlanning || item.PlanApproved {
+			continue
+		}
+		if item.QueuedAt == nil || time.Since(*item.QueuedAt) <= planApprovalStaleness {
+			continue // still plausibly about to be approved/dequeued
+		}
+
+		applied, markErr := er.MarkStuck(ctx, item.ID, domain.StuckReasonPlanNotApproved, BacklogStatusQueued,
+			"queued item blocked by DequeueNextQueuedItems' planning gate (plan not approved, skip_planning not set)")
+		if markErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePlanNotApprovedItems MarkStuck item=%s: %v", item.ID, markErr)
+			continue
+		}
+		if !applied {
+			continue
+		}
+		rows, findErr := er.FindOpenStuckStates(ctx)
+		if findErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePlanNotApprovedItems FindOpenStuckStates item=%s: %v", item.ID, findErr)
+			continue
+		}
+		row, ok := findOpenStuckStateFor(rows, item.ID, domain.StuckReasonPlanNotApproved)
+		if !ok || row.NotifiedAt != nil {
+			continue
+		}
+
+		log.WarningLog.Printf("[BacklogLifecycle] item %s queued but blocked by unapproved plan", item.ID)
+		l.notify(item.ID,
+			"Queued item blocked by unapproved plan",
+			fmt.Sprintf("%s — this item cannot be dequeued until its plan is approved (or skip_planning is set). Approve the plan or update the item to unblock it.", item.Title),
+			8, // sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING
+			2, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
+		)
+		if _, notifyErr := er.MarkStuckNotified(ctx, item.ID, domain.StuckReasonPlanNotApproved); notifyErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcilePlanNotApprovedItems MarkStuckNotified item=%s: %v", item.ID, notifyErr)
+		}
+	}
+	// No resolve pass needed here: selfHealStuck (status-anchored) clears this
+	// reason once the item leaves 'queued' (dequeued, manually reopened, etc.).
+}
+
 // resolveLatestWorkCommit returns the true current tip commit of the work
 // session identified by sessionUUID — never ItemSessionSummary.LastCommitSha,
 // which is only ever seeded once at session spawn with the pre-work base SHA
@@ -2350,6 +2431,8 @@ func (l *BacklogLifecycleListener) selfHealStuck(ctx context.Context, er *EntRep
 			resolve = row.ItemStatus != BacklogStatusInProgress && row.ItemStatus != BacklogStatusReview
 		case domain.StuckReasonOrphanedTriage:
 			resolve = row.ItemStatus != BacklogStatusIdea
+		case domain.StuckReasonPlanNotApproved:
+			resolve = row.ItemStatus != BacklogStatusQueued
 		default:
 			// autonomous_stuck, push_failed, rework_cap, and any future reason
 			// with no non-terminal anchor: stays open until the blanket
