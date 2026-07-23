@@ -65,6 +65,23 @@ const (
 	// ephemeral notification (onAutonomousDriverComplete), invisible to the
 	// Unfinished tab's durable stuck-reason system.
 	StuckReasonAutonomousStuck StuckReason = "autonomous_stuck"
+	// StuckReasonSpawnFailed: AutoReopenAfterFailedReview transitioned an item
+	// to in_progress, then SpawnSessionFromItem failed AND the scoped rollback
+	// to "review" also failed (its precondition no longer matched — something
+	// else touched the item in the interim). Previously this left the item
+	// silently stranded at in_progress with no work session and no visible
+	// error (server/services/backlog_service_triage.go's rollback branch only
+	// logged it) — invisible to every other stuck detector, since none of them
+	// check "in_progress with zero live sessions and no error surfaced."
+	StuckReasonSpawnFailed StuckReason = "spawn_failed"
+	// StuckReasonPlanNotApproved: DequeueNextQueuedItems' planning gate
+	// (SkipPlanning=false, PlanApproved=false) refuses to claim a queued item
+	// indefinitely — by design (see that function's doc comment) — with only a
+	// per-tick WARNING log and no durable, human-visible signal. Confirmed live
+	// 2026-07-22: three items sat queued for days, silently re-blocked on every
+	// 60s tick, invisible on the kanban board (BUG-037) and with no "Approve
+	// Plan" action anywhere in the UI to unblock them.
+	StuckReasonPlanNotApproved StuckReason = "plan_not_approved"
 )
 
 // AllStuckReasons lists every valid StuckReason constant.
@@ -77,6 +94,8 @@ var AllStuckReasons = []StuckReason{
 	StuckReasonPushFailed,
 	StuckReasonOrphanedTriage,
 	StuckReasonAutonomousStuck,
+	StuckReasonSpawnFailed,
+	StuckReasonPlanNotApproved,
 }
 
 // IsValid reports whether r is a known stuck reason value.
@@ -84,7 +103,7 @@ func (r StuckReason) IsValid() bool {
 	switch r {
 	case StuckReasonPRReadyUnmerged, StuckReasonReworkCap, StuckReasonAbandonedReview,
 		StuckReasonStaleWork, StuckReasonBouncing, StuckReasonPushFailed, StuckReasonOrphanedTriage,
-		StuckReasonAutonomousStuck:
+		StuckReasonAutonomousStuck, StuckReasonSpawnFailed, StuckReasonPlanNotApproved:
 		return true
 	}
 	return false
