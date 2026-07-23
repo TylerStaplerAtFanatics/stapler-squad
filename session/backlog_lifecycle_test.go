@@ -486,6 +486,63 @@ func TestBacklogLifecycleListener_WireToInstance(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond, "EventStarted should trigger UpdateItemSessionStarted")
 }
 
+// TestBacklogLifecycleListener_WireToInstance_EventStopped_TransitionsToReview
+// is the BUG-027 regression test: a session torn down via an explicit operator
+// stop (Instance.Destroy(), as called by the stop_session MCP tool,
+// SessionService.DeleteSession, and BacklogService.SessionStopper) must drive
+// the same in_progress→review transition and ItemSession.EndedAt bookkeeping
+// as a natural process exit — not silently strand the backlog item.
+func TestBacklogLifecycleListener_WireToInstance_EventStopped_TransitionsToReview(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.SetEnabled(true)
+
+	inst := &Instance{UUID: uuid.New().String()}
+	listener.WireToInstance(inst)
+
+	itemData := BacklogItemData{
+		Title:              "EventStopped test item",
+		Description:        "Testing operator-stop reconciliation",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusInProgress),
+		SkipReviewGate:     false,
+	}
+	createdItem, err := storage.CreateBacklogItem(ctx, itemData)
+	require.NoError(t, err)
+
+	isData := ItemSessionData{
+		ItemID:      createdItem.ID,
+		SessionUUID: inst.UUID,
+		SessionRole: "work",
+	}
+	createdIS, err := storage.CreateItemSession(ctx, isData)
+	require.NoError(t, err)
+
+	// Simulate Destroy()'s deferred fire — an operator-initiated stop, not a
+	// natural exit — through the exact shim wired by WireToInstance.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		inst.fireLifecycleEvent(EventStopped, "operator-destroy")
+	}()
+	waitWithTimeout(t, done)
+
+	require.Eventually(t, func() bool {
+		fetchedItem, ferr := storage.GetBacklogItem(ctx, createdItem.ID)
+		return ferr == nil && fetchedItem.Status == string(BacklogStatusReview)
+	}, 2*time.Second, 20*time.Millisecond, "EventStopped should trigger the same in_progress->review transition as EventExited")
+
+	repo := storage.repo.(*EntRepository)
+	fetchedIS, err := repo.GetItemSession(ctx, createdIS.ID)
+	require.NoError(t, err)
+	require.NotNil(t, fetchedIS.EndedAt, "EventStopped should set ItemSession.EndedAt, same as a natural exit")
+}
+
 // TestBacklogLifecycleListener_NewBacklogLifecycleListener creates a listener
 // without a spawner and verifies it's initialized correctly.
 func TestBacklogLifecycleListener_NewBacklogLifecycleListener(t *testing.T) {
