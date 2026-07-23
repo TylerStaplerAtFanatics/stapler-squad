@@ -2820,3 +2820,96 @@ func TestSelfHealSweep_should_resolvePlanNotApprovedRow_When_ItemLeavesQueued(t 
 	require.NoError(t, err)
 	assert.Empty(t, open, "leaving queued must resolve the plan_not_approved row via the status-anchored self-heal sweep")
 }
+
+// TestReconcilePRPendingWithoutPRItems_should_writeDurableRowNotifyOnce_When_PrNumberZero
+// is the BUG-040 detection-backstop regression test: an item that reaches
+// pr_pending with pr_number=0/pr_url="" is otherwise structurally invisible —
+// FindPRPendingItems' PrNumberGT(0) filter excludes it from ReconcilePRPending
+// and everything downstream of it — so this detector must be the one thing
+// that still surfaces it as a durable, human-visible, notify-once stuck row.
+func TestReconcilePRPendingWithoutPRItems_should_writeDurableRowNotifyOnce_When_PrNumberZero(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "PR-pending-no-PR test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusPRPending),
+	})
+	require.NoError(t, err)
+
+	listener := NewBacklogLifecycleListener(storage)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	listener.reconcilePRPendingWithoutPRItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, item.ID, open[0].ItemID)
+	assert.Equal(t, domain.StuckReasonPRPendingNoPR, open[0].Reason)
+	assert.Equal(t, []string{"Backlog item stuck: pr_pending with no PR"}, notifier.titles())
+
+	// Repeat tick must not re-notify (DB-backed notify-once dedup).
+	listener.reconcilePRPendingWithoutPRItems(ctx, er)
+	assert.Len(t, notifier.calls, 1)
+}
+
+// TestReconcilePRPendingWithoutPRItems_should_notFlag_When_PrNumberSet verifies
+// the detector doesn't over-trigger for healthy pr_pending items that DO carry
+// a real PR reference.
+func TestReconcilePRPendingWithoutPRItems_should_notFlag_When_PrNumberSet(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item := newPRPendingTestItem(t, storage, 152)
+	_ = item
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.reconcilePRPendingWithoutPRItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "a pr_pending item with a real PR reference must not be flagged")
+}
+
+// TestSelfHealSweep_should_resolvePRPendingNoPRRow_When_ItemLeavesPRPending verifies
+// the status-anchored self-heal sweep clears this reason once the item is no
+// longer pr_pending (e.g. successfully reopened for a fresh attempt).
+func TestSelfHealSweep_should_resolvePRPendingNoPRRow_When_ItemLeavesPRPending(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "PR-pending-no-PR self-heal test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusPRPending),
+	})
+	require.NoError(t, err)
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.reconcilePRPendingWithoutPRItems(ctx, er)
+
+	open, err := er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1, "row must be open before the item leaves pr_pending")
+
+	precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusPRPending)}
+	_, err = storage.TransitionBacklogItemStatus(ctx, item.ID, BacklogStatusInProgress, precondition, TriggeredBySystem)
+	require.NoError(t, err)
+
+	listener.selfHealStuck(ctx, er)
+
+	open, err = er.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "leaving pr_pending must resolve the pr_pending_no_pr row via the status-anchored self-heal sweep")
+}
