@@ -646,7 +646,11 @@ func (il *instanceBacklogListener) OnLifecycleEvent(event LifecycleEvent, _ stri
 	switch event {
 	case EventStarted:
 		go il.parent.onSessionStarted(il.instanceUUID)
-	case EventExited:
+	case EventExited, EventStopped:
+		// A deliberate operator stop (stop_session, DeleteSession, backlog
+		// stale-work remediation) ends the session exactly as much as an
+		// unexpected exit does — the ItemSession bookkeeping and downstream
+		// reconciliation must not depend on which one happened. See BUG-027.
 		go il.parent.onSessionExited(il.instanceUUID)
 	}
 }
