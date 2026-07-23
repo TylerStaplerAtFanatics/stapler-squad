@@ -3215,6 +3215,22 @@ func (l *BacklogLifecycleListener) ReconcilePRPending(ctx context.Context, er *E
 		// loop below would poll it forever. Clear the cached PR fields so the next
 		// pushAndCreatePR call creates a fresh PR instead of reusing the closed one.
 		if prStatus.IsClosed {
+			// Before assuming a closed-without-merging PR means the item's own
+			// code needs fixing, check whether its work already landed on main
+			// through some other path — the same BUG-032 shape, recurring: a PR
+			// can be closed (by a human, or by an autonomous session itself,
+			// e.g. running `gh pr close` directly from the worktree, bypassing
+			// this reconciler entirely) specifically because it was already
+			// superseded, not because it's broken. Without this check here,
+			// AutoReopenForPRFix below would spawn a wasted rework cycle for
+			// work that's already shipped — exactly the waste BUG-032 fixed for
+			// the CI-failing/blocked/conflicting branch below, but missed for
+			// this sibling "closed" branch. See BUG-036.
+			supersededItemData := backlogItemToData(item)
+			if superseded := l.closeIfSupersededByMain(ctx, g, &supersededItemData); superseded {
+				continue
+			}
+
 			closedPrURL, closedPrNum := item.PrURL, item.PrNumber
 			emptyURL, zeroNum := "", 0
 			if _, updateErr := l.storage.UpdateBacklogItem(ctx, item.ID.String(), BacklogItemUpdate{
