@@ -711,6 +711,27 @@ func (s *BacklogService) spawnSessionAfterGates(
 	}
 	inst.SetCategory(session.CategoryBacklog)
 
+	// Steering hook: git-drift-check fires the same branch-drift detection BUG-044's
+	// review-gate precondition uses, but after every git commit/push instead of only
+	// at review time — so an autonomous session notices and can self-correct while
+	// still working. Scoped STRICTLY to autonomous=true (AutonomousDriver-run, no
+	// human attached) — never injected for a manual spawn, the generic create_session
+	// MCP tool, or a human-initiated "Reopen for Revision" (which does not pass
+	// autonomous=true; see BacklogItemDetail.tsx's handleGateReopen). The worktree
+	// path (and its "backlog/<item>" branch) is reused across reopen cycles, so on
+	// every spawn we reconcile in BOTH directions — inject when autonomous, actively
+	// remove when not — rather than only ever adding: without the removal side, a
+	// worktree that was ever spawned autonomously once would keep this hook wired
+	// into a later manual session on the same worktree forever.
+	driftHook := []HookName{HookGitDriftCheck}
+	if autonomous {
+		if hookErr := InjectHooksConfig(inst.GetEffectiveRootDir(), inst.Title, driftHook); hookErr != nil {
+			log.WarningLog.Printf("[SpawnSessionFromItem] git-drift-check hook injection failed item=%s session=%s: %v", item.ID, inst.UUID, hookErr)
+		}
+	} else if hookErr := RemoveHooksConfig(inst.GetEffectiveRootDir(), driftHook); hookErr != nil {
+		log.WarningLog.Printf("[SpawnSessionFromItem] git-drift-check hook removal failed item=%s session=%s: %v", item.ID, inst.UUID, hookErr)
+	}
+
 	// Persist the instance (and its Worktree row, with BaseCommitSha) synchronously now
 	// rather than waiting for the next periodic SaveInstances sweep. The review gate looks
 	// up worktree data by session UUID as soon as request_review fires from inside the
