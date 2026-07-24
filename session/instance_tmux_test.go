@@ -9,6 +9,48 @@ import (
 	"time"
 )
 
+// TestBuildSubmittableInput_UsesCarriageReturnNotNewline is a regression test
+// for BUG-047: WriteToSession (the ConnectRPC handler backing the web UI's
+// session chat box) and the write_to_session/run_command MCP tools appended
+// a bare '\n' after input intended to submit, instead of the '\r' that
+// Claude Code's raw-mode TUI actually recognizes as Enter (matching TapEnter
+// and the already-working nudge/initial-prompt/autonomous-driver call
+// sites). A message sent with only a trailing '\n' is written into the pane
+// but never submitted — it sits in the input buffer indefinitely, silently,
+// with no error surfaced to the caller. This test fails against the
+// pre-fix behavior (which appended "\n") and passes against
+// BuildSubmittableInput's use of EnterKeySequence ("\r").
+func TestBuildSubmittableInput_UsesCarriageReturnNotNewline(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		pressEnter bool
+		want       string
+	}{
+		{"press enter appends carriage return", "merge it", true, "merge it\r"},
+		{"no press enter leaves input untouched", "merge it", false, "merge it"},
+		{"empty input with press enter is just the terminator", "", true, "\r"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BuildSubmittableInput(tc.input, tc.pressEnter)
+			if got != tc.want {
+				t.Errorf("BuildSubmittableInput(%q, %v) = %q, want %q", tc.input, tc.pressEnter, got, tc.want)
+			}
+			if tc.pressEnter && strings.HasSuffix(got, "\n") && !strings.HasSuffix(got, "\r") {
+				t.Errorf("BuildSubmittableInput(%q, true) = %q ends in bare \\n, not \\r — Claude Code's "+
+					"raw-mode TUI will not treat this as a submitted line (BUG-047)", tc.input, got)
+			}
+		})
+	}
+
+	if EnterKeySequence != "\r" {
+		t.Errorf("EnterKeySequence = %q, want \"\\r\" (0x0D) — matching TapEnter's raw byte write and the "+
+			"terminal convention every working SendKeys-with-enter call site in this package already relies on",
+			EnterKeySequence)
+	}
+}
+
 func TestIsClaude(t *testing.T) {
 	cases := []struct {
 		program string

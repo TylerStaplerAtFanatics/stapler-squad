@@ -283,10 +283,10 @@ func (th *terminalHandlers) writeToSession(ctx context.Context, req mcpgo.CallTo
 		return errResult_, nil
 	}
 
-	text := input
-	if pressEnter {
-		text += "\n"
-	}
+	// BUG-047: must use session.EnterKeySequence ('\r'), not a bare '\n' —
+	// the Claude Code CLI's raw-mode TUI only recognizes '\r' as submit, so a
+	// trailing '\n' leaves the text sitting unsubmitted in the input buffer.
+	text := session.BuildSubmittableInput(input, pressEnter)
 
 	// Wrap SendKeys in a goroutine with a 5-second timeout to prevent PTY write deadlock.
 	// Use the request context so caller cancellation propagates; add a hard 5s cap.
@@ -542,9 +542,12 @@ func (th *terminalHandlers) runCommand(ctx context.Context, req mcpgo.CallToolRe
 		return errResult_, nil
 	}
 
-	// Send the command.
+	// Send the command. BUG-047: must use session.EnterKeySequence ('\r'),
+	// not a bare '\n' — a raw-mode TUI target (e.g. the Claude Code CLI
+	// itself) only recognizes '\r' as submit, so a trailing '\n' leaves the
+	// command sitting unsubmitted in the input buffer.
 	sendErrCh := make(chan error, 1)
-	go func() { sendErrCh <- inst.SendKeys(command + "\n") }()
+	go func() { sendErrCh <- inst.SendKeys(session.BuildSubmittableInput(command, true)) }()
 
 	sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer sendCancel()

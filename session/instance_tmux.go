@@ -581,6 +581,33 @@ func (i *Instance) RefreshTmuxClient() error {
 	return i.pm().RefreshClient()
 }
 
+// EnterKeySequence is the byte sequence that submits a line of input to an
+// interactive terminal session, matching what a real terminal sends for a
+// physical Enter keypress in raw/cbreak mode (TapEnter, elsewhere in this
+// package, writes the same 0x0D byte directly to the PTY). Raw-mode TUIs —
+// including the Claude Code CLI's Ink-based interface running inside these
+// tmux panes — read '\r' as submit; a bare '\n' is not recognized as Enter,
+// so text sent with only a trailing '\n' is written into the pane but never
+// actually submitted and sits unactioned in the input buffer indefinitely
+// (BUG-047). Every call site that appends an "Enter" to text sent via
+// SendKeys must use this constant (via BuildSubmittableInput, where
+// applicable) rather than hand-rolling its own terminator.
+const EnterKeySequence = "\r"
+
+// BuildSubmittableInput appends EnterKeySequence to input when pressEnter is
+// true, producing the exact string that must be handed to SendKeys for the
+// receiving program to treat it as a submitted line rather than unsubmitted
+// text sitting in the input buffer. Centralizing this (rather than each
+// caller appending its own terminator) is what BUG-047 was missing: three of
+// six SendKeys-with-enter call sites had independently picked '\n' instead of
+// '\r'.
+func BuildSubmittableInput(input string, pressEnter bool) string {
+	if pressEnter {
+		return input + EnterKeySequence
+	}
+	return input
+}
+
 // SendKeys sends keys to the tmux session.
 func (i *Instance) SendKeys(keys string) error {
 	if !i.started.Load() || i.Status == Paused {
