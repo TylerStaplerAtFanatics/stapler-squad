@@ -628,3 +628,127 @@ func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_KeepsAutonomo
 	require.Len(t, open, 1, "the MarkStuck row written moments earlier in the same call must survive — the item is still stuck")
 	assert.Equal(t, domain.StuckReasonAutonomousStuck, open[0].Reason)
 }
+
+// TestAutonomousOrchestrationService_OnAutonomousDriverComplete_ReviewStuck_ResolvesRow_When_ItemAlreadyMovedOn
+// is BUG-048's regression test for the "bouncing already handled it" half of the
+// fix: if the item's status has already moved off "review" by the time a
+// review-role driver's stuck (outcome.Done=false) exit is processed — e.g.
+// session/backlog_lifecycle.go's bouncing gate already reopened it via a
+// different, earlier review-session-exit event — the autonomous_stuck row this
+// exit's own MarkStuck call just (re)opened must be resolved immediately
+// instead of being left open and drifting arbitrarily overdue forever.
+func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_ReviewStuck_ResolvesRow_When_ItemAlreadyMovedOn(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+	eventBus := events.NewEventBus(4)
+	svc := NewSessionService(storage, eventBus)
+
+	const title = "review-stuck-already-moved-on-test"
+	inst := &session.Instance{
+		Title:          title,
+		UUID:           title + "-uuid",
+		Path:           "/tmp/test",
+		Status:         session.Paused,
+		Program:        "claude",
+		AutonomousMode: true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	require.NoError(t, storage.AddInstance(inst))
+	svc.autonomousSvc.SetInstanceFinder(func(_ string) *session.Instance { return inst })
+
+	// Item has already been reopened to in_progress by the time this stuck
+	// review exit is processed (simulates bouncing's autoReopenWithBackoffGate
+	// having already acted via a different, earlier session exit).
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Review stuck, item already moved on",
+		Status: string(session.BacklogStatusInProgress),
+	})
+	require.NoError(t, err)
+
+	is, err := storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: inst.UUID,
+		SessionRole: session.SessionRoleReview,
+	})
+	require.NoError(t, err)
+
+	outcome := session.AutonomousDriverOutcome{Done: false, Reason: "no DONE signal", Turns: 20, Stuck: true}
+	svc.autonomousSvc.onAutonomousDriverComplete(title, outcome)
+
+	open, err := storage.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, open, "autonomous_stuck must be resolved immediately once the item's status shows the underlying condition was already handled elsewhere")
+
+	// The ItemSession row is untouched by this branch — only the resolve path runs.
+	refreshed, err := storage.GetItemSessionBySessionUUID(ctx, inst.UUID)
+	require.NoError(t, err)
+	assert.Equal(t, is.ID, refreshed.ID)
+}
+
+// TestAutonomousOrchestrationService_OnAutonomousDriverComplete_ReviewStuck_EndsSession_NoCompetingRespawn
+// is BUG-048's regression test for the "still genuinely stuck" half of the fix:
+// when a review-role autonomous driver exits stuck (outcome.Done=false) and the
+// item is still in "review", onAutonomousDriverComplete must NOT spawn a
+// competing review session (that responsibility belongs solely to
+// session/backlog_lifecycle.go's abandoned_review detector) — it must instead
+// end the ItemSession row so the item becomes visible to that existing
+// machinery on the next reconcile tick. Asserts the row's EndedAt is now
+// non-nil and that the still-open autonomous_stuck row is left as an honest
+// signal rather than resolved.
+func TestAutonomousOrchestrationService_OnAutonomousDriverComplete_ReviewStuck_EndsSession_NoCompetingRespawn(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+	eventBus := events.NewEventBus(4)
+	svc := NewSessionService(storage, eventBus)
+
+	const title = "review-stuck-still-stuck-test"
+	inst := &session.Instance{
+		Title:          title,
+		UUID:           title + "-uuid",
+		Path:           "/tmp/test",
+		Status:         session.Paused,
+		Program:        "claude",
+		AutonomousMode: true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	require.NoError(t, storage.AddInstance(inst))
+	svc.autonomousSvc.SetInstanceFinder(func(_ string) *session.Instance { return inst })
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Review stuck, still stuck test item",
+		Status: string(session.BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	is, err := storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: inst.UUID,
+		SessionRole: session.SessionRoleReview,
+	})
+	require.NoError(t, err)
+	require.Nil(t, is.EndedAt, "precondition: the review ItemSession is still active (autonomous driver never ended it)")
+
+	outcome := session.AutonomousDriverOutcome{Done: false, Reason: "no DONE signal", Turns: 20, Stuck: true}
+	svc.autonomousSvc.onAutonomousDriverComplete(title, outcome)
+
+	// The autonomous_stuck row must survive — the item is genuinely still stuck.
+	open, err := storage.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	require.Len(t, open, 1, "autonomous_stuck must stay open — the item is still genuinely stuck in review")
+	assert.Equal(t, domain.StuckReasonAutonomousStuck, open[0].Reason)
+
+	// The review ItemSession must now be ended so the abandoned_review detector's
+	// FindStuckReviewItems query (which excludes any EndedAt-nil review/work
+	// session) can see this item on the next tick, instead of the item being
+	// permanently invisible to every existing reconciler.
+	refreshed, err := storage.GetItemSessionBySessionUUID(ctx, inst.UUID)
+	require.NoError(t, err)
+	require.NotNil(t, refreshed.EndedAt, "the review ItemSession must be marked ended so the item becomes visible to the existing abandoned_review/bouncing machinery")
+
+	// No new review (or any) session was spawned as a competing responder.
+	sessions, err := storage.ListItemSessions(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Len(t, sessions, 1, "onAutonomousDriverComplete must not spawn a competing review session — that is abandoned_review's job")
+}
