@@ -140,6 +140,7 @@ func ParseAllWorktrees(output string) []WorktreeInfo {
 // scanTask is an item to process in the worker pool.
 type scanTask struct {
 	repoPath string
+	force    bool
 }
 
 // Scanner is the central coordinator for the unfinished-work background scan.
@@ -150,6 +151,12 @@ type Scanner struct {
 	repoSet      sync.Map // map[string]bool (tracked repo paths, from any source)
 	cacheStore   sync.Map // map[string]*worktreeCache (key = worktreePath)
 	breakerStore sync.Map // map[string]*circuitBreaker (key = repoPath)
+
+	// inFlight tracks repos currently queued or being scanned (key = repoPath)
+	// so a burst of triggers (fsnotify + manual Refresh + periodic tick landing
+	// close together) coalesces into one scan per repo instead of queuing a
+	// redundant concurrent scanRepo call for each trigger.
+	inFlight sync.Map // map[string]struct{}
 
 	eventBus   *pkgevents.EventBus
 	stateStore *StateStore
@@ -296,9 +303,9 @@ func (s *Scanner) coordinator(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			s.enqueueAll()
+			s.enqueueAll(false)
 		case <-s.triggerCh:
-			s.enqueueAll()
+			s.enqueueAll(true)
 		}
 	}
 }
@@ -395,17 +402,24 @@ func (s *Scanner) fsnotifyLoop(ctx context.Context) {
 	}
 }
 
-// enqueueAll sends all known repos to the scan queue.
-func (s *Scanner) enqueueAll() {
+// enqueueAll sends all known repos to the scan queue. force=true bypasses the
+// per-worktree TTL cache — used for a user-initiated scan (button click or RPC
+// call), where "nothing changed in the last 30s" is not a reason to no-op a
+// request the user just explicitly made.
+func (s *Scanner) enqueueAll(force bool) {
 	s.repoSet.Range(func(key, _ any) bool {
 		repoPath, _ := key.(string)
-		s.EnqueueRepo(repoPath)
+		s.enqueueRepo(repoPath, force)
 		return true
 	})
 }
 
 // EnqueueRepo queues a repo for scanning if it's not cached recently.
 func (s *Scanner) EnqueueRepo(repoPath string) {
+	s.enqueueRepo(repoPath, false)
+}
+
+func (s *Scanner) enqueueRepo(repoPath string, force bool) {
 	// Check circuit breaker first.
 	if !s.shouldScan(repoPath) {
 		return
@@ -444,13 +458,21 @@ func (s *Scanner) EnqueueRepo(repoPath string) {
 		}
 		return true
 	})
-	if recent {
+	if recent && !force {
+		return
+	}
+
+	// Coalesce: if this repo is already queued or being scanned, don't stack
+	// another task behind it — the in-flight scan will already pick up
+	// current state by the time it runs.
+	if _, alreadyQueued := s.inFlight.LoadOrStore(repoPath, struct{}{}); alreadyQueued {
 		return
 	}
 
 	select {
-	case s.scanQueue <- scanTask{repoPath: repoPath}:
+	case s.scanQueue <- scanTask{repoPath: repoPath, force: force}:
 	default:
+		s.inFlight.Delete(repoPath)
 		log.Warn("scan queue full, dropping repo", "repo", repoPath)
 	}
 }
@@ -465,14 +487,15 @@ func (s *Scanner) worker(ctx context.Context) {
 			if !ok {
 				return
 			}
-			results := s.scanRepo(task.repoPath)
+			results := s.scanRepo(task.repoPath, task.force)
 			s.publishResults(results)
+			s.inFlight.Delete(task.repoPath)
 		}
 	}
 }
 
 // scanRepo enumerates all worktrees in the given repo root and scans each one.
-func (s *Scanner) scanRepo(repoPath string) []ScanResult {
+func (s *Scanner) scanRepo(repoPath string, force bool) []ScanResult {
 	worktrees, err := s.reader.ListWorktrees(repoPath)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -498,7 +521,7 @@ func (s *Scanner) scanRepo(repoPath string) []ScanResult {
 		if wt.Branch == "" {
 			continue
 		}
-		result := s.scanWorktree(wt, defaultBranch, repoPath)
+		result := s.scanWorktree(wt, defaultBranch, repoPath, force)
 		if result.Status == ScanResultStatusOK && !result.IsUnfinished() {
 			// Worktree went clean (e.g. the only uncommitted file was deleted) —
 			// remove any stale entry left in resultStore. Mirrors the CleanWorktree
@@ -516,7 +539,7 @@ func (s *Scanner) scanRepo(repoPath string) []ScanResult {
 }
 
 // scanWorktree produces a ScanResult for a single git worktree.
-func (s *Scanner) scanWorktree(wt WorktreeInfo, defaultBranch, repoPath string) ScanResult {
+func (s *Scanner) scanWorktree(wt WorktreeInfo, defaultBranch, repoPath string, force bool) ScanResult {
 	result := ScanResult{
 		RepoPath:      repoPath,
 		Branch:        wt.Branch,
@@ -542,10 +565,14 @@ func (s *Scanner) scanWorktree(wt WorktreeInfo, defaultBranch, repoPath string) 
 		result.LastModified = fi.ModTime()
 	}
 
-	// Check cache.
+	// Check cache — skipped when force is set, so a user-initiated scan (Refresh
+	// button, ScanUnfinishedWork RPC) always re-reads live git state instead of
+	// returning up-to-30s-stale data.
 	cache := s.getOrCreateCache(wt.Path)
-	if cached, ok := cache.Get(); ok {
-		return cached
+	if !force {
+		if cached, ok := cache.Get(); ok {
+			return cached
+		}
 	}
 
 	uncommitted, err := s.reader.HasUncommitted(wt.Path)
