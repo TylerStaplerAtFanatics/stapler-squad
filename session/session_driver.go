@@ -324,7 +324,7 @@ func runSessionDriverWithPrompt(inst *Instance, allowedPath string, initialPromp
 				// that the keystrokes were actually received (read-back confirmation).
 				contentBefore, _ := inst.Preview()
 
-				if err := inst.SendKeys(initialPrompt + "\r"); err != nil {
+				if err := inst.SendKeys(initialPrompt + EnterKeySequence); err != nil {
 					log.Warn("SessionDriver: failed to send initial prompt",
 						"session", inst.Title,
 						"claudeAtPrompt", claudeAtPrompt,
@@ -486,7 +486,7 @@ func attemptBacklogNudge(inst *Instance, idle time.Duration) time.Time {
 	nudge := "You appear to have paused. Run `/backlog/status` to see remaining " +
 		"acceptance criteria. Mark each complete criterion with `/backlog/done-N`, " +
 		"then submit with `/backlog/review` once all are done."
-	if sendErr := inst.SendKeys(nudge + "\r"); sendErr != nil {
+	if sendErr := inst.SendKeys(nudge + EnterKeySequence); sendErr != nil {
 		log.Warn("SessionDriver: failed to send backlog nudge, will not retry — falling through to inactivity timeout",
 			"session", inst.Title, "err", sendErr)
 	} else {

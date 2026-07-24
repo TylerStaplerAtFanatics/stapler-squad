@@ -251,7 +251,7 @@ func (d *AutonomousDriver) run(ctx context.Context) {
 			break
 		}
 		waitForPaneSettle(ctx, d.inst)
-		if sendErr := d.inst.SendKeys("\r"); sendErr != nil {
+		if sendErr := d.inst.SendKeys(EnterKeySequence); sendErr != nil {
 			log.Warn("AutonomousDriver: submit keystroke failed", "session", sessionName, "turn", turnCount+1, "err", sendErr)
 			break
 		}
