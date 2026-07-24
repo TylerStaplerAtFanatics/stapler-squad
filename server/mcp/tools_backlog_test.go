@@ -724,6 +724,285 @@ func TestSubmitTriageResult_NoNotificationWhenEventBusNil(t *testing.T) {
 	})
 }
 
+// --- report_pr_created ---
+
+// setupReportPRCreatedFixture creates a review-status item with a linked
+// work session, returning the item and the session UUID. verifyResult/
+// verifyErr control the injected verifyPRMatchesBranch stub's return value.
+func setupReportPRCreatedFixture(t *testing.T, storage *session.Storage, itemStatus session.BacklogStatus) (*session.BacklogItemData, string) {
+	t.Helper()
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Ship it",
+		Status: string(itemStatus),
+	})
+	require.NoError(t, err)
+
+	sessionUUID := uuid.New().String()
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: sessionUUID,
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	return item, sessionUUID
+}
+
+// TestReportPRCreated_should_TransitionToPRPending_When_ValidPR verifies the
+// happy path: a work session reports a PR that verifies against GitHub, and
+// the item transitions review -> pr_pending with pr_url/pr_number persisted.
+func TestReportPRCreated_should_TransitionToPRPending_When_ValidPR(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+	item, sessionUUID := setupReportPRCreatedFixture(t, storage, session.BacklogStatusReview)
+
+	handler := &backlogHandlers{
+		storage:               storage,
+		resolveSessionBranch:  func(context.Context, string) (string, error) { return "backlog/ship-it", nil },
+		verifyPRMatchesBranch: func(context.Context, string, string, int, string) (bool, error) { return true, nil },
+	}
+	ctxWithUUID := WithSessionUUID(context.Background(), sessionUUID)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id":   item.ID,
+		"pr_url":    "https://github.com/tstapler/stapler-squad/pull/42",
+		"pr_number": float64(42),
+		"summary":   "Implemented the feature and shipped it via /backlog:ship.",
+	})
+
+	result, err := handler.reportPRCreated(ctxWithUUID, req)
+	require.NoError(t, err)
+	require.Len(t, result.Content, 1)
+	tc, ok := result.Content[0].(mcpgo.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "pr_pending")
+
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusPRPending), fetched.Status)
+	assert.Equal(t, 42, fetched.PrNumber)
+	assert.Equal(t, "https://github.com/tstapler/stapler-squad/pull/42", fetched.PrURL)
+}
+
+// TestReportPRCreated_should_ReturnError_When_PersistFails mirrors BUG-040's
+// own TestPushAndCreatePR_PRFieldsPersistFails_StaysInReview_AndNotifies test
+// shape: force the underlying storage write to fail (by closing the real
+// on-disk SQLite connection right before the call, the same technique
+// BUG-040's regression test uses), and assert the tool call itself surfaces
+// an error rather than silently reporting success.
+func TestReportPRCreated_should_ReturnError_When_PersistFails(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "backlog-persist-fail-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, fmt.Sprintf("test-%d.db", time.Now().UnixNano()))
+	repo, err := session.NewEntRepository(session.WithDatabasePath(dbPath))
+	require.NoError(t, err)
+	storage, err := session.NewStorageWithRepository(repo)
+	require.NoError(t, err)
+
+	item, sessionUUID := setupReportPRCreatedFixture(t, storage, session.BacklogStatusReview)
+
+	// Close the DB connection now that fixture setup succeeded — every
+	// subsequent storage call inside reportPRCreated (including the primary
+	// PR-field/transition write) will fail.
+	require.NoError(t, repo.Close())
+
+	handler := &backlogHandlers{
+		storage:               storage,
+		resolveSessionBranch:  func(context.Context, string) (string, error) { return "backlog/ship-it", nil },
+		verifyPRMatchesBranch: func(context.Context, string, string, int, string) (bool, error) { return true, nil },
+	}
+	ctxWithUUID := WithSessionUUID(context.Background(), sessionUUID)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id":   item.ID,
+		"pr_url":    "https://github.com/tstapler/stapler-squad/pull/42",
+		"pr_number": float64(42),
+		"summary":   "Implemented the feature.",
+	})
+
+	result, err := handler.reportPRCreated(ctxWithUUID, req)
+	require.NoError(t, err)
+
+	m := parseResult(t, result)
+	require.False(t, m["success"].(bool), "report_pr_created must not silently succeed when the storage write fails")
+}
+
+// TestReportPRCreated_should_NoOp_When_AlreadyPRPendingSamePR verifies the
+// idempotency contract: calling report_pr_created again for a PR already
+// recorded on a pr_pending item is a no-op success, not an error.
+func TestReportPRCreated_should_NoOp_When_AlreadyPRPendingSamePR(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Already shipped",
+		Status: string(session.BacklogStatusPRPending),
+	})
+	require.NoError(t, err)
+	prURL := "https://github.com/tstapler/stapler-squad/pull/42"
+	prNum := 42
+	_, err = storage.UpdateBacklogItem(ctx, item.ID, session.BacklogItemUpdate{PrURL: &prURL, PrNumber: &prNum}, nil)
+	require.NoError(t, err)
+
+	sessionUUID := uuid.New().String()
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: sessionUUID,
+		SessionRole: session.SessionRoleWork,
+	})
+	require.NoError(t, err)
+
+	verifyCalled := false
+	handler := &backlogHandlers{
+		storage:              storage,
+		resolveSessionBranch: func(context.Context, string) (string, error) { return "backlog/ship-it", nil },
+		verifyPRMatchesBranch: func(context.Context, string, string, int, string) (bool, error) {
+			verifyCalled = true
+			return true, nil
+		},
+	}
+	ctxWithUUID := WithSessionUUID(ctx, sessionUUID)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id":   item.ID,
+		"pr_url":    prURL,
+		"pr_number": float64(prNum),
+		"summary":   "Implemented the feature.",
+	})
+
+	result, err := handler.reportPRCreated(ctxWithUUID, req)
+	require.NoError(t, err)
+	require.Len(t, result.Content, 1)
+	tc, ok := result.Content[0].(mcpgo.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "already recorded")
+	assert.False(t, verifyCalled, "idempotent no-op must short-circuit before any GitHub verification call")
+}
+
+// TestReportPRCreated_should_RejectCall_When_CallerRoleNotWork verifies the
+// role guard: a review-role session may not call report_pr_created.
+func TestReportPRCreated_should_RejectCall_When_CallerRoleNotWork(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Review-role caller",
+		Status: string(session.BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	sessionUUID := uuid.New().String()
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: sessionUUID,
+		SessionRole: session.SessionRoleReview,
+	})
+	require.NoError(t, err)
+
+	handler := &backlogHandlers{storage: storage}
+	ctxWithUUID := WithSessionUUID(ctx, sessionUUID)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id":   item.ID,
+		"pr_url":    "https://github.com/tstapler/stapler-squad/pull/42",
+		"pr_number": float64(42),
+		"summary":   "Implemented the feature.",
+	})
+
+	result, err := handler.reportPRCreated(ctxWithUUID, req)
+	require.NoError(t, err)
+
+	m := parseResult(t, result)
+	require.False(t, m["success"].(bool))
+	errObj, ok := m["error"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, ErrPermissionDenied, errObj["code"].(string))
+}
+
+// TestReportPRCreated_should_RejectCall_When_BranchMismatch is the
+// GitHub-verification regression test: a self-reported PR whose head branch
+// (per GitHub) does not match this session's own branch must be rejected,
+// not persisted.
+func TestReportPRCreated_should_RejectCall_When_BranchMismatch(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+	item, sessionUUID := setupReportPRCreatedFixture(t, storage, session.BacklogStatusReview)
+
+	handler := &backlogHandlers{
+		storage:              storage,
+		resolveSessionBranch: func(context.Context, string) (string, error) { return "backlog/ship-it", nil },
+		verifyPRMatchesBranch: func(_ context.Context, _, _ string, _ int, expectedBranch string) (bool, error) {
+			assert.Equal(t, "backlog/ship-it", expectedBranch)
+			return false, nil // definitive mismatch — a real PR exists, but for a different branch/number
+		},
+	}
+	ctxWithUUID := WithSessionUUID(context.Background(), sessionUUID)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id":   item.ID,
+		"pr_url":    "https://github.com/tstapler/stapler-squad/pull/999",
+		"pr_number": float64(999),
+		"summary":   "Implemented the feature.",
+	})
+
+	result, err := handler.reportPRCreated(ctxWithUUID, req)
+	require.NoError(t, err)
+
+	m := parseResult(t, result)
+	require.False(t, m["success"].(bool))
+	errObj, ok := m["error"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, ErrInvalidArgument, errObj["code"].(string))
+
+	// Item must remain untouched — the mismatch must not be persisted.
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusReview), fetched.Status)
+	assert.Equal(t, 0, fetched.PrNumber)
+}
+
+// TestReportPRCreated_should_ReturnRetryableError_When_GitHubLookupTransientlyFails
+// verifies that a transient GitHub lookup failure (rate limit, network) is
+// surfaced as a retryable INTERNAL_ERROR, distinct from a definitive
+// mismatch (INVALID_ARGUMENT) — the agent should retry, not correct itself.
+func TestReportPRCreated_should_ReturnRetryableError_When_GitHubLookupTransientlyFails(t *testing.T) {
+	storage := newTestBacklogStorage(t)
+	item, sessionUUID := setupReportPRCreatedFixture(t, storage, session.BacklogStatusReview)
+
+	handler := &backlogHandlers{
+		storage:              storage,
+		resolveSessionBranch: func(context.Context, string) (string, error) { return "backlog/ship-it", nil },
+		verifyPRMatchesBranch: func(context.Context, string, string, int, string) (bool, error) {
+			return false, fmt.Errorf("GitHub API: rate limited (403)")
+		},
+	}
+	ctxWithUUID := WithSessionUUID(context.Background(), sessionUUID)
+
+	req := makeToolReq(map[string]interface{}{
+		"item_id":   item.ID,
+		"pr_url":    "https://github.com/tstapler/stapler-squad/pull/42",
+		"pr_number": float64(42),
+		"summary":   "Implemented the feature.",
+	})
+
+	result, err := handler.reportPRCreated(ctxWithUUID, req)
+	require.NoError(t, err)
+
+	m := parseResult(t, result)
+	require.False(t, m["success"].(bool))
+	errObj, ok := m["error"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, ErrInternalError, errObj["code"].(string), "a transient lookup failure must be retryable (INTERNAL_ERROR), not a definitive mismatch (INVALID_ARGUMENT)")
+
+	// Item must remain untouched.
+	fetched, err := storage.GetBacklogItem(context.Background(), item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(session.BacklogStatusReview), fetched.Status)
+	assert.Equal(t, 0, fetched.PrNumber)
+}
+
 // TestRegisterBacklogTools_RequestReview_DescribesAlreadyImplementedCitationRequirement
 // verifies that the request_review tool description (and its verification_notes
 // field description) instruct the agent to cite an exact file path and

@@ -660,3 +660,78 @@ func TestDiffStatsDataRoundTrip(t *testing.T) {
 	// Content should NOT be preserved (this is the desired behavior)
 	assert.Empty(t, loaded.Content, "content should be empty after round trip")
 }
+
+// TestSetBacklogItemPRAndTransition_should_TransitionAndPersistPR_When_ItemInReview
+// verifies the happy path of the shared primary-write path used by both
+// report_pr_created (Epic 3.1) and the reconciliation backstop (Epic 3.2).
+func TestSetBacklogItemPRAndTransition_should_TransitionAndPersistPR_When_ItemInReview(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:  "Ship it",
+		Status: string(BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	err = storage.SetBacklogItemPRAndTransition(ctx, item.ID, "https://github.com/tstapler/stapler-squad/pull/55", 55, "Implemented the feature.")
+	require.NoError(t, err)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusPRPending), fetched.Status)
+	assert.Equal(t, 55, fetched.PrNumber)
+	assert.Equal(t, "https://github.com/tstapler/stapler-squad/pull/55", fetched.PrURL)
+}
+
+// TestSetBacklogItemPRAndTransition_should_NoOp_When_AlreadyPRPendingSamePR
+// verifies the idempotency contract directly at the storage layer.
+func TestSetBacklogItemPRAndTransition_should_NoOp_When_AlreadyPRPendingSamePR(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:  "Already shipped",
+		Status: string(BacklogStatusPRPending),
+	})
+	require.NoError(t, err)
+	prURL := "https://github.com/tstapler/stapler-squad/pull/55"
+	prNum := 55
+	_, err = storage.UpdateBacklogItem(ctx, item.ID, BacklogItemUpdate{PrURL: &prURL, PrNumber: &prNum}, nil)
+	require.NoError(t, err)
+
+	err = storage.SetBacklogItemPRAndTransition(ctx, item.ID, prURL, prNum, "Implemented the feature.")
+	require.NoError(t, err, "repeating the same PR on an already-pr_pending item must be a no-op success, not an error")
+}
+
+// TestSetBacklogItemPRAndTransition_should_ReturnError_When_StorageWriteFails
+// mirrors BUG-040's own TestPushAndCreatePR_PRFieldsPersistFails_StaysInReview_AndNotifies
+// test technique: close the real on-disk SQLite connection right after the
+// item is created, then call SetBacklogItemPRAndTransition and assert the
+// failure is returned to the caller rather than silently swallowed — the
+// exact discipline BUG-040 root cause #1 violated.
+func TestSetBacklogItemPRAndTransition_should_ReturnError_When_StorageWriteFails(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "storage-persist-fail-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, fmt.Sprintf("test-%d.db", time.Now().UnixNano()))
+	repo, err := NewEntRepository(WithDatabasePath(dbPath))
+	require.NoError(t, err)
+	storage, err := NewStorageWithRepository(repo)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:  "Ship it",
+		Status: string(BacklogStatusReview),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.Close())
+
+	err = storage.SetBacklogItemPRAndTransition(ctx, item.ID, "https://github.com/tstapler/stapler-squad/pull/55", 55, "Implemented the feature.")
+	require.Error(t, err, "a storage write failure must be returned to the caller, not silently swallowed")
+}

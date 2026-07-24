@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/github"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/domain"
 	"github.com/tstapler/stapler-squad/session/git"
@@ -3269,4 +3270,100 @@ func TestReconcilePRPending_CleansUpBacklogScaffolding_WhenPRMerged(t *testing.T
 	assert.True(t, os.IsNotExist(statErr), ".backlog-context.md must be cleaned up once the item reaches done")
 	_, statErr = os.Stat(statusPath)
 	assert.True(t, os.IsNotExist(statErr), "slash command files must be cleaned up once the item reaches done")
+}
+
+// newOrphanedAgentPRTestItem creates a review-status item with pr_number=0
+// and an ENDED work session whose worktree branch is branchName — the exact
+// shape reconcileOrphanedAgentPRs (Epic 3.2's reconciliation backstop)
+// targets: an agent shipped a PR out-of-band and then exited/crashed before
+// ever calling report_pr_created (Epic 3.1) to report it back.
+func newOrphanedAgentPRTestItem(t *testing.T, storage *Storage, branchName string) *BacklogItemData {
+	t.Helper()
+	ctx := context.Background()
+
+	item, err := storage.CreateBacklogItem(ctx, BacklogItemData{
+		Title:              "Orphaned agent PR test item",
+		AcceptanceCriteria: `[]`,
+		Priority:           1,
+		Status:             string(BacklogStatusReview),
+		RepoPath:           "/tmp/orphaned-agent-pr-test-repo",
+	})
+	require.NoError(t, err)
+
+	inst := newTestInstance("orphaned-agent-pr-worktree")
+	inst.UUID = uuid.New().String()
+	inst.gitManager.worktree = git.NewGitWorktreeFromStorage("/tmp/orphaned-agent-pr-test-repo", "/tmp/orphaned-agent-pr-test-repo/../wt", "orphaned-agent-pr-worktree", branchName, "abc123")
+	require.NoError(t, storage.SaveInstances([]*Instance{inst}))
+
+	is, err := storage.CreateItemSession(ctx, ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: inst.UUID,
+		SessionRole: SessionRoleWork,
+	})
+	require.NoError(t, err)
+	// No live session — the whole point of this backstop is that the agent
+	// that shipped the PR has already exited/crashed.
+	require.NoError(t, storage.UpdateItemSessionEnded(ctx, is.ID, time.Now()))
+
+	return item
+}
+
+// TestReconcileOrphanedAgentPRs_should_LinkPR_When_ReviewStatusNoLiveSessionPRExists
+// is the Epic 3.2 happy-path regression test: a review-status item with no
+// live session and no PR reference recorded, but a real open GitHub PR for
+// its branch, must be linked and transitioned to pr_pending — the exact
+// backstop for an agent that shipped via /backlog:ship but crashed before
+// calling report_pr_created.
+func TestReconcileOrphanedAgentPRs_should_LinkPR_When_ReviewStatusNoLiveSessionPRExists(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item := newOrphanedAgentPRTestItem(t, storage, "backlog/orphan-item")
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.SetOrphanedPRFinder(func(_ context.Context, repoPath, branch string) (*github.PRInfo, error) {
+		assert.Equal(t, "/tmp/orphaned-agent-pr-test-repo", repoPath)
+		assert.Equal(t, "backlog/orphan-item", branch)
+		return &github.PRInfo{
+			Number:  77,
+			HTMLURL: "https://github.com/tstapler/stapler-squad/pull/77",
+			State:   "open",
+			HeadRef: branch,
+		}, nil
+	})
+
+	listener.reconcileOrphanedAgentPRs(ctx, er)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusPRPending), fetched.Status)
+	assert.Equal(t, 77, fetched.PrNumber)
+	assert.Equal(t, "https://github.com/tstapler/stapler-squad/pull/77", fetched.PrURL)
+}
+
+// TestReconcileOrphanedAgentPRs_should_NoOp_When_NoMatchingPR verifies the
+// detector leaves the item untouched when GitHub genuinely has no PR for the
+// item's branch yet — the common, expected case on every tick until the
+// agent (or a human) actually ships.
+func TestReconcileOrphanedAgentPRs_should_NoOp_When_NoMatchingPR(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+	er := storage.repo.(*EntRepository)
+
+	item := newOrphanedAgentPRTestItem(t, storage, "backlog/no-pr-yet")
+
+	listener := NewBacklogLifecycleListener(storage)
+	listener.SetOrphanedPRFinder(func(context.Context, string, string) (*github.PRInfo, error) {
+		return nil, github.ErrNoPR
+	})
+
+	listener.reconcileOrphanedAgentPRs(ctx, er)
+
+	fetched, err := storage.GetBacklogItem(ctx, item.ID)
+	require.NoError(t, err)
+	assert.Equal(t, string(BacklogStatusReview), fetched.Status, "no matching PR — item must stay in review")
+	assert.Equal(t, 0, fetched.PrNumber)
 }
