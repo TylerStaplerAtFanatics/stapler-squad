@@ -18,6 +18,19 @@ import (
 // scale that made backlog item 693c2700's diff unreviewable (289 commits behind).
 const DefaultBranchDriftThreshold = 50
 
+// SteeringBranchDriftThreshold is the lower drift threshold used by the PostToolUse
+// steering hook (server/services/hook_receiver_drift.go) that fires after every git
+// commit/push inside an autonomous backlog work session. Deliberately smaller than
+// DefaultBranchDriftThreshold: that threshold governs when review itself blocks and
+// is calibrated to "comfortably past normal multi-day activity"; this one governs
+// when the *agent still doing the work* gets nudged, so it can self-correct well
+// before drift ever reaches review-blocking scale. 20 is roughly a day or so of
+// normal upstream activity — enough headroom that this doesn't fire on ordinary
+// same-session commits, while leaving a wide margin before DefaultBranchDriftThreshold
+// (50) so the agent has room to act on the nudge before review would block. See
+// BUG-044.
+const SteeringBranchDriftThreshold = 20
+
 // EnsureBranchSyncedWithMain checks how far worktreePath's checked-out branch has
 // drifted behind origin/mainBranch (via BehindOriginMain, always freshly fetched)
 // and, once past driftThreshold commits, proactively merges main in and pushes the
