@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -2277,4 +2278,182 @@ func TestTriggerReReview_should_BlockOnBranchDriftInsteadOfMisleadingFailVerdict
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected an operator notification when the review is blocked")
 	}
+}
+
+// --- git-drift-check steering hook scoping (BUG-044 follow-up) ---
+//
+// HookGitDriftCheck must be injected into a spawned session's worktree ONLY when
+// SpawnSessionFromItem's autonomous flag is true (the AutonomousDriver-run, no-human-
+// attached path) — never for a manual spawn, and never left behind on a worktree
+// reused by a later manual respawn. These three tests are the scoping guard called
+// for in the hook's own design: "assert the hook is NOT injected for a
+// non-autonomous/manually-created session."
+
+// driftHookURLFragment matches the fragment InjectHooksConfig/RemoveHooksConfig write
+// into the curl command for HookGitDriftCheck — kept in sync with hookEndpoints'
+// "/api/hooks/post-tool-use-drift-check" suffix.
+const driftHookURLFragment = "/api/hooks/post-tool-use-drift-check"
+
+// settingsHasDriftHook reports whether <worktreePath>/.claude/settings.local.json
+// exists and its PostToolUse hooks contain the git-drift-check command. A missing
+// settings file is treated as "hook absent" (false, no error) since a purely-manual
+// spawn may never create one at all.
+func settingsHasDriftHook(t *testing.T, worktreePath string) bool {
+	t.Helper()
+	path := filepath.Join(worktreePath, ".claude", "settings.local.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false
+		}
+		t.Fatalf("read settings.local.json: %v", err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("parse settings.local.json: %v", err)
+	}
+	hooksRaw, ok := top["hooks"]
+	if !ok {
+		return false
+	}
+	var hooksMap map[string]json.RawMessage
+	if err := json.Unmarshal(hooksRaw, &hooksMap); err != nil {
+		t.Fatalf("parse hooks map: %v", err)
+	}
+	postToolRaw, ok := hooksMap["PostToolUse"]
+	if !ok {
+		return false
+	}
+	var groups []hookMatcherGroup
+	if err := json.Unmarshal(postToolRaw, &groups); err != nil {
+		t.Fatalf("parse PostToolUse groups: %v", err)
+	}
+	for _, g := range groups {
+		for _, hk := range g.Hooks {
+			if strings.Contains(hk.Command, driftHookURLFragment) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// spawnReadyItemForDriftHookTest creates a backlog item against a real git repo and
+// transitions it to ready, returning the item ID — shared setup for the three tests
+// below, mirroring TestSpawnSessionFromItem_should_SnapshotResolvedModeSlugAndContentHash's
+// existing real-repo pattern.
+func spawnReadyItemForDriftHookTest(t *testing.T, svc *BacklogService, title string) string {
+	t.Helper()
+	repoPath := t.TempDir()
+	initGitRepoWithCommit(t, repoPath)
+
+	createResp, err := svc.CreateBacklogItem(t.Context(), connect.NewRequest(&sessionv1.CreateBacklogItemRequest{
+		Title:    title,
+		RepoPath: repoPath,
+		AcceptanceCriteria: []*sessionv1.AcCriterion{
+			{Index: 0, Text: "test", Status: "pending"},
+		},
+		SkipTriage:   true,
+		SkipPlanning: true,
+	}))
+	require.NoError(t, err)
+	itemID := createResp.Msg.Item.Id
+
+	_, err = svc.TransitionBacklogItemStatus(t.Context(), connect.NewRequest(&sessionv1.TransitionBacklogItemStatusRequest{
+		ItemId:       itemID,
+		TargetStatus: "ready",
+	}))
+	require.NoError(t, err)
+	return itemID
+}
+
+// TestSpawnSessionFromItem_should_InjectGitDriftCheckHook_When_Autonomous is the
+// positive scoping case: Autonomous:true (the flag AutoReopenAfterFailedReview,
+// AutoReopenForPRFix, AutoRespawnReview, and the "Run Autonomously" button all pass)
+// must get the steering hook wired into its worktree.
+func TestSpawnSessionFromItem_should_InjectGitDriftCheckHook_When_Autonomous(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+
+	itemID := spawnReadyItemForDriftHookTest(t, svc, "autonomous drift hook item")
+
+	_, err := svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId:     itemID,
+		Autonomous: true,
+	}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 1)
+
+	worktreePath := creator.calls[0].path
+	assert.True(t, settingsHasDriftHook(t, worktreePath),
+		"expected git-drift-check hook to be injected into an autonomous spawn's worktree")
+}
+
+// TestSpawnSessionFromItem_should_NotInjectGitDriftCheckHook_When_NotAutonomous is the
+// negative scoping case: a plain manual spawn (the default "Start Session" button and
+// the manual "Reopen for Revision" flow both omit autonomous, defaulting to false)
+// must NEVER get the steering hook wired in.
+func TestSpawnSessionFromItem_should_NotInjectGitDriftCheckHook_When_NotAutonomous(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+
+	itemID := spawnReadyItemForDriftHookTest(t, svc, "manual drift hook item")
+
+	_, err := svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId: itemID,
+		// Autonomous intentionally omitted — proto default false, matching every
+		// manual call site (spawn_session, handleGateReopen).
+	}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 1)
+
+	worktreePath := creator.calls[0].path
+	assert.False(t, settingsHasDriftHook(t, worktreePath),
+		"git-drift-check hook must never be injected into a non-autonomous (manually-created) session")
+}
+
+// TestSpawnSessionFromItem_should_RemoveGitDriftCheckHook_When_ReopenedManuallyOnReusedWorktree
+// covers the worktree-reuse gap the hard scoping requirement calls out explicitly: a
+// backlog item's worktree/branch is reused across reopen cycles (same
+// "backlog/<item>" slug every revision — see spawnSessionAfterGates step 10). Without
+// an active removal step, a worktree first spawned autonomously would keep the
+// steering hook wired into every later session on that same worktree forever, even a
+// subsequent manual respawn a human is actively watching. This spawns autonomously
+// once (hook injected), then force-respawns the SAME item non-autonomously on the
+// SAME worktree, and asserts the hook is gone afterward.
+func TestSpawnSessionFromItem_should_RemoveGitDriftCheckHook_When_ReopenedManuallyOnReusedWorktree(t *testing.T) {
+	storage := createTestStorage(t)
+	creator := &mockSessionCreator{}
+	svc := NewBacklogService(storage, creator, nil, nil, nil, nil)
+
+	itemID := spawnReadyItemForDriftHookTest(t, svc, "reused worktree drift hook item")
+
+	_, err := svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId:     itemID,
+		Autonomous: true,
+	}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 1)
+	firstWorktreePath := creator.calls[0].path
+	require.True(t, settingsHasDriftHook(t, firstWorktreePath), "setup: hook must be present after the autonomous spawn")
+
+	// Force-respawn the same item non-autonomously. Force ends the still-open first
+	// work session so the guard against duplicate active sessions doesn't reject it;
+	// the branch slug (derived from repoName + baseTitle, unaffected by prior work
+	// sessions) resolves to the SAME worktree path both times.
+	_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+		ItemId: itemID,
+		Force:  true,
+		// Autonomous omitted: false — a human forcing a restart is driving this one.
+	}))
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 2)
+	secondWorktreePath := creator.calls[1].path
+	require.Equal(t, firstWorktreePath, secondWorktreePath, "setup: expected the reopen to reuse the same worktree path")
+
+	assert.False(t, settingsHasDriftHook(t, secondWorktreePath),
+		"git-drift-check hook must be actively removed when a worktree that was previously spawned "+
+			"autonomously is later respawned non-autonomously (manual reopen)")
 }
