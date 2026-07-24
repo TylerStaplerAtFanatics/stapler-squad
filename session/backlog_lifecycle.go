@@ -871,13 +871,35 @@ func (l *BacklogLifecycleListener) handleReviewSessionExited(ctx context.Context
 		// The review session exited without ever calling submit_review_verdict —
 		// crashed, killed, ran out of turns, etc. Treat it like a failed review so
 		// the item doesn't sit stuck in "review" forever.
-		log.WarningLog.Printf("[BacklogLifecycle] handleReviewSessionExited item=%s review session %s exited without a verdict", item.ID, reviewIS.SessionUUID)
-		l.notify(item.ID,
-			"Review session ended without a verdict",
-			fmt.Sprintf("%s — the review session exited without calling submit_review_verdict. Treating as a failed review.", item.Title),
-			7, // sessionv1.NotificationType_NOTIFICATION_TYPE_ERROR
-			3, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH
-		)
+		//
+		// BUG-046: when autoReopenWithBackoffGate's downstream "bouncing" gate is
+		// already open/mid-backoff (a prior bounce cycle already surfaced this
+		// exact condition), the item never leaves "review" — nothing transitions
+		// it — so reconcileUnprocessedReviewVerdicts' sweep re-detects the SAME
+		// dead session on every subsequent ~60s tick and would otherwise notify
+		// and log a WARNING every time, forever, until the gate finally opens
+		// (confirmed live: item 12981e9d reached occurrence_count 95 in ~94
+		// minutes). RemediationBlocked is a read-only peek at that same gate — if
+		// it's already blocking, this exact condition was already recorded on a
+		// prior tick, so skip the redundant notify+log and only re-run
+		// autoReopenWithBackoffGate (whose own gating logic is unchanged and
+		// still correctly no-ops until the gate opens). Mirrors the idempotency
+		// pattern BUG-043 established via the same RemediationBlocked primitive
+		// for abandoned_review's attempt-budget guard. Fails open on a query
+		// error (proceeds to notify) rather than silently going quiet.
+		blocked, blockedErr := l.storage.RemediationBlocked(ctx, item.ID, domain.StuckReasonBouncing)
+		if blockedErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] handleReviewSessionExited RemediationBlocked(bouncing) item=%s: %v", item.ID, blockedErr)
+		}
+		if !blocked {
+			log.WarningLog.Printf("[BacklogLifecycle] handleReviewSessionExited item=%s review session %s exited without a verdict", item.ID, reviewIS.SessionUUID)
+			l.notify(item.ID,
+				"Review session ended without a verdict",
+				fmt.Sprintf("%s — the review session exited without calling submit_review_verdict. Treating as a failed review.", item.Title),
+				7, // sessionv1.NotificationType_NOTIFICATION_TYPE_ERROR
+				3, // sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH
+			)
+		}
 		l.autoReopenWithBackoffGate(ctx, item.ID, item.Title)
 		return
 	}
