@@ -737,6 +737,64 @@ func (s *Storage) TransitionBacklogItemStatus(ctx context.Context, id string, to
 	return s.repo.TransitionBacklogItemStatus(ctx, id, toStatus, precondition, triggeredBy)
 }
 
+// SetBacklogItemPRAndTransition is the shared primary-write path for
+// recording a PR that genuinely exists on GitHub against a backlog item and
+// moving it review -> pr_pending. Used by both the agent-initiated
+// report_pr_created MCP tool (server/mcp/tools_backlog.go, Epic 3.1) and the
+// reconciliation backstop detector (BacklogLifecycleListener.
+// reconcileOrphanedAgentPRs, Epic 3.2) — see "PR Metadata Capture Fix",
+// project_plans/backlog-agent-communication/implementation/plan.md.
+//
+// Unlike AppendProgressNote's best-effort discipline, a failure persisting
+// the PR fields or performing the transition is returned to the caller, not
+// merely logged — BUG-040's root cause #1 was exactly this class of silent
+// failure (a write whose result was never checked against the invariant it
+// protects), and this is the primitive that must not repeat it.
+//
+// Idempotent: if the item is already pr_pending with this exact prNumber,
+// this is a no-op success — a retried report_pr_created call (network blip)
+// or the reconciliation backstop re-scanning an item it already fixed on a
+// prior tick must not error.
+func (s *Storage) SetBacklogItemPRAndTransition(ctx context.Context, itemID, prURL string, prNumber int, summary string) error {
+	item, err := s.GetBacklogItem(ctx, itemID)
+	if err != nil {
+		return fmt.Errorf("load item: %w", err)
+	}
+	if item.Status == string(BacklogStatusPRPending) && item.PrNumber == prNumber && prNumber > 0 {
+		return nil // already recorded — idempotent no-op
+	}
+
+	prURLCopy, prNumCopy := prURL, prNumber
+	if _, err := s.UpdateBacklogItem(ctx, itemID, BacklogItemUpdate{
+		PrURL:    &prURLCopy,
+		PrNumber: &prNumCopy,
+	}, nil); err != nil {
+		return fmt.Errorf("persist PR fields: %w", err)
+	}
+
+	precondition := &BacklogItemPrecondition{ExpectedStatus: string(BacklogStatusReview), Note: summary}
+	if _, err := s.TransitionBacklogItemStatus(ctx, itemID, BacklogStatusPRPending, precondition, TriggeredBySystem); err != nil {
+		return fmt.Errorf("transition to pr_pending: %w", err)
+	}
+
+	// Best-effort from here: the primary contract (PR fields persisted, item
+	// moved to pr_pending) already succeeded above. A failure enriching the
+	// history or resolving a stale stuck row must not roll that back or be
+	// reported as this call's own failure — mirrors report_progress's
+	// primary-write/secondary-enrichment split (AppendProgressNote there).
+	if appendErr := s.AppendProgressNote(ctx, itemID, -1, summary, "pr_created"); appendErr != nil {
+		log.WarningLog.Printf("[Storage] SetBacklogItemPRAndTransition: failed to append summary note item=%s: %v", itemID, appendErr)
+	}
+	if _, resolveErr := s.ResolveStuck(ctx, itemID, domain.StuckReasonPushFailed); resolveErr != nil {
+		log.WarningLog.Printf("[Storage] SetBacklogItemPRAndTransition: failed to resolve push_failed row item=%s: %v", itemID, resolveErr)
+	}
+	if _, resolveErr := s.ResolveStuck(ctx, itemID, domain.StuckReasonAbandonedReview); resolveErr != nil {
+		log.WarningLog.Printf("[Storage] SetBacklogItemPRAndTransition: failed to resolve abandoned_review row item=%s: %v", itemID, resolveErr)
+	}
+
+	return nil
+}
+
 // FindDoneItemsOlderThan returns backlog items in "done" status whose most
 // recent done-transition happened at/before cutoff. Thin passthrough to the
 // ent-backed repository (same rationale as MarkStuck below) — returns

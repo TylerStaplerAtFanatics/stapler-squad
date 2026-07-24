@@ -95,6 +95,18 @@ type backlogHandlers struct {
 	reviewStopper ReviewCompletionSignaler // optional; nil means no driver stop on review verdict
 	enabledCheck  func() bool              // optional; nil means always-enabled (tests)
 	reviewTrigger ReviewTrigger            // optional; nil means review gate waits for the next reconcile tick
+
+	// verifyPRMatchesBranch backs report_pr_created's GitHub cross-check.
+	// Defaults to VerifyPRMatchesBranch (tools_github.go) when nil;
+	// overridable in tests to avoid making real GitHub API calls.
+	verifyPRMatchesBranch func(ctx context.Context, owner, repo string, prNumber int, expectedBranch string) (bool, error)
+	// resolveSessionBranch resolves the git branch a session UUID is working
+	// on, used by report_pr_created to determine "this item's own branch"
+	// before trusting a self-reported PR against it. Defaults to
+	// h.storage.GetWorktreeDataBySessionUUID when nil; overridable in tests —
+	// session.Storage has no public seam for constructing worktree data
+	// without spawning and starting a real Instance (real git/tmux calls).
+	resolveSessionBranch func(ctx context.Context, sessionUUID string) (string, error)
 }
 
 // --- get_backlog_item ---
@@ -198,6 +210,7 @@ func (h *backlogHandlers) getBacklogItem(ctx context.Context, req mcpgo.CallTool
 		sb.WriteString("2. After completing each criterion, call report_progress with criteria_index + status=pass\n")
 		sb.WriteString("3. When all criteria are done, call request_review with a summary of what you built\n")
 		fmt.Fprintf(&sb, "4. Do NOT end your session after request_review. Wait a bit, then call get_backlog_item again — once a verdict lands it appears under \"Latest Review Verdict\" above. PASS → run /backlog/ship now to open the pull request yourself (it drives /github:pr-ship through local CI, code review, remote CI, and merge-conflict resolution) — shipping the PR is part of this task, do not stop here. FAIL/PARTIAL → fix the noted gaps yourself in this same session and call request_review again. Track how many times you've called request_review in this session (count your own calls in this conversation) — after %d cycles without a PASS, run /backlog/ship anyway to hand the PR to a human instead of retrying indefinitely.\n", session.MaxSameSessionReviewAttempts)
+		sb.WriteString("5. If you create the PR yourself (via /backlog/ship or a manual `gh pr create`) rather than letting the system create one for you, you MUST call report_pr_created with item_id, pr_url, pr_number, and a summary as the final step — otherwise the item never shows the PR and stays invisible to the reviewer/operator.\n")
 	case "review":
 		sb.WriteString("## Your Role: Review\n")
 		sb.WriteString("Verify each acceptance criterion is met. Do NOT modify source code or call report_progress.\n\n")
@@ -209,6 +222,7 @@ func (h *backlogHandlers) getBacklogItem(ctx context.Context, req mcpgo.CallTool
 		sb.WriteString("## Available MCP Tools\n")
 		sb.WriteString("- report_progress — mark an AC criterion pass/fail/in_progress (role: work)\n")
 		sb.WriteString("- request_review — signal implementation complete, notify reviewer (role: work)\n")
+		sb.WriteString("- report_pr_created — report a PR you created yourself back onto the item (role: work)\n")
 		sb.WriteString("- submit_review_verdict — submit per-criterion verdicts, PASS transitions to done (role: review)\n")
 		sb.WriteString("- submit_triage_result — record triage analysis and notify operator (role: triage)\n")
 	}
@@ -545,6 +559,147 @@ func findSessionTitleByUUID(store session.InstanceStore, uuid string) (string, e
 	return "", fmt.Errorf("no session found with UUID %s", uuid)
 }
 
+// --- report_pr_created ---
+
+// sessionBranch resolves the branch sessionUUID is working on, via the
+// overridable resolveSessionBranch seam when set, otherwise the real
+// worktree lookup. See backlogHandlers.resolveSessionBranch's doc comment.
+func (h *backlogHandlers) sessionBranch(ctx context.Context, sessionUUID string) (string, error) {
+	if h.resolveSessionBranch != nil {
+		return h.resolveSessionBranch(ctx, sessionUUID)
+	}
+	wt, err := h.storage.GetWorktreeDataBySessionUUID(ctx, sessionUUID)
+	if err != nil {
+		return "", err
+	}
+	return wt.BranchName, nil
+}
+
+// verifyPR runs the GitHub cross-check via the overridable verifyPRMatchesBranch
+// seam when set, otherwise the real VerifyPRMatchesBranch (tools_github.go).
+func (h *backlogHandlers) verifyPR(ctx context.Context, owner, repo string, prNumber int, expectedBranch string) (bool, error) {
+	if h.verifyPRMatchesBranch != nil {
+		return h.verifyPRMatchesBranch(ctx, owner, repo, prNumber, expectedBranch)
+	}
+	return VerifyPRMatchesBranch(ctx, owner, repo, prNumber, expectedBranch)
+}
+
+// reportPRCreated records a PR the calling work session created itself
+// (typically via /backlog:ship -> gh pr create, outside the mechanical
+// pushAndCreatePR path — see session/backlog_lifecycle.go) back onto the
+// backlog item. Role: work only. This closes the gap named in "PR Metadata
+// Capture Fix" (project_plans/backlog-agent-communication, Epic 3.1): only
+// the system-driven mechanical push path used to write pr_url/pr_number, so
+// an agent-driven PR could exist on GitHub with the item never reflecting
+// it. See SetBacklogItemPRAndTransition for the shared primary-write path
+// (also used by the reconciliation backstop, Epic 3.2) and
+// VerifyPRMatchesBranch for the GitHub cross-check this handler performs
+// before trusting the self-reported pr_url/pr_number.
+func (h *backlogHandlers) reportPRCreated(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	if r := featureDisabledResult(h.enabledCheck); r != nil {
+		return r, nil
+	}
+	callerUUID, err := callerSessionUUID(ctx)
+	if err != nil {
+		return errResult(ErrPermissionDenied, err.Error(), "Set STAPLER_SESSION_UUID in your environment."), nil
+	}
+
+	args := req.GetArguments()
+
+	itemID, ok := args["item_id"].(string)
+	if !ok || itemID == "" {
+		return errResult(ErrInvalidArgument, "item_id is required", ""), nil
+	}
+	if err := validateUUID(itemID); err != nil {
+		return errResult(ErrInvalidArgument, err.Error(), ""), nil
+	}
+
+	prURL, ok := args["pr_url"].(string)
+	if !ok || prURL == "" {
+		return errResult(ErrInvalidArgument, "pr_url is required", ""), nil
+	}
+
+	prNumberF, ok := args["pr_number"].(float64)
+	if !ok || prNumberF <= 0 {
+		return errResult(ErrInvalidArgument, "pr_number is required and must be > 0", ""), nil
+	}
+	prNumber := int(prNumberF)
+
+	summary, ok := args["summary"].(string)
+	if !ok || summary == "" {
+		return errResult(ErrInvalidArgument, "summary is required", ""), nil
+	}
+	if len(summary) > 1000 {
+		return errResult(ErrInvalidArgument, "summary must be <= 1000 characters", ""), nil
+	}
+
+	// Verify session is linked to item with role=work.
+	itemSession, linkErr := h.storage.GetItemSessionBySessionAndItem(ctx, callerUUID, itemID)
+	if linkErr != nil {
+		if errors.Is(linkErr, session.ErrNotFound) {
+			return errResult(ErrPermissionDenied, "this session is not linked to the specified backlog item", ""), nil
+		}
+		return errResult(ErrInternalError, fmt.Sprintf("link check failed: %v", linkErr), ""), nil
+	}
+	if itemSession.Role != session.SessionRoleWork {
+		return errResult(ErrPermissionDenied, fmt.Sprintf("session role is %q — only 'work' role may report a created PR", itemSession.Role), ""), nil
+	}
+
+	item, getErr := h.storage.GetBacklogItem(ctx, itemID)
+	if getErr != nil {
+		if errors.Is(getErr, session.ErrNotFound) {
+			return errResult(ErrItemNotFound, fmt.Sprintf("backlog item %q not found", itemID), ""), nil
+		}
+		return errResult(ErrInternalError, fmt.Sprintf("get backlog item: %v", getErr), ""), nil
+	}
+
+	// Idempotency: already pr_pending with this exact PR number is a no-op success.
+	if item.Status == string(session.BacklogStatusPRPending) && item.PrNumber == prNumber {
+		return mcpgo.NewToolResultText(fmt.Sprintf(
+			"PR #%d already recorded for item %s (status already pr_pending) — no changes made.", prNumber, itemID,
+		)), nil
+	}
+
+	// Parse the reported URL to extract owner/repo, and cross-check it
+	// against the reported pr_number — a typo'd URL/number pair fails fast
+	// here, before any network call.
+	ref, parseErr := session.ParseGitHubURL(prURL)
+	if parseErr != nil || ref.Owner == "" || ref.Repo == "" {
+		return errResult(ErrInvalidArgument, fmt.Sprintf("pr_url is not a recognizable GitHub PR URL: %v", parseErr), ""), nil
+	}
+	if ref.PRNumber != 0 && ref.PRNumber != prNumber {
+		return errResult(ErrInvalidArgument, fmt.Sprintf("pr_url references PR #%d but pr_number=%d was given — these must match", ref.PRNumber, prNumber), ""), nil
+	}
+
+	// Resolve this session's own branch to verify the reported PR against —
+	// the whole point of this check is to refuse a self-reported PR number
+	// for a branch that isn't even this item's own.
+	branch, branchErr := h.sessionBranch(ctx, callerUUID)
+	if branchErr != nil || branch == "" {
+		return errResult(ErrInternalError, "could not resolve this session's git branch to verify the reported PR", ""), nil
+	}
+
+	matched, verifyErr := h.verifyPR(ctx, ref.Owner, ref.Repo, prNumber, branch)
+	if verifyErr != nil {
+		return errResult(ErrInternalError, fmt.Sprintf("could not verify PR #%d against GitHub — retry: %v", prNumber, verifyErr), ""), nil
+	}
+	if !matched {
+		return errResult(ErrInvalidArgument, fmt.Sprintf(
+			"PR #%d does not match this item's branch %q on GitHub — refusing to record it. Double-check the PR number/URL.",
+			prNumber, branch), ""), nil
+	}
+
+	if setErr := h.storage.SetBacklogItemPRAndTransition(ctx, itemID, prURL, prNumber, summary); setErr != nil {
+		return errResult(ErrInternalError, fmt.Sprintf("record PR: %v", setErr), ""), nil
+	}
+
+	log.InfoLog.Printf("[mcp:report_pr_created] session=%s item=%s PR #%d %s", callerUUID, itemID, prNumber, prURL)
+
+	return mcpgo.NewToolResultText(fmt.Sprintf(
+		"PR #%d recorded for item %s. Item transitioned to pr_pending.", prNumber, itemID,
+	)), nil
+}
+
 // --- submit_triage_result ---
 
 func (h *backlogHandlers) submitTriageResult(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -828,6 +983,32 @@ func registerBacklogTools(s *mcpserver.MCPServer, h *backlogHandlers) {
 			),
 		),
 		h.submitReviewVerdict,
+	)
+
+	s.AddTool(
+		mcpgo.NewTool("report_pr_created",
+			mcpgo.WithDescription("Report a pull request YOU created (e.g. via /backlog:ship or a manual `gh pr create`) back onto this backlog item. Role: work only. Call this as the final step any time you create a PR yourself instead of letting the system create one for you — otherwise the item never shows the PR and stays invisible to the reviewer and the operator. "+
+				"The reported PR is verified against GitHub (it must exist and its head branch must match this session's own branch) before being trusted — a mismatched or invalid PR is rejected, not silently recorded. "+
+				"On success, the item transitions from review to pr_pending. Calling this again with the same PR after it already succeeded is safe (no-op)."),
+			mcpgo.WithString("item_id",
+				mcpgo.Description("UUID of the backlog item"),
+				mcpgo.Required(),
+			),
+			mcpgo.WithString("pr_url",
+				mcpgo.Description("Full GitHub URL of the pull request you created, e.g. https://github.com/owner/repo/pull/123"),
+				mcpgo.Required(),
+			),
+			mcpgo.WithNumber("pr_number",
+				mcpgo.Description("The pull request number (must match the number in pr_url)"),
+				mcpgo.Required(),
+				mcpgo.Min(1),
+			),
+			mcpgo.WithString("summary",
+				mcpgo.Description("What changed and why (max 1000 chars) — shown to the reviewer/operator alongside the PR link so they see why the PR exists, not just a bare link"),
+				mcpgo.Required(),
+			),
+		),
+		h.reportPRCreated,
 	)
 
 	s.AddTool(

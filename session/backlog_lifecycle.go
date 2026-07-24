@@ -199,6 +199,21 @@ func defaultPRPendingCheckerFactory(repoPath string) prPendingChecker {
 	return git.NewGitWorktreeFromStorage(repoPath, repoPath, "", "", "")
 }
 
+// defaultOrphanedPRFinder resolves repoPath's GitHub owner/repo from its git
+// remote, then looks up an existing PR for branch. Returns github.ErrNoPR
+// unchanged when no PR exists — see reconcileOrphanedAgentPRs, which treats
+// that as "no match yet", not a failure.
+func defaultOrphanedPRFinder(ctx context.Context, repoPath, branch string) (*github.PRInfo, error) {
+	ref, err := github.GetOwnerRepoFromRemote(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if !ref.IsValid() {
+		return nil, fmt.Errorf("could not resolve a GitHub owner/repo from the git remote at %s", repoPath)
+	}
+	return github.GetPRForBranch(ctx, ref.Owner(), ref.Repo(), branch)
+}
+
 // maxConcurrentReviewGates is the maximum number of review gates that can run
 // concurrently. This caps goroutine fan-out when many sessions exit simultaneously.
 const maxConcurrentReviewGates = 8
@@ -269,6 +284,15 @@ type BacklogLifecycleListener struct {
 	// prCreatorMu guards prCreatorFactory for concurrent Set/get access.
 	prCreatorMu      sync.RWMutex
 	prCreatorFactory func(repoPath, worktreePath, sessionName, branchName, baseCommitSHA string) prCreator
+
+	// orphanedPRFinderMu guards orphanedPRFinder for concurrent Set/get access.
+	orphanedPRFinderMu sync.RWMutex
+	// orphanedPRFinder looks up an existing PR for repoPath's branch — used by
+	// reconcileOrphanedAgentPRs (Epic 3.2's reconciliation backstop). Defaults
+	// to defaultOrphanedPRFinder via newListenerBase (resolves owner/repo from
+	// repoPath's git remote, then queries GitHub); overridable in tests to
+	// avoid real GitHub API calls or needing a real git remote on disk.
+	orphanedPRFinder func(ctx context.Context, repoPath, branch string) (*github.PRInfo, error)
 
 	// branchReconcilerMu guards branchReconciler for concurrent Set/get access.
 	branchReconcilerMu sync.RWMutex
@@ -497,6 +521,24 @@ func (l *BacklogLifecycleListener) getPRCreatorFactory() func(repoPath, worktree
 	return l.prCreatorFactory
 }
 
+// SetOrphanedPRFinder overrides the function used to look up an existing PR
+// for a repo path's branch, used by reconcileOrphanedAgentPRs (Epic 3.2).
+// Overridable in tests to avoid real GitHub API calls or needing a real git
+// remote on disk; production code never needs to call this, since
+// newListenerBase installs defaultOrphanedPRFinder.
+func (l *BacklogLifecycleListener) SetOrphanedPRFinder(f func(ctx context.Context, repoPath, branch string) (*github.PRInfo, error)) {
+	l.orphanedPRFinderMu.Lock()
+	defer l.orphanedPRFinderMu.Unlock()
+	l.orphanedPRFinder = f
+}
+
+// getOrphanedPRFinder returns the current orphaned-PR finder under a read lock.
+func (l *BacklogLifecycleListener) getOrphanedPRFinder() func(ctx context.Context, repoPath, branch string) (*github.PRInfo, error) {
+	l.orphanedPRFinderMu.RLock()
+	defer l.orphanedPRFinderMu.RUnlock()
+	return l.orphanedPRFinder
+}
+
 // SetBranchReconciler overrides the function used to fetch+merge a branch's
 // remote ref into its worktree for push_failed remediation
 // (attemptPushRemediation). Overridable in tests to avoid needing a real git
@@ -600,6 +642,7 @@ func newListenerBase(storage *Storage, pipelineEngine PipelineEngine) *BacklogLi
 		prPendingCheckerFactory: defaultPRPendingCheckerFactory,
 		prCreatorFactory:        defaultPRCreatorFactory,
 		branchReconciler:        git.MergeMainIntoWorktree,
+		orphanedPRFinder:        defaultOrphanedPRFinder,
 	}
 	l.runner = NewReviewGateRunner(storage, l.getAutoReopener, l.getNotifier, l.getSessionCreator, pipelineEngine)
 	return l
@@ -1320,6 +1363,16 @@ func (l *BacklogLifecycleListener) ReconcileStuck(ctx context.Context) {
 	// are otherwise invisible to every other reconciler.
 	l.runStuckDetector("abandoned_review", &okNames, &panickedNames, func() {
 		l.reconcileStuckReviewItems(ctx, er)
+	})
+
+	// Reconciliation backstop (Epic 3.2, "PR Metadata Capture Fix"): review-status
+	// items with no live session but a real, unreported GitHub PR for their
+	// branch — an agent that shipped via /backlog:ship but crashed before calling
+	// report_pr_created. Self-heals immediately on a match; see
+	// reconcileOrphanedAgentPRs' doc comment for why this is a backstop, not a
+	// new StuckReason.
+	l.runStuckDetector("orphaned_agent_pr", &okNames, &panickedNames, func() {
+		l.reconcileOrphanedAgentPRs(ctx, er)
 	})
 
 	// Apply a review verdict that was recorded but never actioned because the
@@ -2225,6 +2278,90 @@ func (l *BacklogLifecycleListener) reconcilePRPendingWithoutPRItems(ctx context.
 	// No resolve pass needed here: selfHealStuck (status-anchored) clears this
 	// reason once the item leaves 'pr_pending' (successfully reopened for a
 	// fresh attempt, or manually recovered).
+}
+
+// reconcileOrphanedAgentPRs is the Epic 3.2 reconciliation backstop from "PR
+// Metadata Capture Fix" (project_plans/backlog-agent-communication): an agent
+// driving its own shipping via /backlog:ship -> gh pr create can crash or be
+// killed after the PR genuinely exists on GitHub but before it ever calls
+// report_pr_created (Epic 3.1, server/mcp/tools_backlog.go) to report it
+// back. Without this sweep such an item is invisible forever: it sits in
+// review with pr_number==0, and — unlike reconcilePRPendingWithoutPRItems'
+// BUG-040 case — there is no dedicated StuckReason for "review, no PR
+// recorded, but GitHub actually has one": StuckReasonAbandonedReview already
+// covers "review, no PR, no session, genuinely nothing shipped", so this is
+// deliberately a backstop that self-heals immediately on a match, not a new
+// StuckReason/human-visible flag (see ADR-001 and this project's plan.md,
+// Epic 3.2's own scope note).
+//
+// Deliberately narrow: only items in review status, with no PR reference
+// recorded yet (pr_number == 0 — the cheap in-process filter applied before
+// any GitHub API call), and no live work/review session (hasActiveSession) —
+// an item still being actively worked or reviewed is left alone; its own
+// normal flow will eventually report or create the PR. On a match, reuses
+// SetBacklogItemPRAndTransition (Epic 3.1's own primary-write path,
+// session/storage.go) — no duplicate PR-field-writing logic. On no match (no
+// open PR yet for the item's branch), this is an expected no-op, retried
+// next tick. Best-effort: query/GitHub failures are logged, never returned —
+// same discipline as every other detector in this sweep.
+func (l *BacklogLifecycleListener) reconcileOrphanedAgentPRs(ctx context.Context, er *EntRepository) {
+	items, err := l.storage.ListBacklogItems(ctx, BacklogItemFilter{
+		Statuses: []string{string(BacklogStatusReview)},
+	})
+	if err != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedAgentPRs list error: %v", err)
+		return
+	}
+
+	for _, item := range items {
+		if item.PrNumber != 0 || item.RepoPath == "" {
+			continue
+		}
+
+		sessions, sessErr := l.storage.ListItemSessions(ctx, item.ID)
+		if sessErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedAgentPRs ListItemSessions item=%s: %v", item.ID, sessErr)
+			continue
+		}
+		if hasActiveSession(sessions) {
+			continue // still legitimately in flight — its own normal flow will report/create the PR
+		}
+
+		// ListItemSessions orders ascending by CreatedAt — keep overwriting so
+		// this ends up holding the most recent work session, mirroring
+		// mostRecentWorkCommitShippedToMain's identical pattern above.
+		var lastWorkSessionUUID string
+		for _, is := range sessions {
+			if is.Role == SessionRoleWork {
+				lastWorkSessionUUID = is.SessionUUID
+			}
+		}
+		if lastWorkSessionUUID == "" {
+			continue // never had a work session — nothing could have shipped a PR
+		}
+		wt, wtErr := l.storage.GetWorktreeDataBySessionUUID(ctx, lastWorkSessionUUID)
+		if wtErr != nil || wt.BranchName == "" {
+			continue
+		}
+
+		info, prErr := l.getOrphanedPRFinder()(ctx, item.RepoPath, wt.BranchName)
+		if prErr != nil {
+			if !errors.Is(prErr, github.ErrNoPR) {
+				log.DebugLog.Printf("[BacklogLifecycle] reconcileOrphanedAgentPRs GetPRForBranch item=%s branch=%s: %v", item.ID, wt.BranchName, prErr)
+			}
+			continue // no PR yet (or a transient lookup failure) — retried next tick
+		}
+		if info.State != "open" {
+			continue // a closed/merged PR for this branch is handled by other reconcilers, not this backstop
+		}
+
+		summary := fmt.Sprintf("Reconciliation backstop: found an existing open PR #%d for this item's branch %q with no report_pr_created call on record.", info.Number, wt.BranchName)
+		if setErr := l.storage.SetBacklogItemPRAndTransition(ctx, item.ID, info.HTMLURL, info.Number, summary); setErr != nil {
+			log.WarningLog.Printf("[BacklogLifecycle] reconcileOrphanedAgentPRs SetBacklogItemPRAndTransition item=%s pr=%d: %v", item.ID, info.Number, setErr)
+			continue
+		}
+		log.InfoLog.Printf("[BacklogLifecycle] reconcileOrphanedAgentPRs item=%s → pr_pending (recovered PR #%d %s, never reported)", item.ID, info.Number, info.HTMLURL)
+	}
 }
 
 // resolveLatestWorkCommit returns the true current tip commit of the work
