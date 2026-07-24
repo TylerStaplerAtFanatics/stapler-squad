@@ -2363,31 +2363,50 @@ func findMostRecentSessions(sessions []session.ItemSessionSummary) (reviewSessio
 
 // resolveCodebaseWorkDir returns the directory the headless codebase-read review call
 // (BuildReviewCallOptions' empty-diff branch) should be granted Read/Grep/Glob access
-// to, and whether that directory actually exists on disk. Prefers the work session's
-// dedicated worktree path (freshest, matches the session's actual branch); falls back
-// to repoPath when no worktree is recorded or the lookup fails (directory-mode
-// sessions, or a worktree that's since been cleaned up).
+// to, and whether that directory is safe to use for that purpose. Prefers the work
+// session's dedicated worktree path (freshest, matches the session's actual branch).
+// Falls back to repoPath only when there is no work session at all to fall back
+// from — the one case where repoPath is genuinely the only directory available, not a
+// stand-in for the item's own (missing) state.
 //
-// The existence check exists because the DB-recorded worktree row can outlive the
-// worktree directory itself (e.g. cleanup deleted the directory without pruning the
-// row) — see the confirmed live incident on the "Backlog History feature Broken" item
-// (PR #173): get_session_diff reported "worktree path does not exist" for a session
-// whose worktree row still resolved successfully. Handing the reviewer Read/Grep/Glob
-// access scoped to a directory that isn't there produces zero real evidence, which the
-// reviewer then (correctly, given what it was shown) reports as "no diff exists" /
-// "codebase shows none of the claimed work" — a false FAIL that masks real, substantial
-// work sitting on the branch. The caller must check exists before proceeding into
-// codebase-read mode, mirroring ReviewGateRunner.Run's (session/review_gate.go) refusal
-// to hand the reviewer a diff it could not positively compute.
+// The existence check on the worktree path exists because the DB-recorded worktree row
+// can outlive the worktree directory itself (e.g. cleanup deleted the directory without
+// pruning the row) — see the confirmed live incident on the "Backlog History feature
+// Broken" item (PR #173): get_session_diff reported "worktree path does not exist" for
+// a session whose worktree row still resolved successfully.
+//
+// BUG-045 (confirmed live on item 693c2700, PR #216): when a work session exists but its
+// worktree data cannot be resolved at all (the underlying session/worktree row itself
+// was reaped, or the storage lookup otherwise fails), this function used to silently
+// fall back to repoPath and report it as "exists" — repoPath obviously exists, since for
+// every backlog item in this project it resolves to the single shared main checkout the
+// human operator (and any concurrent Claude Code session) actively works in day to day.
+// Granting the reviewer live Read/Grep/Glob access to that directory hands it whatever
+// unrelated, uncommitted work happens to be sitting there at that exact moment, as if it
+// were the item's own diff — producing a plausible-sounding but completely wrong verdict
+// (item 693c2700's review reported FAIL describing an entirely unrelated tmux fix that
+// happened to be stashed in the operator's checkout, not any of the item's real work).
+// A work session with no resolvable worktree now refuses the codebase-read fallback
+// outright (dir is still returned, for logging, but exists is always false) — mirroring
+// ReviewGateRunner.Run's (session/review_gate.go) refusal to hand the reviewer a diff it
+// could not positively compute. The caller must check exists before proceeding into
+// codebase-read mode.
 func (s *BacklogService) resolveCodebaseWorkDir(ctx context.Context, repoPath string, workSession *session.ItemSessionSummary) (dir string, exists bool) {
-	dir = repoPath
-	if workSession != nil {
-		if wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, workSession.SessionUUID); wtErr == nil && wt.WorktreePath != "" {
-			dir = wt.WorktreePath
-		}
+	if workSession == nil {
+		// No work session at all for this item — repoPath is the only directory
+		// available, and there is nothing item-specific it could be masking.
+		info, statErr := os.Stat(repoPath)
+		return repoPath, statErr == nil && info.IsDir()
 	}
-	info, statErr := os.Stat(dir)
-	return dir, statErr == nil && info.IsDir()
+	wt, wtErr := s.storage.GetWorktreeDataBySessionUUID(ctx, workSession.SessionUUID)
+	if wtErr != nil || wt.WorktreePath == "" {
+		// A work session exists but its dedicated worktree cannot be resolved. Refuse
+		// the repoPath fallback rather than risk granting the reviewer live access to
+		// the shared main checkout's current, arbitrary working-tree state (BUG-045).
+		return repoPath, false
+	}
+	info, statErr := os.Stat(wt.WorktreePath)
+	return wt.WorktreePath, statErr == nil && info.IsDir()
 }
 
 // getWorkSessionDiff returns the git diff for the given work session. It prefers the
