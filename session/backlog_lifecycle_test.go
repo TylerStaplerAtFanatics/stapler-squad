@@ -2881,6 +2881,82 @@ func TestHandleReviewSessionExited_NoVerdict_NotifiesAndInvokesAutoReopener(t *t
 	assert.Contains(t, notifier.titles(), "Review session ended without a verdict")
 }
 
+// TestHandleReviewSessionExited_NoVerdict_NotifiesOnlyOnce_AcrossRepeatedSweepTicks
+// is a BUG-046 regression test. Live evidence: item 12981e9d's "Review session
+// ended without a verdict" notification reached occurrence_count 95 over ~94
+// minutes (one per ~60s sweep tick). Root cause: reconcileUnprocessedReviewVerdicts
+// re-detects the same dead review session on every tick because
+// handleReviewSessionExited's no-verdict branch never transitions the item out
+// of "review" when autoReopenWithBackoffGate's downstream "bouncing" gate is
+// mid-backoff — so the sweep's own "already consumed" guard (which only
+// catches "item left review and came back") never trips, and the identical
+// dead SessionUUID gets reprocessed — same WARNING log, same notify() call —
+// forever, until the gate finally opens.
+//
+// This reproduces the realistic timeline: tick 1 fires before any "bouncing"
+// row exists (the first-ever detection of this failure shape, same as before
+// this fix — RemediationDue's own ungated-until-first-detected default means
+// the reopen genuinely gets attempted here too), then a "bouncing" row opens
+// mid-backoff in between ticks (the shape reconcileBouncingItems produces once
+// its own bounceThreshold trips, mirroring TestMarkAbandonedReview_SkipsRespawn_WhenBouncingGateNotDue's
+// identical seed for the live DB state BUG-043 found on this same item), then
+// tick 2 reprocesses the SAME dead SessionUUID with the gate now blocked.
+// Pre-fix, tick 2 notifies again regardless of the gate; post-fix it must not.
+func TestHandleReviewSessionExited_NoVerdict_NotifiesOnlyOnce_AcrossRepeatedSweepTicks(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, reviewIS, _, _ := newHandleReviewSessionExitedFixture(t, storage, nil)
+
+	listener := NewBacklogLifecycleListener(storage)
+	reopener := newFakeAutoReopenSpawner()
+	listener.SetAutoReopener(reopener)
+	notifier := &fakeNotifier{}
+	listener.SetNotifier(notifier)
+
+	er := storage.repo.(*EntRepository)
+
+	// Sweep tick 1 (forcePush=true, matching reconcileUnprocessedReviewVerdicts):
+	// no "bouncing" row exists yet, so RemediationBlocked reports false (ungated
+	// default) — this is a genuinely fresh detection and must notify. The reopen
+	// is ungated too for the same reason, so AutoReopenAfterFailedReview fires.
+	listener.handleReviewSessionExited(ctx, reviewIS, true)
+
+	select {
+	case <-reopener.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for AutoReopenAfterFailedReview on tick 1 (ungated — no bouncing row yet)")
+	}
+	assert.Equal(t, []string{"Review session ended without a verdict"}, notifier.titles(),
+		"tick 1 is a fresh detection and must notify")
+
+	// Between ticks: a "bouncing" stuck row opens mid-backoff — mirrors
+	// reconcileBouncingItems tripping its own bounceThreshold independently,
+	// the live DB state BUG-043 found on this exact item.
+	_, err := er.MarkStuck(ctx, reviewIS.BacklogItemID, domain.StuckReasonBouncing, BacklogStatusReview, "bounced previously")
+	require.NoError(t, err)
+	future := time.Now().Add(2 * time.Hour)
+	_, err = er.RecordRemediationAttempt(ctx, reviewIS.BacklogItemID, domain.StuckReasonBouncing, 1, &future)
+	require.NoError(t, err)
+
+	// Sweep tick 2: the item never left "review" (nothing transitioned it), so
+	// reconcileUnprocessedReviewVerdicts' own guard doesn't skip it — the SAME
+	// dead SessionUUID is reprocessed. The bouncing gate is now mid-backoff, so
+	// the reopen correctly no-ops (autoReopenWithBackoffGate's own gating is
+	// unchanged) — and, with this fix, must NOT notify a second time either.
+	listener.handleReviewSessionExited(ctx, reviewIS, true)
+
+	select {
+	case id := <-reopener.called:
+		t.Fatalf("bouncing gate is mid-backoff on tick 2 — AutoReopenAfterFailedReview must not be invoked, got call for item=%s", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	assert.Equal(t, []string{"Review session ended without a verdict"}, notifier.titles(),
+		"must not notify a second time for the same dead session once the bouncing gate is blocking (BUG-046)")
+}
+
 // TestBacklogLifecycleListener_OnSessionExited_ReviewSession_RoutesToHandleReviewSessionExited
 // verifies that onSessionExited dispatches Role==SessionRoleReview to
 // handleReviewSessionExited (proven by observing its FAIL-verdict side effect —
