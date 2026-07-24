@@ -32,11 +32,26 @@ import (
 // session.CachingPipelineEngine's own default-mode fallback for the nil-engine case
 // (many tests construct a BacklogService without one). Used by SpawnSessionFromItem
 // (Epic 1.5, Story 1.5.5) to build the prompt handed to inst.Prompt / AutonomousDriver.
-func (s *BacklogService) initialPromptFor(item *session.BacklogItemData, priorSessions []session.ItemSessionSummary) string {
+//
+// Appends a one-time "other active sessions in this workspace" nudge (AC5) when peers
+// exist — best-effort: detection/lookup failures are logged and swallowed rather than
+// blocking session creation, since this is a convenience nudge, not required context.
+func (s *BacklogService) initialPromptFor(ctx context.Context, item *session.BacklogItemData, priorSessions []session.ItemSessionSummary) string {
+	var prompt string
 	if s.pipelineEngine == nil {
-		return session.BuildTokenBudgetedPrompt(item, priorSessions)
+		prompt = session.BuildTokenBudgetedPrompt(item, priorSessions)
+	} else {
+		prompt = s.pipelineEngine.InitialPromptFor(item, priorSessions)
 	}
-	return s.pipelineEngine.InitialPromptFor(item, priorSessions)
+	return prompt + s.workspacePeersBlockFor(ctx, item.RepoPath)
+}
+
+// workspacePeersBlockFor returns the rendered workspace-peers nudge for repoPath, or ""
+// on any detection/lookup failure or when repoPath is empty. Delegates to
+// session.WorkspacePeersBlockForPath, shared with SessionService.CreateSession so the two
+// callers can't drift on how the nudge is built.
+func (s *BacklogService) workspacePeersBlockFor(ctx context.Context, repoPath string) string {
+	return session.WorkspacePeersBlockForPath(ctx, s.storage, repoPath)
 }
 
 // triagePromptFor returns s.pipelineEngine.TriagePromptFor(...) when pipelineEngine is
@@ -647,7 +662,7 @@ func (s *BacklogService) spawnSessionAfterGates(
 
 	// 8. Build agent prompt. Routed through PipelineEngine (Epic 1.5, Story 1.5.5) so a
 	// non-default PipelineMode changes what inst.Prompt / AutonomousDriver's goal sees.
-	prompt := s.initialPromptFor(item, priorSessions)
+	prompt := s.initialPromptFor(ctx, item, priorSessions)
 
 	// 9. Generate session title.
 	// On reopen, append a revision number (r2, r3…) based on how many work sessions
