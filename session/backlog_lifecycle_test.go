@@ -1025,6 +1025,64 @@ func TestMarkAbandonedReview_AutoRespawnsReview_OncePastGrace(t *testing.T) {
 	assert.Equal(t, string(BacklogStatusReview), fetched.Status)
 }
 
+// TestMarkAbandonedReview_SkipsRespawn_WhenBouncingGateNotDue is a BUG-043
+// regression test. Live trace (2026-07-23, three real backlog items) found
+// that a respawned review's FAIL verdict only leads anywhere via
+// handleReviewSessionExited's autoReopenWithBackoffGate, which is gated on
+// the SEPARATE StuckReasonBouncing backoff clock — not the abandoned_review
+// one markAbandonedReview itself checks. When bouncing's own gate is mid
+// backoff (already tripped by earlier bounce cycles), every abandoned_review
+// respawn keeps producing a correct-but-discarded verdict, silently burning
+// through the 5-attempt cap for zero forward progress, until abandoned_review
+// itself parks with a "use Reset to retry" notification that never mentions
+// bouncing was the real blocker. markAbandonedReview must check whether
+// bouncing is currently blocking a reopen BEFORE spending an abandoned_review
+// attempt on a respawn that cannot possibly help.
+func TestMarkAbandonedReview_SkipsRespawn_WhenBouncingGateNotDue(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	item := newStuckReviewTestItem(t, storage, ReviewVerdictUnverifiable, true, false)
+
+	listener := NewBacklogLifecycleListener(storage)
+	respawner := newFakeReviewRespawner()
+	listener.SetReviewRespawner(respawner)
+
+	er := storage.repo.(*EntRepository)
+
+	// Seed a "bouncing" stuck row for this item that already consumed an
+	// attempt and is mid-backoff (next_remediation_at well in the future) —
+	// mirrors the live DB state found on all three affected items (BUG-043):
+	// a prior bounce cycle already tripped this gate independently of
+	// abandoned_review's own schedule.
+	_, err := er.MarkStuck(ctx, item.ID, domain.StuckReasonBouncing, BacklogStatusReview, "bounced previously")
+	require.NoError(t, err)
+	future := time.Now().Add(2 * time.Hour)
+	_, err = er.RecordRemediationAttempt(ctx, item.ID, domain.StuckReasonBouncing, 1, &future)
+	require.NoError(t, err)
+
+	// First tick opens the abandoned_review row (still within grace).
+	listener.reconcileStuckReviewItems(ctx, er)
+	// Past grace: normally respawn-worthy.
+	backdateStuckFirstDetected(t, er, item.ID, domain.StuckReasonAbandonedReview, time.Now().Add(-20*time.Minute))
+
+	listener.reconcileStuckReviewItems(ctx, er)
+	select {
+	case id := <-respawner.calls:
+		t.Fatalf("must not respawn while the bouncing reopen gate is not due — the resulting verdict could not be acted on, got call for item=%s", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// The abandoned_review attempt budget must be untouched — the whole point
+	// is not to waste it on a foregone conclusion.
+	rows, err := storage.FindOpenStuckStates(ctx)
+	require.NoError(t, err)
+	row, ok := findOpenStuckStateFor(rows, item.ID, domain.StuckReasonAbandonedReview)
+	require.True(t, ok, "abandoned_review row must still be open")
+	assert.Equal(t, int32(0), row.RemediationAttempts, "must not consume an abandoned_review attempt on a respawn blocked downstream by the bouncing gate")
+}
+
 // TestMarkAbandonedReview_NoRespawn_WhenNoReviewRespawnerConfigured verifies
 // markAbandonedReview degrades gracefully (notification only, no panic) when no
 // ReviewRespawner has been wired — the same nil-safe default every other
