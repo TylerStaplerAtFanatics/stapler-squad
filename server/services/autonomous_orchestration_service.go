@@ -394,8 +394,47 @@ func (a *AutonomousOrchestrationService) onAutonomousDriverComplete(instanceName
 						// any open autonomous_stuck row here even though the item's own status
 						// transition (if any) happens elsewhere. Only when outcome.Done — a stuck
 						// review run must not immediately undo the MarkStuck call a few lines up.
-						if outcome.Done {
+						switch {
+						case outcome.Done:
 							a.resolveAutonomousStuck(ctx, concreteStorage, item.ID)
+						case session.BacklogStatus(item.Status) != session.BacklogStatusReview:
+							// BUG-048: the item already moved on from "review" by the time this
+							// stuck exit was processed — most likely session/backlog_lifecycle.go's
+							// bouncing gate already reopened it via a different, earlier
+							// review-session-exit event. The condition this autonomous_stuck row
+							// represents no longer describes the item's current state; resolve it
+							// now instead of leaving it open and drifting arbitrarily overdue
+							// forever (the original bug: nothing else was ever going to revisit
+							// this row once opened).
+							a.resolveAutonomousStuck(ctx, concreteStorage, item.ID)
+						default:
+							// BUG-048: still genuinely stuck in review. A review-role autonomous
+							// driver that hits its turn cap without a DONE signal does NOT kill
+							// the underlying tmux/CLI session — AutonomousDriver.run
+							// (session/autonomous_driver.go) simply stops injecting turns — so the
+							// ItemSession row stays EndedAt == nil ("active") indefinitely. That
+							// single fact hides this item from both existing subsystems that could
+							// otherwise recover it:
+							//   - session/backlog_lifecycle.go's bouncing gate only ever fires from
+							//     handleReviewSessionExited, itself only invoked on a genuine
+							//     Instance EventExited/EventStopped — which will never arrive here,
+							//     since nothing is left driving this session toward exit.
+							//   - The abandoned_review detector's FindStuckReviewItems query
+							//     explicitly excludes items with any EndedAt-nil review/work
+							//     session (session/storage_backlog.go).
+							// Deliberately do NOT spawn a competing review session here —
+							// session/backlog_lifecycle.go's abandoned_review detector (itself
+							// already bouncing-gate-aware, see BUG-043's RemediationBlocked fix)
+							// is the sole intended owner of that responsibility; a second
+							// independent respawner racing it here would repeat the exact
+							// "two subsystems chase the same condition" shape BUG-041/043/046
+							// already found and fixed. Instead, close the visibility gap: end
+							// this ItemSession row so the item becomes visible to that existing,
+							// already-correct machinery on the very next ReconcileStuck tick
+							// (~60s) — bookkeeping only, no new actor, no session spawn.
+							if endErr := concreteStorage.UpdateItemSessionEnded(ctx, is.ID, time.Now()); endErr != nil {
+								log.Warn("[AutonomousDriver] onAutonomousDriverComplete: UpdateItemSessionEnded(review, stuck) failed", "item", item.ID, "itemSession", is.ID, "err", endErr)
+							}
 						}
 						log.Info("[AutonomousDriver] skipping status transition for role", "role", is.Role, "item", item.ID)
 						return
