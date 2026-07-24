@@ -1715,6 +1715,30 @@ func (l *BacklogLifecycleListener) markAbandonedReview(ctx context.Context, er *
 		return
 	}
 
+	// BUG-043: a respawned review's FAIL/PARTIAL/UNVERIFIABLE verdict only
+	// leads anywhere via handleReviewSessionExited's autoReopenWithBackoffGate,
+	// which is gated on the SEPARATE StuckReasonBouncing backoff clock, not
+	// this one. When bouncing's own gate is currently closed (mid-backoff or
+	// parked), respawning here cannot possibly make progress — the diff hasn't
+	// changed since the last respawn (nothing reopened the item for rework),
+	// so a fresh headless review would just recompute the identical verdict,
+	// which would then hit the exact same closed bouncing gate again. Checked
+	// BEFORE RemediationDue below so a foregone-conclusion respawn never
+	// consumes an abandoned_review attempt — confirmed live 2026-07-23 (three
+	// real items burned their entire 5-attempt abandoned_review budget this
+	// way, each attempt producing a correct FAIL verdict that a not-due
+	// bouncing row silently discarded every time, until abandoned_review
+	// itself parked with a "use Reset to retry" notification that never
+	// mentioned bouncing was the actual blocker). Best-effort: a query error
+	// fails open (proceeds with the respawn) rather than silently stalling an
+	// item that might otherwise be perfectly fine to retry.
+	if blocked, blockedErr := l.storage.RemediationBlocked(ctx, itemID, domain.StuckReasonBouncing); blockedErr != nil {
+		log.WarningLog.Printf("[BacklogLifecycle] markAbandonedReview RemediationBlocked(bouncing) item=%s: %v", itemID, blockedErr)
+	} else if blocked {
+		log.WarningLog.Printf("[BacklogLifecycle] markAbandonedReview item=%s: skipping respawn — a fresh verdict would be discarded by the bouncing reopen gate, which is not due yet; not spending an abandoned_review attempt on a foregone conclusion", itemID)
+		return
+	}
+
 	due, justParked, gateErr := l.storage.RemediationDue(ctx, itemID, domain.StuckReasonAbandonedReview)
 	if gateErr != nil {
 		log.WarningLog.Printf("[BacklogLifecycle] markAbandonedReview RemediationDue item=%s: %v", itemID, gateErr)
