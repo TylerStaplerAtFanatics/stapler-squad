@@ -9,6 +9,45 @@ import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import styles from "./XtermTerminal.module.css";
 import { loadTerminalConfig, darkTerminalTheme, lightTerminalTheme, type TerminalConfig } from "@/lib/config/terminalConfig";
+import type { ResizeDimensions } from "@/lib/terminal/types";
+
+/**
+ * Fixed cadence (ms) of the decoupled resize sampler. See
+ * project_plans/terminal-resize-fit-loop/decisions/ADR-002-decoupled-sampler-tick-semantics.md
+ */
+const SAMPLE_INTERVAL_MS = 50;
+
+/**
+ * Bounded give-up threshold (~1s of sampling) for sustained oscillation. See
+ * project_plans/terminal-resize-fit-loop/decisions/ADR-002-decoupled-sampler-tick-semantics.md
+ */
+const MAX_SAMPLES = 20;
+
+export interface ShouldScheduleFitResult {
+  schedule: boolean;
+  nextPending: ResizeDimensions | null;
+}
+
+/**
+ * Pure Reading-A dead-band decision: a fit() should only be scheduled once a
+ * proposed candidate matches the immediately preceding sampled candidate
+ * exactly (not merely "differs from applied"). See ADR-002 §2 for the full
+ * derivation of why Reading A is correct and Reading B is not.
+ */
+export function shouldScheduleFit(
+  proposed: ResizeDimensions | undefined,
+  applied: ResizeDimensions,
+  pending: ResizeDimensions | null
+): ShouldScheduleFitResult {
+  if (!proposed) return { schedule: false, nextPending: null };
+  if (proposed.cols === applied.cols && proposed.rows === applied.rows) {
+    return { schedule: false, nextPending: null };
+  }
+  if (pending && pending.cols === proposed.cols && pending.rows === proposed.rows) {
+    return { schedule: true, nextPending: null };
+  }
+  return { schedule: false, nextPending: proposed };
+}
 
 export interface XtermTerminalProps {
   /**
@@ -256,6 +295,75 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
     let lastContainerSize = { width: 0, height: 0 };
     let resizeCount = 0;
     let resizeTimeout: NodeJS.Timeout | null = null;
+
+    // Decoupled resize sampler (ADR-002): a fixed-cadence re-sampling loop,
+    // started by the adaptive debounce below but never reset by further
+    // ResizeObserver deliveries once running. See ADR-002 for the full
+    // algorithm and rationale.
+    let samplerActive = false;
+    let sampleTimeout: NodeJS.Timeout | null = null;
+    let sampleCount = 0;
+    let pendingProposedDims: ResizeDimensions | null = null;
+
+    const stopSampler = () => {
+      samplerActive = false;
+      pendingProposedDims = null;
+      sampleCount = 0;
+      if (sampleTimeout) {
+        clearTimeout(sampleTimeout);
+        sampleTimeout = null;
+      }
+    };
+
+    const sampleTick = () => {
+      if (!fitAddonRef.current || !terminalRef.current) {
+        stopSampler();
+        return;
+      }
+
+      const proposed = fitAddonRef.current.proposeDimensions();
+      const applied: ResizeDimensions = {
+        cols: terminalRef.current.cols,
+        rows: terminalRef.current.rows,
+      };
+      const result = shouldScheduleFit(proposed, applied, pendingProposedDims);
+
+      if (result.schedule) {
+        fitAddonRef.current.fit();
+        console.log(`[XtermTerminal] Sampler confirmed resize, fit applied: ${terminalRef.current.cols} cols × ${terminalRef.current.rows} rows`);
+        stopSampler();
+        return;
+      }
+
+      if (result.nextPending === null) {
+        // At rest (proposed equals applied) or proposeDimensions() returned undefined.
+        stopSampler();
+        return;
+      }
+
+      pendingProposedDims = result.nextPending;
+      sampleCount++;
+
+      if (sampleCount >= MAX_SAMPLES) {
+        console.warn('[XtermTerminal] Resize did not converge after 20 samples; giving up');
+        // Full reset (not a partial abandon): give-up must not leave the
+        // sampler permanently inert, since startSamplerIfNeeded() is a
+        // no-op whenever samplerActive is already true. See ADR-002.
+        stopSampler();
+        return;
+      }
+
+      sampleTimeout = setTimeout(sampleTick, SAMPLE_INTERVAL_MS);
+    };
+
+    const startSamplerIfNeeded = () => {
+      if (samplerActive) return;
+      samplerActive = true;
+      sampleCount = 0;
+      pendingProposedDims = null;
+      sampleTick();
+    };
+
     const resizeObserver = new ResizeObserver((entries: ResizeObserverEntry[]) => {
       if (!fitAddonRef.current || !terminalRef.current) return;
 
@@ -285,10 +393,12 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
           clearTimeout(resizeTimeout);
         }
 
-        // Schedule fit with adaptive debounce
+        // Schedule sampler start with adaptive debounce. The debounce only
+        // decides *when to start* the sampler for a burst of RO deliveries;
+        // once started, the sampler's own tick chain is never reset by
+        // further RO deliveries (ADR-002).
         resizeTimeout = setTimeout(() => {
-          fitAddonRef.current?.fit();
-          console.log(`[XtermTerminal] Terminal dimensions AFTER fit: ${terminalRef.current?.cols} cols × ${terminalRef.current?.rows} rows`);
+          startSamplerIfNeeded();
           resizeTimeout = null;
         }, debounceDelay);
       }
@@ -301,6 +411,7 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
       if (resizeTimeout) {
         clearTimeout(resizeTimeout);
       }
+      stopSampler();
       resizeObserver.disconnect();
       dataDisposable.dispose();
       selectionDisposable.dispose();
