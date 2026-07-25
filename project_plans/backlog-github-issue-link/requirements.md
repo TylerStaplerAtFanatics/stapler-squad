@@ -29,8 +29,10 @@ current `origin/main` — see note below)
   both plugins' `Fetch` from `issue.HTMLURL` / `pr.HTMLURL`.
 - `BacklogItemData` (`session/repository.go:257-282`) has `ExternalID` but no
   `ExternalURL`.
-- `BacklogItemUpdate` (`session/repository.go:301-313`) has no URL field either
-  (not needed for AC6 — see below, the backfill bypasses this struct).
+- `BacklogItemUpdate` (`session/repository.go:301-313`) has no URL field either.
+  Per the resolved design (plan.md, ADR-001), the AC6 backfill routes *through*
+  this struct — adding `ExternalURL *string` to it — and only bypasses the
+  `UserModifiedFields` local-wins gate, not the struct itself.
 - ent schema `session/ent/schema/backlog_item.go` has `external_id` (optional
   string) but no `external_url` column.
 - `backlogItemToData` / `CreateBacklogItem` (`session/ent_repository_backlog.go`)

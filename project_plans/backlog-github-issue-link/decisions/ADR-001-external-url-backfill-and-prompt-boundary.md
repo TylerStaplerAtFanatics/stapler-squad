@@ -102,6 +102,35 @@ the block the agent is told not to treat as instructions — a future reader
 "simplifying" the two lines back into one location is the exact mistake
 this ADR exists to prevent.
 
+## Decision 3: the instruction line references `owner/repo#N`, not the raw URL
+
+Added during `sdd:4-validate`'s pre-mortem pass, which flagged as a P1 risk
+that the feature's entire value proposition (GitHub auto-closing an issue on
+merge) was never verified against GitHub's actual behavior. Checked directly
+against GitHub's documentation
+(https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue,
+fetched 2026-07-25): the closing-keyword parser recognizes only `KEYWORD #N`
+(same-repo) or `KEYWORD OWNER/REPO#N` (cross-repo) — **a bare full URL is
+not a documented, recognized reference form**.
+
+The original design (`closingKeywordFor` + raw `item.ExternalURL`) would have
+rendered `Fixes https://github.com/acme/widget/issues/42` — plausible-looking
+text that does not, per GitHub's own documented syntax, actually trigger
+auto-close. Every AC and test in this plan could have passed while the
+feature silently failed at its one real job.
+
+**Chosen**: add `githubShortRefFor(url string) string`, extracting
+`owner/repo#N` from the same `ExternalURL` the fact line already carries, and
+use *that* (not the raw URL) as what follows the keyword in the instruction
+line. The fact line is unaffected — it's read by a human/agent for context,
+not parsed by GitHub, so it keeps showing the full URL for clarity.
+
+**Rejected alternative**: leaving the raw-URL design in place and adding a
+non-blocking "recommend a manual post-ship verification" note. Rejected
+because the actual answer was cheaply obtainable by reading GitHub's own
+documentation rather than deferred to an easy-to-skip manual step that may
+never happen — the pre-mortem's own top-ranked failure mode.
+
 ## Consequences
 
 - A future change to `SyncOne` must keep the `ExternalURL` backfill

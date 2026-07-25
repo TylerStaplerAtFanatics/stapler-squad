@@ -15,6 +15,7 @@
 | `ExternalURL` | The full `html_url` of the originating GitHub issue/PR (e.g. `https://github.com/acme/widget/issues/42`), carried on `BacklogItemData`, `BacklogItemUpdate`, and the `BacklogItem` ent entity/DB column. Capped at 500 chars. | Plain `string`, not a newtype — see Pattern Decisions for why. Empty string means "no linked issue" (manually-created item, or not yet backfilled). |
 | `ExternalID` | The bare issue/PR number as a string (e.g. `"42"`), already existing before this change. Unique only within a given `ItemSource` (two repos can each have issue #1). | Pre-existing field; `ExternalURL` is added as its sibling, never a lookup key. |
 | `closingKeywordFor` | New Go function in `session/backlog_context.go`: given an `ExternalURL`, deterministically returns the fully-punctuated instruction prefix — `"Fixes "` (space, no colon) for `/issues/` URLs or `"Related: "` (colon+space) for `/pull/`-or-unrecognized URLs — matching AC3's literal wording exactly. Never left to agent-side inference (AC3). | Pure function, `strings.Contains`-based, no `net/url` parsing needed. Returns the punctuation itself so the caller never has to assemble it (see Task 4.1.2b) — this removes the punctuation-assembly responsibility from the caller entirely. |
+| `githubShortRefFor` | New Go function in `session/backlog_context.go`: given an `ExternalURL`, extracts the `"owner/repo#N"` reference GitHub's closing-keyword parser actually recognizes (e.g. `"acme/widget#42"`). | Added during sdd:4-validate to fix a confirmed defect: GitHub's documented closing-keyword syntax does NOT accept a bare full URL, only `#N`/`owner/repo#N` — see Story 4.1.1. Used only in the instruction line, never the fact line (which still shows the full URL for human readability). |
 | `BacklogItemData` | The domain-model struct (`session/repository.go:257-282`) that all repository methods return/accept; the ent-independent representation of a backlog item. | Gains `ExternalURL string` field. |
 | `BacklogItemUpdate` | The mutable-fields struct (`session/repository.go:301-313`) passed to `UpdateBacklogItem`; every field is a pointer, `nil` means "leave unchanged." | Gains `ExternalURL *string`. `UpdateBacklogItem` itself has no gating logic — all local-wins/backfill decisions live in the caller (`SyncOne`). |
 | `SyncOne` | `session/backlog_sync.go:195-303` — the per-source sync tick: fetches items via the plugin, creates new ones, and applies local-wins updates to existing ones. | The "ExternalURL backfill" is the unconditional write of `ExternalURL` on the existing-item branch, described below. |
@@ -22,7 +23,7 @@
 | `ExternalURL` backfill | The behavior added to `SyncOne`'s existing-item branch: `if existing.ExternalURL == "" && data.ExternalURL != "" { update.ExternalURL = &data.ExternalURL; anyField = true }` — bypasses `UserModifiedFields` local-wins entirely, unconditional per AC6. | Known limitation (accepted, not a bug): only fires for items still returned by the plugin's `state=open` Fetch; closed/renamed-then-closed issues never get backfilled. |
 | `GetBacklogItemByExternalID` | Existing lookup (`session/ent_repository_backlog.go:466`), scoped by `(sourceID, externalID)`. Unaffected by this change — `ExternalURL` is never a lookup key. | No new index, no new collision risk. |
 | Fact line | The new `"Linked GitHub Issue/PR: <url>"` line rendered inside `BuildSessionInitialPrompt`'s inert-data block — treated as *data about the item*, like Title/Priority. | See ADR-001, Decision 2. |
-| Instruction line | The new `closingKeywordFor`-derived line (e.g. `"...include the line `Fixes https://github.com/acme/widget/issues/42` in the PR body..."` — note: no colon, since `closingKeywordFor` now returns `"Fixes "` with the space already included) rendered *outside* the inert-data block, alongside the existing plan.md pointer — a genuine first-party instruction, never inside the "treat as inert data" section. | See ADR-001, Decision 2. |
+| Instruction line | The new line rendered *outside* the inert-data block (e.g. `` "...include the line `Fixes acme/widget#42` in the PR body..." `` — `closingKeywordFor`'s output concatenated directly with `githubShortRefFor`'s output, no separate colon), alongside the existing plan.md pointer — a genuine first-party instruction, never inside the "treat as inert data" section. | See ADR-001, Decisions 2 and 3. |
 
 ---
 
@@ -109,8 +110,8 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
 - AC2 (part 1): `BacklogItem` ent entity/DB column gains `external_url`.
   - *Given* `session/ent/schema/backlog_item.go` has no `external_url` field, *When* `field.String("external_url").Optional()` is added to `Fields()` and `go generate ./session/ent` is run, *Then* `session/ent/backlogitem.go` contains a plain `ExternalURL string` struct field (not `*string`) and `session/ent/migrate/schema.go` contains a `{Name: "external_url", Type: field.TypeString, Nullable: true}` column entry.
 - AC2 (part 2): pre-existing rows read back `ExternalURL == ""`, no NULL panic.
-  - *Given* a SQLite DB with a `backlog_items` row created before this migration (so `external_url` is `NULL` after auto-migration adds the column), *When* that row is fetched via `r.client.BacklogItem.Get(ctx, id)`, *Then* `item.ExternalURL == ""` and no panic occurs — because ent's generated scan code reads a `sql.NullString` and unconditionally assigns `.String` (confirmed identical to the existing `Notes` field's scan behavior at `session/ent/backlogitem.go:233`).
-**Files**: `session/ent/schema/backlog_item.go`, `session/ent/backlogitem.go` (generated), `session/ent/migrate/schema.go` (generated), `session/ent/backlogitem_create.go` (generated), `session/ent/backlogitem_update.go` (generated), `session/ent/mutation.go` (generated)
+  - *Given* a SQLite DB with a `backlog_items` row created before this migration (so `external_url` is `NULL` after auto-migration adds the column), *When* that row is fetched via `r.client.BacklogItem.Get(ctx, id)`, *Then* `item.ExternalURL == ""` and no panic occurs — because ent's generated scan code reads a `sql.NullString` and only assigns `.String` to the struct field when `value.Valid` is true, otherwise leaving the field at Go's zero value for `string` (`""`) — confirmed identical to the existing `Notes` field's scan behavior at `session/ent/backlogitem.go:229-234`.
+**Files**: `session/ent/schema/backlog_item.go`, `session/ent/backlogitem.go` (generated), `session/ent/migrate/schema.go` (generated), `session/ent/backlogitem_create.go` (generated), `session/ent/backlogitem_update.go` (generated), `session/ent/mutation.go` (generated), `session/ent_repository_backlog_test.go` (new file)
 
 ##### Task 1.1.1a: Add `external_url` field to schema (~2 min)
 - In `session/ent/schema/backlog_item.go`, in `Fields()`, add immediately after the existing `field.String("external_id").Optional(),` block (currently lines 55-56):
@@ -126,6 +127,10 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
 - Run: `go generate ./session/ent` (from repo root; resolves to `go run -mod=mod entgo.io/ent/cmd/ent generate --feature sql/upsert ./schema` per `session/ent/generate.go` — do NOT omit `--feature sql/upsert`, that flag is already baked into the generate directive so a plain `go generate ./session/ent` picks it up automatically).
 - Run: `go build ./session/...` and confirm it compiles — it is expected to **pass** at this checkpoint. Adding a purely additive `Optional()` field to the ent schema and regenerating never breaks a build on its own; nothing elsewhere in the codebase is required to reference a newly-added struct field for `go build` to succeed. This step is an early sanity check that codegen produced valid Go (i.e. that `--feature sql/upsert` wasn't dropped and the generated files parse/typecheck), not a red flag if it succeeds. If `go build ./session/ent/...` in particular fails, the codegen step was wrong.
 - Files: `session/ent/backlogitem.go`, `session/ent/migrate/schema.go`, `session/ent/backlogitem_create.go`, `session/ent/backlogitem_update.go`, `session/ent/mutation.go` (all regenerated, no hand-edits)
+
+##### Task 1.1.1c: Add the NULL-safety migration test (~4 min) — closes sdd:4-validate Gap 1
+- In a new file `session/ent_repository_backlog_test.go` (colocated with `session/ent_repository_backlog.go`, mirroring the `TestEntRepository_*` naming/placement convention used for `session/ent_repository.go` in `session/ent_repository_test.go`), add `TestGetBacklogItem_ExternalURL_ReadsEmptyStringForPreExistingRow`: create a `BacklogItem` directly via `repo.client.BacklogItem.Create()` without setting `external_url` (simulating a row written before this column existed, so it scans from SQL `NULL`), then `repo.client.BacklogItem.Get(ctx, id)` and assert `ExternalURL == ""` with no panic. This is the actual test proving AC2's NULL-safety claim — Task 1.1.1b's build-passing check alone doesn't exercise the runtime scan path.
+- Files: `session/ent_repository_backlog_test.go` (new)
 
 ---
 
@@ -152,7 +157,7 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
 **Acceptance Criteria**:
 - AC2 (part 3): the field round-trips through `CreateBacklogItem`/`GetBacklogItem`.
   - *Given* `storage.CreateBacklogItem(ctx, BacklogItemData{Title: "t", ExternalURL: "https://github.com/acme/widget/issues/42", ...})`, *When* the created item is refetched via `storage.GetBacklogItem(ctx, created.ID)`, *Then* `refetched.ExternalURL == "https://github.com/acme/widget/issues/42"`.
-**Files**: `session/ent_repository_backlog.go`
+**Files**: `session/ent_repository_backlog.go`, `session/backlog_lifecycle_test.go`
 
 ##### Task 1.2.2a: Add `ExternalURL` to `backlogItemToData` converter (~2 min)
 - In `session/ent_repository_backlog.go`, in `backlogItemToData` (lines 21-50), add `ExternalURL: item.ExternalURL,` immediately after `ExternalID:         item.ExternalID,` (line 36).
@@ -170,6 +175,10 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
   }
   ```
 - Files: `session/ent_repository_backlog.go`
+
+##### Task 1.2.2c-2: Add the Create/Get round-trip test (~3 min) — closes sdd:4-validate Gap 2
+- In `session/backlog_lifecycle_test.go`, following that file's existing `storage.CreateBacklogItem(ctx, itemData)` pattern, add `TestCreateBacklogItem_ExternalURL_RoundTripsThroughGetBacklogItem`: create an item with `ExternalURL` set, refetch via `storage.GetBacklogItem`, assert the value round-trips exactly.
+- Files: `session/backlog_lifecycle_test.go`
 
 ##### Task 1.2.2d: Verify Phase 1 compiles standalone (~2 min)
 - Run: `go build ./session/...` — should now compile cleanly (all `ExternalURL` references in `session/` package now resolve; plugin/sync/prompt files from later phases don't yet reference it, so no new compile errors are introduced by this phase).
@@ -288,17 +297,24 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
 ### Epic 4.1: `closingKeywordFor` + fact/instruction line rendering
 **Goal**: `BuildSessionInitialPrompt` renders the linked-issue fact line and a deterministic closing-keyword instruction line whenever `ExternalURL` is non-empty, with the fact line inside and the instruction line outside the existing inert-data boundary (ADR-001, Decision 2). No changes needed to `BuildTokenBudgetedPrompt` or `WriteBacklogContextFile` — both inherit automatically.
 
-#### Story 4.1.1: Add `closingKeywordFor` helper
-**As a** developer, **I want** a pure function mapping a linked-issue URL to its fully-punctuated GitHub closing-keyword prefix, **so that** the agent is told deterministically (never left to inference) whether to write `Fixes ` or `Related: `.
+#### Story 4.1.1: Add `closingKeywordFor` and `githubShortRefFor` helpers
+**As a** developer, **I want** pure functions mapping a linked-issue URL to (a) its fully-punctuated GitHub closing-keyword prefix and (b) the actual `owner/repo#N` reference GitHub's closing-keyword parser recognizes, **so that** the agent is told deterministically (never left to inference) both what keyword to write and what reference will actually trigger GitHub's auto-close/cross-reference behavior.
+
+**IMPORTANT — corrects a confirmed defect found during sdd:4-validate's pre-mortem**: GitHub's documented closing-keyword syntax (https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue, confirmed via direct fetch on 2026-07-25) recognizes only two reference forms: `KEYWORD #N` (same-repo) or `KEYWORD OWNER/REPO#N` (cross-repo) — **a bare full URL like `https://github.com/acme/widget/issues/42` is NOT a documented/recognized closing-keyword reference form**. The original plan (now corrected below) rendered the instruction line as `Fixes <full-url>`, which would silently fail to trigger GitHub's auto-close on merge — passing every test and AC in this plan while not achieving the feature's actual purpose. The fix: derive the `owner/repo#N` short reference from `ExternalURL` and use that (not the raw URL) as what follows the keyword in the instruction line. The fact line (Task 4.1.2a) is unaffected — it's human-readable context, not parsed by GitHub, so it still shows the full URL.
+
 **Acceptance Criteria**:
 - AC3 (part 1): `closingKeywordFor` returns the correct, fully-punctuated keyword for each URL shape — the returned string is used directly by the caller with no added punctuation, so it must match AC3's literal wording exactly, trailing space included.
   - *Given* `"https://github.com/acme/widget/issues/42"`, *When* `closingKeywordFor(url)` is called, *Then* it returns `"Fixes "` (trailing space, no colon).
   - *Given* `"https://github.com/acme/widget/pull/17"`, *When* `closingKeywordFor(url)` is called, *Then* it returns `"Related: "` (trailing colon+space).
   - *Given* `""` (empty, though callers already gate on non-empty per AC4), *When* `closingKeywordFor(url)` is called, *Then* it returns `"Related: "` (safe default) without panicking.
   - *Given* an unrecognized shape like `"https://example.com/foo"`, *When* `closingKeywordFor(url)` is called, *Then* it returns `"Related: "` (safe fallback).
+- AC3 (part 1b, new): `githubShortRefFor` derives the GitHub-recognized `owner/repo#N` reference from the same URL.
+  - *Given* `"https://github.com/acme/widget/issues/42"`, *When* `githubShortRefFor(url)` is called, *Then* it returns `"acme/widget#42"`.
+  - *Given* `"https://github.com/acme/widget/pull/17"`, *When* `githubShortRefFor(url)` is called, *Then* it returns `"acme/widget#17"`.
+  - *Given* a malformed/non-GitHub URL like `"https://example.com/foo"`, *When* `githubShortRefFor(url)` is called, *Then* it returns the input unchanged (safe fallback — never panics; the rendered instruction line will just be less precise for a URL shape that can't occur from either real plugin today).
 **Files**: `session/backlog_context.go`, `session/backlog_context_test.go`
 
-##### Task 4.1.1a: Implement `closingKeywordFor` (~2 min)
+##### Task 4.1.1a: Implement `closingKeywordFor` and `githubShortRefFor` (~4 min)
 - In `session/backlog_context.go`, add next to `BuildSessionInitialPrompt` (before line 71):
   ```go
   // closingKeywordFor returns the fully-punctuated GitHub auto-close/reference
@@ -310,7 +326,7 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
   // the safe fallback for any unrecognized shape. Returning the punctuation
   // here (rather than a bare keyword) removes the punctuation-assembly
   // responsibility from the caller entirely — the caller concatenates this
-  // return value directly with the URL, no separator added.
+  // return value directly with githubShortRefFor's output, no separator added.
   func closingKeywordFor(url string) string {
       switch {
       case strings.Contains(url, "/issues/"):
@@ -321,18 +337,36 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
           return "Related: "
       }
   }
+
+  // githubShortRefFor extracts the "owner/repo#N" reference GitHub's
+  // closing-keyword parser actually recognizes from a GitHub issue/PR HTML
+  // URL (https://github.com/{owner}/{repo}/issues|pull/{n}). GitHub's
+  // closing keywords (Fixes/Closes/Resolves) only recognize "#N" (same-repo)
+  // or "owner/repo#N" (cross-repo) — never a bare full URL — confirmed
+  // against GitHub's docs. Falls back to returning url unchanged if it
+  // doesn't match the expected shape (never panics).
+  func githubShortRefFor(url string) string {
+      trimmed := strings.TrimPrefix(strings.TrimPrefix(url, "https://github.com/"), "http://github.com/")
+      parts := strings.Split(trimmed, "/")
+      if len(parts) >= 4 && (parts[2] == "issues" || parts[2] == "pull") {
+          return fmt.Sprintf("%s/%s#%s", parts[0], parts[1], parts[3])
+      }
+      return url
+  }
   ```
 - Files: `session/backlog_context.go`
 
-##### Task 4.1.1b: Add `closingKeywordFor` table test (~3 min)
-- In `session/backlog_context_test.go`, add a table-driven test covering the exact, fully-punctuated return values: `/issues/` URL → `"Fixes "` (trailing space, no colon), `/pull/` URL → `"Related: "` (trailing colon+space), empty string → `"Related: "`, unrecognized shape → `"Related: "`. Use exact equality (`assert.Equal`), not a loose substring check, so a future regression reintroducing/removing punctuation is caught.
+##### Task 4.1.1b: Add `closingKeywordFor` and `githubShortRefFor` table tests (~4 min)
+- In `session/backlog_context_test.go`, add table-driven tests covering:
+  - `closingKeywordFor`: `/issues/` URL → `"Fixes "` (trailing space, no colon), `/pull/` URL → `"Related: "` (trailing colon+space), empty string → `"Related: "`, unrecognized shape → `"Related: "`. Use exact equality (`assert.Equal`), not a loose substring check.
+  - `githubShortRefFor`: `"https://github.com/acme/widget/issues/42"` → `"acme/widget#42"`; `"https://github.com/acme/widget/pull/17"` → `"acme/widget#17"`; a malformed URL → returned unchanged.
 - Files: `session/backlog_context_test.go`
 
 #### Story 4.1.2: Render the fact line inside, and the instruction line outside, the inert-data boundary
 **As an** agent working an imported backlog item, **I want** the prompt to tell me the linked issue URL and exactly what closing keyword to use, **so that** my PR auto-closes the issue (or cross-references the PR) without me having to guess.
 **Acceptance Criteria**:
 - AC3 (part 2): both lines render when `ExternalURL` is non-empty.
-  - *Given* an `ent.BacklogItem` with `ExternalURL: "https://github.com/acme/widget/issues/42"`, *When* `BuildSessionInitialPrompt(item, nil)` is called, *Then* the output contains `"Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42"` somewhere between `"## Acceptance Criteria"` and `"--- END BACKLOG ITEM DATA ---"`, AND contains the exact literal substring `"Fixes https://github.com/acme/widget/issues/42"` (no colon) somewhere AFTER `"--- END BACKLOG ITEM DATA ---"`.
+  - *Given* an `ent.BacklogItem` with `ExternalURL: "https://github.com/acme/widget/issues/42"`, *When* `BuildSessionInitialPrompt(item, nil)` is called, *Then* the output contains `"Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42"` (the full URL, for human-readable context) somewhere between `"## Acceptance Criteria"` and `"--- END BACKLOG ITEM DATA ---"`, AND contains the exact literal substring `"Fixes acme/widget#42"` (the GitHub-recognized `owner/repo#N` short reference, via `githubShortRefFor` — NOT the full URL, per Story 4.1.1's corrected design) somewhere AFTER `"--- END BACKLOG ITEM DATA ---"`.
 - AC4: no `ExternalURL` → output unchanged from today.
   - *Given* an `ent.BacklogItem` with `ExternalURL: ""`, *When* `BuildSessionInitialPrompt(item, nil)` is called, *Then* the output contains neither `"Linked GitHub Issue/PR"` nor `"Fixes"`/`"Related:"` closing-keyword text, and is byte-for-byte identical to the pre-change output for the same item (verified by the existing `TestBuildSessionInitialPrompt_ContainsTaskProtocolBlock` and `TestBuildSessionInitialPrompt_WithPriorAttempts_ContainsHandoffSection` tests continuing to pass unmodified).
 **Files**: `session/backlog_context.go`, `session/backlog_context_test.go`
@@ -347,27 +381,28 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
 - The rendered text must literally contain `"Linked GitHub Issue/PR: "` immediately followed by the URL, matching AC3's exact phrasing — do not wrap it in its own `##` heading, to keep this to exactly one rendered line (plus the guard) and minimize token-budget shift per the pitfalls research.
 - Files: `session/backlog_context.go`
 
-##### Task 4.1.2b: Add the instruction line outside the inert-data block (~2 min)
+##### Task 4.1.2b: Add the instruction line outside the inert-data block (~3 min)
 - In `session/backlog_context.go`, in `BuildSessionInitialPrompt`, add immediately after `sb.WriteString("--- END BACKLOG ITEM DATA ---\n\n")` (line 118) and before the `if item.PlanArtifactsPath != ""` block (line 120):
   ```go
   if item.ExternalURL != "" {
       fmt.Fprintf(&sb, "This item is linked to %s. When you open your PR, include the line `%s%s` in the PR body so GitHub cross-references (and, for issues, auto-closes) it.\n\n",
-          item.ExternalURL, closingKeywordFor(item.ExternalURL), item.ExternalURL)
+          item.ExternalURL, closingKeywordFor(item.ExternalURL), githubShortRefFor(item.ExternalURL))
   }
   ```
-- Note the format verb is `%s%s`, not `%s: %s` — `closingKeywordFor` now returns the fully-punctuated prefix (`"Fixes "` / `"Related: "`) directly, so the caller must concatenate with no added colon. Using `%s: %s` here would incorrectly render `"Fixes: https://..."` (extra colon), breaking AC3's exact wording.
+- **Two distinct things follow the keyword here, do not conflate them**: the human-readable sentence still mentions the full URL (`item.ExternalURL`, for the agent's/reviewer's own context), but the actual backtick-quoted line-to-include-in-the-PR-body uses `githubShortRefFor(item.ExternalURL)` (e.g. `acme/widget#42`), NOT the raw URL — because GitHub's closing-keyword parser does not recognize a bare URL (confirmed via GitHub's docs, see Story 4.1.1). Rendered example: `` This item is linked to https://github.com/acme/widget/issues/42. When you open your PR, include the line `Fixes acme/widget#42` in the PR body... ``
+- The format verb is `%s%s` (not `%s: %s`) for the keyword+ref concatenation — `closingKeywordFor` returns the fully-punctuated prefix (`"Fixes "` / `"Related: "`) directly, so no separate colon is added.
 - Keep this to one instruction sentence to minimize token-budget shift (pitfalls research: new section should stay ~2 short lines total across both fact + instruction additions).
 - Files: `session/backlog_context.go`
 
 ##### Task 4.1.2c: Add prompt-rendering tests for fact/instruction line present and absent (~4 min)
-- In `session/backlog_context_test.go`, add: (1) a test with `ExternalURL: "https://github.com/acme/widget/issues/42"` asserting the fact line is present and, using the **exact literal substring** (not a loose `Contains(..., "Fixes")`), `assert.Contains(t, prompt, "Fixes https://github.com/acme/widget/issues/42")` (no colon) appears after `"--- END BACKLOG ITEM DATA ---"` while the fact line appears before it; (2) a test with `ExternalURL: "https://github.com/acme/widget/pull/17"` asserting `assert.Contains(t, prompt, "Related: https://github.com/acme/widget/pull/17")` (with colon) appears after the boundary; (3) a test with `ExternalURL: ""` asserting neither line appears (AC4). Asserting the exact literal substring (rather than just `Contains(..., "Fixes")`) is required so a future regression reintroducing a colon after `Fixes` is caught by this test.
+- In `session/backlog_context_test.go`, add: (1) a test with `ExternalURL: "https://github.com/acme/widget/issues/42"` asserting the fact line (full URL) is present before the boundary and, using the **exact literal substring** (not a loose `Contains(..., "Fixes")`), `assert.Contains(t, prompt, "Fixes acme/widget#42")` appears after `"--- END BACKLOG ITEM DATA ---"`; (2) a test with `ExternalURL: "https://github.com/acme/widget/pull/17"` asserting `assert.Contains(t, prompt, "Related: acme/widget#17")` appears after the boundary; (3) a test with `ExternalURL: ""` asserting neither line appears (AC4). Asserting the exact literal `owner/repo#N` substring (rather than just `Contains(..., "Fixes")` or the raw URL) is required so a future regression that reverts to rendering the un-recognized full URL, or reintroduces a colon after `Fixes`, is caught by this test.
 - Files: `session/backlog_context_test.go`
 
 #### Story 4.1.3: Confirm `BuildTokenBudgetedPrompt`'s truncation passes still include both lines (AC5)
 **As a** developer, **I want** confidence that token-budget truncation doesn't silently drop the linked-issue content, **so that** AC5 holds even for long items.
 **Acceptance Criteria**:
 - AC5: both truncation passes still include the fact line and instruction line.
-  - *Given* an `ent.BacklogItem` with `ExternalURL: "https://github.com/acme/widget/issues/42"` and a `Description` long enough (and enough prior sessions) to exceed the 4000-estimated-token budget on the first pass, *When* `BuildTokenBudgetedPrompt(item, priorSessions)` is called, *Then* the returned prompt (after either the "drop prior sessions" pass or the "truncate description to 500 chars" pass) still contains `"Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42"` and the `"Fixes"` instruction line — because both passes call `BuildSessionInitialPrompt` (line 143 with `nil` priorSessions, line 152 with a shallow-copied `truncatedItem`) which unconditionally includes the new sections whenever `ExternalURL != ""`, and `ExternalURL` is a plain string value (no aliasing risk in the `truncatedItem := *item` shallow copy at line 150).
+  - *Given* an `ent.BacklogItem` with `ExternalURL: "https://github.com/acme/widget/issues/42"` and a `Description` long enough (and enough prior sessions) to exceed the 4000-estimated-token budget on the first pass, *When* `BuildTokenBudgetedPrompt(item, priorSessions)` is called, *Then* the returned prompt (after either the "drop prior sessions" pass or the "truncate description to 500 chars" pass) still contains `"Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42"` and the `"Fixes acme/widget#42"` instruction line — because both passes call `BuildSessionInitialPrompt` (line 143 with `nil` priorSessions, line 152 with a shallow-copied `truncatedItem`) which unconditionally includes the new sections whenever `ExternalURL != ""`, and `ExternalURL` is a plain string value (no aliasing risk in the `truncatedItem := *item` shallow copy at line 150).
 **Files**: `session/backlog_context_test.go`
 
 ##### Task 4.1.3a: Add token-budget truncation test covering the new sections (~4 min)
@@ -408,15 +443,19 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
 **As a** developer, **I want** an end-to-end test through the real `SpawnSessionFromItem` handler, **so that** AC7 is proven at the boundary an agent session actually sees, not just at the ent-struct level.
 **Acceptance Criteria**:
 - AC7 (part 2): integration-level proof.
-  - *Given* a real backlog item created via `storage.CreateBacklogItem(ctx, BacklogItemData{Title: "zzyzx widget", Status: string(session.BacklogStatusReady), SkipPlanning: true, RepoPath: t.TempDir(), ExternalURL: "https://github.com/acme/widget/issues/42"})` (status pre-set to `"ready"` and `SkipPlanning: true` so the planning gate at `server/services/backlog_service.go:1051-1054` is bypassed without needing the full triage/approve flow), and a `mockSessionCreator` wired via `NewBacklogService`, *When* `svc.SpawnSessionFromItem(ctx, &sessionv1.SpawnSessionFromItemRequest{ItemId: itemID})` is called, *Then* `creator.calls[0].prompt` contains `"Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42"` and the exact literal substring `"Fixes https://github.com/acme/widget/issues/42"` (no colon) — not a loose `Contains(..., "Fixes")`, so a regression reintroducing a colon is caught here too.
+  - *Given* a real backlog item created via `storage.CreateBacklogItem(ctx, BacklogItemData{Title: "zzyzx widget", Status: string(session.BacklogStatusReady), SkipPlanning: true, RepoPath: t.TempDir(), ExternalURL: "https://github.com/acme/widget/issues/42"})` (status pre-set to `"ready"` and `SkipPlanning: true` so the planning gate at `server/services/backlog_service.go:1051-1054` is bypassed without needing the full triage/approve flow), and a `mockSessionCreator` wired via `NewBacklogService`, *When* `svc.SpawnSessionFromItem(ctx, &sessionv1.SpawnSessionFromItemRequest{ItemId: itemID})` is called, *Then* `creator.calls[0].prompt` contains `"Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42"` (fact line, full URL) and the exact literal substring `"Fixes acme/widget#42"` (instruction line, GitHub-recognized short reference via `githubShortRefFor` — NOT the raw URL, per Story 4.1.1's corrected design) — not a loose `Contains(..., "Fixes")`, so a regression reintroducing either the raw URL or a colon is caught here too.
 **Files**: `server/services/backlog_service_test.go`
 
 ##### Task 5.1.2a: Write `TestSpawnSessionFromItem_PromptContainsLinkedIssueSection` (~5 min)
-- In `server/services/backlog_service_test.go`, add a new test near `TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent` (line 447), but simpler: skip the triage/approve flow entirely by creating the item directly via `storage.CreateBacklogItem` with `Status: string(session.BacklogStatusReady)`, `SkipPlanning: true`, `RepoPath: t.TempDir()`, and `ExternalURL: "https://github.com/acme/widget/issues/42"` set. Wire a `mockSessionCreator` (pattern at line 92/142) via `NewBacklogService(storage, creator, nil, nil)`. Call `svc.SpawnSessionFromItem` with `Autonomous: false` (no need to exercise the autonomous-driver path for this test). Assert `require.Len(t, creator.calls, 1)`, then `assert.Contains(t, creator.calls[0].prompt, "Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42")` and `assert.Contains(t, creator.calls[0].prompt, "Fixes https://github.com/acme/widget/issues/42")` (exact literal substring, no colon — not a loose `Contains(..., "Fixes")`). Also add a second, PR-URL variant of this test (or a table-driven case) with `ExternalURL: "https://github.com/acme/widget/pull/17"` asserting `assert.Contains(t, creator.calls[0].prompt, "Related: https://github.com/acme/widget/pull/17")` (with colon), so the PR-keyword branch is explicitly covered at the integration level too.
+- In `server/services/backlog_service_test.go`, add a new test near `TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent` (line 447), but simpler: skip the triage/approve flow entirely by creating the item directly via `storage.CreateBacklogItem` with `Status: string(session.BacklogStatusReady)`, `SkipPlanning: true`, `RepoPath: t.TempDir()`, and `ExternalURL: "https://github.com/acme/widget/issues/42"` set. Wire a `mockSessionCreator` (pattern at line 92/142) via `NewBacklogService(storage, creator, nil, nil)`. Call `svc.SpawnSessionFromItem` with `Autonomous: false` (no need to exercise the autonomous-driver path for this test). Assert `require.Len(t, creator.calls, 1)`, then `assert.Contains(t, creator.calls[0].prompt, "Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42")` (fact line, full URL) and `assert.Contains(t, creator.calls[0].prompt, "Fixes acme/widget#42")` (instruction line, short reference — not the raw URL, not a loose `Contains(..., "Fixes")`). Also add a second, PR-URL variant of this test (or a table-driven case) with `ExternalURL: "https://github.com/acme/widget/pull/17"` asserting `assert.Contains(t, creator.calls[0].prompt, "Related: acme/widget#17")`, so the PR-keyword branch is explicitly covered at the integration level too.
+- Files: `server/services/backlog_service_test.go`
+
+##### Task 5.1.2b: Add the `AttachSessionToItem` integration test (~4 min) — closes sdd:4-validate Gap 3
+- In `server/services/backlog_service_test.go`, add `TestAttachSessionToItem_PromptContainsLinkedIssueSection`, modeled on the existing `TestAttachSessionToItem_WritesContextFileWithPlanArtifactsAndPriorSessions` test (line 545): create an item with `ExternalURL` set, call `svc.AttachSessionToItem`, and assert the written context/prompt content contains the fact and instruction lines. This is required because Task 5.1.1b's literal has no dedicated test otherwise — the plan's own "Known follow-ups" note flags these two hand-built literals as a manual-lockstep risk precisely because an omission like this (as happened historically with `ExternalID`, present in neither literal before this feature) is otherwise silent.
 - Files: `server/services/backlog_service_test.go`
 
 ##### Task 5.1.3: Run package tests for Phase 5 (~2 min)
-- Run: `go build ./server/... && go test ./server/services/... -run 'TestSpawnSessionFromItem|TestBacklogFullLifecycle'`
+- Run: `go build ./server/... && go test ./server/services/... -run 'TestSpawnSessionFromItem|TestAttachSessionToItem|TestBacklogFullLifecycle'`
 - Files: none (verification only)
 
 ---
@@ -443,4 +482,4 @@ Phases 2, 3, 4 have no inter-dependency once Phase 1 lands and can be implemente
 - Run: `go vet ./session/ent/... && go build ./session/ent/...`
 - Files: none (verification only)
 
-**Known follow-up (not a blocker for merging this PR)**: this plan cannot unit-test whether GitHub's live closing-keyword parser actually recognizes a bare full URL (e.g. `Fixes https://github.com/acme/widget/issues/42`) — as opposed to `#42` or `owner/repo#42` — as a valid auto-close reference. Every AC in this plan, and `make test`, can pass while this assumption (inherited from requirements.md/ADR-001) remains unverified against live GitHub behavior. Recommended follow-up, post-ship: open one real test PR referencing a real linked issue using the exact rendered instruction-line text, and confirm the auto-close fires on merge. This is a manual verification step, not a unit test, and should not block merging this plumbing change.
+**Resolved during sdd:4-validate (was a P1 pre-mortem item, no longer an open follow-up)**: the original plan rendered the instruction line as `Fixes <full-url>`, an assumption that GitHub's live closing-keyword parser accepts a bare URL. This was checked directly against GitHub's documentation (https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue, fetched 2026-07-25): **a bare full URL is not a recognized closing-keyword reference form** — only `#N` (same-repo) or `owner/repo#N` (cross-repo) are documented as valid. Story 4.1.1/Task 4.1.1a now derive and render the `owner/repo#N` short reference (`githubShortRefFor`) instead of the raw URL, so the instruction line will actually trigger GitHub's auto-close/cross-reference behavior on merge, matching documented syntax exactly. A remaining, much narrower manual-verification recommendation: after shipping, open one real test PR referencing a real linked issue with the exact rendered text and confirm the auto-close fires — this covers residual risk from any GitHub behavior not captured in public docs (e.g. cross-repo/fork edge cases), not the core syntax question, and is not a merge blocker.
