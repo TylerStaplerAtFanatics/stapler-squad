@@ -1161,3 +1161,123 @@ func TestSpawnReviewSession_SetsBacklogCategory(t *testing.T) {
 
 	assert.Equal(t, session.CategoryBacklog, inst.Category)
 }
+
+// drainNotificationEvents reads every event currently queued on ch (with a short
+// deadline) and returns any events.EventNotification events found. Used to assert
+// on presence/absence of a notification without depending on channel buffering
+// details.
+func drainNotificationEvents(ch <-chan *events.Event) []*events.Event {
+	var notifs []*events.Event
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == events.EventNotification {
+				notifs = append(notifs, ev)
+			}
+		case <-deadline:
+			return notifs
+		}
+	}
+}
+
+// TestWireRateLimitCallbacks_SuppressesNotification_When_InstanceHidden verifies
+// the Epic 5 Story 5.1 Hidden gate: a Hidden instance (e.g. a headless review
+// session spawned via SpawnReviewSession) must never receive a rate-limit
+// detected/recovery notification, since rate-limit events have no
+// AttentionReason to preserve as a narrowing safety net — suppression here is
+// unconditional on Hidden, matching Epic 3's generic done/stuck notifier.
+func TestWireRateLimitCallbacks_SuppressesNotification_When_InstanceHidden(t *testing.T) {
+	storage := createTestStorage(t)
+	eventBus := events.NewEventBus(8)
+	svc := NewSessionService(storage, eventBus)
+
+	newHiddenInstance := func(title string) *session.Instance {
+		inst := &session.Instance{
+			Title:     title,
+			UUID:      title + "-uuid",
+			Path:      "/tmp/test",
+			Status:    session.Paused,
+			Program:   "claude",
+			Hidden:    true,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		require.NoError(t, storage.AddInstance(inst))
+		return inst
+	}
+
+	t.Run("onDetected", func(t *testing.T) {
+		inst := newHiddenInstance("rl-hidden-detected")
+		subCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ch, _ := eventBus.Subscribe(subCtx)
+
+		svc.onRateLimitDetected(inst, inst.UUID, time.Time{})
+
+		notifs := drainNotificationEvents(ch)
+		assert.Empty(t, notifs, "a Hidden instance must never receive a rate-limit-detected notification")
+	})
+
+	t.Run("onRecovery", func(t *testing.T) {
+		inst := newHiddenInstance("rl-hidden-recovery")
+		subCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ch, _ := eventBus.Subscribe(subCtx)
+
+		svc.onRateLimitRecovery(inst, inst.UUID, true, "")
+
+		notifs := drainNotificationEvents(ch)
+		assert.Empty(t, notifs, "a Hidden instance must never receive a rate-limit-recovery notification")
+	})
+}
+
+// TestWireRateLimitCallbacks_StampsItemIDMetadata_When_BacklogLinkedAndNotHidden
+// covers the positive case for Epic 5 Story 5.1: a non-Hidden instance whose
+// session is linked to a backlog item must have its rate-limit notification's
+// metadata built via events.SessionScopedMetadata — {"item_id": ..., "session_scoped": "true"}
+// — not the nil it carried before this fix.
+func TestWireRateLimitCallbacks_StampsItemIDMetadata_When_BacklogLinkedAndNotHidden(t *testing.T) {
+	storage := createTestStorage(t)
+	ctx := context.Background()
+	eventBus := events.NewEventBus(8)
+	svc := NewSessionService(storage, eventBus)
+
+	const title = "rl-metadata-test"
+	inst := &session.Instance{
+		Title:     title,
+		UUID:      title + "-uuid",
+		Path:      "/tmp/test",
+		Status:    session.Paused,
+		Program:   "claude",
+		Hidden:    false,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	require.NoError(t, storage.AddInstance(inst))
+
+	item, err := storage.CreateBacklogItem(ctx, session.BacklogItemData{
+		Title:  "Rate limit metadata test item",
+		Status: string(session.BacklogStatusIdea),
+	})
+	require.NoError(t, err)
+
+	_, err = storage.CreateItemSession(ctx, session.ItemSessionData{
+		ItemID:      item.ID,
+		SessionUUID: inst.UUID,
+		SessionRole: "primary",
+	})
+	require.NoError(t, err)
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, _ := eventBus.Subscribe(subCtx)
+
+	svc.onRateLimitDetected(inst, inst.UUID, time.Time{})
+
+	notifs := drainNotificationEvents(ch)
+	require.Len(t, notifs, 1, "expected exactly one rate-limit-detected notification")
+	require.NotNil(t, notifs[0].NotificationMetadata, "metadata must not be nil so downstream consumers can correlate the notification to its item")
+	assert.Equal(t, item.ID, notifs[0].NotificationMetadata[events.MetadataKeyItemID])
+	assert.Equal(t, "true", notifs[0].NotificationMetadata[events.MetadataKeySessionScoped])
+}
