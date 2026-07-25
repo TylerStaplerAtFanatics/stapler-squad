@@ -5,6 +5,7 @@ import (
 	"github.com/tstapler/stapler-squad/server/adapters"
 	"github.com/tstapler/stapler-squad/server/events"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/detection"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -13,22 +14,30 @@ import (
 func convertEventToProto(event *events.Event) *sessionv1.SessionEvent {
 	protoEvent := &sessionv1.SessionEvent{
 		Timestamp: timestamppb.New(event.Timestamp),
+		Seq:       event.Seq,
 	}
 
 	switch event.Type {
 	case events.EventSessionCreated:
 		protoEvent.Event = &sessionv1.SessionEvent_SessionCreated{
 			SessionCreated: &sessionv1.SessionCreatedEvent{
-				Session: adapters.InstanceToProto(event.Session),
+				Session: adapters.InstanceToProto(event.Session, nil),
 			},
 		}
 
 	case events.EventSessionUpdated:
+		sessionUpdatedProto := &sessionv1.SessionUpdatedEvent{
+			Session:       adapters.InstanceToProto(event.Session, nil),
+			UpdatedFields: event.UpdatedFields,
+		}
+		// Populate detection fields when detection data is present.
+		// StatusUnknown (zero value) means "no detection data" — map it to UNSPECIFIED.
+		if event.DetectedStatusTyped != detection.StatusUnknown {
+			sessionUpdatedProto.DetectedStatus = detection.DetectedStatusToProto(event.DetectedStatusTyped)
+			sessionUpdatedProto.DetectedContext = event.DetectedContext
+		}
 		protoEvent.Event = &sessionv1.SessionEvent_SessionUpdated{
-			SessionUpdated: &sessionv1.SessionUpdatedEvent{
-				Session:       adapters.InstanceToProto(event.Session),
-				UpdatedFields: event.UpdatedFields,
-			},
+			SessionUpdated: sessionUpdatedProto,
 		}
 
 	case events.EventSessionDeleted:
@@ -36,15 +45,6 @@ func convertEventToProto(event *events.Event) *sessionv1.SessionEvent {
 			SessionDeleted: &sessionv1.SessionDeletedEvent{
 				SessionId: event.SessionID,
 				Reason:    "", // Optional: could be populated from event context
-			},
-		}
-
-	case events.EventSessionStatusChanged:
-		protoEvent.Event = &sessionv1.SessionEvent_StatusChanged{
-			StatusChanged: &sessionv1.SessionStatusChangedEvent{
-				SessionId: event.SessionID,
-				OldStatus: adapters.StatusToProto(event.OldStatus),
-				NewStatus: adapters.StatusToProto(event.NewStatus),
 			},
 		}
 
@@ -62,6 +62,38 @@ func convertEventToProto(event *events.Event) *sessionv1.SessionEvent {
 				NotificationId:   event.NotificationID,
 			},
 		}
+
+	case events.EventSessionAcknowledged:
+		protoEvent.Event = &sessionv1.SessionEvent_SessionAcknowledged{
+			SessionAcknowledged: &sessionv1.SessionAcknowledgedEvent{
+				SessionId:      event.SessionID,
+				AcknowledgedAt: timestamppb.New(event.Timestamp),
+				Reason:         event.Context,
+			},
+		}
+
+	case events.EventUserInteraction:
+		interactionType := sessionv1.UserInteractionEvent_INTERACTION_TYPE_UNSPECIFIED
+		if v, ok := sessionv1.UserInteractionEvent_InteractionType_value[event.InteractionType]; ok {
+			interactionType = sessionv1.UserInteractionEvent_InteractionType(v)
+		}
+		protoEvent.Event = &sessionv1.SessionEvent_UserInteraction{
+			UserInteraction: &sessionv1.UserInteractionEvent{
+				SessionId: event.SessionID,
+				Type:      interactionType,
+				Context:   event.Context,
+			},
+		}
+
+	case events.EventApprovalResponse:
+		protoEvent.Event = &sessionv1.SessionEvent_ApprovalResponse{
+			ApprovalResponse: &sessionv1.ApprovalResponseEvent{
+				SessionId:   event.SessionID,
+				Approved:    event.Approved,
+				Context:     event.Context, // carries approval ID for client-side correlation
+				RespondedAt: timestamppb.New(event.Timestamp),
+			},
+		}
 	}
 
 	return protoEvent
@@ -74,7 +106,7 @@ func createInitialSnapshotEvent(instance *session.Instance) *sessionv1.SessionEv
 		Timestamp: timestamppb.Now(),
 		Event: &sessionv1.SessionEvent_SessionCreated{
 			SessionCreated: &sessionv1.SessionCreatedEvent{
-				Session: adapters.InstanceToProto(instance),
+				Session: adapters.InstanceToProto(instance, nil),
 			},
 		},
 	}

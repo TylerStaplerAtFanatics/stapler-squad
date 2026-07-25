@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tstapler/stapler-squad/testutil/wait"
 )
 
 func TestAutoDiscoveryCreation(t *testing.T) {
@@ -15,7 +17,7 @@ func TestAutoDiscoveryCreation(t *testing.T) {
 		t.Logf("Filesystem watcher not available: %v (expected on some systems)", err)
 	}
 	if ad != nil {
-		defer ad.Stop()
+		defer func() { _ = ad.Stop() }()
 	}
 
 	// Test creation with fallback
@@ -23,7 +25,7 @@ func TestAutoDiscoveryCreation(t *testing.T) {
 	if adFallback == nil {
 		t.Fatal("NewAutoDiscoveryWithFallback returned nil")
 	}
-	defer adFallback.Stop()
+	defer func() { _ = adFallback.Stop() }()
 
 	if !adFallback.IsUsingFallback() && adFallback.watcher == nil {
 		t.Error("Expected fallback mode or watcher available")
@@ -35,33 +37,33 @@ func TestIsClaudeMuxSocket(t *testing.T) {
 		path     string
 		expected bool
 	}{
-		{"/tmp/claude-mux-12345.sock", true},
-		{"/tmp/claude-mux-999.sock", true},
+		{"/tmp/ssq-mux-12345.sock", true},
+		{"/tmp/ssq-mux-999.sock", true},
 		{"/tmp/other-file.sock", false},
-		{"/tmp/claude-mux.sock", false}, // Missing PID
-		{"/tmp/claude-mux-12345.txt", false},
-		{"claude-mux-12345.sock", true},              // Base name only
-		{"/var/run/claude-mux-789.sock", true},       // Different directory
-		{"/tmp/CLAUDE-MUX-12345.sock", false},        // Case sensitive
-		{"/tmp/claude-mux-12345.sock.old", false},    // Extra extension
-		{"/tmp/.claude-mux-12345.sock", false},       // Hidden file
-		{"/tmp/my-claude-mux-12345.sock", false},     // Prefix mismatch
-		{"/tmp/claude-mux-12345.sock.backup", false}, // Suffix
-		{"/tmp/claude-mux-abc.sock", true},           // Non-numeric OK
-		{"/tmp/claude-mux-.sock", true},              // Empty PID OK
+		{"/tmp/ssq-mux.sock", false}, // Missing PID
+		{"/tmp/ssq-mux-12345.txt", false},
+		{"ssq-mux-12345.sock", true},              // Base name only
+		{"/var/run/ssq-mux-789.sock", true},       // Different directory
+		{"/tmp/CLAUDE-MUX-12345.sock", false},     // Case sensitive
+		{"/tmp/ssq-mux-12345.sock.old", false},    // Extra extension
+		{"/tmp/.ssq-mux-12345.sock", false},       // Hidden file
+		{"/tmp/my-ssq-mux-12345.sock", false},     // Prefix mismatch
+		{"/tmp/ssq-mux-12345.sock.backup", false}, // Suffix
+		{"/tmp/ssq-mux-abc.sock", true},           // Non-numeric OK
+		{"/tmp/ssq-mux-.sock", true},              // Empty PID OK
 	}
 
 	for _, tt := range tests {
-		result := isClaudeMuxSocket(tt.path)
+		result := isSsqMuxSocket(tt.path)
 		if result != tt.expected {
-			t.Errorf("isClaudeMuxSocket(%q) = %v, expected %v", tt.path, result, tt.expected)
+			t.Errorf("isSsqMuxSocket(%q) = %v, expected %v", tt.path, result, tt.expected)
 		}
 	}
 }
 
 func TestAutoDiscoveryStartStop(t *testing.T) {
 	ad := NewAutoDiscoveryWithFallback()
-	defer ad.Stop()
+	defer func() { _ = ad.Stop() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -71,10 +73,7 @@ func TestAutoDiscoveryStartStop(t *testing.T) {
 		t.Fatalf("Failed to start auto-discovery: %v", err)
 	}
 
-	// Let it run briefly
-	time.Sleep(100 * time.Millisecond)
-
-	// Cancel context
+	// Let it run briefly then cancel
 	cancel()
 
 	// Wait for shutdown
@@ -88,11 +87,11 @@ func TestAutoDiscoveryStartStop(t *testing.T) {
 
 func TestAutoDiscoverySocketHandling(t *testing.T) {
 	ad := NewAutoDiscoveryWithFallback()
-	defer ad.Stop()
+	defer func() { _ = ad.Stop() }()
 
 	// Create a temporary socket file for testing
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "claude-mux-test.sock")
+	socketPath := filepath.Join(tmpDir, "ssq-mux-test.sock")
 
 	// Test socket created
 	f, err := os.Create(socketPath)
@@ -102,8 +101,8 @@ func TestAutoDiscoverySocketHandling(t *testing.T) {
 	f.Close()
 
 	// Socket should match pattern
-	if !isClaudeMuxSocket(socketPath) {
-		t.Error("Test socket should match claude-mux pattern")
+	if !isSsqMuxSocket(socketPath) {
+		t.Error("Test socket should match ssq-mux pattern")
 	}
 
 	// Test socket removed
@@ -116,7 +115,7 @@ func TestAutoDiscoverySocketHandling(t *testing.T) {
 
 func TestWatcherActiveStatus(t *testing.T) {
 	ad := NewAutoDiscoveryWithFallback()
-	defer ad.Stop()
+	defer func() { _ = ad.Stop() }()
 
 	// Check status methods
 	isActive := ad.WatcherActive()
@@ -135,7 +134,7 @@ func TestWatcherActiveStatus(t *testing.T) {
 
 func TestAutoDiscoveryCallbacks(t *testing.T) {
 	ad := NewAutoDiscoveryWithFallback()
-	defer ad.Stop()
+	defer func() { _ = ad.Stop() }()
 
 	callbackCalled := false
 	ad.OnSessionChange(func(session *DiscoveredSession, isNew bool) {
@@ -151,8 +150,10 @@ func TestAutoDiscoveryCallbacks(t *testing.T) {
 		t.Fatalf("Failed to start: %v", err)
 	}
 
-	// Initial scan should happen
-	time.Sleep(200 * time.Millisecond)
+	// Initial scan should happen; callback is optional (no sessions may exist)
+	_ = wait.WaitForCondition(func() bool {
+		return callbackCalled
+	}, wait.WaitConfig{Timeout: 2 * time.Second, PollInterval: 50 * time.Millisecond, Description: "callback"})
 
 	// Callback might not be called if no sessions exist, that's OK
 	t.Logf("Callback called: %v", callbackCalled)

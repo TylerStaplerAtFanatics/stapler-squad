@@ -3,12 +3,14 @@ package session
 import (
 	"context"
 	"fmt"
-	"github.com/tstapler/stapler-squad/session/git"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/session/git"
+	"github.com/tstapler/stapler-squad/testutil/wait"
 )
 
 // TestReviewQueue_UncommittedChangesDetection verifies that uncommitted changes are detected
@@ -68,11 +70,11 @@ func TestReviewQueue_UncommittedChangesDetection(t *testing.T) {
 		Branch:      branchName,
 		Status:      Running,
 		gitManager:  GitWorktreeManager{worktree: worktree},
-		started:     true,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		ReviewState: ReviewState{LastMeaningfulOutput: now},
 	}
+	instance.started.Store(true)
 
 	// Create review queue infrastructure
 	queue := NewReviewQueue()
@@ -82,7 +84,7 @@ func TestReviewQueue_UncommittedChangesDetection(t *testing.T) {
 
 	// Test 1: Clean worktree (no uncommitted changes) should not be added to queue
 	t.Run("clean_worktree_not_added", func(t *testing.T) {
-		poller.checkSession(instance)
+		poller.checkSession(instance, nil)
 		if queue.Has(instance.Title) {
 			t.Error("Expected clean worktree to not be in review queue")
 		}
@@ -95,9 +97,13 @@ func TestReviewQueue_UncommittedChangesDetection(t *testing.T) {
 		if err := os.WriteFile(modifiedFile, []byte("uncommitted content"), 0644); err != nil {
 			t.Fatalf("Failed to create modified file: %v", err)
 		}
+		// Invalidate the dirty cache so the next checkSession re-runs git status.
+		// In production this happens naturally after IsDirtyCacheTTL (30s) or IsDirtyCleanCacheTTL (5min); in tests
+		// we invalidate explicitly since we know we just changed the filesystem.
+		worktree.InvalidateDirtyCache()
 
 		// Check session - should detect uncommitted changes
-		poller.checkSession(instance)
+		poller.checkSession(instance, nil)
 
 		// Verify added to queue with correct reason
 		if !queue.Has(instance.Title) {
@@ -130,7 +136,7 @@ func TestReviewQueue_UncommittedChangesDetection(t *testing.T) {
 		}
 
 		// Check session again - should be removed from queue
-		poller.checkSession(instance)
+		poller.checkSession(instance, nil)
 
 		if queue.Has(instance.Title) {
 			item, _ := queue.Get(instance.Title)
@@ -225,11 +231,11 @@ func TestReviewQueue_UncommittedChanges_NoWorktree(t *testing.T) {
 		Branch:      "",
 		Status:      Running,
 		gitManager:  GitWorktreeManager{worktree: nil}, // No worktree
-		started:     true,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		ReviewState: ReviewState{LastMeaningfulOutput: now},
 	}
+	instance.started.Store(true)
 
 	// Create review queue infrastructure
 	queue := NewReviewQueue()
@@ -238,7 +244,7 @@ func TestReviewQueue_UncommittedChanges_NoWorktree(t *testing.T) {
 	poller.AddInstance(instance)
 
 	// Check session - should not crash and not add to queue for uncommitted changes
-	poller.checkSession(instance)
+	poller.checkSession(instance, nil)
 
 	// If added to queue, it should NOT be for uncommitted changes
 	if queue.Has(instance.Title) {
@@ -308,16 +314,19 @@ func TestReviewQueue_UncommittedChanges_Integration(t *testing.T) {
 		Branch:      branchName,
 		Status:      Running,
 		gitManager:  GitWorktreeManager{worktree: worktree},
-		started:     true,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		ReviewState: ReviewState{LastMeaningfulOutput: now},
 	}
+	instance.started.Store(true)
 
 	// Create review queue with poller
 	queue := NewReviewQueue()
 	statusManager := NewInstanceStatusManager()
-	poller := NewReviewQueuePoller(queue, statusManager, nil)
+	pollerCfg := DefaultReviewQueuePollerConfig()
+	pollerCfg.PollInterval = 100 * time.Millisecond
+	pollerCfg.SlowPollInterval = 100 * time.Millisecond
+	poller := NewReviewQueuePollerWithConfig(queue, statusManager, nil, pollerCfg)
 	poller.AddInstance(instance)
 
 	// Start polling in background
@@ -327,8 +336,14 @@ func TestReviewQueue_UncommittedChanges_Integration(t *testing.T) {
 	poller.Start(ctx)
 	defer poller.Stop()
 
-	// Wait for initial check
-	time.Sleep(500 * time.Millisecond)
+	// Wait for poller to start running
+	startCfg := wait.FastWaitConfig()
+	startCfg.Description = "poller running"
+	if err := wait.WaitForCondition(func() bool {
+		return poller.IsRunning()
+	}, startCfg); err != nil {
+		t.Fatalf("poller failed to start: %v", err)
+	}
 
 	// Verify initially clean (not in queue)
 	if queue.Has(instance.Title) {
@@ -340,9 +355,18 @@ func TestReviewQueue_UncommittedChanges_Integration(t *testing.T) {
 	if err := os.WriteFile(modifiedFile, []byte("uncommitted"), 0644); err != nil {
 		t.Fatalf("Failed to create modified file: %v", err)
 	}
+	// Invalidate cache so the running poller picks up the change on its next tick
+	// rather than waiting for IsDirtyCacheTTL (30s) or IsDirtyCleanCacheTTL (5min) to elapse.
+	worktree.InvalidateDirtyCache()
 
 	// Wait for poller to detect changes
-	time.Sleep(3 * time.Second)
+	detectCfg := wait.DefaultWaitConfig()
+	detectCfg.Description = "uncommitted changes detected"
+	if err := wait.WaitForCondition(func() bool {
+		return queue.Has(instance.Title)
+	}, detectCfg); err != nil {
+		t.Fatalf("poller failed to detect uncommitted changes: %v", err)
+	}
 
 	// Verify detected and added to queue
 	if !queue.Has(instance.Title) {
@@ -363,8 +387,18 @@ func TestReviewQueue_UncommittedChanges_Integration(t *testing.T) {
 		t.Fatalf("Failed to commit changes: %v", err)
 	}
 
-	// Wait for poller to detect committed state
-	time.Sleep(3 * time.Second)
+	// Wait for poller to detect committed state (queue entry removed or reason changed)
+	committedCfg := wait.DefaultWaitConfig()
+	committedCfg.Description = "committed state detected"
+	if err := wait.WaitForCondition(func() bool {
+		if !queue.Has(instance.Title) {
+			return true
+		}
+		updatedItem, _ := queue.Get(instance.Title)
+		return updatedItem.Reason != ReasonUncommittedChanges
+	}, committedCfg); err != nil {
+		t.Fatalf("poller failed to detect committed state: %v", err)
+	}
 
 	// Verify removed from queue (or reason changed)
 	if queue.Has(instance.Title) {
@@ -377,7 +411,7 @@ func TestReviewQueue_UncommittedChanges_Integration(t *testing.T) {
 
 // Helper function to run git commands
 func runGitCommand(dir string, args ...string) error {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := safeexec.CommandContext(context.Background(), "git", append([]string{"-C", dir}, args...)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git command failed: %s (%w)", output, err)

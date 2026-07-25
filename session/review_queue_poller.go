@@ -1,30 +1,53 @@
 package session
 
+import "github.com/linkdata/deadlock"
+
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/detection"
-	"strings"
-	"sync"
-	"time"
+	"github.com/tstapler/stapler-squad/session/tmux"
 )
+
+// StatusProvider is the interface ReviewQueuePoller uses to fetch session status.
+// Defined at the consumption point (the poller), not the production point.
+type StatusProvider interface {
+	GetStatus(inst *Instance) InstanceStatusInfo
+	GetController(instanceTitle string) (*ClaudeController, bool)
+}
+
+// ContentProvider fetches terminal content for a session.
+// Defined at the consumption point so tests can inject fakes without tmux.
+type ContentProvider interface {
+	GetContent(inst *Instance, statusInfo InstanceStatusInfo, paneActivity map[string]time.Time) string
+	EvictInstance(title string)
+}
 
 // ReviewQueuePollerConfig contains configuration for the review queue poller.
 type ReviewQueuePollerConfig struct {
-	PollInterval       time.Duration // How often to check sessions
+	PollInterval       time.Duration // How often to check sessions (fast path, default 2s)
+	SlowPollInterval   time.Duration // Interval when review queue is empty (default 8s); 0 = no backoff
 	IdleThreshold      time.Duration // Duration before considering session idle and adding to queue
 	InputWaitDuration  time.Duration // Time waiting for input before flagging
 	StalenessThreshold time.Duration // Duration since last meaningful output before considering stale
+	ReconcileInterval  time.Duration // How often to reconcile in-memory state against tmux reality (0 = disabled)
 }
 
 // DefaultReviewQueuePollerConfig returns sensible defaults for polling.
 func DefaultReviewQueuePollerConfig() ReviewQueuePollerConfig {
 	return ReviewQueuePollerConfig{
-		PollInterval:       2 * time.Second, // Poll every 2 seconds for immediate detection
-		IdleThreshold:      5 * time.Second, // Add to queue after 5s idle for immediate user notifications
-		InputWaitDuration:  3 * time.Second, // Flag if waiting for input > 3s (reduced from 5s)
-		StalenessThreshold: 2 * time.Minute, // Flag if no meaningful output for 2 minutes (reduced from 5min)
+		PollInterval:       2 * time.Second,  // Poll every 2 seconds for immediate detection
+		SlowPollInterval:   8 * time.Second,  // Back off to 8s when queue is empty
+		IdleThreshold:      5 * time.Second,  // Add to queue after 5s idle for immediate user notifications
+		InputWaitDuration:  3 * time.Second,  // Flag if waiting for input > 3s (reduced from 5s)
+		StalenessThreshold: 2 * time.Minute,  // Flag if no meaningful output for 2 minutes (reduced from 5min)
+		ReconcileInterval:  30 * time.Second, // Reconcile against tmux reality every 30 seconds
 	}
 }
 
@@ -49,45 +72,81 @@ type ApprovalMetadataProvider interface {
 // when they become idle or need attention.
 type ReviewQueuePoller struct {
 	queue            *ReviewQueue
-	statusManager    *InstanceStatusManager
+	statusManager    StatusProvider
 	storage          *Storage
 	instances        []*Instance
 	config           ReviewQueuePollerConfig
-	statusDetector   *detection.StatusDetector // For detecting status in sessions without ClaudeController
-	approvalProvider ApprovalMetadataProvider  // Optional: enriches approval items with hook metadata
-
-	// Content cache: avoids spawning a tmux capture-pane subprocess when the session
-	// has not produced new output since the last poll. For sessions with an active
-	// ClaudeController the idle detector's lastActivity timestamp (driven by PTY output
-	// reading, no subprocess) is used as a change signal.
-	cacheMu          sync.Mutex
-	lastSeenActivity map[string]time.Time // per-session: last IdleDetector.lastActivity seen
-	cachedContent    map[string]string    // per-session: content from last Preview() call
+	statusDetector   detection.TerminalDetector // For detecting status in sessions without ClaudeController
+	approvalProvider ApprovalMetadataProvider   // Optional: enriches approval items with hook metadata
+	contentProvider  ContentProvider            // Fetches and caches terminal content
+	statusDeterminer StatusDeterminer           // Evaluates whether session should be in queue
+	tmuxSocket       TmuxSocketQuerier          // Tmux server-socket queries for reconcileSessions; fakeable in tests
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
-	mu     sync.RWMutex
+	mu     deadlock.RWMutex
+
+	// activityCh is an optional channel that signals the poll loop to snap back to
+	// the fast interval. Wired by ReactiveQueueManager on EventApprovalResponse and
+	// EventUserInteraction. A nil channel is never selected (safe in select statements).
+	activityCh <-chan struct{}
+
+	// Backoff state: tracks consecutive poll errors to apply exponential delay.
+	consecutiveErrors int
+	// tickCount counts poll loop iterations; atomic because pollLoop writes and tests read concurrently.
+	tickCount atomic.Int64
+}
+
+// contentCacheEntry bundles all per-session cache fields into one value so
+// reads and writes can be done with a single lock-free map operation.
+type contentCacheEntry struct {
+	cachedContent        string
+	lastSeenActivity     time.Time // last IdleDetector.lastActivity seen (controller path)
+	lastSeenPaneActivity time.Time // last #{pane_last_activity} seen (no-controller path)
+	lastPreviewTime      time.Time // fallback TTL timestamp (no-controller path)
+}
+
+// pollerContentProvider is the default ContentProvider implementation that owns all
+// content caching state. It is created by NewReviewQueuePoller and can be replaced
+// in tests with a fake implementation.
+type pollerContentProvider struct {
+	// ponytail: xsync.Map replaces 4 map[string]* + RWMutex — lock-free reads across sessions
+	cache *xsync.Map[string, contentCacheEntry]
+}
+
+// NewPollerContentProvider creates a new pollerContentProvider.
+// It is exported so server/dependencies.go can pass it to NewStartupScanner.
+func NewPollerContentProvider() ContentProvider {
+	return &pollerContentProvider{
+		cache: xsync.NewMap[string, contentCacheEntry](),
+	}
+}
+
+// EvictInstance removes all cache entries for the given session title.
+func (p *pollerContentProvider) EvictInstance(title string) {
+	p.cache.Delete(title)
 }
 
 // NewReviewQueuePoller creates a new poller for automatically managing the review queue.
 // The storage parameter is optional (can be nil) but required for persisting LastAddedToQueue timestamps.
-func NewReviewQueuePoller(queue *ReviewQueue, statusManager *InstanceStatusManager, storage *Storage) *ReviewQueuePoller {
+func NewReviewQueuePoller(queue *ReviewQueue, statusManager StatusProvider, storage *Storage) *ReviewQueuePoller {
 	return NewReviewQueuePollerWithConfig(queue, statusManager, storage, DefaultReviewQueuePollerConfig())
 }
 
 // NewReviewQueuePollerWithConfig creates a poller with custom configuration.
 // The storage parameter is optional (can be nil) but required for persisting LastAddedToQueue timestamps.
-func NewReviewQueuePollerWithConfig(queue *ReviewQueue, statusManager *InstanceStatusManager, storage *Storage, config ReviewQueuePollerConfig) *ReviewQueuePoller {
+func NewReviewQueuePollerWithConfig(queue *ReviewQueue, statusManager StatusProvider, storage *Storage, config ReviewQueuePollerConfig) *ReviewQueuePoller {
 	return &ReviewQueuePoller{
 		queue:            queue,
 		statusManager:    statusManager,
 		storage:          storage,
 		instances:        make([]*Instance, 0),
 		config:           config,
-		statusDetector:   detection.NewStatusDetector(), // For detecting status in sessions without ClaudeController
-		lastSeenActivity: make(map[string]time.Time),
-		cachedContent:    make(map[string]string),
+		statusDetector:   detection.NewStatusDetector(),
+		contentProvider:  NewPollerContentProvider(),
+		statusDeterminer: NewDefaultStatusDeterminer(config),
+		tmuxSocket:       realTmuxSocketQuerier{},
 	}
 }
 
@@ -102,6 +161,9 @@ func (rqp *ReviewQueuePoller) SetInstances(instances []*Instance) {
 func (rqp *ReviewQueuePoller) AddInstance(instance *Instance) {
 	rqp.mu.Lock()
 	defer rqp.mu.Unlock()
+	// Stagger this session's dirty-cache TTL so sessions added in a burst
+	// (e.g. bulk startup) don't all run git-status subprocesses simultaneously.
+	instance.gitManager.PrimeDirtyCacheJitter()
 	rqp.instances = append(rqp.instances, instance)
 }
 
@@ -111,18 +173,22 @@ func (rqp *ReviewQueuePoller) RemoveInstance(instanceTitle string) {
 	defer rqp.mu.Unlock()
 
 	filtered := make([]*Instance, 0, len(rqp.instances))
+	var removedTitle string
 	for _, inst := range rqp.instances {
-		if inst.Title != instanceTitle {
+		if inst.MatchesID(instanceTitle) {
+			removedTitle = inst.Title
+		} else {
 			filtered = append(filtered, inst)
 		}
 	}
 	rqp.instances = filtered
 
-	// Evict content cache for this session.
-	rqp.cacheMu.Lock()
-	delete(rqp.lastSeenActivity, instanceTitle)
-	delete(rqp.cachedContent, instanceTitle)
-	rqp.cacheMu.Unlock()
+	// Evict content cache using the resolved title (MatchesID may have matched by UUID).
+	evictKey := instanceTitle
+	if removedTitle != "" {
+		evictKey = removedTitle
+	}
+	rqp.contentProvider.EvictInstance(evictKey)
 }
 
 // SetApprovalProvider sets the approval metadata provider for enriching review queue items.
@@ -132,12 +198,21 @@ func (rqp *ReviewQueuePoller) SetApprovalProvider(provider ApprovalMetadataProvi
 	rqp.approvalProvider = provider
 }
 
+// SetActivityChannel wires an external signal channel to the poll loop. When a signal
+// arrives on ch, the loop snaps back to the fast interval (PollInterval). Must be called
+// before Start(); subsequent calls have no effect once the loop is running.
+func (rqp *ReviewQueuePoller) SetActivityChannel(ch <-chan struct{}) {
+	rqp.mu.Lock()
+	rqp.activityCh = ch
+	rqp.mu.Unlock()
+}
+
 // Start begins polling for idle sessions.
 func (rqp *ReviewQueuePoller) Start(ctx context.Context) {
 	rqp.mu.Lock()
 	if rqp.ctx != nil {
 		rqp.mu.Unlock()
-		log.InfoLog.Printf("ReviewQueuePoller already started")
+		log.Info("ReviewQueuePoller already started")
 		return
 	}
 
@@ -155,7 +230,7 @@ func (rqp *ReviewQueuePoller) Start(ctx context.Context) {
 	rqp.wg.Add(1)
 	go rqp.pollLoop()
 
-	log.InfoLog.Printf("ReviewQueuePoller started (poll interval: %s)", rqp.config.PollInterval)
+	log.Info("ReviewQueuePoller started", "poll_interval", rqp.config.PollInterval)
 }
 
 // Stop stops the poller.
@@ -167,7 +242,7 @@ func (rqp *ReviewQueuePoller) Stop() {
 	rqp.mu.Unlock()
 
 	rqp.wg.Wait()
-	log.InfoLog.Printf("ReviewQueuePoller stopped")
+	log.Info("ReviewQueuePoller stopped")
 }
 
 // cleanupOrphanedItems removes queue items with zero or invalid LastActivity timestamps.
@@ -184,36 +259,245 @@ func (rqp *ReviewQueuePoller) cleanupOrphanedItems() {
 	for _, item := range allItems {
 		// Remove items with zero or invalid LastActivity timestamps
 		if item.LastActivity.IsZero() || item.LastActivity.Before(minValidTime) {
-			log.InfoLog.Printf("[ReviewQueue] STARTUP CLEANUP: Removing orphaned item '%s' with invalid LastActivity (%v)",
-				item.SessionID, item.LastActivity)
+			log.Info("startup cleanup: removing orphaned item with invalid LastActivity", "session", item.SessionID, "last_activity", item.LastActivity)
 			rqp.queue.Remove(item.SessionID)
 			removedCount++
 		}
 	}
 
 	if removedCount > 0 {
-		log.InfoLog.Printf("[ReviewQueue] STARTUP CLEANUP: Removed %d orphaned items with invalid timestamps", removedCount)
+		log.Info("startup cleanup: removed orphaned items with invalid timestamps", "count", removedCount)
 	} else {
-		log.InfoLog.Printf("[ReviewQueue] STARTUP CLEANUP: No orphaned items found")
+		log.Info("startup cleanup: no orphaned items found")
 	}
 }
 
 // pollLoop is the main polling loop that runs in the background.
+//
+// Adaptive interval: when an activityCh is wired and the review queue becomes empty,
+// the loop backs off to SlowPollInterval (8s by default). Any signal on activityCh
+// snaps the interval back to PollInterval (2s) immediately.
 func (rqp *ReviewQueuePoller) pollLoop() {
 	defer rqp.wg.Done()
 
-	ticker := time.NewTicker(rqp.config.PollInterval)
-	defer ticker.Stop()
+	fastInterval := rqp.config.PollInterval
+	slowInterval := rqp.config.SlowPollInterval
+	if slowInterval <= 0 {
+		slowInterval = fastInterval
+	}
+
+	// Capture activityCh once; must be set before Start() for the snap behavior to work.
+	// A nil channel is never selected in a select statement, so the adaptive path is
+	// simply skipped when no activity channel is wired.
+	rqp.mu.RLock()
+	actCh := rqp.activityCh
+	rqp.mu.RUnlock()
+
+	interval := fastInterval
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-rqp.ctx.Done():
 			return
-		case <-ticker.C:
-			rqp.checkSessions()
+
+		case <-actCh:
+			// Snap back to fast interval on external activity signal.
+			if interval != fastInterval {
+				interval = fastInterval
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(interval)
+			}
+
+		case <-timer.C:
+			rqp.tickCount.Add(1)
+
+			if err := rqp.checkSessionsSafe(); err != nil {
+				rqp.consecutiveErrors++
+				backoff := rqp.backoffDuration(rqp.consecutiveErrors)
+				log.Warn("ReviewQueuePoller checkSessions error", "consecutive_errors", rqp.consecutiveErrors, "err", err, "backoff", backoff)
+				select {
+				case <-rqp.ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				timer.Reset(interval)
+				continue
+			}
+			rqp.consecutiveErrors = 0
+
+			// Adaptive interval: back off when queue is empty and activity channel is wired.
+			if actCh != nil && rqp.queue.Count() == 0 {
+				interval = slowInterval
+			} else {
+				interval = fastInterval
+			}
+			timer.Reset(interval)
+
+			// Periodic reconciliation: verify in-memory state matches tmux reality.
+			// Runs every ReconcileInterval ticks; skipped when ReconcileInterval is 0.
+			if rqp.config.ReconcileInterval > 0 {
+				ticksPerReconcile := int(rqp.config.ReconcileInterval / rqp.config.PollInterval)
+				if ticksPerReconcile < 1 {
+					ticksPerReconcile = 1
+				}
+				if rqp.tickCount.Load()%int64(ticksPerReconcile) == 0 {
+					rqp.reconcileSessions()
+				}
+			}
 		}
 	}
 }
+
+// checkSessionsSafe wraps checkSessions with panic recovery, returning an error on panic.
+func (rqp *ReviewQueuePoller) checkSessionsSafe() (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("panic in checkSessions: %v", r)
+			log.Error("ReviewQueuePoller panic recovered", "panic", r)
+		}
+	}()
+	rqp.checkSessions()
+	return nil
+}
+
+// backoffDuration returns the exponential backoff duration for the given error count.
+// Caps at 30 seconds: 2s, 4s, 8s, 16s, 30s, 30s, ...
+func (rqp *ReviewQueuePoller) backoffDuration(consecutiveErrors int) time.Duration {
+	const base = 2 * time.Second
+	const maxBackoff = 30 * time.Second
+	if consecutiveErrors <= 0 {
+		return base
+	}
+	shift := consecutiveErrors - 1
+	if shift > 10 {
+		shift = 10 // prevent overflow
+	}
+	backoff := base * (1 << uint(shift))
+	if backoff > maxBackoff {
+		backoff = maxBackoff
+	}
+	return backoff
+}
+
+// ForceReconcile immediately runs session reconciliation outside the normal 30s cadence.
+// Safe to call concurrently; typically used by the fork pressure monitor to rapidly clean
+// up dead sessions when subprocess failures indicate stale Active states.
+func (rqp *ReviewQueuePoller) ForceReconcile() {
+	log.Info("ReviewQueuePoller ForceReconcile triggered")
+	rqp.reconcileSessions()
+}
+
+// reconcileSessions compares in-memory instances against live tmux sessions.
+// - Active instances not found in tmux are transitioned to Stopped.
+// - Stopped instances whose tmux session is found alive are revived to Active.
+func (rqp *ReviewQueuePoller) reconcileSessions() {
+	rqp.mu.RLock()
+	instances := make([]*Instance, len(rqp.instances))
+	copy(instances, rqp.instances)
+	rqp.mu.RUnlock()
+
+	if len(instances) == 0 {
+		return
+	}
+
+	// Group instances by their own tmux server socket -- see groupInstancesBySocket
+	// for why querying a single assumed-shared socket is wrong. Unmanaged instances
+	// are skipped inside the per-socket loop below, same as before.
+	bySocket := groupInstancesBySocket(instances)
+
+	for serverSocket, socketInstances := range bySocket {
+		liveSessions, err := rqp.tmuxSocket.ListSessions(serverSocket)
+		if err != nil {
+			if err == tmux.ErrServerDown {
+				log.Warn("reconcileSessions: tmux server is down, skipping reconciliation", "socket", serverSocket)
+			} else {
+				log.Warn("reconcileSessions: ListAllSessions error", "socket", serverSocket, "err", err)
+			}
+			continue
+		}
+
+		for _, inst := range socketInstances {
+			if !inst.IsManaged {
+				continue
+			}
+			sessionName := inst.GetTmuxSessionName()
+			if sessionName == "" {
+				continue
+			}
+
+			switch inst.Status {
+			case Active:
+				// Active but tmux session gone — mark Stopped.
+				if !liveSessions[sessionName] {
+					log.Warn("reconcileSessions: managed session not found in live sessions, transitioning to Stopped", "session", inst.Title, "tmux", sessionName, "socket", serverSocket)
+					ctx2s, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					_ = inst.sendCtx(ctx2s, func(s *instanceState) {
+						if s.inst.Status == Active {
+							if err := transitionToLocked(s, context.Background(), Stopped); err != nil {
+								log.Warn("reconcileSessions: transition to Stopped failed, using loadStatus", "session", inst.Title, "err", err)
+								s.inst.loadStatus(Stopped)
+							}
+						}
+					})
+					cancel()
+					rqp.queue.Remove(inst.Title)
+					inst.fireLifecycleEvent(EventExited, "reconcile-session-missing")
+				}
+			case Stopped:
+				// Stopped but tmux session is alive — revive to Active.
+				if liveSessions[sessionName] {
+					log.Info("reconcileSessions: stopped session found alive, reviving to Active", "session", inst.Title, "tmux", sessionName, "socket", serverSocket)
+					ctx2s, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					_ = inst.sendCtx(ctx2s, func(s *instanceState) {
+						if s.inst.Status == Stopped {
+							if err := transitionToLocked(s, context.Background(), Active); err != nil {
+								log.Warn("reconcileSessions: revival to Active failed", "session", inst.Title, "err", err)
+							}
+						}
+					})
+					cancel()
+					inst.fireLifecycleEvent(EventStarted, "reconcile-session-revived")
+				}
+			case Hibernated:
+				// Hibernated sessions intentionally have no tmux session (Hibernate()
+				// explicitly kills it) -- that's the expected steady state, so do
+				// nothing when the tmux session is also gone. But if one is found
+				// alive anyway (e.g. a code path resurrected it without checking
+				// IsHibernated() first), bring the instance back in sync via the same
+				// transition streamTerminal's hibernation guard uses deliberately:
+				// this restarts the controller/session driver, instead of leaving
+				// Status stuck at Hibernated forever while a real tmux session runs
+				// unmanaged underneath it (Preview() short-circuits for Hibernated,
+				// so such a session would otherwise look permanently dead).
+				if liveSessions[sessionName] {
+					log.Warn("reconcileSessions: hibernated session found alive in tmux, resuming to Active", "session", inst.Title, "tmux", sessionName, "socket", serverSocket)
+					ctx2s, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					_ = inst.sendCtx(ctx2s, func(s *instanceState) {
+						if s.inst.Status == Hibernated {
+							if err := transitionToLocked(s, context.Background(), Active); err != nil {
+								log.Warn("reconcileSessions: resume from hibernation failed", "session", inst.Title, "err", err)
+							}
+						}
+					})
+					cancel()
+					inst.fireLifecycleEvent(EventStarted, "reconcile-session-hibernated-but-alive")
+				}
+			}
+		}
+	}
+}
+
+// checkSessionsConcurrency caps the number of sessions checked simultaneously,
+// limiting concurrent subprocess (capture-pane) calls to avoid fork exhaustion
+// on macOS (kern.maxprocperuid).
+const checkSessionsConcurrency = 5
 
 // checkSessions checks all instances and updates the review queue.
 func (rqp *ReviewQueuePoller) checkSessions() {
@@ -222,125 +506,147 @@ func (rqp *ReviewQueuePoller) checkSessions() {
 	copy(instances, rqp.instances)
 	rqp.mu.RUnlock()
 
+	// Fetch pane activity timestamps once for all sessions. This single subprocess call
+	// replaces per-session capture-pane calls when content hasn't changed.
+	paneActivity := batchPaneActivity("")
+
+	sem := make(chan struct{}, checkSessionsConcurrency)
+	var wg sync.WaitGroup
 	for _, inst := range instances {
-		rqp.checkSession(inst)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i *Instance) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			rqp.checkSession(i, paneActivity)
+		}(inst)
 	}
+	wg.Wait()
 }
 
-// detectProcessing checks if session is actively processing after user interaction.
-// Uses multiple signals to determine if the session is responding to user input.
-func detectProcessing(inst *Instance, content string, statusInfo InstanceStatusInfo) bool {
-	// Signal 1: Status change from prompt state to active/processing
-	if statusInfo.ClaudeStatus == detection.StatusActive ||
-		statusInfo.ClaudeStatus == detection.StatusProcessing {
-		return true
-	}
+// previewCacheTTL is the fallback maximum age of a cached Preview() result when
+// pane activity timestamps are unavailable (e.g. tmux not running). The primary
+// invalidation mechanism is #{pane_last_activity} from batchPaneActivity(); this
+// TTL is only a safety net and is intentionally long.
+const previewCacheTTL = 30 * time.Second
 
-	// Signal 2: Idle detector shows Active state
-	if statusInfo.IdleState.State == detection.IdleStateActive {
-		return true
-	}
-
-	// Signal 3: Recent terminal output (activity within 2 seconds)
-	if time.Since(inst.LastMeaningfulOutput) < 2*time.Second {
-		return true
-	}
-
-	// Signal 4: Processing patterns in recent content (last 50 lines)
-	processingPatterns := []string{
-		"Thinking...",
-		"Processing...",
-		"Executing...",
-		"Running...",
-		"Working...",
-		"Analyzing...",
-		"esc to interrupt",
-		"Synthesizing",
-	}
-
-	// Only check recent content (last ~50 lines) to avoid false positives from old output
-	lines := strings.Split(content, "\n")
-	recentLines := lines
-	if len(lines) > 50 {
-		recentLines = lines[len(lines)-50:]
-	}
-	recentContent := strings.Join(recentLines, "\n")
-
-	for _, pattern := range processingPatterns {
-		if strings.Contains(recentContent, pattern) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// getContent returns the terminal content for inst, using a cache to avoid
+// GetContent returns the terminal content for inst, using a cache to avoid
 // spawning a subprocess when no new output has arrived since the last poll.
 //
 // For sessions with an active ClaudeController: the idle detector's lastActivity
-// timestamp is used as a change signal. lastActivity is updated in real-time
-// via PTY output reading (no subprocess), so a zero-cost check tells us whether
-// any new bytes arrived. If nothing changed, the last captured content is returned
-// directly, saving one `tmux capture-pane` subprocess per idle session per tick.
+// timestamp (driven by PTY reads, no subprocess) is the change signal.
 //
-// For sessions without a ClaudeController: Preview() is always called (no change
-// signal is available without the controller's PTY reader).
+// For sessions without a ClaudeController: #{pane_last_activity} from the
+// paneActivity snapshot (one `tmux list-panes -a` call shared across all sessions)
+// is the change signal. capture-pane is only called when that timestamp advances.
+// A 30s TTL acts as a fallback when paneActivity is nil (tmux unavailable).
 //
-// The error case returns the last cached content (empty string on the first poll)
-// so callers can continue with empty content as before.
-func (rqp *ReviewQueuePoller) getContent(inst *Instance, statusInfo InstanceStatusInfo) string {
+// On error, the last cached content is returned so callers see empty string only
+// on the very first poll for a session.
+func (p *pollerContentProvider) GetContent(inst *Instance, statusInfo InstanceStatusInfo, paneActivity map[string]time.Time) string {
+	// Lock-free read: load the single bundled entry for this session.
+	entry, _ := p.cache.Load(inst.Title)
+
 	if statusInfo.IsControllerActive {
 		lastActivity := statusInfo.IdleState.LastActivity
-		if !lastActivity.IsZero() {
-			rqp.cacheMu.Lock()
-			lastSeen := rqp.lastSeenActivity[inst.Title]
-			cached := rqp.cachedContent[inst.Title]
-			rqp.cacheMu.Unlock()
-
-			if lastActivity.Equal(lastSeen) {
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': content cache hit (lastActivity=%s, %d bytes)",
-					inst.Title, lastActivity.Format("15:04:05.000"), len(cached))
-				return cached
+		if !lastActivity.IsZero() && lastActivity.Equal(entry.lastSeenActivity) {
+			return entry.cachedContent
+		}
+	} else {
+		if paneActivity != nil {
+			tmuxName := inst.GetTmuxSessionName()
+			if currentActivity, ok := paneActivity[tmuxName]; ok {
+				if !currentActivity.IsZero() && currentActivity.Equal(entry.lastSeenPaneActivity) {
+					return entry.cachedContent
+				}
+			} else if !entry.lastPreviewTime.IsZero() && time.Since(entry.lastPreviewTime) < previewCacheTTL {
+				// The session's pane is absent from the batch snapshot entirely (its
+				// tmux session has died or never existed). Without this fallback, a
+				// dead session's capture-pane gets retried on every single poll cycle
+				// forever instead of backing off -- observed as thousands of failed
+				// subprocess spawns per hour for a handful of orphaned sessions.
+				return entry.cachedContent
 			}
+		} else if !entry.lastPreviewTime.IsZero() && time.Since(entry.lastPreviewTime) < previewCacheTTL {
+			return entry.cachedContent
 		}
 	}
 
 	content, err := inst.Preview()
 	if err != nil {
-		log.DebugLog.Printf("[ReviewQueue] Session '%s': Preview() error: %v", inst.Title, err)
-		rqp.cacheMu.Lock()
-		cached := rqp.cachedContent[inst.Title]
-		rqp.cacheMu.Unlock()
-		return cached
+		log.Debug("Preview() error", "session", inst.Title, "err", err)
+		// Record the attempt even on failure. Without this, lastPreviewTime stays
+		// at its zero value forever for a session whose Preview() never succeeds,
+		// which defeats the previewCacheTTL backoff above and re-triggers a fresh
+		// capture-pane subprocess on every single poll cycle indefinitely.
+		p.cache.Compute(inst.Title, func(e contentCacheEntry, _ bool) (contentCacheEntry, xsync.ComputeOp) {
+			e.lastPreviewTime = time.Now()
+			return e, xsync.UpdateOp
+		})
+		return entry.cachedContent
 	}
 
-	rqp.cacheMu.Lock()
-	rqp.cachedContent[inst.Title] = content
-	if statusInfo.IsControllerActive && !statusInfo.IdleState.LastActivity.IsZero() {
-		rqp.lastSeenActivity[inst.Title] = statusInfo.IdleState.LastActivity
+	// Update LastMeaningfulOutput when new terminal content is detected.
+	// This ensures sessions resurface in the review queue after producing new output,
+	// even when the user hasn't visited them via WebSocket streaming.
+	// The content-signature dedup in UpdateTimestamps() (persisted to DB) prevents
+	// false positives: if content is cosmetically changed but semantically the same
+	// as when the user last acknowledged, LastMeaningfulOutput is not updated and
+	// the acknowledgment snooze is preserved.
+	if content != "" {
+		inst.UpdateTerminalTimestamps(content, false)
 	}
-	rqp.cacheMu.Unlock()
+
+	// Atomic write: Compute replaces the entry under a per-key shard lock (no I/O inside).
+	newActivity := statusInfo.IdleState.LastActivity
+	isController := statusInfo.IsControllerActive
+	var newPaneActivity time.Time
+	if !isController && paneActivity != nil {
+		tmuxName := inst.GetTmuxSessionName()
+		if t, ok := paneActivity[tmuxName]; ok && !t.IsZero() {
+			newPaneActivity = t
+		}
+	}
+	now := time.Now()
+	p.cache.Compute(inst.Title, func(e contentCacheEntry, _ bool) (contentCacheEntry, xsync.ComputeOp) {
+		e.cachedContent = content
+		if isController && !newActivity.IsZero() {
+			e.lastSeenActivity = newActivity
+		} else {
+			if !newPaneActivity.IsZero() {
+				e.lastSeenPaneActivity = newPaneActivity
+			}
+			e.lastPreviewTime = now
+		}
+		return e, xsync.UpdateOp
+	})
 
 	return content
 }
 
+// shouldSkipSession returns true for sessions the poller should not evaluate.
+// Don't check sessions that are not running or are explicitly paused.
+// Hidden (system/background) sessions are never shown in the review queue.
+// All other states proceed to status detection regardless of controller state.
+func (rqp *ReviewQueuePoller) shouldSkipSession(inst *Instance) bool {
+	// Lock-free snapshot read for Hidden and Status; Started() reads inst.started
+	// (set once during construction, not in the snapshot).
+	snap := inst.Snapshot()
+	return snap.Hidden || snap.Status == Stopped || snap.Status == Paused || !inst.Started()
+}
+
 // checkSession checks a single session and adds/removes from queue as needed.
-func (rqp *ReviewQueuePoller) checkSession(inst *Instance) {
-	log.InfoLog.Printf("[ReviewQueue] === CHECKING SESSION '%s' === (started=%v, paused=%v)",
-		inst.Title, inst.Started(), inst.Paused())
-
-	if inst.LastMeaningfulOutput.IsZero() {
-		log.DebugLog.Printf("[ReviewQueue] Session '%s': LastMeaningfulOutput is zero — processing without output timestamp", inst.Title)
-	}
-
-	// Skip paused or unstarted sessions
-	if !inst.Started() || inst.Paused() {
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Skipping (started=%v, paused=%v)",
-			inst.Title, inst.Started(), inst.Paused())
-		rqp.queue.Remove(inst.Title)
+// paneActivity is the snapshot from batchPaneActivity(); nil falls back to TTL cache.
+func (rqp *ReviewQueuePoller) checkSession(inst *Instance, paneActivity map[string]time.Time) {
+	// Skip paused, stopped, or unstarted sessions
+	if rqp.shouldSkipSession(inst) {
 		return
 	}
+
+	// Lock-free snapshot for all read-only field accesses below.
+	// Write paths (inst.LastAddedToQueue = ...) and method calls (IsAcknowledgedAfterOutput,
+	// GetDiffStats, etc.) are left unchanged.
+	snap := inst.Snapshot()
 
 	// Get comprehensive status
 	statusInfo := rqp.statusManager.GetStatus(inst)
@@ -348,414 +654,77 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance) {
 	// STEP 1: Get terminal content for prompt detection.
 	// Uses cached content when the controller reports no new activity since the last
 	// poll — avoids a subprocess spawn on every tick for idle controller-managed sessions.
-	content := rqp.getContent(inst, statusInfo)
+	content := rqp.contentProvider.GetContent(inst, statusInfo, paneActivity)
 
-	// STEP 2: Detect and track prompts
-	isNewPrompt := inst.detectAndTrackPrompt(content, statusInfo)
+	// Status determination: pure evaluation, no side effects.
+	// Handles controller-based and terminal-content detection, idle/staleness checks.
+	result := rqp.statusDeterminer.Determine(inst, content, statusInfo, rqp.statusDetector)
 
-	// STEP 3: Check if user responded to current prompt
-	userRespondedToPrompt := inst.ReviewState.UserRespondedAfterPrompt()
+	reason := result.Reason
+	priority := result.Priority
+	context := result.Context
+	claudeStatus := result.ClaudeStatus
+	shouldAdd := result.Action == DetectionActionAdd
 
-	// STEP 4: Check if session is actively processing after user response
-	isProcessing := false
-	if userRespondedToPrompt && content != "" {
-		isProcessing = detectProcessing(inst, content, statusInfo)
-	}
-
-	// STEP 5: Check grace period for temporary removal
-	inGracePeriod := inst.ReviewState.IsInProcessingGracePeriod()
-
-	log.InfoLog.Printf("[ReviewQueue] Session '%s': isNewPrompt=%v, userResponded=%v, isProcessing=%v, gracePeriod=%v",
-		inst.Title, isNewPrompt, userRespondedToPrompt, isProcessing, inGracePeriod)
-
-	// DECISION LOGIC:
-
-	// If user responded and session is processing -> remove from queue
-	if userRespondedToPrompt && isProcessing {
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': User responded and processing - removing from queue", inst.Title)
-		rqp.queue.Remove(inst.Title)
-		inst.ProcessingGraceUntil = time.Time{} // Clear grace period
-		// Persist cleared grace period
-		if rqp.storage != nil {
-			if err := rqp.storage.UpdateInstanceProcessingGrace(inst.Title, inst.ProcessingGraceUntil); err != nil {
-				log.ErrorLog.Printf("Failed to persist cleared ProcessingGraceUntil: %v", err)
-			}
-		}
-		return
-	}
-
-	// If user responded but NOT processing yet -> grace period
-	if userRespondedToPrompt && !isProcessing {
-		if inGracePeriod {
-			// Already in grace period - keep off queue
-			log.DebugLog.Printf("[ReviewQueue] Session '%s': In grace period, keeping off queue", inst.Title)
-			rqp.queue.Remove(inst.Title)
-			return
-		}
-
-		if inst.ProcessingGraceUntil.IsZero() {
-			// Fresh response - start grace period and remove from queue
-			inst.ProcessingGraceUntil = time.Now().Add(10 * time.Second)
-			log.InfoLog.Printf("[ReviewQueue] Session '%s': User responded, starting grace period until %v",
-				inst.Title, inst.ProcessingGraceUntil)
-
-			// Persist grace period
-			if rqp.storage != nil {
-				if err := rqp.storage.UpdateInstanceProcessingGrace(inst.Title, inst.ProcessingGraceUntil); err != nil {
-					log.ErrorLog.Printf("Failed to persist ProcessingGraceUntil: %v", err)
-				}
-			}
-			rqp.queue.Remove(inst.Title)
-			return
-		}
-
-		// Grace period expired and still not processing
-		// Clear grace period and fall through to add logic (will check if new prompt)
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Grace period expired, session not responding", inst.Title)
-		inst.ProcessingGraceUntil = time.Time{}
-		if rqp.storage != nil {
-			if err := rqp.storage.UpdateInstanceProcessingGrace(inst.Title, inst.ProcessingGraceUntil); err != nil {
-				log.ErrorLog.Printf("Failed to persist cleared ProcessingGraceUntil: %v", err)
-			}
-		}
-	}
-
-	// Determine if needs attention and why
-	var reason AttentionReason
-	var priority Priority
-	var shouldAdd bool
-	var context string
-
-	// Check for controller-based states if controller is active
-	if statusInfo.IsControllerActive {
-		controller, exists := rqp.statusManager.GetController(inst.Title)
-		if exists && controller != nil {
-			log.DebugLog.Printf("[ReviewQueue] Session '%s': Checking idle state (controller active)", inst.Title)
-
-			// Get idle state from controller
-			idleState, lastActivity := controller.GetIdleState()
-			log.DebugLog.Printf("[ReviewQueue] Session '%s': Detected idle state=%s, lastActivity=%s",
-				inst.Title, idleState.String(), detection.FormatDuration(time.Since(lastActivity)))
-
-			// IMPORTANT: Check Claude status FIRST before idle state handling.
-			// Status-based conditions (approval, input required, error) take priority over
-			// idle state because they represent explicit user prompts that need attention,
-			// even if terminal activity makes the session appear "active".
-
-			// Check for approval needs (highest priority for user prompts)
-			if statusInfo.ClaudeStatus == detection.StatusNeedsApproval || statusInfo.PendingApprovals > 0 {
-				reason = ReasonApprovalPending
-				priority = PriorityHigh
-				shouldAdd = true
-				// Use the detailed context from status detector if available
-				if statusInfo.StatusContext != "" {
-					context = statusInfo.StatusContext
-				} else {
-					context = "Waiting for approval to proceed"
-				}
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Approval needed (status=%s, pendingApprovals=%d) - %s",
-					inst.Title, statusInfo.ClaudeStatus.String(), statusInfo.PendingApprovals, context)
-			}
-
-			// Check for input required (explicit prompts asking for user input)
-			if statusInfo.ClaudeStatus == detection.StatusInputRequired {
-				reason = ReasonInputRequired
-				priority = PriorityMedium
-				shouldAdd = true
-				// Use the detailed context from status detector if available
-				if statusInfo.StatusContext != "" {
-					context = statusInfo.StatusContext
-				} else {
-					context = "Waiting for explicit user input"
-				}
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Input required - %s", inst.Title, context)
-			}
-
-			// Check for errors (highest priority)
-			if statusInfo.ClaudeStatus == detection.StatusError {
-				reason = ReasonErrorState
-				priority = PriorityUrgent
-				shouldAdd = true
-				// Use the detailed context from status detector if available
-				if statusInfo.StatusContext != "" {
-					context = statusInfo.StatusContext
-				} else {
-					context = "Error state detected"
-				}
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Error detected - %s", inst.Title, context)
-			}
-
-			// Check for tests failing (high priority - actionable failures)
-			if statusInfo.ClaudeStatus == detection.StatusTestsFailing {
-				reason = ReasonTestsFailing
-				priority = PriorityHigh
-				shouldAdd = true
-				// Use the detailed context from status detector if available
-				if statusInfo.StatusContext != "" {
-					context = statusInfo.StatusContext
-				} else {
-					context = "Tests are failing"
-				}
-				log.InfoLog.Printf("[ReviewQueue] Session '%s': Tests failing - %s", inst.Title, context)
-			}
-
-			// Check for task completion (high priority - user wants to know when work is done)
-			if statusInfo.ClaudeStatus == detection.StatusSuccess {
-				reason = ReasonTaskComplete
-				priority = PriorityLow // Low priority since it's informational, not blocking
-				shouldAdd = true
-				// Use the detailed context from status detector if available
-				if statusInfo.StatusContext != "" {
-					context = statusInfo.StatusContext
-				} else {
-					context = "Task completed successfully"
-				}
-				log.InfoLog.Printf("[ReviewQueue] Session '%s': Task completion - %s", inst.Title, context)
-			}
-
-			// Now handle idle state - but only if no status-based condition was detected above.
-			// This ensures user prompts aren't hidden just because terminal is "active".
-			if !shouldAdd {
-				switch idleState {
-				case detection.IdleStateActive:
-					// Actively working, remove from queue (but only if no prompt detected above)
-					log.DebugLog.Printf("[ReviewQueue] Session '%s': Active state with no prompts - removing from queue", inst.Title)
-					rqp.queue.Remove(inst.Title)
+	// Handle early-exit actions from the determiner.
+	if result.Action == DetectionActionRemove {
+		// For sessions without an active controller, the raw terminal scanner can produce
+		// false-positive Active/Processing detections during a resize redraw. Suppress
+		// removal for prompt-reason items on the no-controller path only.
+		// Controller-active sessions: trust the controller — if it returns DetectionActionRemove
+		// for an approval item, the dialog is genuinely gone (e.g., user approved the tool use).
+		if !statusInfo.IsControllerActive {
+			if existing, exists := rqp.queue.Get(snap.Title); exists {
+				isPromptReason := existing.Reason == ReasonApprovalPending ||
+					existing.Reason == ReasonInputRequired ||
+					existing.Reason == ReasonWaitingForUser
+				if isPromptReason {
 					return
-
-				case detection.IdleStateWaiting:
-					// Normal idle state (e.g., INSERT mode) - don't add by default
-					log.DebugLog.Printf("[ReviewQueue] Session '%s': Waiting state - will check for specific issues", inst.Title)
-					shouldAdd = false
-
-				case detection.IdleStateTimeout:
-					// Definite timeout - been idle too long
-					// Use semantic ReasonIdle instead of deprecated ReasonIdleTimeout
-					reason = ReasonIdle
-					priority = PriorityLow
-					shouldAdd = true
-					idleDuration := time.Since(lastActivity)
-					context = "Session idle - ready for next task"
-					log.DebugLog.Printf("[ReviewQueue] Session '%s': Idle detected - idle for %s", inst.Title, detection.FormatDuration(idleDuration))
-				}
-			}
-
-			// Check for uncommitted changes (informational - user may want to review and commit)
-			// Only check if we don't already have a higher-priority reason
-			if (!shouldAdd || priority == PriorityLow) && inst.HasGitWorktree() {
-				worktree, err := inst.GetGitWorktree()
-				if err != nil {
-					log.DebugLog.Printf("[ReviewQueue] Session '%s': Failed to get git worktree: %v", inst.Title, err)
-				} else if worktree != nil {
-					isDirty, err := worktree.IsDirty()
-					if err != nil {
-						log.DebugLog.Printf("[ReviewQueue] Session '%s': Failed to check git status: %v", inst.Title, err)
-					} else if isDirty {
-						// Only override if we don't have a higher priority reason already
-						if !shouldAdd || priority == PriorityLow {
-							reason = ReasonUncommittedChanges
-							priority = PriorityLow
-							shouldAdd = true
-							context = "Uncommitted changes ready to commit"
-							log.InfoLog.Printf("[ReviewQueue] Session '%s': Uncommitted changes detected", inst.Title)
-						}
-					}
 				}
 			}
 		}
-	} else {
-		// No controller - but we can still detect status from terminal content
-		log.DebugLog.Printf("[ReviewQueue] Session '%s': No active controller - using terminal-based status detection", inst.Title)
-
-		// IMPORTANT: Check terminal content for approval/input prompts.
-		// 'content' was already fetched at STEP 1 via getContent(); for no-controller
-		// sessions getContent() always calls Preview(), so no extra subprocess needed.
-		if content != "" {
-			// Detect status from terminal content using the shared status detector
-			detectedStatus, statusContext := rqp.statusDetector.DetectWithContext([]byte(content))
-			log.DebugLog.Printf("[ReviewQueue] Session '%s': Detected status=%s from terminal content",
-				inst.Title, detectedStatus.String())
-
-			// Check for approval needs (highest priority for user prompts)
-			if detectedStatus == detection.StatusNeedsApproval {
-				reason = ReasonApprovalPending
-				priority = PriorityHigh
-				shouldAdd = true
-				if statusContext != "" {
-					context = statusContext
-				} else {
-					context = "Waiting for approval to proceed"
-				}
-				log.InfoLog.Printf("[ReviewQueue] Session '%s': Approval needed (no controller) - %s", inst.Title, context)
-			}
-
-			// Check for input required (explicit prompts asking for user input)
-			if detectedStatus == detection.StatusInputRequired {
-				reason = ReasonInputRequired
-				priority = PriorityMedium
-				shouldAdd = true
-				if statusContext != "" {
-					context = statusContext
-				} else {
-					context = "Waiting for explicit user input"
-				}
-				log.InfoLog.Printf("[ReviewQueue] Session '%s': Input required (no controller) - %s", inst.Title, context)
-			}
-
-			// Check for errors (highest priority)
-			if detectedStatus == detection.StatusError {
-				reason = ReasonErrorState
-				priority = PriorityUrgent
-				shouldAdd = true
-				if statusContext != "" {
-					context = statusContext
-				} else {
-					context = "Error state detected"
-				}
-				log.InfoLog.Printf("[ReviewQueue] Session '%s': Error detected (no controller) - %s", inst.Title, context)
-			}
-
-			// If actively processing, don't add to queue
-			if detectedStatus == detection.StatusActive || detectedStatus == detection.StatusProcessing {
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Active/processing state detected - not adding to queue", inst.Title)
-				rqp.queue.Remove(inst.Title)
-				return
-			}
-		}
-
-		// If no status-based condition was detected, fall back to time-based checks
-		if !shouldAdd {
-			// Check if session has been idle for a long time based on UpdatedAt
-			idleDuration := time.Since(inst.UpdatedAt)
-			const basicIdleThreshold = 5 * time.Second
-
-			if idleDuration > basicIdleThreshold {
-				// Use semantic ReasonIdle instead of deprecated ReasonIdleTimeout
-				reason = ReasonIdle
-				priority = PriorityLow
-				shouldAdd = true
-				context = "Session idle - ready for next task"
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Basic idle check - %s since UpdatedAt",
-					inst.Title, detection.FormatDuration(idleDuration))
-			}
-		}
-
-		// Check for uncommitted changes (informational - user may want to review and commit)
-		// Only check if we don't already have a higher-priority reason
-		if (!shouldAdd || priority == PriorityLow) && inst.HasGitWorktree() {
-			worktree, err := inst.GetGitWorktree()
-			if err != nil {
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Failed to get git worktree: %v", inst.Title, err)
-			} else if worktree != nil {
-				isDirty, err := worktree.IsDirty()
-				if err != nil {
-					log.DebugLog.Printf("[ReviewQueue] Session '%s': Failed to check git status: %v", inst.Title, err)
-				} else if isDirty {
-					// Only override if we don't have a higher priority reason already
-					if !shouldAdd || priority == PriorityLow {
-						reason = ReasonUncommittedChanges
-						priority = PriorityLow
-						shouldAdd = true
-						context = "Uncommitted changes ready to commit"
-						log.InfoLog.Printf("[ReviewQueue] Session '%s': Uncommitted changes detected", inst.Title)
-					}
-				}
-			}
-		}
-	}
-
-	// NOTE: Preview() is now a read-only operation that does NOT update timestamps.
-	// Timestamps are managed by:
-	// 1. WebSocket streaming when users view the terminal in the web UI
-	// 2. User interactions (typing, viewing) via UpdateTerminalTimestamps(forceUpdate=true)
-	// 3. Automated checks in HasUpdated() which call UpdateTerminalTimestamps(forceUpdate=false)
-	//
-	// We deliberately avoid calling Preview() here because it would be an expensive operation
-	// (blocking tmux capture) that doesn't provide value since it no longer updates timestamps.
-	// Instead, we rely on the timestamps already set by the above mechanisms.
-	//
-	// This approach:
-	// - Prevents breaking acknowledgment snooze (Preview() no longer updates LastMeaningfulOutput)
-	// - Avoids expensive blocking tmux calls during polling
-	// - Relies on WebSocket streaming or HasUpdated() for accurate timestamp management
-
-	// Check for terminal staleness (no meaningful output for configured threshold)
-	// This helps identify sessions that might be stuck or waiting without showing obvious idle state
-	// IMPORTANT: Respect acknowledgment - don't flag as stale if user already acknowledged
-	timeSinceOutput := inst.GetTimeSinceLastMeaningfulOutput()
-	log.InfoLog.Printf("[ReviewQueue] Session '%s': Staleness check - %s since last meaningful output (threshold: %s, shouldAdd=%v, priority=%v)",
-		inst.Title, detection.FormatDuration(timeSinceOutput), detection.FormatDuration(rqp.config.StalenessThreshold), shouldAdd, priority)
-
-	// Check if user has acknowledged this session after it became stale
-	// If acknowledged after last output, don't re-flag as stale
-	alreadyAcknowledged := inst.ReviewState.IsAcknowledgedAfterOutput()
-
-	if timeSinceOutput > rqp.config.StalenessThreshold {
-		if alreadyAcknowledged {
-			log.InfoLog.Printf("[ReviewQueue] Session '%s': STALE but already acknowledged - skipping staleness flag",
-				inst.Title)
-		} else {
-			log.InfoLog.Printf("[ReviewQueue] Session '%s': STALENESS DETECTED - time since output (%s) > threshold (%s)",
-				inst.Title, detection.FormatDuration(timeSinceOutput), detection.FormatDuration(rqp.config.StalenessThreshold))
-
-			// Only override if we don't already have a higher-priority reason.
-			// Only set stale if not already flagged with Medium priority or higher.
-			if !shouldAdd || priority.IsLowerThan(PriorityMedium) {
-				// Use semantic ReasonStale instead of deprecated ReasonIdleTimeout
-				reason = ReasonStale
-				priority = PriorityLow // Lower priority than approval/error, but should be reviewed
-				shouldAdd = true
-				context = fmt.Sprintf("No activity for %s - session may be stuck or waiting",
-					detection.FormatDuration(timeSinceOutput))
-
-				log.InfoLog.Printf("[ReviewQueue] Session '%s': SETTING shouldAdd=true - flagged as stale - %s since last meaningful output",
-					inst.Title, detection.FormatDuration(timeSinceOutput))
-			} else {
-				log.InfoLog.Printf("[ReviewQueue] Session '%s': Stale but already has higher priority reason (%s)",
-					inst.Title, reason.String())
-			}
-		}
-	} else {
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': NOT STALE - time since output (%s) <= threshold (%s)",
-			inst.Title, detection.FormatDuration(timeSinceOutput), detection.FormatDuration(rqp.config.StalenessThreshold))
-	}
-
-	// Acknowledgment snooze and grace-period checks.
-	// For sessions with an active controller, high/medium-priority states (approval, error,
-	// input required) bypass snooze so live Claude processes always surface to the user.
-	// For sessions WITHOUT an active controller (orphaned/external/no-tty sessions), there is
-	// no live process that can generate new approvals — detections come from static terminal
-	// content. In that case, respect acknowledgment at any priority level so the user can
-	// permanently dismiss stale entries.
-	if !shouldAdd || priority == PriorityLow || !statusInfo.IsControllerActive {
-		// Check if user dismissed this session.
-		// Sessions are snoozed when LastAcknowledged is newer than LastMeaningfulOutput.
-		if inst.ReviewState.IsAcknowledgedAfterOutput() {
-			log.DebugLog.Printf("[ReviewQueue] Session '%s': User acknowledged (snoozed until new output), removing from queue", inst.Title)
-			rqp.queue.Remove(inst.Title)
-			return
-		}
-
-		// Grace period: Don't re-add for 5 minutes after acknowledgment, even with new output.
-		// This prevents immediate re-notification after user dismisses a session.
-		if !inst.LastAcknowledged.IsZero() {
-			gracePeriod := 5 * time.Minute
-			timeSinceAck := time.Since(inst.LastAcknowledged)
-			if timeSinceAck < gracePeriod {
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Still in grace period (%s / %s since acknowledgment), skipping queue add",
-					inst.Title, detection.FormatDuration(timeSinceAck), detection.FormatDuration(gracePeriod))
-				rqp.queue.Remove(inst.Title)
-				return
-			}
-		}
-	}
-
-	// Prevent re-adding same prompt user already responded to
-	// Only add if this is a NEW prompt OR user hasn't responded yet
-	if shouldAdd && userRespondedToPrompt && !isNewPrompt {
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': User already responded to this prompt - removing from queue", inst.Title)
-		rqp.queue.Remove(inst.Title)
+		rqp.queue.Remove(snap.Title)
 		return
+	}
+
+	// If the determiner saw a clean worktree, remove any stale UncommittedChanges entry.
+	if result.CleanWorktree {
+		if existing, exists := rqp.queue.Get(snap.Title); exists && existing.Reason == ReasonUncommittedChanges {
+			log.Debug("changes committed, removing UncommittedChanges entry", "session", snap.Title)
+			rqp.queue.Remove(snap.Title)
+		}
+	}
+
+	// LastMeaningfulOutput is updated by GetContent() above via UpdateTerminalTimestamps()
+	// when new terminal content is detected. The persisted content-signature dedup prevents
+	// false positives: sessions stay snoozed after acknowledgment unless output genuinely changes.
+
+	// Acknowledgment snooze: removes sessions where LastAcknowledged is newer than
+	// LastMeaningfulOutput (i.e., no new output since the user last dismissed it).
+	// Bypass for active high-priority conditions (approval, error, input): the
+	// content-signature dedup in UpdateTimestamps() does not update LastMeaningfulOutput
+	// when an identical prompt reappears, so IsAcknowledgedAfterOutput() would be a false
+	// positive and silently suppress a live blocking prompt.
+	isActiveHighPriority := shouldAdd && priority <= PriorityHigh
+	if !isActiveHighPriority && snap.IsAcknowledgedAfterOutput() {
+		rqp.queue.Remove(snap.Title)
+		return
+	}
+
+	// Grace period: Don't re-add for 5 minutes after acknowledgment, even with new output.
+	// Scoped to low-priority or inactive-controller sessions only — high/medium priority sessions
+	// with an active controller should resurface promptly when new output arrives.
+	// Only applied when shouldAdd is true: a Skip result should leave the queue unchanged,
+	// not trigger a removal through the grace-period path.
+	if shouldAdd && (priority == PriorityLow || !statusInfo.IsControllerActive) {
+		if !snap.LastAcknowledged.IsZero() {
+			gracePeriod := 5 * time.Minute
+			timeSinceAck := time.Since(snap.LastAcknowledged)
+			if timeSinceAck < gracePeriod {
+				rqp.queue.Remove(snap.Title)
+				return
+			}
+		}
 	}
 
 	// Spam prevention: Enforce minimum re-add interval to prevent notification spam.
@@ -764,16 +733,13 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance) {
 	// must not block urgent prompts from re-appearing — the session should always be re-added.
 	if shouldAdd {
 		minReAddInterval := 2 * time.Minute
-		if !inst.LastAddedToQueue.IsZero() && time.Since(inst.LastAddedToQueue) < minReAddInterval {
-			if existingItem, exists := rqp.queue.Get(inst.Title); exists {
+		if !snap.LastAddedToQueue.IsZero() && time.Since(snap.LastAddedToQueue) < minReAddInterval {
+			if existingItem, exists := rqp.queue.Get(snap.Title); exists {
 				// Lower priority number = higher priority (Urgent=1 > High=2 > Medium=3 > Low=4)
 				isEscalation := priority < existingItem.Priority
 				if isEscalation {
-					log.InfoLog.Printf("[ReviewQueue] Session '%s': Priority escalation (%s → %s) - bypassing rate limit",
-						inst.Title, existingItem.Priority.String(), priority.String())
+					log.Debug("priority escalation, bypassing rate limit", "session", snap.Title, "from", existingItem.Priority.String(), "to", priority.String())
 				} else {
-					log.DebugLog.Printf("[ReviewQueue] Session '%s': Skipping queue add (too soon - last added %v ago, minimum %v)",
-						inst.Title, time.Since(inst.LastAddedToQueue), minReAddInterval)
 					return
 				}
 			}
@@ -782,25 +748,27 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance) {
 		}
 	}
 
-	// Add or update in queue
-	log.InfoLog.Printf("[ReviewQueue] Session '%s': Final decision - shouldAdd=%v, reason=%s, priority=%s, context=%q",
-		inst.Title, shouldAdd, reason.String(), priority.String(), context)
+	// Add or update in queue, or leave unchanged.
+	// DetectionActionSkip means the determiner saw no actionable condition — the queue
+	// entry (if any) should remain; only DetectionActionAdd and DetectionActionRemove
+	// (handled above) mutate the queue.
+	if result.Action == DetectionActionSkip {
+		return
+	}
+
+	log.Debug("final decision", "session", snap.Title, "should_add", shouldAdd, "reason", reason.String(), "priority", priority.String(), "context", context)
 
 	if shouldAdd {
 		// Check if item already exists and preserve DetectedAt if status hasn't changed
 		detectedAt := time.Now()
 		isUpdate := false
-		if existingItem, exists := rqp.queue.Get(inst.Title); exists {
+		if existingItem, exists := rqp.queue.Get(snap.Title); exists {
 			isUpdate = true
 			// Preserve original timestamp if meaningful fields haven't changed
 			if existingItem.Reason == reason &&
 				existingItem.Priority == priority &&
 				existingItem.Context == context {
 				detectedAt = existingItem.DetectedAt
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Updating existing queue item (no changes, preserving timestamp)", inst.Title)
-			} else {
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Updating queue item (reason changed from %s to %s, priority %s to %s)",
-					inst.Title, existingItem.Reason.String(), reason.String(), existingItem.Priority.String(), priority.String())
 			}
 		}
 
@@ -809,33 +777,36 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance) {
 
 		// Use CreatedAt as fallback LastActivity when LastMeaningfulOutput hasn't been set yet
 		// (new sessions, sessions where StartController failed before the migration ran).
-		lastActivity := inst.LastMeaningfulOutput
+		lastActivity := snap.LastMeaningfulOutput
 		if lastActivity.IsZero() {
-			lastActivity = inst.CreatedAt
+			lastActivity = snap.CreatedAt
 		}
 
 		item := &ReviewItem{
-			SessionID:   inst.Title,
-			SessionName: inst.Title,
+			SessionID:   snap.Title,
+			SessionName: snap.Title,
 			Reason:      reason,
 			Priority:    priority,
 			DetectedAt:  detectedAt,
 			Context:     context,
 			// Populate session details for rich display
-			Program:      inst.Program,
-			Branch:       inst.Branch,
-			Path:         inst.Path,
-			WorkingDir:   inst.WorkingDir,
-			Status:       inst.Status.String(),
-			Tags:         inst.Tags,
-			Category:     inst.Category,
+			Program:      snap.Program,
+			Branch:       snap.Branch,
+			Path:         snap.Path,
+			WorkingDir:   snap.WorkingDir,
+			Status:       snap.Status.String(),
+			Tags:         snap.Tags,
+			Category:     snap.Category,
 			DiffStats:    inst.GetDiffStats(),
 			LastActivity: lastActivity,
+			// Populate idle state and raw detected status for WorkingState mapping.
+			IdleState:    statusInfo.IdleState.State,
+			ClaudeStatus: claudeStatus,
 		}
 
 		// Enrich approval items with hook metadata from ApprovalStore (Story 3, Task 3.2).
 		if reason == ReasonApprovalPending && rqp.approvalProvider != nil {
-			if approvals := rqp.approvalProvider.GetApprovalMetadataBySession(inst.Title); len(approvals) > 0 {
+			if approvals := rqp.approvalProvider.GetApprovalMetadataBySession(snap.Title); len(approvals) > 0 {
 				a := approvals[0] // Use the most recent/first approval
 				if item.Metadata == nil {
 					item.Metadata = make(map[string]string)
@@ -854,19 +825,18 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance) {
 				if a.Orphaned {
 					item.Metadata["orphaned"] = "true"
 				}
-				log.InfoLog.Printf("[ReviewQueue] Session '%s': Enriched approval item with hook metadata (tool=%s, approval_id=%s)",
-					inst.Title, a.ToolName, a.ApprovalID)
+				log.Debug("enriched approval item with hook metadata", "session", snap.Title, "tool", a.ToolName, "approval_id", a.ApprovalID)
 			}
 		}
 
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': ADDING TO QUEUE - reason=%s, priority=%s, context=%q",
-			inst.Title, reason.String(), priority.String(), context)
+		log.Debug("adding to queue", "session", snap.Title, "reason", reason.String(), "priority", priority.String(), "context", context)
 		rqp.queue.Add(item)
 
-		// Update spam prevention timestamp
-		inst.LastAddedToQueue = time.Now()
-		log.InfoLog.Printf("[ReviewQueue] Session '%s': Updated LastAddedToQueue timestamp to %v",
-			inst.Title, inst.LastAddedToQueue)
+		// Update spam prevention timestamp via actor command so the write is
+		// serialised with buildSnapshot and does not race.
+		now := time.Now()
+		inst.SetLastAddedToQueue(now)
+		log.Debug("updated LastAddedToQueue timestamp", "session", snap.Title, "timestamp", now)
 
 		// CRITICAL: Persist LastAddedToQueue to database to prevent notification spam
 		// Without persistence, this timestamp resets on app restart or instance reload,
@@ -874,24 +844,13 @@ func (rqp *ReviewQueuePoller) checkSession(inst *Instance) {
 		// NOTE: Use UpdateInstanceLastAddedToQueue instead of SaveInstances to avoid
 		// the merge logic which would restore deleted instances from disk.
 		if rqp.storage != nil {
-			if err := rqp.storage.UpdateInstanceLastAddedToQueue(inst.Title, inst.LastAddedToQueue); err != nil {
-				log.ErrorLog.Printf("[ReviewQueue] Session '%s': Failed to persist LastAddedToQueue: %v", inst.Title, err)
-			} else {
-				log.DebugLog.Printf("[ReviewQueue] Session '%s': Successfully persisted LastAddedToQueue timestamp", inst.Title)
+			if err := rqp.storage.UpdateInstanceLastAddedToQueue(snap.Title, now); err != nil {
+				log.Error("failed to persist LastAddedToQueue", "session", snap.Title, "err", err)
 			}
-		} else {
-			log.DebugLog.Printf("[ReviewQueue] Session '%s': Storage not available, LastAddedToQueue will not persist", inst.Title)
 		}
 
 		if !isUpdate {
-			log.InfoLog.Printf("[ReviewQueue] Session '%s': Successfully added to queue - %s (priority: %s, context: %s)",
-				inst.Title, reason.String(), priority.String(), context)
-		}
-	} else {
-		// Remove from queue - log only if it was actually in the queue
-		if rqp.queue.Has(inst.Title) {
-			log.DebugLog.Printf("[ReviewQueue] Session '%s': Removing from queue (shouldAdd=false)", inst.Title)
-			rqp.queue.Remove(inst.Title)
+			log.Debug("successfully added to queue", "session", snap.Title, "reason", reason.String(), "priority", priority.String(), "context", context)
 		}
 	}
 }
@@ -901,8 +860,7 @@ func (rqp *ReviewQueuePoller) UpdateConfig(config ReviewQueuePollerConfig) {
 	rqp.mu.Lock()
 	defer rqp.mu.Unlock()
 	rqp.config = config
-	log.InfoLog.Printf("ReviewQueuePoller config updated: poll interval=%s, idle threshold=%s",
-		config.PollInterval, config.IdleThreshold)
+	log.Info("ReviewQueuePoller config updated", "poll_interval", config.PollInterval, "idle_threshold", config.IdleThreshold)
 }
 
 // GetConfig returns the current configuration.
@@ -929,8 +887,9 @@ func (rqp *ReviewQueuePoller) GetMonitoredCount() int {
 // CheckSession checks a single session immediately (exported for ReactiveQueueManager).
 // This allows external components to trigger immediate re-evaluation without waiting for
 // the next poll cycle, providing <100ms feedback on user interactions.
+// Fetches a fresh pane activity snapshot for accurate cache invalidation.
 func (rqp *ReviewQueuePoller) CheckSession(inst *Instance) {
-	rqp.checkSession(inst)
+	rqp.checkSession(inst, batchPaneActivity(""))
 }
 
 // FindInstance finds an instance by session ID (exported for ReactiveQueueManager).
@@ -940,11 +899,25 @@ func (rqp *ReviewQueuePoller) FindInstance(sessionID string) *Instance {
 	defer rqp.mu.RUnlock()
 
 	for _, inst := range rqp.instances {
-		if inst.Title == sessionID {
+		if inst.MatchesID(sessionID) {
 			return inst
 		}
 	}
 	return nil
+}
+
+// injectCachedContent is a test helper that seeds the content cache directly,
+// bypassing tmux. Only the pollerContentProvider implementation supports this;
+// custom ContentProvider implementations ignore the call.
+func (rqp *ReviewQueuePoller) injectCachedContent(title, content string) {
+	if p, ok := rqp.contentProvider.(*pollerContentProvider); ok {
+		now := time.Now()
+		p.cache.Compute(title, func(e contentCacheEntry, _ bool) (contentCacheEntry, xsync.ComputeOp) {
+			e.cachedContent = content
+			e.lastPreviewTime = now
+			return e, xsync.UpdateOp
+		})
+	}
 }
 
 // GetInstances returns a snapshot of all live in-memory instances held by the poller.

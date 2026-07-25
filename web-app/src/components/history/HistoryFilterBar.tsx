@@ -12,7 +12,8 @@ import type {
   SearchMode,
 } from "@/lib/hooks/useHistoryFilters";
 import type { useHistoryFullTextSearch } from "@/lib/hooks/useHistoryFullTextSearch";
-import styles from "./HistoryFilterBar.module.css";
+import { ActionBar } from "@/components/ui/ActionBar";
+import * as styles from "./HistoryFilterBar.css";
 
 // ============================================================================
 // Types
@@ -21,6 +22,7 @@ import styles from "./HistoryFilterBar.module.css";
 interface HistoryFilterBarProps {
   // Filter state
   searchQuery: string;
+  branchFilter: string;
   selectedModel: string;
   dateFilter: DateFilter;
   sortField: SortField;
@@ -30,6 +32,7 @@ interface HistoryFilterBarProps {
 
   // Setters
   setSearchQuery: (value: string) => void;
+  setBranchFilter: (value: string) => void;
   setSelectedModel: (value: string) => void;
   setDateFilter: (value: DateFilter) => void;
   setSortField: (value: SortField) => void;
@@ -57,6 +60,7 @@ interface HistoryFilterBarProps {
 
 export function HistoryFilterBar({
   searchQuery,
+  branchFilter,
   selectedModel,
   dateFilter,
   sortField,
@@ -64,6 +68,7 @@ export function HistoryFilterBar({
   groupingStrategy,
   searchMode,
   setSearchQuery,
+  setBranchFilter,
   setSelectedModel,
   setDateFilter,
   setSortField,
@@ -83,14 +88,14 @@ export function HistoryFilterBar({
       {/* Search Mode Toggle */}
       <div className={styles.searchModeToggle}>
         <button
-          className={`${styles.searchModeButton} ${searchMode === "metadata" ? styles.active : ""}`}
+          className={`${styles.searchModeButton} ${searchMode === "metadata" ? styles.searchModeButtonActive : ""}`}
           onClick={() => setSearchMode("metadata")}
           title="Search by name, project, model"
         >
           📋 Metadata
         </button>
         <button
-          className={`${styles.searchModeButton} ${searchMode === "fulltext" ? styles.active : ""}`}
+          className={`${styles.searchModeButton} ${searchMode === "fulltext" ? styles.searchModeButtonActive : ""}`}
           onClick={() => setSearchMode("fulltext")}
           title="Search full conversation content"
         >
@@ -147,7 +152,16 @@ export function HistoryFilterBar({
       )}
 
       {/* Filters */}
-      <div className={styles.filters}>
+      <ActionBar scroll compact gap="sm" className={styles.filters}>
+        <input
+          type="text"
+          placeholder="⎇ Branch…"
+          value={branchFilter}
+          onChange={(e) => setBranchFilter(e.target.value)}
+          className={styles.select}
+          style={{ minWidth: "100px" }}
+          aria-label="Filter by branch"
+        />
         <select
           value={selectedModel}
           onChange={(e) => setSelectedModel(e.target.value)}
@@ -200,7 +214,7 @@ export function HistoryFilterBar({
             <option key={value} value={value}>Group: {label}</option>
           ))}
         </select>
-      </div>
+      </ActionBar>
     </div>
   );
 }

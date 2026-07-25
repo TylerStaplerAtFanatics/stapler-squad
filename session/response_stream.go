@@ -3,8 +3,9 @@ package session
 import (
 	"context"
 	"fmt"
+	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/log"
-	"github.com/tstapler/stapler-squad/server/analytics"
+	"github.com/tstapler/stapler-squad/pkg/analytics"
 	"io"
 	"strings"
 	"sync"
@@ -25,6 +26,9 @@ type Subscriber struct {
 	created time.Time
 }
 
+// exitTailSize is the number of bytes kept in the rolling pre-exit buffer.
+const exitTailSize = 2048
+
 // ResponseStream manages real-time streaming of Claude instance responses to multiple subscribers.
 // It reads from the PTY access layer and broadcasts output to all active subscribers.
 type ResponseStream struct {
@@ -38,39 +42,109 @@ type ResponseStream struct {
 	started      bool
 	bufferSize   int                         // Channel buffer size for each subscriber
 	escapeParser *analytics.EscapeCodeParser // For escape code analytics
+	onOutput     func()                      // Called on every PTY read with data (for event-driven activity tracking)
+	OnEOF        func()                      // Called when the PTY exits unexpectedly (program exit, not Stop())
+}
+
+// mangleCorrelatorTTL is how long a Stage 1 observation waits for its matching
+// Stage 2 observation before being evicted and recorded as "stripped".
+const mangleCorrelatorTTL = 5 * time.Second
+
+// mangleCorrelatorMaxPending bounds the correlator's in-memory pending map.
+const mangleCorrelatorMaxPending = 10000
+
+// newEscapeParserForSession creates and configures an EscapeCodeParser for a session,
+// wiring in the global escape event writer and config-driven settings.
+func newEscapeParserForSession(sessionName string) *analytics.EscapeCodeParser {
+	cfg := loadAnalyticsConfig()
+	parser := analytics.NewEscapeCodeParser(analytics.GetGlobalStore(), sessionName)
+	writer := analytics.GetGlobalEscapeWriter()
+	// If the writer is a Noop (no analytics DB configured) or captureLevel is "off",
+	// skip all extraction work — there is nothing to write to.
+	_, isNoop := writer.(analytics.NoopEscapeEventWriter)
+	if cfg.captureLevel != "off" && !isNoop {
+		parser.SetEventWriter(writer, cfg.captureLevel, cfg.redactOSC, cfg.samplingRate)
+		parser.SetCorrelator(analytics.NewMangleCorrelator(mangleCorrelatorTTL, mangleCorrelatorMaxPending))
+	} else {
+		parser.SetEventWriter(analytics.NoopEscapeEventWriter{}, "off", true, 0)
+	}
+	parser.SetEnabled(true)
+	return parser
+}
+
+// escapeAnalyticsConfig holds the subset of config fields needed for parser wiring.
+type escapeAnalyticsConfig struct {
+	captureLevel string
+	redactOSC    bool
+	samplingRate float64
+}
+
+// loadAnalyticsConfig reads the current config for escape analytics.
+// Falls back to safe defaults if config cannot be loaded.
+func loadAnalyticsConfig() escapeAnalyticsConfig {
+	cfg := escapeAnalyticsConfig{
+		captureLevel: "summary",
+		redactOSC:    true,
+		samplingRate: 1.0,
+	}
+	appCfg := loadAppConfig()
+	if appCfg.EscapeAnalyticsCaptureLevel != "" {
+		cfg.captureLevel = appCfg.EscapeAnalyticsCaptureLevel
+	}
+	cfg.redactOSC = appCfg.OSCPayloadsAreRedacted()
+	if appCfg.EscapeAnalyticsSamplingRate != nil {
+		cfg.samplingRate = *appCfg.EscapeAnalyticsSamplingRate
+	}
+	return cfg
+}
+
+// loadAppConfig loads the application config. Always returns a non-nil config;
+// config.LoadConfig falls back to DefaultConfig on any load error.
+func loadAppConfig() *config.Config {
+	appCfg := config.LoadConfig()
+	return appCfg
 }
 
 // NewResponseStream creates a new response stream for the given session.
 // The bufferSize parameter determines how many chunks can be buffered per subscriber.
 func NewResponseStream(sessionName string, ptyAccess *PTYAccess) *ResponseStream {
-	// Create escape code parser using global store
-	escapeParser := analytics.NewEscapeCodeParser(analytics.GetGlobalStore(), sessionName)
-	// Parser is enabled/disabled via the global store's enabled state
-	escapeParser.SetEnabled(true) // Always parse when store is enabled
-
 	return &ResponseStream{
 		sessionName:  sessionName,
 		ptyAccess:    ptyAccess,
 		subscribers:  make(map[string]*Subscriber),
 		bufferSize:   10000, // Large buffer to handle high-output scenarios (build errors, code generation)
 		started:      false,
-		escapeParser: escapeParser,
+		escapeParser: newEscapeParserForSession(sessionName),
 	}
 }
 
 // NewResponseStreamWithBuffer creates a response stream with a custom buffer size.
 func NewResponseStreamWithBuffer(sessionName string, ptyAccess *PTYAccess, bufferSize int) *ResponseStream {
-	// Create escape code parser using global store
-	escapeParser := analytics.NewEscapeCodeParser(analytics.GetGlobalStore(), sessionName)
-	escapeParser.SetEnabled(true) // Always parse when store is enabled
-
 	return &ResponseStream{
 		sessionName:  sessionName,
 		ptyAccess:    ptyAccess,
 		subscribers:  make(map[string]*Subscriber),
 		bufferSize:   bufferSize,
 		started:      false,
-		escapeParser: escapeParser,
+		escapeParser: newEscapeParserForSession(sessionName),
+	}
+}
+
+// SetOnOutput registers a callback invoked each time PTY bytes arrive.
+// Used by ClaudeController to drive event-based activity tracking in IdleDetector.
+// Must be called before Start().
+func (rs *ResponseStream) SetOnOutput(fn func()) {
+	rs.onOutput = fn
+}
+
+// SetStableSessionID switches the escape parser's recorded session identifier
+// from the tmux session name (used at construction time, before the owning
+// Instance's stable UUID is available) to the stable UUID. This only affects
+// how escape_event rows are tagged — it does not change rs.sessionName, which
+// is still used for logging, PTY naming, and history keyed off the tmux name.
+func (rs *ResponseStream) SetStableSessionID(id string) {
+	if rs.escapeParser != nil && id != "" {
+		rs.escapeParser.SetStableSessionID(id)
 	}
 }
 
@@ -89,37 +163,62 @@ func (rs *ResponseStream) Start(ctx context.Context) error {
 		return fmt.Errorf("PTY access not initialized for session '%s'", rs.sessionName)
 	}
 
-	rs.ctx, rs.cancel = context.WithCancel(ctx)
+	innerCtx, cancel := context.WithCancel(ctx)
+	rs.ctx = innerCtx
+	rs.cancel = cancel
 	rs.started = true
+
+	// Start the mangle-correlator eviction loop (no-op if no correlator is attached,
+	// e.g. capture_level=off). Tied to innerCtx so it stops when the stream stops, and
+	// tracked by rs.wg like streamLoop so Stop() genuinely blocks until both have exited
+	// (Stop()'s doc comment promises full drain, not "everything but this one goroutine").
+	if rs.escapeParser != nil {
+		rs.wg.Add(1)
+		go func() {
+			defer rs.wg.Done()
+			rs.escapeParser.RunCorrelatorEviction(innerCtx)
+		}()
+	}
 
 	// Start the streaming goroutine
 	rs.wg.Add(1)
-	go rs.streamLoop()
+	go rs.streamLoop(innerCtx)
 
-	log.InfoLog.Printf("Response stream started for session '%s'", rs.sessionName)
+	log.Info("response stream started", "session", rs.sessionName)
 	return nil
 }
 
+// logEscapeAnalyticsSummary logs a summary of escape analytics for NFR-4.
+func (rs *ResponseStream) logEscapeAnalyticsSummary() {
+	if rs.escapeParser == nil {
+		return
+	}
+	stats := rs.escapeParser.GetStats()
+	log.Info("escape analytics: session closed",
+		"session", rs.sessionName,
+		"sequences", stats.TotalSequences,
+		"mangled", stats.TotalMangled,
+	)
+}
+
 // streamLoop is the main streaming loop that reads from PTY and broadcasts to subscribers.
-func (rs *ResponseStream) streamLoop() {
+func (rs *ResponseStream) streamLoop(ctx context.Context) {
 	defer rs.wg.Done()
-	defer log.InfoLog.Printf("Response stream stopped for session '%s'", rs.sessionName)
+	defer rs.logEscapeAnalyticsSummary()
+	defer log.Info("response stream stopped", "session", rs.sessionName)
 
 	// Buffer for reading PTY output
 	readBuf := make([]byte, 4096)
 
 	for {
 		select {
-		case <-rs.ctx.Done():
+		case <-ctx.Done():
 			// Stream was cancelled
 			rs.closeAllSubscribers()
 			return
 		default:
 			// Try to read from PTY with timeout
-			rs.ptyAccess.mu.RLock()
-			pty := rs.ptyAccess.pty
-			closed := rs.ptyAccess.closed
-			rs.ptyAccess.mu.RUnlock()
+			pty, closed := rs.ptyAccess.GetFile()
 
 			if closed {
 				// PTY is closed, stop streaming
@@ -139,8 +238,15 @@ func (rs *ResponseStream) streamLoop() {
 
 			if err != nil {
 				if err == io.EOF {
-					// PTY closed
+					// PTY closed - the tmux session's program has exited
+					log.ForSession(rs.sessionName).Info("session program exited (PTY EOF)")
 					rs.closeAllSubscribers()
+					rs.mu.Lock()
+					rs.started = false
+					rs.mu.Unlock()
+					if rs.OnEOF != nil {
+						rs.OnEOF()
+					}
 					return
 				}
 				// Check if it's a timeout error
@@ -148,46 +254,75 @@ func (rs *ResponseStream) streamLoop() {
 					// Timeout is expected, continue loop
 					continue
 				}
-				// Check for "file already closed" errors which indicate EOF
+				// Check for "file already closed" or Linux PTY "input/output error" which indicate EOF
 				errMsg := err.Error()
-				if strings.Contains(errMsg, "file already closed") || strings.Contains(errMsg, "bad file descriptor") {
-					// PTY has been closed, stop streaming
+				if strings.Contains(errMsg, "file already closed") ||
+					strings.Contains(errMsg, "bad file descriptor") ||
+					strings.Contains(errMsg, "input/output error") {
+					// PTY has been closed - the tmux session's program has exited
+					log.ForSession(rs.sessionName).Info("session program exited (PTY closed)", "err", err)
 					rs.closeAllSubscribers()
+					rs.mu.Lock()
+					rs.started = false
+					rs.mu.Unlock()
+					if rs.OnEOF != nil {
+						rs.OnEOF()
+					}
 					return
 				}
 				// Other errors - log and continue
-				log.ErrorLog.Printf("Error reading from PTY in response stream for '%s': %v", rs.sessionName, err)
+				log.Error("error reading from PTY in response stream", "session", rs.sessionName, "err", err)
 				continue
 			}
 
 			if n > 0 {
-				// Got some data, broadcast to subscribers
-				chunk := ResponseChunk{
-					Data:      make([]byte, n),
-					Timestamp: time.Now(),
-				}
-				copy(chunk.Data, readBuf[:n])
+				data := readBuf[:n] // direct slice — valid until next pty.Read call
 
-				// Parse escape codes for analytics (passthrough - doesn't modify data)
-				if rs.escapeParser != nil {
-					rs.escapeParser.Parse(chunk.Data)
+				// Notify activity listener (e.g. IdleDetector.RecordActivity)
+				if rs.onOutput != nil {
+					rs.onOutput()
 				}
 
-				// Also write to circular buffer for history
+				// Capture the byte offset BEFORE writing to buffer so sessionSeq
+				// represents the start of this chunk in the cumulative stream.
+				var sessionSeq int64
 				if rs.ptyAccess.buffer != nil {
-					rs.ptyAccess.buffer.Write(chunk.Data)
+					sessionSeq = rs.ptyAccess.buffer.TotalBytesWritten()
 				}
 
-				rs.broadcast(chunk)
+				// Parse escape codes (synchronous, no reference retained after return)
+				if rs.escapeParser != nil {
+					rs.escapeParser.Parse(data, sessionSeq)
+				}
+
+				// Write to circular buffer (copies data internally, no reference retained)
+				if rs.ptyAccess.buffer != nil {
+					rs.ptyAccess.buffer.Write(data)
+				}
+
+				// Broadcast to subscribers — only allocates a copy when subscribers exist.
+				rs.broadcast(data)
 			}
 		}
 	}
 }
 
-// broadcast sends a response chunk to all subscribers.
-func (rs *ResponseStream) broadcast(chunk ResponseChunk) {
+// broadcast sends data to all subscribers.
+// Allocation of the ResponseChunk and its Data copy is deferred until inside the lock
+// so we pay zero allocation cost when no subscribers are registered.
+func (rs *ResponseStream) broadcast(data []byte) {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
+
+	if len(rs.subscribers) == 0 {
+		return
+	}
+
+	chunk := ResponseChunk{
+		Data:      make([]byte, len(data)),
+		Timestamp: time.Now(),
+	}
+	copy(chunk.Data, data)
 
 	for id, sub := range rs.subscribers {
 		select {
@@ -195,7 +330,7 @@ func (rs *ResponseStream) broadcast(chunk ResponseChunk) {
 			// Successfully sent
 		default:
 			// Channel is full, log warning but don't block
-			log.WarningLog.Printf("Subscriber %s channel full in session '%s', dropping chunk", id, rs.sessionName)
+			log.Warn("subscriber channel full, dropping chunk", "subscriber", id, "session", rs.sessionName)
 		}
 	}
 }
@@ -217,7 +352,7 @@ func (rs *ResponseStream) Subscribe(subscriberID string) (<-chan ResponseChunk, 
 	}
 
 	rs.subscribers[subscriberID] = sub
-	log.InfoLog.Printf("Subscriber '%s' registered for session '%s'", subscriberID, rs.sessionName)
+	log.Info("subscriber registered", "subscriber", subscriberID, "session", rs.sessionName)
 
 	return sub.Ch, nil
 }
@@ -234,7 +369,7 @@ func (rs *ResponseStream) Unsubscribe(subscriberID string) error {
 
 	close(sub.Ch)
 	delete(rs.subscribers, subscriberID)
-	log.InfoLog.Printf("Subscriber '%s' unregistered from session '%s'", subscriberID, rs.sessionName)
+	log.Info("subscriber unregistered", "subscriber", subscriberID, "session", rs.sessionName)
 
 	return nil
 }
@@ -246,7 +381,7 @@ func (rs *ResponseStream) closeAllSubscribers() {
 
 	for id, sub := range rs.subscribers {
 		close(sub.Ch)
-		log.InfoLog.Printf("Closed subscriber '%s' for session '%s'", id, rs.sessionName)
+		log.Info("closed subscriber", "subscriber", id, "session", rs.sessionName)
 	}
 	rs.subscribers = make(map[string]*Subscriber)
 }
@@ -273,7 +408,7 @@ func (rs *ResponseStream) Stop() error {
 	rs.started = false
 	rs.mu.Unlock()
 
-	log.InfoLog.Printf("Response stream stopped for session '%s'", rs.sessionName)
+	log.Info("response stream stopped", "session", rs.sessionName)
 	return nil
 }
 
@@ -328,4 +463,31 @@ func (rs *ResponseStream) GetBufferSize() int {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
 	return rs.bufferSize
+}
+
+// GetEscapeParser returns the escape code parser for this stream.
+// Used by the WebSocket handler for Stage 2 analytics observations.
+// Returns nil if no parser is configured.
+func (rs *ResponseStream) GetEscapeParser() *analytics.EscapeCodeParser {
+	return rs.escapeParser
+}
+
+// GetTotalBytesWritten returns the monotonic PTY byte offset from the circular
+// buffer. This is the same counter used by Stage 1 (Parse) so Stage 2
+// (ParseStage2) session_seq values are stable across WebSocket reconnections.
+// Returns 0 if no buffer is available.
+func (rs *ResponseStream) GetTotalBytesWritten() int64 {
+	if rs.ptyAccess == nil || rs.ptyAccess.buffer == nil {
+		return 0
+	}
+	return rs.ptyAccess.buffer.TotalBytesWritten()
+}
+
+// GetExitTail returns the last exitTailSize bytes from the circular buffer.
+// The circular buffer already holds this data; no separate rolling copy is needed.
+func (rs *ResponseStream) GetExitTail() []byte {
+	if rs.ptyAccess == nil {
+		return nil
+	}
+	return rs.ptyAccess.GetRecentOutput(exitTailSize)
 }

@@ -4,6 +4,8 @@
  */
 
 import { InputType, DetectionResult, GitHubRef } from "./types";
+import { CommandDetector } from "./detectors/CommandDetector";
+import { toSessionSlug } from "./slugify";
 
 export interface Detector {
   name: string;
@@ -254,6 +256,55 @@ class LocalPathDetector implements Detector {
 }
 
 /**
+ * New Session detector — matches the "new/" prefix shortcut.
+ * Priority 35 places it before GitHubShorthand (40) so "new/foo" is always
+ * treated as a new-session command, not a GitHub owner/repo shorthand.
+ * Accepts case-insensitive "new/" prefix; extracts the query after the slash.
+ */
+class NewSessionDetector implements Detector {
+  name = "NewSession";
+  priority = 35;
+
+  private readonly PREFIX_RE = /^new\//i;
+
+  detect(input: string): DetectionResult | null {
+    const trimmed = input.trim();
+    if (!this.PREFIX_RE.test(trimmed)) return null;
+    const query = trimmed.replace(this.PREFIX_RE, "");
+    return {
+      type: InputType.NewSession,
+      confidence: 1.0,
+      parsedValue: query,
+      suggestedName: query,
+    };
+  }
+}
+
+/**
+ * Session Search detector — catch-all for bare-text queries.
+ * Fires for any non-empty input that no other detector claimed.
+ * Priority 200 ensures it runs last (after LocalPath at priority 100).
+ */
+class SessionSearchDetector implements Detector {
+  name = "SessionSearch";
+  priority = 200;
+
+  detect(input: string): DetectionResult | null {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    // All inputs that reach this point have already been rejected by
+    // GitHub URL detectors (priorities 10-40), PathWithBranch (50),
+    // and LocalPath (100). They are bare-text session search queries.
+    return {
+      type: InputType.SessionSearch,
+      confidence: 0.5,
+      parsedValue: trimmed,
+      suggestedName: toSessionSlug(trimmed),
+    };
+  }
+}
+
+/**
  * DetectorRegistry manages detectors and orchestrates detection
  */
 export class DetectorRegistry {
@@ -263,6 +314,14 @@ export class DetectorRegistry {
     this.detectors.push(detector);
     // Sort by priority (lower = higher priority)
     this.detectors.sort((a, b) => a.priority - b.priority);
+  }
+
+  /**
+   * Remove a detector from the registry.
+   * Safe to call when the detector is not registered (no-op).
+   */
+  unregister(detector: Detector): void {
+    this.detectors = this.detectors.filter((d) => d !== detector);
   }
 
   detect(input: string): DetectionResult {
@@ -296,12 +355,15 @@ export class DetectorRegistry {
 // Create default registry with all detectors
 export function createDefaultRegistry(): DetectorRegistry {
   const registry = new DetectorRegistry();
+  registry.register(new CommandDetector());
   registry.register(new GitHubPRDetector());
   registry.register(new GitHubBranchDetector());
   registry.register(new GitHubRepoDetector());
+  registry.register(new NewSessionDetector());
   registry.register(new GitHubShorthandDetector());
   registry.register(new PathWithBranchDetector());
   registry.register(new LocalPathDetector());
+  registry.register(new SessionSearchDetector());
   return registry;
 }
 
@@ -313,6 +375,14 @@ export function getDefaultRegistry(): DetectorRegistry {
     defaultRegistry = createDefaultRegistry();
   }
   return defaultRegistry;
+}
+
+/**
+ * Reset the singleton registry to null so subsequent getDefaultRegistry() calls
+ * return a fresh instance. Use in test afterEach blocks for test isolation.
+ */
+export function resetDefaultRegistry(): void {
+  defaultRegistry = null;
 }
 
 /**

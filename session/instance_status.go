@@ -2,14 +2,15 @@ package session
 
 import (
 	"fmt"
+
+	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/detection"
-	"sync"
 )
 
 // InstanceStatusInfo provides extended status information for an instance.
 type InstanceStatusInfo struct {
-	BasicStatus        Status                   // Running, Paused, Ready
+	BasicStatus        Status                   // Creating, Active, Paused, Stopped, Hibernated
 	ClaudeStatus       detection.DetectedStatus // If ClaudeController is active
 	StatusContext      string                   // Context/details about current status (e.g., error message)
 	PendingApprovals   int                      // Number of pending approvals
@@ -21,86 +22,68 @@ type InstanceStatusInfo struct {
 
 // InstanceStatusManager manages status information for instances.
 type InstanceStatusManager struct {
-	controllers map[string]*ClaudeController // Map of instance title to controller
-	mu          sync.RWMutex
+	// ponytail: xsync.Map replaces map+RWMutex — lock-free reads on the hot GetStatus path
+	controllers *xsync.Map[string, *ClaudeController]
 }
 
 // NewInstanceStatusManager creates a new status manager.
 func NewInstanceStatusManager() *InstanceStatusManager {
 	return &InstanceStatusManager{
-		controllers: make(map[string]*ClaudeController),
+		controllers: xsync.NewMap[string, *ClaudeController](),
 	}
 }
 
 // RegisterController registers a controller for an instance.
 func (ism *InstanceStatusManager) RegisterController(instanceTitle string, controller *ClaudeController) {
-	ism.mu.Lock()
-	defer ism.mu.Unlock()
-	ism.controllers[instanceTitle] = controller
-	log.DebugLog.Printf("[RegisterController] Registered controller for '%s' (total registered: %d)", instanceTitle, len(ism.controllers))
+	ism.controllers.Store(instanceTitle, controller)
+	log.Debug("registered controller", "session", instanceTitle, "count", ism.controllers.Size())
 }
 
 // UnregisterController removes a controller for an instance.
 func (ism *InstanceStatusManager) UnregisterController(instanceTitle string) {
-	ism.mu.Lock()
-	defer ism.mu.Unlock()
-	delete(ism.controllers, instanceTitle)
+	ism.controllers.Delete(instanceTitle)
 }
 
 // GetController retrieves a controller for an instance.
 func (ism *InstanceStatusManager) GetController(instanceTitle string) (*ClaudeController, bool) {
-	ism.mu.RLock()
-	defer ism.mu.RUnlock()
-	controller, exists := ism.controllers[instanceTitle]
-	return controller, exists
+	return ism.controllers.Load(instanceTitle)
 }
 
 // GetAllControllers returns all registered controllers.
 func (ism *InstanceStatusManager) GetAllControllers() map[string]*ClaudeController {
-	ism.mu.RLock()
-	defer ism.mu.RUnlock()
-
-	// Return a copy to prevent concurrent modification
-	controllers := make(map[string]*ClaudeController, len(ism.controllers))
-	for k, v := range ism.controllers {
-		controllers[k] = v
-	}
-	return controllers
+	out := make(map[string]*ClaudeController, ism.controllers.Size())
+	ism.controllers.Range(func(k string, v *ClaudeController) bool {
+		out[k] = v
+		return true
+	})
+	return out
 }
 
 // GetStatus retrieves comprehensive status for an instance.
 func (ism *InstanceStatusManager) GetStatus(instance *Instance) InstanceStatusInfo {
-	ism.mu.RLock()
-	controller, exists := ism.controllers[instance.Title]
-	ism.mu.RUnlock()
-
-	// Debug logging to diagnose controller detection issue
-	log.DebugLog.Printf("[GetStatus] Session '%s': exists=%v, controller!=nil=%v, IsStarted=%v",
-		instance.Title, exists, controller != nil, exists && controller != nil && controller.IsStarted())
+	controller, exists := ism.controllers.Load(instance.Title)
 
 	info := InstanceStatusInfo{
-		BasicStatus:        instance.Status,
+		// Snapshot(), not instance.Status directly — an unguarded read of instance.Status
+		// doesn't synchronize with actor commands' direct field writes (see
+		// Instance.GetStatus's doc comment).
+		BasicStatus:        instance.Snapshot().Status,
 		IsControllerActive: exists && controller != nil && controller.IsStarted(),
 	}
 
 	if info.IsControllerActive {
-		// Get Claude status with context (includes error details, matched patterns, etc.)
-		claudeStatus, statusContext := controller.GetCurrentStatus()
+		// Combined call: one hash + one cache read covers both status and idle state.
+		claudeStatus, statusContext, idleInfo := controller.GetStatusAndIdleInfo()
 		info.ClaudeStatus = claudeStatus
 		info.StatusContext = statusContext
+		info.IdleState = idleInfo
 
-		// Get queued commands count
-		commands := controller.GetQueuedCommands()
-		info.QueuedCommands = len(commands)
+		info.QueuedCommands = controller.GetQueuedCommandsCount()
 
-		// Get current command if any
 		currentCmd := controller.GetCurrentCommand()
 		if currentCmd != nil {
-			info.LastCommandStatus = fmt.Sprintf("Executing: %s", currentCmd.Text)
+			info.LastCommandStatus = "Executing: " + currentCmd.Text
 		}
-
-		// Get idle state information
-		info.IdleState = controller.GetIdleStateInfo()
 	}
 
 	return info
@@ -110,12 +93,12 @@ func (ism *InstanceStatusManager) GetStatus(instance *Instance) InstanceStatusIn
 func (info InstanceStatusInfo) GetStatusIcon() string {
 	if !info.IsControllerActive {
 		switch info.BasicStatus {
-		case Running:
-			return "●" // Running but no controller
+		case Active:
+			return "●" // Active but no controller
 		case Paused:
 			return "⏸"
-		case Ready:
-			return "●"
+		case Hibernated:
+			return "❄"
 		default:
 			return "?"
 		}
@@ -129,6 +112,10 @@ func (info InstanceStatusInfo) GetStatusIcon() string {
 		return "◐" // Working
 	case detection.StatusNeedsApproval:
 		return "❗" // Needs attention
+	case detection.StatusInputRequired:
+		return "⌨" // Waiting for input
+	case detection.StatusWaitingForAgent:
+		return "⏳" // Waiting for background agent
 	case detection.StatusError:
 		return "✖" // Error
 	default:
@@ -140,16 +127,16 @@ func (info InstanceStatusInfo) GetStatusIcon() string {
 func (info InstanceStatusInfo) GetStatusDescription() string {
 	if !info.IsControllerActive {
 		switch info.BasicStatus {
-		case Running:
-			return "Running"
-		case Ready:
-			return "Ready"
+		case Active:
+			return "Active"
+		case Creating:
+			return "Creating"
 		case Paused:
 			return "Paused"
-		case Loading:
-			return "Loading"
-		case NeedsApproval:
-			return "Needs Approval"
+		case Stopped:
+			return "Stopped"
+		case Hibernated:
+			return "Hibernated"
 		default:
 			return "Unknown"
 		}
@@ -161,12 +148,22 @@ func (info InstanceStatusInfo) GetStatusDescription() string {
 		desc = "Ready"
 	case detection.StatusProcessing:
 		desc = "Processing"
+	case detection.StatusExecuting:
+		desc = "Executing"
+	case detection.StatusIdle:
+		desc = "Idle"
 	case detection.StatusNeedsApproval:
 		desc = "Needs Approval"
+	case detection.StatusInputRequired:
+		desc = "Needs Input"
+	case detection.StatusSuccess:
+		desc = "Completed"
+	case detection.StatusWaitingForAgent:
+		desc = "Waiting for Agent"
+	case detection.StatusTestsFailing:
+		desc = "Tests Failing"
 	case detection.StatusError:
 		desc = "Error"
-	case detection.StatusUnknown:
-		desc = "Unknown"
 	default:
 		desc = "Unknown"
 	}
@@ -190,12 +187,15 @@ func (info InstanceStatusInfo) HasPendingWork() bool {
 // IsWaitingForUser returns true if the instance is waiting for user input.
 func (info InstanceStatusInfo) IsWaitingForUser() bool {
 	return info.ClaudeStatus == detection.StatusNeedsApproval ||
+		info.ClaudeStatus == detection.StatusInputRequired ||
 		info.PendingApprovals > 0
 }
 
 // NeedsAttention returns true if the instance requires user attention.
 func (info InstanceStatusInfo) NeedsAttention() bool {
-	return info.IsWaitingForUser() || info.ClaudeStatus == detection.StatusError
+	return info.IsWaitingForUser() ||
+		info.ClaudeStatus == detection.StatusError ||
+		info.ClaudeStatus == detection.StatusTestsFailing
 }
 
 // GetColorCode returns a color code for the status (for lipgloss styling).
@@ -208,15 +208,15 @@ func (info InstanceStatusInfo) GetColorCode() string {
 		return "214" // Orange
 	}
 
-	if info.ClaudeStatus == detection.StatusProcessing {
+	if info.ClaudeStatus == detection.StatusProcessing || info.ClaudeStatus == detection.StatusWaitingForAgent {
 		return "39" // Blue
 	}
 
-	if info.BasicStatus == Running && info.IsControllerActive {
+	if info.BasicStatus == Active && info.IsControllerActive {
 		return "82" // Green
 	}
 
-	if info.BasicStatus == Paused {
+	if info.BasicStatus == Paused || info.BasicStatus == Hibernated {
 		return "240" // Gray
 	}
 

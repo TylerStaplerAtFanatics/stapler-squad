@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -11,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/stretchr/testify/require"
 	"github.com/tstapler/stapler-squad/executor"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
 type MockPtyFactory struct {
@@ -34,6 +37,10 @@ func (pt *MockPtyFactory) Start(cmd *exec.Cmd) (*os.File, *exec.Cmd, error) {
 		pt.files = append(pt.files, f)
 	}
 	return f, cmd, err
+}
+
+func (pt *MockPtyFactory) StartWithSize(cmd *exec.Cmd, _ *pty.Winsize) (*os.File, *exec.Cmd, error) {
+	return pt.Start(cmd)
 }
 
 func (pt *MockPtyFactory) Close() {}
@@ -89,7 +96,9 @@ func TestStartTmuxSession(t *testing.T) {
 	}
 
 	workdir := t.TempDir()
-	session := newTmuxSession("test-session", "echo", ptyFactory, cmdExec, TmuxPrefix)
+	// WithRegistry(nil) prevents DoesSessionExist() from using the global real-tmux
+	// registry fast path — ensures the mock executor is used for session polling.
+	session := newTmuxSessionWithSocket("test-session", "echo", ptyFactory, cmdExec, TmuxPrefix, "", WithRegistry(nil))
 
 	err := session.Start(workdir)
 	require.NoError(t, err)
@@ -133,6 +142,16 @@ func TestServerNotRunning(t *testing.T) {
 			name:     "empty output",
 			output:   []byte(""),
 			expected: false,
+		},
+		{
+			name:     "stale socket: server exited unexpectedly",
+			output:   []byte("server exited unexpectedly"),
+			expected: true,
+		},
+		{
+			name:     "stale socket: uppercase variant",
+			output:   []byte("Server Exited Unexpectedly"),
+			expected: true,
 		},
 		{
 			name:     "unrelated error message",
@@ -179,10 +198,21 @@ func TestTmuxCircuitBreakerConfig(t *testing.T) {
 			"list-sessions with empty output (no sessions) should NOT trip the circuit breaker")
 	})
 
-	t.Run("non_list_sessions_commands_trip_on_any_error", func(t *testing.T) {
-		require.True(t, cfg.IsFailure("tmux-has-session", nil, someErr))
-		require.True(t, cfg.IsFailure("tmux-new-session", nil, someErr))
-		require.True(t, cfg.IsFailure("tmux-kill-session", nil, someErr))
+	t.Run("non_list_sessions_server_down_is_failure", func(t *testing.T) {
+		// Server-down output trips the breaker for any command class.
+		serverDown := []byte("no server running on /tmp/tmux-501/default")
+		require.True(t, cfg.IsFailure("tmux-has-session", serverDown, someErr))
+		require.True(t, cfg.IsFailure("tmux-new-session", serverDown, someErr))
+		require.True(t, cfg.IsFailure("tmux-capture-pane", serverDown, someErr))
+	})
+
+	t.Run("non_list_sessions_per_target_errors_not_failure", func(t *testing.T) {
+		// Per-target errors (pane/session not found) must NOT trip the breaker —
+		// the server is healthy; only that specific session/pane is missing.
+		require.False(t, cfg.IsFailure("tmux-capture-pane", []byte("can't find pane: staplersquad_mysession"), someErr))
+		require.False(t, cfg.IsFailure("tmux-display-message", []byte("session not found: staplersquad_mysession"), someErr))
+		require.False(t, cfg.IsFailure("tmux-has-session", nil, someErr))
+		require.False(t, cfg.IsFailure("tmux-new-session", []byte(""), someErr))
 	})
 }
 
@@ -194,18 +224,22 @@ func TestEnsureServerRunning_NoOp(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
-	socketName := fmt.Sprintf("test_ensure_noop_%d", rand.Int63())
+	socketName := fmt.Sprintf("test_ensure_noop_%d_%d", os.Getpid(), rand.Int63())
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", socketName, "kill-server").Run()
+		killCtx, killCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer killCancel()
+		_ = safeexec.CommandContext(killCtx, "tmux", "-L", socketName, "kill-server").Run()
 	})
 
 	// Start the isolated server and keep it alive with a detached session.
 	// Without a session, tmux exits immediately (exit-empty=on by default), causing
 	// the follow-up check in EnsureServerRunning to falsely report the server as dead.
-	require.NoError(t, exec.Command("tmux", "-L", socketName, "new-session", "-d", "-s", "keepalive").Run())
+	newSessionCtx, newSessionCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer newSessionCancel()
+	require.NoError(t, safeexec.CommandContext(newSessionCtx, "tmux", "-L", socketName, "new-session", "-d", "-s", "keepalive").Run())
 
 	// With the server running and a live session, EnsureServerRunning should be a no-op.
-	err := EnsureServerRunning(socketName)
+	_, err := EnsureServerRunning(socketName)
 	require.NoError(t, err, "EnsureServerRunning should be a no-op when server is already running")
 }
 
@@ -218,9 +252,11 @@ func TestEnsureServerRunning_StartsServer(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
-	socketName := fmt.Sprintf("test_ensure_start_%d", rand.Int63())
+	socketName := fmt.Sprintf("test_ensure_start_%d_%d", os.Getpid(), rand.Int63())
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", socketName, "kill-server").Run()
+		killCtx2, killCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer killCancel2()
+		_ = safeexec.CommandContext(killCtx2, "tmux", "-L", socketName, "kill-server").Run()
 	})
 
 	// Confirm no server is running on this socket yet.
@@ -228,13 +264,13 @@ func TestEnsureServerRunning_StartsServer(t *testing.T) {
 		"server should not be running before the test starts")
 
 	// EnsureServerRunning should start the server.
-	err := EnsureServerRunning(socketName)
+	_, err := EnsureServerRunning(socketName)
 	require.NoError(t, err)
 
 	// On macOS, tmux's default exit-empty=on causes the server to exit immediately
 	// when there are no sessions. Create a session to keep the server alive and
 	// verify the server is functional by confirming the session can be created.
-	createCmd := exec.Command("tmux", "-L", socketName, "new-session", "-d", "-s", "verify-alive")
+	createCmd := safeexec.CommandContext(context.Background(), "tmux", "-L", socketName, "new-session", "-d", "-s", "verify-alive")
 	require.NoError(t, createCmd.Run(),
 		"should be able to create a session on the newly started server — server must be running")
 }
@@ -248,14 +284,14 @@ func TestCreateKeepaliveSession(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
-	socketName := fmt.Sprintf("test_keepalive_%d", rand.Int63())
+	socketName := fmt.Sprintf("test_keepalive_%d_%d", os.Getpid(), rand.Int63())
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", socketName, "kill-server").Run()
+		_ = safeexec.CommandContext(context.Background(), "tmux", "-L", socketName, "kill-server").Run()
 	})
 
 	// Start the server with an anchor session to keep it alive while we test.
 	// (new-session -d is equivalent to start-server + create session atomically)
-	require.NoError(t, exec.Command("tmux", "-L", socketName, "new-session", "-d", "-s", "anchor").Run())
+	require.NoError(t, safeexec.CommandContext(context.Background(), "tmux", "-L", socketName, "new-session", "-d", "-s", "anchor").Run())
 
 	// Create keepalive session.
 	err := CreateKeepaliveSession(socketName)
@@ -263,7 +299,7 @@ func TestCreateKeepaliveSession(t *testing.T) {
 
 	// Verify the keepalive session exists.
 	keepaliveName := TmuxPrefix + "keepalive"
-	out, err := exec.Command("tmux", "-L", socketName, "has-session", "-t", keepaliveName).CombinedOutput()
+	out, err := safeexec.CommandContext(context.Background(), "tmux", "-L", socketName, "has-session", "-t", keepaliveName).CombinedOutput()
 	require.NoError(t, err, "keepalive session should exist after CreateKeepaliveSession; output: %s", out)
 
 	// Calling it again should be idempotent (no error).
@@ -279,22 +315,22 @@ func TestSetExitEmpty(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
-	socketName := fmt.Sprintf("test_exit_empty_%d", rand.Int63())
+	socketName := fmt.Sprintf("test_exit_empty_%d_%d", os.Getpid(), rand.Int63())
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", socketName, "kill-server").Run()
+		_ = safeexec.CommandContext(context.Background(), "tmux", "-L", socketName, "kill-server").Run()
 	})
 
 	// Start the server WITH a detached session to prevent the server from exiting
 	// immediately due to exit-empty=on (the default). Using new-session -d starts
 	// both the server and an anchor session in one step.
-	require.NoError(t, exec.Command("tmux", "-L", socketName, "new-session", "-d", "-s", "anchor").Run())
+	require.NoError(t, safeexec.CommandContext(context.Background(), "tmux", "-L", socketName, "new-session", "-d", "-s", "anchor").Run())
 
 	// Set exit-empty off.
 	err := SetExitEmpty(socketName, false)
 	require.NoError(t, err, "SetExitEmpty(false) should succeed")
 
 	// Verify the option was set.
-	out, err := exec.Command("tmux", "-L", socketName, "show-options", "-g", "exit-empty").CombinedOutput()
+	out, err := safeexec.CommandContext(context.Background(), "tmux", "-L", socketName, "show-options", "-g", "exit-empty").CombinedOutput()
 	require.NoError(t, err)
 	require.Contains(t, strings.ToLower(string(out)), "off",
 		"exit-empty should be off after SetExitEmpty(false)")
@@ -303,7 +339,7 @@ func TestSetExitEmpty(t *testing.T) {
 	err = SetExitEmpty(socketName, true)
 	require.NoError(t, err, "SetExitEmpty(true) should succeed")
 
-	out, err = exec.Command("tmux", "-L", socketName, "show-options", "-g", "exit-empty").CombinedOutput()
+	out, err = safeexec.CommandContext(context.Background(), "tmux", "-L", socketName, "show-options", "-g", "exit-empty").CombinedOutput()
 	require.NoError(t, err)
 	require.Contains(t, strings.ToLower(string(out)), "on",
 		"exit-empty should be on after SetExitEmpty(true)")
@@ -413,8 +449,13 @@ func TestDoesSessionExist_LockReleasedBeforeRecovery(t *testing.T) {
 	}
 }
 
-// TestPrependSocket verifies that prependSocket returns args unmodified when the socket
-// is empty and prepends "-L <socket>" when the socket is non-empty.
+// TestPrependSocket verifies that prependSocket prepends "-L <socket>" for an
+// explicit socket, and — since this runs inside a `go test` binary — also
+// prepends the per-process isolated socket even when called with an empty
+// socket, via ResolveSocket. This is the regression guard for the incident
+// where an unguarded raw tmux call with no socket argument enumerated and
+// killed sessions on another, currently-running stapler-squad process's
+// shared default socket. See ResolveSocket's doc comment for the incident.
 func TestPrependSocket(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -423,10 +464,10 @@ func TestPrependSocket(t *testing.T) {
 		expected []string
 	}{
 		{
-			name:     "empty socket returns args unchanged",
+			name:     "empty socket resolves to the isolated test socket, not the shared default",
 			socket:   "",
 			args:     []string{"list-sessions"},
-			expected: []string{"list-sessions"},
+			expected: []string{"-L", testSocketOnce(), "list-sessions"},
 		},
 		{
 			name:     "non-empty socket prepends -L flag",
@@ -444,6 +485,50 @@ func TestPrependSocket(t *testing.T) {
 	}
 }
 
+// TestResolveSocket verifies the canonical socket-resolution choke point:
+// an explicit socket always passes through unchanged (production callers
+// that already isolate explicitly must not be double-prefixed), while an
+// empty socket resolves to a stable, non-empty per-process value whenever
+// running inside a `go test` binary — it must never resolve to "" and fall
+// through to the real shared default socket.
+func TestResolveSocket(t *testing.T) {
+	t.Run("explicit socket passes through unchanged", func(t *testing.T) {
+		require.Equal(t, Socket("explicit-socket"), ResolveSocket("explicit-socket"))
+	})
+
+	t.Run("empty socket resolves to a non-empty isolated value in test mode", func(t *testing.T) {
+		resolved := ResolveSocket("")
+		require.NotEmpty(t, resolved.String(), "empty socket must never resolve to the shared default inside a test binary")
+		require.Contains(t, resolved.String(), "test-isolated-")
+	})
+
+	t.Run("repeated empty-socket calls return the same isolated value", func(t *testing.T) {
+		first := ResolveSocket("")
+		second := ResolveSocket("")
+		require.Equal(t, first, second, "ResolveSocket must be stable across calls within the same process")
+	})
+}
+
+// TestSocket_Args verifies the smart constructor's sole args-building method:
+// the default (zero-value) Socket leaves args untouched, and a non-default
+// Socket prepends "-L <socket>".
+func TestSocket_Args(t *testing.T) {
+	t.Run("default socket returns args unchanged", func(t *testing.T) {
+		var s Socket
+		require.Equal(t, []string{"list-sessions"}, s.Args("list-sessions"))
+	})
+
+	t.Run("non-default socket prepends -L flag", func(t *testing.T) {
+		s := Socket("my-socket")
+		require.Equal(t, []string{"-L", "my-socket", "list-sessions"}, s.Args("list-sessions"))
+	})
+
+	t.Run("String returns the underlying socket name", func(t *testing.T) {
+		require.Equal(t, "my-socket", Socket("my-socket").String())
+		require.Equal(t, "", Socket("").String())
+	})
+}
+
 // TestSetServerRecoveryCallback verifies that the callback registered via
 // SetServerRecoveryCallback is called after a successful server recovery.
 func TestSetServerRecoveryCallback(t *testing.T) {
@@ -457,7 +542,7 @@ func TestSetServerRecoveryCallback(t *testing.T) {
 	// Inject a succeeding ensureServerRunning so recoverFromServerFailure
 	// takes the success branch and fires the callback.
 	origEnsure := ensureServerRunning
-	ensureServerRunning = func(_ string) error { return nil }
+	ensureServerRunning = func(_ string) (TmuxServerReady, error) { return TmuxServerReady{}, nil }
 	t.Cleanup(func() { ensureServerRunning = origEnsure })
 
 	// Ensure recoveryInFlight is clean before and after.
@@ -518,7 +603,8 @@ func TestRegistryKeyUnregisteredOnClose(t *testing.T) {
 	})
 
 	// Trip the breaker so AllBreakers returns a non-empty snapshot for this executor.
-	_ = cbExec.Run(exec.Command("tmux", "list-sessions"))
+	//nolint:norawexec executor-mediated; TimeoutExecutor wraps and sets WaitDelay internally
+	_ = cbExec.Run(exec.CommandContext(context.Background(), "tmux", "list-sessions"))
 	breakersBefore := executor.GetGlobalRegistry().AllBreakers()
 	found := false
 	for k := range breakersBefore {
@@ -578,4 +664,129 @@ func TestGetPaneCurrentPath_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 	require.Empty(t, path)
 	require.Contains(t, err.Error(), "failed to get pane path")
+}
+
+// --- T3: DoesSessionExist registry integration tests ---
+
+// TestDoesSessionExist_UsesRegistry verifies that when the registry is healthy,
+// DoesSessionExist returns the registry answer without executing any tmux subprocess.
+func TestDoesSessionExist_UsesRegistry(t *testing.T) {
+	forkCount := 0
+	cmdExec := MockCmdExec{
+		CombinedOutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			forkCount++ // Any exec call increments this.
+			return []byte(""), nil
+		},
+		RunFunc:    func(cmd *exec.Cmd) error { forkCount++; return nil },
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { forkCount++; return []byte(""), nil },
+	}
+
+	reg := NewFakeTmuxRegistry()
+	reg.SetHealthy(true)
+	reg.SetSessions([]string{TmuxPrefix + "reg-test"})
+
+	session := newTmuxSessionWithSocket("reg-test", "echo", NewMockPtyFactory(t), cmdExec, TmuxPrefix, "", WithRegistry(reg))
+
+	result := session.DoesSessionExist()
+
+	require.True(t, result, "DoesSessionExist should return true from healthy registry")
+	require.Equal(t, 0, forkCount, "no exec forks should occur when registry is healthy")
+}
+
+// TestDoesSessionExist_FallsBackWhenRegistryUnhealthy verifies that when the
+// registry reports unhealthy, DoesSessionExist falls back to the exec path.
+func TestDoesSessionExist_FallsBackWhenRegistryUnhealthy(t *testing.T) {
+	execCalled := false
+	cmdExec := MockCmdExec{
+		CombinedOutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			if strings.Contains(cmd.String(), "list-sessions") {
+				execCalled = true
+				return []byte(TmuxPrefix + "fallback-test"), nil
+			}
+			return []byte(""), nil
+		},
+		RunFunc:    func(cmd *exec.Cmd) error { return nil },
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte(""), nil },
+	}
+
+	reg := NewFakeTmuxRegistry()
+	reg.SetHealthy(false) // Registry is unhealthy — must fall back.
+
+	session := newTmuxSessionWithSocket("fallback-test", "echo", NewMockPtyFactory(t), cmdExec, TmuxPrefix, "", WithRegistry(reg))
+
+	// The exec fallback returns the session name in the list-sessions output.
+	result := session.DoesSessionExist()
+
+	require.True(t, result, "DoesSessionExist should return true from exec fallback")
+	require.True(t, execCalled, "exec list-sessions should be called when registry is unhealthy")
+}
+
+// TestDoesSessionExist_NilRegistry verifies that a nil registry falls back to exec.
+func TestDoesSessionExist_NilRegistry(t *testing.T) {
+	execCalled := false
+	cmdExec := MockCmdExec{
+		CombinedOutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			if strings.Contains(cmd.String(), "list-sessions") {
+				execCalled = true
+				return []byte(TmuxPrefix + "nil-reg-test"), nil
+			}
+			return []byte(""), nil
+		},
+		RunFunc:    func(cmd *exec.Cmd) error { return nil },
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte(""), nil },
+	}
+
+	session := newTmuxSessionWithSocket("nil-reg-test", "echo", NewMockPtyFactory(t), cmdExec, TmuxPrefix, "", WithRegistry(nil))
+
+	result := session.DoesSessionExist()
+
+	require.True(t, result)
+	require.True(t, execCalled, "exec list-sessions should be called when registry is nil")
+}
+
+// TestCapturePaneSemaphore verifies that the capturePaneSem semaphore caps
+// concurrent CapturePaneContent subprocess executions to at most 8.
+func TestCapturePaneSemaphore(t *testing.T) {
+	const goroutines = 20
+	const maxConcurrent = 8
+
+	var mu sync.Mutex
+	inflight := 0
+	maxSeen := 0
+
+	cmdExec := MockCmdExec{
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			mu.Lock()
+			inflight++
+			if inflight > maxSeen {
+				maxSeen = inflight
+			}
+			mu.Unlock()
+
+			// Hold the "subprocess" briefly so concurrency builds up.
+			time.Sleep(10 * time.Millisecond)
+
+			mu.Lock()
+			inflight--
+			mu.Unlock()
+			return []byte("pane content"), nil
+		},
+		RunFunc:            func(cmd *exec.Cmd) error { return nil },
+		CombinedOutputFunc: func(cmd *exec.Cmd) ([]byte, error) { return []byte(""), nil },
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			session := newTmuxSession(fmt.Sprintf("sem-test-%d", i), "echo", NewMockPtyFactory(t), cmdExec, TmuxPrefix)
+			_, _ = session.CapturePaneContent()
+		}(i)
+	}
+	wg.Wait()
+
+	require.LessOrEqual(t, maxSeen, maxConcurrent,
+		"concurrent capture-pane subprocesses (%d) exceeded semaphore limit (%d)", maxSeen, maxConcurrent)
+	require.Greater(t, maxSeen, 0, "at least one subprocess should have executed")
 }

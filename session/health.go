@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"github.com/linkdata/deadlock"
 	"github.com/tstapler/stapler-squad/log"
 	"os"
 	"time"
@@ -9,13 +10,26 @@ import (
 
 // SessionHealthChecker manages session health validation and recovery
 type SessionHealthChecker struct {
-	storage *Storage
+	storage    *Storage
+	tmuxSocket TmuxSocketQuerier // Tmux server-socket queries for CheckAllSessions; fakeable in tests
+
+	// failureCounts tracks consecutive health-check failures per session title.
+	// Recovery is only attempted after failureThreshold consecutive failures,
+	// preventing false-positive recoveries from transient check glitches.
+	failureCounts   map[string]int
+	failureCountsMu deadlock.Mutex
 }
+
+// failureThreshold is the number of consecutive failed health checks before
+// a recovery attempt is triggered. Set to 2 to require two consecutive misses.
+const failureThreshold = 2
 
 // NewSessionHealthChecker creates a new session health checker
 func NewSessionHealthChecker(storage *Storage) *SessionHealthChecker {
 	return &SessionHealthChecker{
-		storage: storage,
+		storage:       storage,
+		tmuxSocket:    realTmuxSocketQuerier{},
+		failureCounts: make(map[string]int),
 	}
 }
 
@@ -35,28 +49,57 @@ func (h *SessionHealthChecker) CheckAllSessions() ([]HealthCheckResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load instances for health check: %w", err)
 	}
+	return h.checkInstances(instances), nil
+}
+
+// checkInstances runs a health check on the given instances, split out from
+// CheckAllSessions so the socket-scoping logic below is unit-testable with a plain
+// []*Instance and a fake TmuxSocketQuerier, without real Storage/DB wiring.
+//
+// Instances can be spread across multiple tmux server sockets (the default socket
+// for ordinary sessions, isolated sockets for some worktree/test scenarios).
+// Deriving a single socket from the first instance and applying its down/up state
+// to every instance would either skip healthy instances on other sockets (false
+// "server is down") or run destructive recovery against instances whose own socket
+// is genuinely down (false "server is up"). So each instance's down-check is scoped
+// to its own socket, memoized per socket to avoid redundant queries.
+func (h *SessionHealthChecker) checkInstances(instances []*Instance) []HealthCheckResult {
+	downSockets := make(map[string]bool)
 
 	results := make([]HealthCheckResult, 0, len(instances))
 
 	for _, instance := range instances {
+		socket := instance.TmuxServerSocket
+		down, checked := downSockets[socket]
+		if !checked {
+			down = h.tmuxSocket.IsServerDown(socket)
+			downSockets[socket] = down
+		}
+		// Guard: if this instance's tmux server is completely down, its session
+		// will look dead. Attempting to recover it would be destructive and
+		// incorrect. Skip until that socket's server is back up.
+		if down {
+			log.Warn("health check: tmux server is down, skipping session check", "session", instance.Title, "socket", socket)
+			continue
+		}
+
 		result := h.checkSingleSession(instance)
 		results = append(results, result)
 
 		// Log any issues found
 		if !result.IsHealthy {
-			log.WarningLog.Printf("Health check found issues for session '%s': %v",
-				result.InstanceTitle, result.Issues)
+			log.Warn("health check found issues for session", "session", result.InstanceTitle, "issues", result.Issues)
 			if result.RecoveryAttempted {
 				if result.RecoverySuccess {
-					log.DebugLog.Printf("Successfully recovered session '%s'", result.InstanceTitle)
+					log.Debug("successfully recovered session", "session", result.InstanceTitle)
 				} else {
-					log.ErrorLog.Printf("Failed to recover session '%s'", result.InstanceTitle)
+					log.Error("failed to recover session", "session", result.InstanceTitle)
 				}
 			}
 		}
 	}
 
-	return results, nil
+	return results
 }
 
 // checkSingleSession performs a health check on a single session
@@ -74,36 +117,62 @@ func (h *SessionHealthChecker) checkSingleSession(instance *Instance) HealthChec
 		return result
 	}
 
+	// Skip hibernated instances - they have no tmux by design
+	if instance.Hibernated() {
+		result.Actions = append(result.Actions, "Skipped (session is hibernated)")
+		return result
+	}
+
 	// Check if instance thinks it's started but tmux session doesn't exist
 	if instance.Started() {
 		if !instance.TmuxAlive() {
 			result.IsHealthy = false
 			result.Issues = append(result.Issues, "Instance marked as started but tmux session doesn't exist")
 
-			// Attempt recovery by recreating the tmux session
-			result.RecoveryAttempted = true
-			if err := instance.Start(false); err != nil {
-				result.Issues = append(result.Issues, fmt.Sprintf("Recovery failed: %v", err))
-				result.RecoverySuccess = false
-				result.Actions = append(result.Actions, "Failed to recreate tmux session")
+			// Debounce: only recover after failureThreshold consecutive failures.
+			// This prevents spurious recovery attempts caused by transient check glitches.
+			h.failureCountsMu.Lock()
+			h.failureCounts[instance.Title]++
+			count := h.failureCounts[instance.Title]
+			h.failureCountsMu.Unlock()
+
+			if count < failureThreshold {
+				log.Debug("health check: deferring recovery", "session", instance.Title, "count", count, "threshold", failureThreshold)
+				result.Actions = append(result.Actions, fmt.Sprintf("Failure %d/%d: deferring recovery", count, failureThreshold))
 			} else {
-				result.RecoverySuccess = true
-				result.Actions = append(result.Actions, "Successfully recreated tmux session")
-				// Re-check health after recovery
-				if instance.TmuxAlive() {
-					result.IsHealthy = true
+				// Threshold reached - attempt recovery
+				h.failureCountsMu.Lock()
+				h.failureCounts[instance.Title] = 0 // Reset counter after attempt
+				h.failureCountsMu.Unlock()
+
+				result.RecoveryAttempted = true
+				if err := instance.Start(false); err != nil {
+					result.Issues = append(result.Issues, fmt.Sprintf("Recovery failed: %v", err))
+					result.RecoverySuccess = false
+					result.Actions = append(result.Actions, "Failed to recreate tmux session")
 				} else {
-					result.Issues = append(result.Issues, "Session still unhealthy after recovery attempt")
+					result.RecoverySuccess = true
+					result.Actions = append(result.Actions, "Successfully recreated tmux session")
+					// Re-check health after recovery
+					if instance.TmuxAlive() {
+						result.IsHealthy = true
+					} else {
+						result.Issues = append(result.Issues, "Session still unhealthy after recovery attempt")
+					}
 				}
 			}
 		} else {
+			// Session is healthy - reset any accumulated failure count
+			h.failureCountsMu.Lock()
+			delete(h.failureCounts, instance.Title)
+			h.failureCountsMu.Unlock()
 			result.Actions = append(result.Actions, "Tmux session is healthy")
 		}
 	}
 
 	// Check worktree existence for non-paused instances
-	if !instance.Paused() && instance.gitManager.worktree != nil {
-		worktreePath := instance.gitManager.worktree.GetWorktreePath()
+	if !instance.Paused() && instance.gitManager.HasWorktree() {
+		worktreePath := instance.gitManager.GetWorktreePath()
 		if worktreePath != "" {
 			if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 				result.IsHealthy = false
@@ -138,7 +207,7 @@ func (h *SessionHealthChecker) RecoverUnhealthySessions() error {
 		}
 	}
 
-	log.DebugLog.Printf("Session recovery completed: %d recovered, %d failed", recoveredCount, failedCount)
+	log.Debug("session recovery completed", "recovered", recoveredCount, "failed", failedCount)
 
 	// Save the updated state if any recoveries were attempted
 	if recoveredCount > 0 || failedCount > 0 {
@@ -148,7 +217,7 @@ func (h *SessionHealthChecker) RecoverUnhealthySessions() error {
 		}
 
 		if err := h.storage.SaveInstances(instances); err != nil {
-			log.WarningLog.Printf("Failed to save instances after recovery: %v", err)
+			log.Warn("failed to save instances after recovery", "err", err)
 		}
 	}
 
@@ -160,16 +229,15 @@ func (h *SessionHealthChecker) ScheduledHealthCheck(interval time.Duration, stop
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	log.DebugLog.Printf("Starting scheduled health checks every %v", interval)
+	log.Debug("starting scheduled health checks", "interval", interval)
 
 	for {
 		select {
 		case <-ticker.C:
 			if err := h.RecoverUnhealthySessions(); err != nil {
-				log.ErrorLog.Printf("Scheduled health check failed: %v", err)
+				log.Error("scheduled health check failed", "err", err)
 			}
 		case <-stopChan:
-			log.DebugLog.Printf("Stopping scheduled health checks")
 			return
 		}
 	}

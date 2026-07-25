@@ -36,7 +36,7 @@ func TestRegistryRegisterAndGet(t *testing.T) {
 		Path:           "/test/workspace",
 		RepositoryRoot: "/test",
 		SessionTitle:   "test-session",
-		SessionStatus:  session.Running,
+		SessionStatus:  session.Active,
 	}
 
 	err := registry.Register(ctx, ws)
@@ -75,7 +75,7 @@ func TestRegistryList(t *testing.T) {
 			Path:           "/repo1/ws1",
 			RepositoryRoot: "/repo1",
 			SessionTitle:   "session-1",
-			SessionStatus:  session.Running,
+			SessionStatus:  session.Active,
 		},
 		{
 			Path:           "/repo1/ws2",
@@ -87,7 +87,7 @@ func TestRegistryList(t *testing.T) {
 			Path:           "/repo2/ws3",
 			RepositoryRoot: "/repo2",
 			SessionTitle:   "session-3",
-			SessionStatus:  session.Running,
+			SessionStatus:  session.Active,
 			IsOrphaned:     true,
 		},
 	}
@@ -130,7 +130,7 @@ func TestRegistryFilter(t *testing.T) {
 		{
 			Path:           "/ws1",
 			RepositoryRoot: "/ws1",
-			SessionStatus:  session.Running,
+			SessionStatus:  session.Active,
 			IsOrphaned:     false,
 		},
 		{
@@ -193,8 +193,8 @@ func TestRegistryUnregister(t *testing.T) {
 
 	// Should not be found
 	retrieved, err := registry.Get(ctx, "/test/workspace")
-	if err != nil {
-		t.Fatalf("get failed: %v", err)
+	if err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 
 	if retrieved != nil {

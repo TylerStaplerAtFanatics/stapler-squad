@@ -141,7 +141,11 @@ func (m *ScrollbackManager) GetRecentBytes(sessionID string, bytes int64) ([]byt
 		m.mutex.RUnlock()
 
 		if exists {
-			entries := buffer.GetAll()
+			// Phase 1 limit: cap in-memory entries at 500 lines to bound initial
+			// payload size. See ADR-001 (lazy scrollback delivery strategy) for
+			// the full phased plan; a server-side streaming approach will lift
+			// this cap in Phase 2.
+			entries := buffer.GetLastN(500)
 			memData := m.entriesToBytes(entries)
 			// Combine storage and memory data
 			data = append(data, memData...)
@@ -246,7 +250,7 @@ func (m *ScrollbackManager) flushLoop() {
 	for {
 		select {
 		case <-m.flushTicker.C:
-			m.FlushAll()
+			_ = m.FlushAll()
 		case <-m.stopChan:
 			return
 		}
@@ -297,6 +301,49 @@ func (m *ScrollbackManager) GetStats(sessionID string) (ScrollbackStats, error) 
 	stats.StorageBytes = size
 
 	return stats, nil
+}
+
+// GetScrollbackBefore retrieves the `limit` most recent scrollback entries
+// with Sequence strictly less than beforeSeq.
+// Returns entries in chronological order (oldest first).
+func (m *ScrollbackManager) GetScrollbackBefore(sessionID string, beforeSeq uint64, limit int) ([]ScrollbackEntry, error) {
+	if beforeSeq == 0 {
+		return nil, nil
+	}
+
+	// Get all entries from the beginning up to (but not including) beforeSeq.
+	all, err := m.GetScrollback(sessionID, 0, int(beforeSeq))
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter to entries strictly before beforeSeq.
+	filtered := make([]ScrollbackEntry, 0, len(all))
+	for _, e := range all {
+		if e.Sequence < beforeSeq {
+			filtered = append(filtered, e)
+		}
+	}
+
+	// Return the last `limit` entries (the ones immediately before beforeSeq).
+	if len(filtered) <= limit {
+		return filtered, nil
+	}
+	return filtered[len(filtered)-limit:], nil
+}
+
+// CurrentSequence returns the highest scrollback sequence number written so far
+// for the given session. Returns 0 if the session has no scrollback yet.
+// Implements the scrollbackSequencer interface used by SessionService.CreateCheckpoint.
+func (m *ScrollbackManager) CurrentSequence(sessionID string) uint64 {
+	m.mutex.RLock()
+	buffer, exists := m.buffers[sessionID]
+	m.mutex.RUnlock()
+
+	if !exists {
+		return 0
+	}
+	return buffer.CurrentSequence()
 }
 
 // ScrollbackStats provides information about scrollback usage.

@@ -1,22 +1,67 @@
 package session
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
+// TestPause_should_skipGitOps_When_IsWorktreeIsFalse verifies that Pause() on a
+// non-worktree session does not call git operations. If the IsWorktree guard were
+// absent, IsDirty() on an uninitialized GitWorktreeManager would return
+// "git worktree not initialized", which would propagate into the error chain.
+func TestPause_should_skipGitOps_When_IsWorktreeIsFalse(t *testing.T) {
+	inst := &Instance{
+		Title:      "test-non-worktree",
+		Status:     Active,
+		IsWorktree: false,
+		// gitManager left as zero value — IsDirty() returns error if called
+	}
+	inst.started.Store(true)
+
+	err := inst.Pause()
+
+	// Pause must succeed: no tmux session (DetachSafely is a no-op when session==nil),
+	// no git operations, transitionTo(Paused) sets the status.
+	require.NoError(t, err, "Pause() on a non-worktree session must not return an error")
+	assert.Equal(t, Paused, inst.Status, "instance should be Paused after successful Pause()")
+}
+
+// TestPause_should_returnGitError_When_IsWorktreeIsTrueAndGitUninitialized verifies
+// that the IsWorktree=true path does attempt git operations. An uninitialized
+// GitWorktreeManager returns an error, confirming the guard condition is honored.
+func TestPause_should_returnGitError_When_IsWorktreeIsTrueAndGitUninitialized(t *testing.T) {
+	inst := &Instance{
+		Title:      "test-worktree-uninit",
+		Status:     Active,
+		IsWorktree: true,
+		// gitManager.worktree == nil → IsDirty returns "git worktree not initialized"
+	}
+	inst.started.Store(true)
+
+	err := inst.Pause()
+
+	// With IsWorktree=true, IsDirty is called. Since gitManager.worktree is nil,
+	// IsDirty returns an error that is appended to errs. combineErrors returns it.
+	assert.Error(t, err, "Pause() on an uninitialized worktree session should propagate git error")
+	assert.Contains(t, err.Error(), "worktree", "error should mention the worktree problem")
+}
+
 func TestTransitionTo_ConcurrentPause(t *testing.T) {
-	// Create an instance in Running status.
+	// Create an instance in Active status.
 	// Launch 10 goroutines all trying to transition to Paused simultaneously.
 	// Exactly one should succeed; the rest should get ErrInvalidTransition
 	// (because after the first successful transition, the status is Paused
 	// and Paused->Paused is not a valid transition).
 	inst := &Instance{
-		Title:   "test-concurrent",
-		Status:  Running,
-		started: true,
+		Title:  "test-concurrent",
+		Status: Active,
 	}
+	inst.started.Store(true)
 
 	const numGoroutines = 10
 	var wg sync.WaitGroup
@@ -28,9 +73,9 @@ func TestTransitionTo_ConcurrentPause(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Use the public-facing mutex pattern matching Approve/Deny
-			inst.stateMutex.Lock()
-			err := inst.transitionTo(Paused)
-			inst.stateMutex.Unlock()
+			inst.mu.Lock()
+			err := inst.transitionTo(context.Background(), Paused)
+			inst.mu.Unlock()
 
 			if err == nil {
 				atomic.AddInt32(&successCount, 1)
@@ -53,12 +98,17 @@ func TestTransitionTo_ConcurrentPause(t *testing.T) {
 }
 
 func TestTransitionTo_ConcurrentApprove(t *testing.T) {
-	// Same pattern as ConcurrentPause but for Approve (NeedsApproval->Running).
+	// Start from Paused — Paused→Active is valid.
+	// Launch goroutines all calling Approve() simultaneously.
+	// Exactly one should succeed; after that, Active→Active is invalid.
+	// Uses LiveInstance so the actor goroutine serializes concurrent commands.
 	inst := &Instance{
-		Title:   "test-concurrent-approve",
-		Status:  NeedsApproval,
-		started: true,
+		Title:  "test-concurrent-approve",
+		Status: Paused,
 	}
+	inst.started.Store(true)
+	li := NewLiveInstance(inst)
+	defer li.Stop()
 
 	const numGoroutines = 10
 	var wg sync.WaitGroup
@@ -76,28 +126,35 @@ func TestTransitionTo_ConcurrentApprove(t *testing.T) {
 	}
 	wg.Wait()
 
-	// NeedsApproval->Running should succeed exactly once.
-	// After that, Running->Running is invalid, so subsequent Approve calls fail.
+	// Paused→Active should succeed exactly once.
+	// After that, Active→Active is invalid, so subsequent Approve calls fail.
 	if successCount != 1 {
 		t.Errorf("expected exactly 1 successful Approve, got %d", successCount)
 	}
-	if inst.Status != Running {
-		t.Errorf("expected final status Running, got %s", inst.Status)
+	if inst.Status != Active {
+		t.Errorf("expected final status Active, got %s", inst.Status)
 	}
 }
 
 func TestTransitionTo_ConcurrentMixed(t *testing.T) {
 	// Multiple goroutines concurrently calling Approve and Deny.
-	// Because Running->Paused and Paused->Running are both valid,
+	// Starting from Paused:
+	//   Approve = Paused→Active (valid once, then Active→Active invalid)
+	//   Deny    = Paused→Paused (invalid self-transition while in Paused;
+	//             Active→Paused valid while in Active)
+	// Because Active→Paused and Paused→Active are both valid,
 	// the state can bounce between them. The key guarantees are:
 	//   1. No data race (validated by -race flag)
-	//   2. Final state is consistent (Running or Paused)
-	//   3. At least one operation succeeds (the first transition from NeedsApproval)
+	//   2. Final state is consistent (Active or Paused)
+	//   3. At least one operation succeeds
+	// Uses LiveInstance so the actor goroutine serializes concurrent commands.
 	inst := &Instance{
-		Title:   "test-concurrent-mixed",
-		Status:  NeedsApproval,
-		started: true,
+		Title:  "test-concurrent-mixed",
+		Status: Paused,
 	}
+	inst.started.Store(true)
+	li := NewLiveInstance(inst)
+	defer li.Stop()
 
 	const numGoroutines = 20
 	var wg sync.WaitGroup
@@ -127,9 +184,49 @@ func TestTransitionTo_ConcurrentMixed(t *testing.T) {
 			totalSuccess, approveSuccess, denySuccess)
 	}
 
-	// The final status must be either Running or Paused (the only reachable
-	// states from NeedsApproval via Approve/Deny cycles).
-	if inst.Status != Running && inst.Status != Paused {
-		t.Errorf("expected final status Running or Paused, got %s", inst.Status)
+	// The final status must be either Active or Paused (the only reachable
+	// states via Approve/Deny cycles).
+	if inst.Status != Active && inst.Status != Paused {
+		t.Errorf("expected final status Active or Paused, got %s", inst.Status)
 	}
+}
+
+// ─── U-GO-30: TestInstanceGetSetSessionGoal_threadSafe ───────────────────────
+// Run with: go test -race ./session/ -run TestInstanceGetSetSessionGoal_threadSafe
+
+func TestInstanceGetSetSessionGoal_threadSafe(t *testing.T) {
+	inst := &Instance{
+		Title: "concurrency-goal-test",
+		UUID:  "test-uuid-concurrent-goal",
+	}
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+
+	// Writers.
+	for i := 0; i < goroutines/2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g := &SessionGoalData{
+				UUID:        "test-uuid",
+				SessionUUID: inst.UUID,
+				Goal:        "concurrent goal",
+				Status:      GoalStatusWorking,
+			}
+			inst.SetSessionGoalCached(g)
+		}()
+	}
+
+	// Readers.
+	for i := 0; i < goroutines/2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = inst.GetSessionGoal()
+		}()
+	}
+
+	wg.Wait()
+	// No data race should occur (detected by -race flag).
 }

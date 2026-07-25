@@ -1,17 +1,23 @@
 package git
 
 import (
+	"context"
 	"fmt"
-	"github.com/tstapler/stapler-squad/log"
 	"os/exec"
-	"strings"
+	"time"
+
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/log"
 )
 
 // runGitCommand executes a git command and returns any error.
 // Uses the executor for circuit breaker support when available.
 func (g *GitWorktree) runGitCommand(path string, args ...string) (string, error) {
-	baseArgs := []string{"-C", path}
-	cmd := exec.Command("git", append(baseArgs, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseArgs := make([]string, 0, 2+len(args))
+	baseArgs = append(baseArgs, "-C", path)
+	cmd := safeexec.CommandContext(ctx, "git", append(baseArgs, args...)...)
 
 	var output []byte
 	var err error
@@ -42,35 +48,42 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 	if isDirty {
 		// Stage all changes
 		if _, err := g.runGitCommand(g.worktreePath, "add", "."); err != nil {
-			log.ErrorLog.Print(err)
+			log.Error("failed to stage changes", "err", err)
 			return fmt.Errorf("failed to stage changes: %w", err)
 		}
 
 		// Create commit
 		if _, err := g.runGitCommand(g.worktreePath, "commit", "-m", commitMessage, "--no-verify"); err != nil {
-			log.ErrorLog.Print(err)
+			log.Error("failed to commit changes", "err", err)
 			return fmt.Errorf("failed to commit changes: %w", err)
 		}
+		g.InvalidateDirtyCache()
 	}
 
 	// First push the branch to remote to ensure it exists
-	pushCmd := exec.Command("gh", "repo", "sync", "--source", "-b", g.branchName)
+	pushCtx, pushCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer pushCancel()
+	pushCmd := safeexec.CommandContext(pushCtx, "gh", "repo", "sync", "--source", "-b", g.branchName)
 	pushCmd.Dir = g.worktreePath
 	if err := g.runExec(pushCmd); err != nil {
 		// If sync fails, try creating the branch on remote first
-		gitPushCmd := exec.Command("git", "push", "-u", "origin", g.branchName)
+		gitPushCtx, gitPushCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer gitPushCancel()
+		gitPushCmd := safeexec.CommandContext(gitPushCtx, "git", "push", "-u", "origin", g.branchName)
 		gitPushCmd.Dir = g.worktreePath
 		if pushOutput, pushErr := g.runCombinedOutput(gitPushCmd); pushErr != nil {
-			log.ErrorLog.Print(pushErr)
+			log.Error("failed to push branch", "err", pushErr)
 			return fmt.Errorf("failed to push branch: %s (%w)", pushOutput, pushErr)
 		}
 	}
 
 	// Now sync with remote
-	syncCmd := exec.Command("gh", "repo", "sync", "-b", g.branchName)
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer syncCancel()
+	syncCmd := safeexec.CommandContext(syncCtx, "gh", "repo", "sync", "-b", g.branchName)
 	syncCmd.Dir = g.worktreePath
 	if output, err := g.runCombinedOutput(syncCmd); err != nil {
-		log.ErrorLog.Print(err)
+		log.Error("failed to sync changes", "err", err)
 		return fmt.Errorf("failed to sync changes: %s (%w)", output, err)
 	}
 
@@ -78,7 +91,7 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 	if open {
 		if err := g.OpenBranchURL(); err != nil {
 			// Just log the error but don't fail the push operation
-			log.ErrorLog.Printf("failed to open branch URL: %v", err)
+			log.Error("failed to open branch URL", "err", err)
 		}
 	}
 
@@ -96,36 +109,99 @@ func (g *GitWorktree) CommitChanges(commitMessage string) error {
 	if isDirty {
 		// Stage all changes
 		if _, err := g.runGitCommand(g.worktreePath, "add", "."); err != nil {
-			log.ErrorLog.Print(err)
+			log.Error("failed to stage changes", "err", err)
 			return fmt.Errorf("failed to stage changes: %w", err)
 		}
 
 		// Create commit (local only)
 		if _, err := g.runGitCommand(g.worktreePath, "commit", "-m", commitMessage, "--no-verify"); err != nil {
-			log.ErrorLog.Print(err)
+			log.Error("failed to commit changes", "err", err)
 			return fmt.Errorf("failed to commit changes: %w", err)
 		}
+		g.InvalidateDirtyCache()
 	}
 
 	return nil
 }
 
-// IsDirty checks if the worktree has uncommitted changes
-func (g *GitWorktree) IsDirty() (bool, error) {
-	output, err := g.runGitCommand(g.worktreePath, "status", "--porcelain")
-	if err != nil {
-		return false, fmt.Errorf("failed to check worktree status: %w", err)
-	}
-	return len(output) > 0, nil
+// PrimeDirtyCacheAt sets the dirty-cache timestamp to t without running git status.
+// Use this to stagger per-session cache expiry so sessions added to the poller
+// within a short window don't all expire simultaneously and burst-launch git subprocesses.
+func (g *GitWorktree) PrimeDirtyCacheAt(t time.Time) {
+	g.isDirtyCache.Store(dirtyCacheState{dirty: false, time: t})
 }
 
-// IsBranchCheckedOut checks if the instance branch is currently checked out
+// InvalidateDirtyCache clears the IsDirty cache so the next call re-runs git status.
+// Call this whenever worktree state changes outside of Claude's control (e.g. after a
+// manual commit, after running git operations, or in tests after writing files directly).
+func (g *GitWorktree) InvalidateDirtyCache() {
+	g.isDirtyCache.Store(dirtyCacheState{}) // zero time signals "cache invalid"
+}
+
+// IsDirty checks if the worktree has uncommitted changes.
+// Results are cached for IsDirtyCacheTTL (dirty) or IsDirtyCleanCacheTTL (clean).
+func (g *GitWorktree) IsDirty() (bool, error) {
+	return g.IsDirtyWithHint(false)
+}
+
+// isDirtyCacheTTL returns the TTL to apply based on the current cached dirty state.
+// Clean worktrees use a longer TTL because they won't change while the session is idle,
+// and InvalidateDirtyCache() fires on every code path that could make them dirty.
+func isDirtyCacheTTL(dirty bool) time.Duration {
+	if dirty {
+		return IsDirtyCacheTTL
+	}
+	return IsDirtyCleanCacheTTL
+}
+
+// IsDirtyWithHint checks if the worktree has uncommitted changes.
+// When claudeActive is true the subprocess is skipped entirely and the cached value is returned
+// (or false if no cached value is available yet), because Claude never modifies worktree state
+// while it is actively generating output.
+func (g *GitWorktree) IsDirtyWithHint(claudeActive bool) (bool, error) {
+	// Fast path: lock-free atomic load; TTL varies by dirty state.
+	// dirty → IsDirtyCacheTTL (30s); clean → IsDirtyCleanCacheTTL (5min).
+	if v := g.isDirtyCache.Load(); v != nil {
+		state := v.(dirtyCacheState)
+		if claudeActive || (!state.time.IsZero() && time.Since(state.time) < isDirtyCacheTTL(state.dirty)) {
+			return state.dirty, nil
+		}
+	} else if claudeActive {
+		return false, nil
+	}
+
+	// Slow path: run git status --porcelain via subprocess, wrapped in singleflight
+	// so concurrent callers coalesce onto a single status check rather than each
+	// spawning their own git process.
+	type dirtyResult struct {
+		dirty bool
+		err   error
+	}
+	v, _, _ := g.isDirtySF.Do(g.worktreePath, func() (interface{}, error) {
+		out, subErr := g.runGitCommand(g.worktreePath, "status", "--porcelain")
+		return dirtyResult{len(out) > 0, subErr}, nil
+	})
+	res := v.(dirtyResult)
+	if res.err != nil {
+		return false, fmt.Errorf("failed to check worktree status: %w", res.err)
+	}
+	dirty := res.dirty
+
+	// Store the result. Return our own observation (`dirty`), not a re-read of
+	// the slot: a lost write race (InvalidateDirtyCache after singleflight started)
+	// is harmless — the next call will re-run git status when TTL expires.
+	g.isDirtyCache.Store(dirtyCacheState{dirty: dirty, time: time.Now()})
+	return dirty, nil
+}
+
+// IsBranchCheckedOut checks if the instance branch is currently checked out.
+// Uses go-git to read HEAD directly (no subprocess).
 func (g *GitWorktree) IsBranchCheckedOut() (bool, error) {
-	output, err := g.runGitCommand(g.repoPath, "branch", "--show-current")
+	current, err := getCurrentBranchName(g.repoPath)
 	if err != nil {
 		return false, fmt.Errorf("failed to get current branch: %w", err)
 	}
-	return strings.TrimSpace(string(output)) == g.branchName, nil
+	return current == g.branchName, nil
 }
 
 // OpenBranchURL opens the branch URL in the default browser
@@ -135,7 +211,9 @@ func (g *GitWorktree) OpenBranchURL() error {
 		return err
 	}
 
-	cmd := exec.Command("gh", "browse", "--branch", g.branchName)
+	browseCtx, browseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer browseCancel()
+	cmd := safeexec.CommandContext(browseCtx, "gh", "browse", "--branch", g.branchName)
 	cmd.Dir = g.worktreePath
 	if err := g.runExec(cmd); err != nil {
 		return fmt.Errorf("failed to open branch URL: %w", err)

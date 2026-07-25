@@ -7,13 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"github.com/tstapler/stapler-squad/config"
+	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/gen/proto/go/session/v1/sessionv1connect"
 	"github.com/tstapler/stapler-squad/log"
+	pkganalytics "github.com/tstapler/stapler-squad/pkg/analytics"
+	"github.com/tstapler/stapler-squad/server/analytics"
 	"github.com/tstapler/stapler-squad/server/events"
+	"github.com/tstapler/stapler-squad/server/handlers"
+	"github.com/tstapler/stapler-squad/server/interceptors"
+	servermcp "github.com/tstapler/stapler-squad/server/mcp"
 	"github.com/tstapler/stapler-squad/server/middleware"
 	"github.com/tstapler/stapler-squad/server/notifications"
+	"github.com/tstapler/stapler-squad/server/push"
 	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/server/web"
+	"github.com/tstapler/stapler-squad/server/workflows"
+	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/memory"
 	"github.com/tstapler/stapler-squad/session/tmux"
 
 	"github.com/google/uuid"
@@ -21,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -30,15 +41,46 @@ import (
 
 // Server manages the HTTP server with ConnectRPC handlers.
 type Server struct {
-	addr           string
-	httpServer     *http.Server
-	mux            *http.ServeMux
-	tlsConfig      *tls.Config                     // non-nil when TLS is enabled
-	authMiddleware func(http.Handler) http.Handler // nil when auth is disabled
-	httpsURL       string                          // set when remote access is enabled
-	hostnames      []string                        // detected LAN hostnames
-	origins        []string                        // allowed CORS origins
-	shutdownHooks  []func()                        // called before HTTP server stops
+	// addr holds the listen address. It starts as the requested address (e.g.
+	// "localhost:0") and is overwritten with the real OS-assigned address once
+	// Start()'s listener goroutine binds — read via GetAddr() from other
+	// goroutines (lazy hook/MCP URL closures, tests), so it must be atomic.
+	addr              atomic.Pointer[string]
+	httpServer        *http.Server
+	mux               *http.ServeMux
+	tlsConfig         *tls.Config                     // non-nil when TLS is enabled
+	authMiddleware    func(http.Handler) http.Handler // nil when auth is disabled
+	httpsURL          string                          // set when remote access is enabled
+	hostnames         []string                        // detected LAN hostnames
+	origins           []string                        // allowed CORS origins
+	shutdownHooks     []func()                        // called before HTTP server stops
+	connCtxCancel     context.CancelFunc              // cancels BaseContext → closes active streams on shutdown
+	availablePrograms []string                        // cached once at startup; programs change only on system changes
+}
+
+// newServerBase creates the base Server struct and returns it alongside the
+// connection context that drives active-stream cancellation on shutdown.
+// Both NewServer and NewServerWithDeps call this before wiring dependencies.
+func newServerBase(addr string) (*Server, context.Context) {
+	mux := http.NewServeMux()
+	connCtx, connCtxCancel := context.WithCancel(context.Background())
+	srv := &Server{
+		mux:           mux,
+		connCtxCancel: connCtxCancel,
+		httpServer: &http.Server{
+			Addr:         addr,
+			Handler:      nil, // Set in Start() after middleware chain is built
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 0, // No write timeout — streaming connections are long-lived
+			IdleTimeout:  60 * time.Second,
+			// BaseContext is cancelled during Shutdown() so active streaming
+			// connections (ConnectRPC terminal streams, SSE) see a done context
+			// and self-close instead of blocking the graceful shutdown timeout.
+			BaseContext: func(_ net.Listener) context.Context { return connCtx },
+		},
+	}
+	srv.addr.Store(&addr)
+	return srv, connCtx
 }
 
 // NewServer creates a new HTTP server instance with SessionService registered.
@@ -62,185 +104,528 @@ type Server struct {
 // Dependency construction is encapsulated in BuildDependencies (server/dependencies.go).
 // See docs/tasks/architecture-refactor.md for the ongoing simplification plan.
 func NewServer(addr string) *Server {
-	mux := http.NewServeMux()
+	srv, connCtx := newServerBase(addr)
 
-	srv := &Server{
-		addr: addr,
-		mux:  mux,
-		httpServer: &http.Server{
-			Addr:         addr,
-			Handler:      nil, // Set in Start() after middleware chain is built
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 0, // No write timeout — streaming connections are long-lived
-			IdleTimeout:  60 * time.Second,
-		},
-	}
-
+	log.Info("Building server dependencies...")
+	startTime := time.Now()
 	deps, err := BuildDependencies()
 	if err != nil {
-		log.ErrorLog.Printf("Failed to build server dependencies: %v", err)
+		log.Error("Failed to build server dependencies", "err", err)
 		// Continue without services — all RPC calls will return errors
 	} else {
-		// Start background components
-		serverCtx := context.Background()
-		go deps.ReactiveQueueMgr.Start(serverCtx)
-		log.InfoLog.Printf("ReactiveQueueManager started")
-
-		// Start HistoryLinker: detects Claude JSONL files and links conversation
-		// UUIDs to sessions so cold restore can use --resume on restart.
-		go deps.HistoryLinker.Start(serverCtx)
-		log.InfoLog.Printf("HistoryLinker started")
-
-		// Register shutdown hook: capture pane working dirs and persist instance
-		// state so cold restore can find the right directory on next start.
-		// Uses HistoryLinker.Instances() (not the startup snapshot) so externally
-		// discovered sessions added after startup are also captured.
-		historyLinker := deps.HistoryLinker
-		storage := deps.Storage
-		srv.shutdownHooks = append(srv.shutdownHooks, func() {
-			instances := historyLinker.Instances()
-			deadline := time.Now().Add(4 * time.Second) // leave headroom for HTTP graceful shutdown
-			captured := 0
-			for _, inst := range instances {
-				if time.Now().After(deadline) {
-					log.WarningLog.Printf("[shutdown] Capture deadline exceeded; skipped %d of %d instances",
-						len(instances)-captured, len(instances))
-					break
-				}
-				if err := inst.CaptureCurrentState(); err != nil {
-					log.WarningLog.Printf("[shutdown] CaptureCurrentState '%s': %v", inst.Title, err)
-				}
-				captured++
-			}
-			if err := storage.SaveInstances(instances); err != nil {
-				log.WarningLog.Printf("[shutdown] SaveInstances: %v", err)
-			} else {
-				log.InfoLog.Printf("[shutdown] Persisted working dirs for %d instances", captured)
-			}
-		})
-
-		// Initialize notification history store and EventBus subscriber.
-		// notifStore is declared here so it can be wired into the approval handler below.
-		var notifStore *notifications.NotificationHistoryStore
-		configDir, configErr := config.GetConfigDir()
-		if configErr != nil {
-			log.ErrorLog.Printf("Failed to get config dir for notification store: %v", configErr)
-		} else {
-			notifStorePath := filepath.Join(configDir, "notifications.json")
-			var storeErr error
-			notifStore, storeErr = notifications.NewNotificationHistoryStore(notifStorePath)
-			if storeErr != nil {
-				log.ErrorLog.Printf("Failed to create notification history store: %v", storeErr)
-				notifStore = nil
-			} else {
-				notifications.StartSubscriber(serverCtx, deps.EventBus, notifStore)
-				log.InfoLog.Printf("NotificationHistoryStore initialized at %s", notifStorePath)
-
-				// Wire the notification store into the session service for RPC access
-				deps.SessionService.SetNotificationStore(notifStore)
-			}
-		}
-
-		// Wire tmux server recovery → web UI toast notification.
-		tmux.SetServerRecoveryCallback(func() {
-			event := events.NewNotificationEvent(
-				"tmux-server",
-				"System",
-				uuid.New().String(),
-				int32(8), // NotificationType_NOTIFICATION_TYPE_WARNING
-				int32(2), // NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM
-				"Tmux Server Recovered",
-				"Connection to the tmux server has been restored. Sessions will resume automatically.",
-				nil,
-			)
-			deps.EventBus.Publish(event)
-			log.InfoLog.Printf("[tmux] recovery notification sent to connected clients")
-		})
-
-		// Note: SetExternalDiscovery is now called inside BuildRuntimeDeps.
-
-		// Start external session infrastructure
-		deps.ExternalDiscovery.Start(5 * time.Second)
-		deps.ExternalApprovalMonitor.Start()
-		deps.ExternalApprovalMonitor.IntegrateWithDiscoveryTmux(deps.ExternalDiscovery, deps.TmuxStreamerManager)
-
-		// Register ConnectRPC WebSocket handler (must come before unary handler)
-		wsHandler := services.NewConnectRPCWebSocketHandler(
-			deps.SessionService, deps.ScrollbackManager, deps.TmuxStreamerManager, "raw-compressed",
-		)
-		wsPath := "/api" + sessionv1connect.SessionServiceStreamTerminalProcedure
-		srv.mux.HandleFunc(wsPath, wsHandler.HandleWebSocket)
-		log.InfoLog.Printf("Registered ConnectRPC WebSocket handler: %s", wsPath)
-
-		// Register general ConnectRPC handler (unary calls)
-		path, handler := sessionv1connect.NewSessionServiceHandler(deps.SessionService, ConnectOptions()...)
-		apiPath := "/api" + path
-		srv.RegisterConnectHandler(apiPath, http.StripPrefix("/api", handler))
-
-		// Wire external session support into the unified WebSocket handler
-		wsHandler.SetExternalSessionSupport(deps.ExternalDiscovery)
-		log.InfoLog.Printf("Unified WebSocket handler configured for external session support")
-
-		// Register external approval endpoints
-		externalWsHandler := services.NewExternalWebSocketHandler(
-			deps.ExternalDiscovery,
-			deps.TmuxStreamerManager,
-			deps.ExternalApprovalMonitor,
-			deps.EventBus,
-		)
-		srv.mux.HandleFunc("/api/external/approvals", externalWsHandler.HandleApprovals)
-		srv.mux.HandleFunc("/api/external/approvals/respond", externalWsHandler.HandleApprovalResponse)
-		log.InfoLog.Printf("Registered External Session approval handlers at /api/external/approvals/*")
-
-		// Register Claude Code HTTP hook approval endpoint
-		approvalHandler := services.NewApprovalHandler(
-			deps.SessionService.GetApprovalStore(),
-			deps.Storage,
-			deps.EventBus,
-		)
-		// Wire the review queue poller for immediate queue checks on new approvals (Story 3, Task 3.1)
-		approvalHandler.SetQueueChecker(deps.ReviewQueuePoller)
-		// Wire the classifier and analytics store for auto-approve/deny before manual review
-		approvalHandler.SetClassifier(deps.SessionService.GetClassifier())
-		approvalHandler.SetAnalyticsStore(deps.SessionService.GetAnalyticsStore())
-		// Wire the domain age checker (enabled by default) for newly-registered domain escalation
-		approvalHandler.SetDomainChecker(services.NewDomainAgeChecker(true))
-		// Wire the notification stamper so approval outcomes persist across page refreshes
-		if notifStore != nil {
-			approvalHandler.SetNotificationStamper(notifStore)
-		}
-		srv.mux.HandleFunc("/api/hooks/permission-request", approvalHandler.HandlePermissionRequest)
-		log.InfoLog.Printf("Registered Claude Code hook approval handler at /api/hooks/permission-request")
-
-		// Start background expiration cleanup for pending approvals
-		services.StartExpirationCleanup(context.Background(), deps.SessionService.GetApprovalStore())
-
-		// Register Escape Code Analytics handler for debugging terminal rendering
-		escapeCodeHandler := services.NewEscapeCodeHandler()
-		escapeCodeHandler.RegisterRoutes(srv.mux)
-		log.InfoLog.Printf("Registered Escape Code Analytics handlers at /api/debug/escape-codes/*")
-
-		// Register Circuit Breaker debug handler for observability
-		cbHandler := services.NewCircuitBreakerHandler()
-		cbHandler.RegisterRoutes(srv.mux)
-		log.InfoLog.Printf("Registered Circuit Breaker debug handler at /api/debug/circuit-breakers")
+		log.Info("Server dependencies built", "elapsed", time.Since(startTime))
+		wireDepsIntoServer(srv, deps, connCtx)
 	}
+	registerStaticRoutes(srv)
+	return srv
+}
+
+// NewServerWithDeps creates a Server using pre-built dependencies.
+// Use this when deps are constructed externally (e.g. via Warren lifecycle phases)
+// so the build phases can be observed and timed independently.
+func NewServerWithDeps(addr string, deps *ServerDependencies) *Server {
+	srv, connCtx := newServerBase(addr)
+	wireDepsIntoServer(srv, deps, connCtx)
+	registerStaticRoutes(srv)
+	return srv
+}
+
+// wireDepsIntoServer wires pre-built ServerDependencies into srv: starts background
+// components, registers shutdown hooks, and mounts all ConnectRPC/HTTP handlers.
+// serverCtx (== connCtx from newServerBase) is cancelled by Shutdown() to signal
+// active streaming connections to close.
+func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context.Context) {
+	// Start background components
+	go deps.ReactiveQueueMgr.Start(serverCtx)
+	log.Info("ReactiveQueueManager started")
+
+	deps.PRStatusPoller.Start(serverCtx)
+	log.Info("PRStatusPoller started")
+
+	// Start HistoryLinker: detects Claude JSONL files and links conversation
+	// UUIDs to sessions so cold restore can use --resume on restart.
+	// Known startup race: the initial ScanAll in Start fires before the
+	// background goroutine below has re-populated live tmux sessions, so the
+	// proc_pidinfo open-file path will miss; recoverFromStaleResume is the
+	// safety net for sessions that slip through.
+	go deps.HistoryLinker.Start(serverCtx)
+	log.Info("HistoryLinker started")
+
+	// Start UnfinishedWork scanner.
+	if deps.UnfinishedScanner != nil {
+		deps.UnfinishedScanner.Start(serverCtx)
+		log.Info("UnfinishedWork scanner started")
+	}
+
+	// Start WorktreePRPoller: enriches worktrees-without-sessions with GitHub PR data.
+	if deps.WorktreePRPoller != nil {
+		deps.WorktreePRPoller.Start(serverCtx)
+		log.Info("WorktreePRPoller started")
+	}
+
+	// Register shutdown hook: capture pane working dirs and persist instance
+	// state so cold restore can find the right directory on next start.
+	// Uses HistoryLinker.Instances() (not the startup snapshot) so externally
+	// discovered sessions added after startup are also captured.
+	historyLinker := deps.HistoryLinker
+	storage := deps.Storage
+	srv.shutdownHooks = append(srv.shutdownHooks, func() {
+		instances := historyLinker.Instances()
+		deadline := time.Now().Add(4 * time.Second) // leave headroom for HTTP graceful shutdown
+		captured := 0
+		for _, inst := range instances {
+			if time.Now().After(deadline) {
+				log.Warn("[shutdown] Capture deadline exceeded; skipped instances", "skipped", len(instances)-captured, "total", len(instances))
+				break
+			}
+			if err := inst.CaptureCurrentState(); err != nil {
+				log.Warn("[shutdown] CaptureCurrentState failed", "session", inst.Title, "err", err)
+			}
+			captured++
+		}
+		if err := storage.SaveInstances(instances); err != nil {
+			log.Warn("[shutdown] SaveInstances failed", "err", err)
+		} else {
+			log.Info("[shutdown] Persisted working dirs for instances", "count", captured)
+		}
+	})
+
+	// Initialize notification history store and EventBus subscriber.
+	// notifStore is declared here so it can be wired into the approval handler below.
+	var notifStore *notifications.NotificationHistoryStore
+	configDir, configErr := config.GetConfigDir()
+	if configErr != nil {
+		log.Error("Failed to get config dir for notification store", "err", configErr)
+	} else {
+		notifStorePath := filepath.Join(configDir, "notifications.json")
+		var storeErr error
+		notifStore, storeErr = notifications.NewNotificationHistoryStore(notifStorePath)
+		if storeErr != nil {
+			log.Error("Failed to create notification history store", "err", storeErr)
+			notifStore = nil
+		} else {
+			// Wire into SessionService BEFORE subscribing to EventBus so any
+			// in-flight event handler that calls GetNotificationStore() sees a
+			// non-nil value even if the subscriber goroutine races ahead.
+			deps.SessionService.SetNotificationStore(notifStore)
+			notifications.StartSubscriber(serverCtx, deps.EventBus, notifStore)
+			log.Info("NotificationHistoryStore initialized", "path", notifStorePath)
+		}
+	}
+
+	// Initialize push notification service.
+	if configErr == nil {
+		pushService := services.NewPushService(configDir)
+		pushHandler := services.NewPushHandler(pushService)
+		pushHandler.RegisterRoutes(srv.mux)
+		push.StartPushSubscriber(serverCtx, deps.EventBus, pushService)
+		log.Info("Push notification service initialized")
+	}
+
+	// Wire fork pressure monitor → push notification + emergency reconcile.
+	// Fires when capture-pane subprocess failures or zombie counts exceed thresholds,
+	// indicating that dead sessions are flooding the poller with fork() calls.
+	tmux.RegisterForkPressureAlert(func(level tmux.ForkPressureLevel, stats tmux.ForkPressureStats) {
+		body := fmt.Sprintf(
+			"Subprocess failures: %d/%ds | Spawns: %d/%ds | Zombies: %d | Level: %s",
+			stats.FailuresInWindow, int(stats.WindowDuration.Seconds()),
+			stats.SpawnsInWindow, int(stats.WindowDuration.Seconds()),
+			stats.ZombiesInWindow, level,
+		)
+		notifType := int32(sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING)
+		if level == tmux.ForkPressureCritical {
+			notifType = int32(sessionv1.NotificationType_NOTIFICATION_TYPE_ERROR)
+		}
+		event := events.NewNotificationEvent(
+			"fork-pressure",
+			"System",
+			uuid.New().String(),
+			notifType,
+			int32(sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_HIGH),
+			fmt.Sprintf("Fork Pressure: %s", level),
+			body,
+			nil,
+		)
+		deps.EventBus.Publish(event)
+		log.Warn("[ForkPressure] alert dispatched", "level", level, "body", body)
+
+		// Immediately reconcile to mark dead sessions Stopped, cutting spawn rate.
+		if deps.ReviewQueuePoller != nil {
+			deps.ReviewQueuePoller.ForceReconcile()
+		}
+	})
+
+	// Start fork pressure logger (logs stats every 30s when activity > 0).
+	tmux.StartForkPressureLogger(serverCtx, 30*time.Second, func(format string, args ...any) {
+		log.Info(fmt.Sprintf(format, args...))
+	})
+
+	// Become the subreaper for our process tree so that tmux's zombie children
+	// get reparented to us (not init) when tmux hasn't yet reaped them.
+	// No-op on macOS and Windows; effective on Linux only.
+	if err := tmux.SetSubreaper(); err != nil {
+		log.Warn("[zombie] SetSubreaper failed (non-fatal)", "err", err)
+	} else {
+		log.Info("[zombie] subreaper enabled: tmux descendant zombies will be reparented here")
+	}
+
+	// Start zombie watcher (scans for zombie child processes every 30s).
+	tmux.StartZombieWatcher(serverCtx, 30*time.Second, func(format string, args ...any) {
+		log.Warn(fmt.Sprintf(format, args...))
+	})
+
+	// Start zombie reaper (calls waitpid(-1, WNOHANG) every 60s to reap any
+	// zombie children left by cmd.Start() paths that skipped cmd.Wait()).
+	tmux.StartZombieReaper(serverCtx, 60*time.Second, func(format string, args ...any) {
+		log.Info(fmt.Sprintf(format, args...))
+	})
+
+	// Wire tmux server recovery → web UI toast notification.
+	tmux.SetServerRecoveryCallback(func() {
+		event := events.NewNotificationEvent(
+			"tmux-server",
+			"System",
+			uuid.New().String(),
+			int32(sessionv1.NotificationType_NOTIFICATION_TYPE_WARNING),
+			int32(sessionv1.NotificationPriority_NOTIFICATION_PRIORITY_MEDIUM),
+			"Tmux Server Recovered",
+			"Connection to the tmux server has been restored. Sessions will resume automatically.",
+			nil,
+		)
+		deps.EventBus.Publish(event)
+		log.Info("[tmux] recovery notification sent to connected clients")
+	})
+
+	// Note: SetExternalDiscovery is now called inside BuildRuntimeDeps.
+
+	// Start external session infrastructure
+	deps.ExternalDiscovery.Start(5 * time.Second)
+	deps.ExternalApprovalMonitor.Start()
+	deps.ExternalApprovalMonitor.IntegrateWithDiscoveryTmux(deps.ExternalDiscovery, deps.TmuxStreamerManager)
+
+	// Register ConnectRPC WebSocket handler (must come before unary handler)
+	wsHandler := services.NewConnectRPCWebSocketHandler(
+		deps.SessionService, deps.ScrollbackManager, deps.TmuxStreamerManager,
+	)
+	wsPath := "/api" + sessionv1connect.SessionServiceStreamTerminalProcedure
+	srv.mux.HandleFunc(wsPath, wsHandler.HandleWebSocket)
+	log.Info("Registered ConnectRPC WebSocket handler", "path", wsPath)
+
+	// Register VNC browser-passthrough WebSocket proxy.
+	// Use ReviewQueuePoller (in-memory) rather than Storage (SQLite) for session lookup.
+	vncProxy := services.NewVNCProxyHandler(deps.ReviewQueuePoller)
+	srv.mux.HandleFunc("/api/sessions/{id}/vnc", vncProxy.HandleWebSocket)
+	log.Info("Registered VNC WebSocket proxy at /api/sessions/{id}/vnc")
+
+	// Register CDP browser-streaming WebSocket handler.
+	// Use ReviewQueuePoller (in-memory) rather than Storage (SQLite) for session lookup.
+	cdpStream := services.NewCDPStreamHandler(deps.ReviewQueuePoller)
+	srv.mux.HandleFunc("/api/sessions/{id}/cdp-stream", cdpStream.HandleWebSocket)
+	log.Info("Registered CDP stream WebSocket handler at /api/sessions/{id}/cdp-stream")
+
+	// Register general ConnectRPC handler (unary calls)
+	path, handler := sessionv1connect.NewSessionServiceHandler(deps.SessionService, ConnectOptions(deps.ErrorRegistry)...)
+	apiPath := "/api" + path
+
+	// Register StreamingWSBridge for server-streaming Watch* RPCs so browsers use
+	// WebSocket instead of HTTP long-polling, avoiding the 6-connection-per-origin limit.
+	// Exact-path registration takes priority over the prefix-registered general handler.
+	wsBridge := services.NewStreamingWSBridge(handler)
+	watchSessionsPath := "/api" + sessionv1connect.SessionServiceWatchSessionsProcedure
+	watchReviewQueuePath := "/api" + sessionv1connect.SessionServiceWatchReviewQueueProcedure
+	srv.mux.Handle(watchSessionsPath, wsBridge.Handler("/api"))
+	srv.mux.Handle(watchReviewQueuePath, wsBridge.Handler("/api"))
+	log.Info("Registered StreamingWSBridge", "watchSessions", watchSessionsPath, "watchReviewQueue", watchReviewQueuePath)
+
+	srv.RegisterConnectHandler(apiPath, http.StripPrefix("/api", handler))
+
+	// Register UnfinishedWorkService handler.
+	if deps.UnfinishedWorkService != nil {
+		uwPath, uwHandler := sessionv1connect.NewUnfinishedWorkServiceHandler(deps.UnfinishedWorkService, ConnectOptions(deps.ErrorRegistry)...)
+		uwAPIPath := "/api" + uwPath
+		srv.RegisterConnectHandler(uwAPIPath, http.StripPrefix("/api", uwHandler))
+		log.Info("Registered UnfinishedWorkService handler", "path", uwAPIPath)
+	}
+
+	// Register InsightsService handler for token usage analytics.
+	if deps.InsightsService != nil {
+		insightsPath, insightsHandler := sessionv1connect.NewInsightsServiceHandler(deps.InsightsService, ConnectOptions(deps.ErrorRegistry)...)
+		insightsAPIPath := "/api" + insightsPath
+		srv.RegisterConnectHandler(insightsAPIPath, http.StripPrefix("/api", insightsHandler))
+		log.Info("Registered InsightsService handler", "path", insightsAPIPath)
+	}
+
+	// Register GitHubUserService handler (GitHub Work Continuity feature).
+	if deps.GitHubUserService != nil {
+		ghPath, ghHandler := sessionv1connect.NewGitHubUserServiceHandler(deps.GitHubUserService, ConnectOptions(deps.ErrorRegistry)...)
+		ghAPIPath := "/api" + ghPath
+		srv.RegisterConnectHandler(ghAPIPath, http.StripPrefix("/api", ghHandler))
+		log.Info("Registered GitHubUserService handler", "path", ghAPIPath)
+	}
+
+	// Register BacklogService handler.
+	// The feature-flag interceptor is added on top of the standard options so that
+	// all BacklogService RPCs return CodeNotFound when the "backlog" flag is off.
+	// isEnabled re-reads config on every request so flag changes take effect immediately.
+	if deps.BacklogService != nil {
+		blOpts := append(
+			ConnectOptions(deps.ErrorRegistry),
+			connect.WithInterceptors(interceptors.NewFeatureFlagInterceptor("backlog", func() bool {
+				return config.LoadConfig().GetFeatureFlag("backlog")
+			})),
+		)
+		blPath, blHandler := sessionv1connect.NewBacklogServiceHandler(deps.BacklogService, blOpts...)
+		blAPIPath := "/api" + blPath
+		srv.RegisterConnectHandler(blAPIPath, http.StripPrefix("/api", blHandler))
+		log.InfoLog.Printf("Registered BacklogService handler at %s", blAPIPath)
+	}
+
+	// Start UserPRCache and register GitHubUserService handler.
+	if deps.UserPRCache != nil {
+		deps.UserPRCache.Start(serverCtx)
+		srv.shutdownHooks = append(srv.shutdownHooks, deps.UserPRCache.Stop)
+		log.Info("UserPRCache started")
+	}
+	// Start WorkflowScheduler (nil guard: disabled when workflow repo is unavailable).
+	if deps.WorkflowScheduler != nil {
+		deps.WorkflowScheduler.Start(serverCtx)
+		srv.shutdownHooks = append(srv.shutdownHooks, deps.WorkflowScheduler.Stop)
+		log.Info("WorkflowScheduler started")
+	}
+
+	// Register BacklogService shutdown so in-flight triage goroutines are signalled
+	// to stop acquiring new semaphore slots and existing calls can complete cleanly.
+	if deps.BacklogService != nil {
+		srv.shutdownHooks = append(srv.shutdownHooks, deps.BacklogService.Shutdown)
+	}
+
+	// Start workflow session retention enforcer (hourly sweep).
+	// Requires both the session ent client and a workflow repository.
+	if deps.WorkflowRepo != nil && deps.Storage != nil {
+		if entClient := deps.Storage.GetEntClient(); entClient != nil {
+			workflows.StartRetentionEnforcer(serverCtx, entClient, deps.WorkflowRepo, time.Hour)
+			log.Info("WorkflowRetentionEnforcer started")
+		}
+	}
+
+	// Register HeadlessService handler (nil guard: pool may be absent if claude not found).
+	if deps.HeadlessPool != nil {
+		hlSvc := services.NewHeadlessService(deps.HeadlessPool)
+		hlPath, hlHandler := sessionv1connect.NewHeadlessServiceHandler(hlSvc, ConnectOptions(deps.ErrorRegistry)...)
+		hlAPIPath := "/api" + hlPath
+		srv.RegisterConnectHandler(hlAPIPath, http.StripPrefix("/api", hlHandler))
+		log.Info("Registered HeadlessService handler", "path", hlAPIPath)
+	}
+
+	// Wire external session support into the unified WebSocket handler
+	wsHandler.SetExternalSessionSupport(deps.ExternalDiscovery)
+	log.Info("Unified WebSocket handler configured for external session support")
+
+	// Register external approval endpoints
+	externalWsHandler := services.NewExternalWebSocketHandler(
+		deps.ExternalDiscovery,
+		deps.TmuxStreamerManager,
+		deps.ExternalApprovalMonitor,
+		deps.EventBus,
+	)
+	srv.mux.HandleFunc("/api/external/approvals", externalWsHandler.HandleApprovals)
+	srv.mux.HandleFunc("/api/external/approvals/respond", externalWsHandler.HandleApprovalResponse)
+	log.Info("Registered External Session approval handlers at /api/external/approvals/*")
+
+	// Shared lazy base-URL resolver for Claude Code hook callbacks (Epic 1.3, Story 1.3.1).
+	// Read at the moment a hook URL is actually needed (per-session, at hook-injection time),
+	// never snapshotted before Start() binds the real listen address -- so hook URLs resolve
+	// correctly even when PORT=0 assigns an OS-chosen port. Mirrors the mcpURL lazy-read
+	// pattern below (srv.GetAddr(), Task 1.1.1c).
+	hookBaseURLFn := func() string { return "http://" + srv.GetAddr() }
+
+	// Register Claude Code HTTP hook approval endpoint
+	approvalHandler := services.NewApprovalHandler(
+		deps.SessionService.GetApprovalStore(),
+		deps.Storage,
+		deps.EventBus,
+	)
+	// Wire the lazy base-URL resolver into the hook injector (hook_injector.go); both
+	// InjectHookConfig's PermissionRequest URL and InjectHooksConfig's stop/pre-tool-use/
+	// post-tool-use/prompt-submit endpoints resolve through this single shared mechanism.
+	services.SetHookBaseURLFn(hookBaseURLFn)
+	// Wire the review queue poller for immediate queue checks on new approvals (Story 3, Task 3.1)
+	approvalHandler.SetQueueChecker(deps.ReviewQueuePoller)
+	// Wire the classifier and analytics store for auto-approve/deny before manual review
+	approvalHandler.SetClassifier(deps.SessionService.GetClassifier())
+	approvalHandler.SetAnalyticsStore(deps.SessionService.GetAnalyticsStore())
+	// Wire the domain age checker (enabled by default) for newly-registered domain escalation
+	approvalHandler.SetDomainChecker(services.NewDomainAgeChecker(true))
+	// Wire the notification stamper so approval outcomes persist across page refreshes
+	if notifStore != nil {
+		approvalHandler.SetNotificationStamper(notifStore)
+		approvalHandler.SetAutoApprovalLogger(notifStore)
+	}
+	// Wire LLM approval for autonomous sessions (E5)
+	if deps.HeadlessPool != nil {
+		approvalHandler.SetHeadlessPool(deps.HeadlessPool)
+	}
+	approvalHandler.SetAutonomousChecker(func(sessionID string) bool {
+		inst := deps.SessionService.FindLiveInstance(sessionID)
+		return inst != nil && inst.AutonomousMode
+	})
+	srv.mux.HandleFunc("/api/hooks/permission-request", approvalHandler.HandlePermissionRequest)
+	log.Info("Registered Claude Code hook approval handler at /api/hooks/permission-request")
+
+	// Register non-approval hook receivers (stop, pre/post-tool-use, prompt-submit)
+	hookReceiver := services.NewHookReceiver()
+	hookReceiver.RegisterRoutes(srv.mux)
+	log.Info("Registered Claude Code hook receivers at /api/hooks/{stop,pre-tool-use,post-tool-use,prompt-submit}")
+
+	// Register session-aware image upload endpoint (multipart/form-data, saves to worktree).
+	sessionUploadHandler := services.NewSessionImageUploadHandler(deps.Storage, deps.ReviewQueuePoller)
+	srv.mux.HandleFunc("POST /api/v1/upload-image", sessionUploadHandler.HandleUpload)
+	log.Info("Registered session image upload handler at POST /api/v1/upload-image")
+
+	// Register MCP HTTP transport at /mcp so Claude sessions can connect
+	// without spawning a subprocess. The URL is passed via --mcp-server to
+	// claude when creating new sessions (no settings-file injection needed).
+	mcpHTTPHandler := servermcp.NewHTTPHandler(deps.Storage, deps.SessionService, deps.ScrollbackManager, deps.Storage, deps.EventBus, deps.UserPRCache)
+	// Wrap with middleware that injects session UUID from X-Stapler-Session-UUID header.
+	mcpWithUUID := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if uuid := r.Header.Get("X-Stapler-Session-UUID"); uuid != "" {
+			r = r.WithContext(servermcp.WithSessionUUID(r.Context(), uuid))
+		}
+		mcpHTTPHandler.ServeHTTP(w, r)
+	})
+	srv.mux.Handle("/mcp", mcpWithUUID)
+	srv.mux.Handle("/mcp/", mcpWithUUID)
+	deps.SessionService.SetMCPServerURL(func() string { return "http://" + srv.GetAddr() + "/mcp" })
+	log.Info("Registered MCP HTTP handler at /mcp", "url", "http://"+srv.GetAddr()+"/mcp (resolved lazily at session-creation time)")
+
+	// Bind server lifecycle context so autonomous driver goroutines exit on shutdown.
+	deps.SessionService.SetLifecycleContext(serverCtx)
+
+	// Start background expiration cleanup for pending approvals
+	services.StartExpirationCleanup(context.Background(), deps.SessionService.GetApprovalStore())
+
+	// Register Escape Code Analytics handler for debugging terminal rendering
+	escapeCodeHandler := services.NewEscapeCodeHandler()
+	escapeCodeHandler.RegisterRoutes(srv.mux)
+	log.Info("Registered Escape Code Analytics handlers at /api/debug/escape-codes/*")
+
+	// Register runtime log-level handler (used by the debug menu in the web UI)
+	logLevelHandler := services.NewLogLevelHandler()
+	logLevelHandler.RegisterRoutes(srv.mux)
+	log.Info("Registered log-level handler at /api/debug/log-level")
+
+	// Register Circuit Breaker debug handler for observability
+	cbHandler := services.NewCircuitBreakerHandler()
+	cbHandler.RegisterRoutes(srv.mux)
+	log.Info("Registered Circuit Breaker debug handler at /api/debug/circuit-breakers")
+
+	// Wire analytics provider: SQLite when DB client is available, log-only fallback otherwise.
+	var analyticsProvider analytics.AnalyticsProvider
+	if deps.AnalyticsEntClient != nil {
+		analyticsProvider = analytics.NewSQLiteAnalyticsProvider(deps.AnalyticsEntClient)
+		log.Info("Analytics: using SQLiteAnalyticsProvider")
+	} else {
+		analyticsProvider = analytics.NewLogAnalyticsProvider()
+		log.Info("Analytics: using LogAnalyticsProvider (fallback)")
+	}
+
+	// Start analytics retention enforcer (hourly; exits when serverCtx is cancelled).
+	cfg := config.LoadConfig()
+	if deps.AnalyticsEntClient != nil {
+		analytics.StartRetentionEnforcer(serverCtx, deps.AnalyticsEntClient,
+			cfg.AnalyticsMaxRowsOrDefault(), cfg.AnalyticsMaxAgeDaysOrDefault(), cfg.EscapeAnalyticsRetentionDays)
+		log.Info("Analytics retention enforcer started", "maxRows", cfg.AnalyticsMaxRowsOrDefault(), "maxAgeDays", cfg.AnalyticsMaxAgeDaysOrDefault())
+	}
+
+	// Start escape analytics batch writer and register it as the global writer.
+	// New ResponseStream instances (created per session) will pick it up via GetGlobalEscapeWriter().
+	if deps.AnalyticsEntClient != nil && cfg.EscapeAnalyticsCaptureLevel != "off" {
+		escapeWriter := analytics.NewEscapeEventBatchWriter(deps.AnalyticsEntClient, cfg.EscapeAnalyticsMaxRowsPerSession)
+		go escapeWriter.Start(serverCtx)
+		pkganalytics.SetGlobalEscapeWriter(escapeWriter)
+		log.Info("Escape analytics batch writer started",
+			"captureLevel", cfg.EscapeAnalyticsCaptureLevel,
+			"maxRowsPerSession", cfg.EscapeAnalyticsMaxRowsPerSession,
+		)
+	} else {
+		log.Info("Escape analytics disabled (no DB client or captureLevel=off)")
+	}
+
+	// Wire analytics ent client into SessionService for escape analytics RPC handlers.
+	if deps.AnalyticsEntClient != nil {
+		deps.SessionService.SetAnalyticsClient(deps.AnalyticsEntClient)
+		log.Info("Wired analytics ent client into SessionService for escape analytics RPCs")
+	}
+
+	// Start EventBus analytics subscriber (maps session lifecycle events to analytics records).
+	analytics.StartAnalyticsSubscriber(serverCtx, deps.EventBus, analyticsProvider)
+	log.Info("Analytics EventBus subscriber started")
+
+	// Register analytics HTTP handler (POST /api/analytics, GET /api/analytics/summary).
+	analyticsHandler := handlers.NewAnalyticsHandlerWithClient(analyticsProvider, deps.AnalyticsEntClient)
+	analyticsHandler.RegisterRoutes(srv.mux)
+	log.Info("Registered analytics handler at POST /api/analytics and GET /api/analytics/summary")
+
+	// Register telemetry handler for frontend performance events
+	telemetryHandler := handlers.NewTelemetryHandler(analyticsProvider)
+	srv.mux.HandleFunc("POST /api/telemetry", telemetryHandler.HandleTelemetry)
+	log.Info("Registered telemetry handler at POST /api/telemetry")
+
+	// Register raw file download endpoint.
+	// Uses the FileService inside SessionService to validate paths against
+	// the session worktree root (path traversal prevention).
+	fileSvc := deps.SessionService.GetFileService()
+	srv.mux.HandleFunc("/api/files/raw", fileSvc.ServeFileRaw)
+	log.Info("Registered raw file download handler at /api/files/raw")
+
+	// Local file browser — serves arbitrary local filesystem paths.
+	// Auth is provided by the existing middleware chain:
+	// local HTTP = no auth; remote HTTPS = WebAuthn required.
+	localFileSvc := services.NewLocalFileService()
+	srv.mux.HandleFunc("/api/local/files/list", localFileSvc.ListLocalDirectory)
+	srv.mux.Handle("/api/local/serve/", http.StripPrefix("/api/local/serve", http.HandlerFunc(localFileSvc.ServeLocalFile)))
+	log.Info("Registered local file browser at /api/local/files/list and /api/local/serve/")
+
+	// Start hibernation sweeper (auto-hibernates idle sessions and prunes stale checkpoints).
+	if cfg.Hibernation.Enabled {
+		sweeper := session.NewHibernationSweeper(deps.Storage, cfg, memory.NewGopsutilReader())
+		if deps.ReviewQueuePoller != nil {
+			sweeper.SetLiveProvider(deps.ReviewQueuePoller)
+		}
+		deps.SessionService.SetMemoryCacheReader(sweeper)
+		go sweeper.Start(serverCtx)
+		log.Info("Hibernation sweeper started",
+			"idle_timeout_minutes", cfg.Hibernation.IdleTimeoutMinutes)
+	}
+}
+
+// registerStaticRoutes mounts routes that are always registered regardless of
+// whether dependencies were successfully built (image upload, server-info, web UI).
+func registerStaticRoutes(srv *Server) {
+	// Register file upload endpoint — saves clipboard files to a temp directory
+	// so the terminal process can reference them by path (e.g. for Claude Code image paste).
+	pasteDir := filepath.Join(os.TempDir(), "stapler-paste")
+	fileHandler := services.NewFileUploadHandler(pasteDir)
+	srv.mux.HandleFunc("/api/upload/file", fileHandler.HandleUpload)
+	log.Info("Registered file upload handler at /api/upload/file", "dir", pasteDir)
+
+	// Detect available programs once at startup so /api/server-info never runs
+	// shell subprocesses on a live request (each detection spawns 5 shells).
+	srv.availablePrograms = config.GetAvailablePrograms()
 
 	// Register server-info endpoint for settings UI
 	srv.registerServerInfoHandler()
-	log.InfoLog.Printf("Registered server-info handler at /api/server-info")
+	log.Info("Registered server-info handler at /api/server-info")
 
 	// Serve web UI static files
 	distFS, err := web.GetDistFS()
 	if err != nil {
-		log.ErrorLog.Printf("Failed to load web UI filesystem: %v", err)
+		log.Error("Failed to load web UI filesystem", "err", err)
 	} else {
 		staticHandler := middleware.StaticFileServer(distFS, "index.html")
 		srv.mux.Handle("/", staticHandler)
-		log.InfoLog.Printf("Registered web UI static file server at /")
+		log.Info("Registered web UI static file server at /")
 	}
-
-	return srv
 }
 
 // SetupTLS configures the server to use TLS with the provided tls.Config.
@@ -248,7 +633,7 @@ func NewServer(addr string) *Server {
 func (s *Server) SetupTLS(cfg *tls.Config) {
 	s.tlsConfig = cfg
 	s.httpServer.TLSConfig = cfg
-	log.InfoLog.Printf("TLS enabled on %s", s.addr)
+	log.Info("TLS enabled", "addr", s.GetAddr())
 }
 
 // SetupAuth installs authentication middleware.  Must be called before Start().
@@ -261,14 +646,14 @@ func (s *Server) SetupAuth(authMiddleware func(http.Handler) http.Handler) {
 // This should be called before Start().
 func (s *Server) RegisterConnectHandler(path string, handler http.Handler) {
 	s.mux.Handle(path, handler)
-	log.InfoLog.Printf("Registered ConnectRPC handler: %s", path)
+	log.Info("Registered ConnectRPC handler", "path", path)
 }
 
 // RegisterHTTPHandler registers a standard HTTP handler.
 // Useful for health checks, static files, etc.
 func (s *Server) RegisterHTTPHandler(pattern string, handler http.Handler) {
 	s.mux.Handle(pattern, handler)
-	log.InfoLog.Printf("Registered HTTP handler: %s", pattern)
+	log.Info("Registered HTTP handler", "pattern", pattern)
 }
 
 // Start starts the HTTP server with middleware chain.
@@ -298,18 +683,31 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.tlsConfig != nil {
 		scheme = "https"
 	}
-	log.InfoLog.Printf("Starting %s server on %s", scheme, s.addr)
-	log.InfoLog.Printf("Web UI: %s://%s", scheme, s.addr)
-	log.InfoLog.Printf("Health check: %s://%s/health", scheme, s.addr)
 
 	errCh := make(chan error, 1)
 	go func() {
 		var err error
 		if s.tlsConfig != nil {
-			// TLS mode: cert/key are already in TLSConfig.Certificates
+			// TLS mode: cert/key are already in TLSConfig.Certificates; the
+			// configured address is never rewritten, so it's safe to log now.
+			log.Info("Starting server", "scheme", scheme, "addr", s.GetAddr())
+			log.Info("Web UI", "url", scheme+"://"+s.GetAddr())
+			log.Info("Health check", "url", scheme+"://"+s.GetAddr()+"/health")
 			err = s.httpServer.ListenAndServeTLS("", "")
 		} else {
-			err = s.httpServer.ListenAndServe()
+			ln, lerr := net.Listen("tcp", s.GetAddr())
+			if lerr != nil {
+				errCh <- lerr
+				return
+			}
+			resolvedAddr := ln.Addr().String()
+			s.addr.Store(&resolvedAddr)
+			// Log the real, OS-assigned address (never the pre-bind ":0"
+			// request) now that the listener has actually bound.
+			log.Info("Starting server", "scheme", scheme, "addr", resolvedAddr)
+			log.Info("Web UI", "url", scheme+"://"+resolvedAddr)
+			log.Info("Health check", "url", scheme+"://"+resolvedAddr+"/health")
+			err = s.httpServer.Serve(ln)
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -318,7 +716,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		log.InfoLog.Printf("Shutting down HTTP server...")
+		log.Info("Shutting down HTTP server...")
 		return s.Shutdown()
 	case err := <-errCh:
 		return err
@@ -327,6 +725,13 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Shutdown gracefully shuts down the HTTP server.
 func (s *Server) Shutdown() error {
+	// Cancel the server's BaseContext first so active streaming connections
+	// (ConnectRPC terminal streams) see a done context and close themselves,
+	// preventing context deadline exceeded on the graceful shutdown below.
+	if s.connCtxCancel != nil {
+		s.connCtxCancel()
+	}
+
 	// Run registered hooks (e.g. capture pane paths, persist instance state) before
 	// stopping the HTTP server so in-flight requests complete first.
 	for _, hook := range s.shutdownHooks {
@@ -337,17 +742,20 @@ func (s *Server) Shutdown() error {
 	defer cancel()
 
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		log.ErrorLog.Printf("HTTP server shutdown error: %v", err)
+		log.Error("HTTP server shutdown error", "err", err)
 		return err
 	}
 
-	log.InfoLog.Printf("HTTP server stopped gracefully")
+	log.Info("HTTP server stopped gracefully")
 	return nil
 }
 
 // GetAddr returns the server address.
 func (s *Server) GetAddr() string {
-	return s.addr
+	if p := s.addr.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // Mux returns the HTTP request multiplexer so callers can register additional
@@ -409,12 +817,12 @@ func (s *Server) registerServerInfoHandler() {
 			HTTPSURL:   s.httpsURL,
 			TLSEnabled: tlsEnabled,
 			Hostnames:  s.hostnames,
-			Programs:   config.GetAvailablePrograms(),
+			Programs:   s.availablePrograms,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if encErr := json.NewEncoder(w).Encode(info); encErr != nil {
-			log.ErrorLog.Printf("server-info: encode error: %v", encErr)
+			log.Error("server-info: encode error", "err", encErr)
 		}
 	})
 }
@@ -448,7 +856,7 @@ func (s *Server) StartRemote(ctx context.Context, remoteAddr string, tlsCfg *tls
 	if err != nil {
 		return fmt.Errorf("bind remote server on %s: %w", remoteAddr, err)
 	}
-	log.InfoLog.Printf("Remote HTTPS server listening on %s", remoteAddr)
+	log.Info("Remote HTTPS server listening", "addr", remoteAddr)
 
 	go func() {
 		// Shutdown when the main context is cancelled.
@@ -457,31 +865,35 @@ func (s *Server) StartRemote(ctx context.Context, remoteAddr string, tlsCfg *tls
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if shutdownErr := remoteSrv.Shutdown(shutdownCtx); shutdownErr != nil {
-				log.ErrorLog.Printf("Remote HTTPS server shutdown error: %v", shutdownErr)
+				log.Error("Remote HTTPS server shutdown error", "err", shutdownErr)
 			} else {
-				log.InfoLog.Printf("Remote HTTPS server stopped gracefully")
+				log.Info("Remote HTTPS server stopped gracefully")
 			}
 		}()
 
 		if serveErr := remoteSrv.ServeTLS(ln, "", ""); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			log.ErrorLog.Printf("Remote HTTPS server error: %v", serveErr)
+			log.Error("Remote HTTPS server error", "err", serveErr)
 		}
 	}()
 
 	return nil
 }
 
-// ConnectOptions returns standard ConnectRPC options with OpenTelemetry instrumentation.
-func ConnectOptions() []connect.HandlerOption {
+// ConnectOptions returns standard ConnectRPC options with OpenTelemetry instrumentation
+// and optional SQLite error recording.  Pass a non-nil registry to persist RPC errors.
+func ConnectOptions(registry interceptors.ErrorRecorder) []connect.HandlerOption {
 	otelInterceptor, err := otelconnect.NewInterceptor(
 		otelconnect.WithTrustRemote(),
 	)
 	if err != nil {
-		log.WarningLog.Printf("Failed to create otelconnect interceptor: %v", err)
+		log.Warn("Failed to create otelconnect interceptor", "err", err)
 		return []connect.HandlerOption{}
 	}
 
 	return []connect.HandlerOption{
-		connect.WithInterceptors(otelInterceptor),
+		connect.WithInterceptors(
+			interceptors.NewErrorRecorderInterceptor(registry),
+			otelInterceptor,
+		),
 	}
 }

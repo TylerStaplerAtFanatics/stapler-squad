@@ -3,7 +3,7 @@ package services
 import (
 	"encoding/json"
 	"github.com/tstapler/stapler-squad/log"
-	"github.com/tstapler/stapler-squad/server/analytics"
+	"github.com/tstapler/stapler-squad/pkg/analytics"
 	"net/http"
 	"strings"
 )
@@ -105,7 +105,7 @@ func (h *EscapeCodeHandler) HandleToggle(w http.ResponseWriter, r *http.Request)
 	}
 
 	h.store.SetEnabled(req.Enabled)
-	log.InfoLog.Printf("Escape code tracking %s", map[bool]string{true: "enabled", false: "disabled"}[req.Enabled])
+	log.Info("escape code tracking toggled", "enabled", req.Enabled)
 
 	h.writeJSON(w, map[string]bool{"enabled": req.Enabled})
 }
@@ -119,7 +119,7 @@ func (h *EscapeCodeHandler) HandleClear(w http.ResponseWriter, r *http.Request) 
 	}
 
 	h.store.Clear()
-	log.InfoLog.Printf("Escape code store cleared")
+	log.Info("escape code store cleared")
 
 	h.writeJSON(w, map[string]string{"status": "cleared"})
 }
@@ -140,7 +140,7 @@ func (h *EscapeCodeHandler) HandleExport(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=escape-codes.json")
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 // HandleStatus returns the current tracking status
@@ -158,7 +158,7 @@ func (h *EscapeCodeHandler) HandleStatus(w http.ResponseWriter, r *http.Request)
 func (h *EscapeCodeHandler) writeJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.ErrorLog.Printf("Failed to encode JSON response: %v", err)
+		log.Error("failed to encode JSON response", "err", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 	}
 }

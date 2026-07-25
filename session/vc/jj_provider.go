@@ -1,9 +1,13 @@
 package vc
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
+
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
 // JujutsuProvider implements VCSProvider for Jujutsu repositories
@@ -38,8 +42,10 @@ func (j *JujutsuProvider) WorkDir() string {
 
 // runJJ executes a jj command and returns the output
 func (j *JujutsuProvider) runJJ(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	// Use --no-pager to prevent interactive output
-	cmd := exec.Command("jj", append([]string{"--no-pager", "-R", j.repoRoot}, args...)...)
+	cmd := safeexec.CommandContext(ctx, "jj", append([]string{"--no-pager", "-R", j.repoRoot}, args...)...)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -85,11 +91,11 @@ func (j *JujutsuProvider) GetStatus() (*VCSStatus, error) {
 	// Categorize files - in jj, working copy changes are always "staged"
 	// since jj auto-commits to the working copy commit
 	for _, f := range files {
-		switch {
-		case f.Status == FileConflict:
+		switch f.Status {
+		case FileConflict:
 			status.ConflictFiles = append(status.ConflictFiles, f)
 			status.HasConflicts = true
-		case f.Status == FileUntracked:
+		case FileUntracked:
 			status.UntrackedFiles = append(status.UntrackedFiles, f)
 			status.HasUntracked = true
 		default:

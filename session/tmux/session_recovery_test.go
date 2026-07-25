@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tstapler/stapler-squad/executor"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/testutil/wait"
 )
 
 // TestSessionRecoveryWorkflowEnd2End tests the complete session recovery workflow
@@ -76,7 +79,7 @@ func testKilledSessionRestoresInCorrectWorktree(t *testing.T) {
 	// Restore after session was killed - this is where the bug would occur
 	// OLD behavior: would use os.Getwd()
 	// NEW behavior: should use the provided worktreeDir
-	err = session.RestoreWithWorkDir(worktreeDir)
+	_ = session.RestoreWithWorkDir(worktreeDir)
 
 	// The restore will timeout with our mock, but that's expected
 	// The important thing is that it attempts to create a new session
@@ -105,6 +108,10 @@ func testKilledSessionRestoresInCorrectWorktree(t *testing.T) {
 // testCompareOldVsNewRestoreBehavior demonstrates the difference between
 // the old buggy behavior and the new fixed behavior
 func testCompareOldVsNewRestoreBehavior(t *testing.T) {
+	// Create test directories - use sibling dirs so worktreeDir is NOT a subdirectory
+	// of currentDirBase. Using filepath.Join(tempDir, "sub") would make tempDir a
+	// substring of worktreeDir, causing the NotContains assertion below to spuriously
+	// fail on Linux CI.
 	worktreeBase := t.TempDir()
 	worktreeDir := filepath.Join(worktreeBase, "session-worktree")
 	err := os.MkdirAll(worktreeDir, 0755)
@@ -118,6 +125,7 @@ func testCompareOldVsNewRestoreBehavior(t *testing.T) {
 	require.NoError(t, err)
 
 	currentDir, _ := os.Getwd()
+
 	// Resolve paths to handle /var vs /private/var on macOS
 	resolvedCurrentDir, _ := filepath.EvalSymlinks(currentDir)
 	resolvedDifferentDir, _ := filepath.EvalSymlinks(differentDir)
@@ -202,24 +210,33 @@ func testSessionRecoveryWithRealTmux(t *testing.T) {
 
 	// Use an isolated tmux server socket so this test does not interfere with
 	// other packages that share the default tmux server when running `go test ./...`.
-	socketName := fmt.Sprintf("test_recovery_%d", time.Now().UnixNano())
+	socketName := fmt.Sprintf("test_recovery_%d_%d", os.Getpid(), time.Now().UnixNano())
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", socketName, "kill-server").Run()
+		killServerCtx, killServerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer killServerCancel()
+		_ = safeexec.CommandContext(killServerCtx, "tmux", "-L", socketName, "kill-server").Run()
 	})
 
 	// Clean up any existing session on the isolated server
-	killCmd := exec.Command("tmux", "-L", socketName, "kill-session", "-t", tmuxSessionName)
+	killCtx, killCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer killCancel()
+	killCmd := safeexec.CommandContext(killCtx, "tmux", "-L", socketName, "kill-session", "-t", tmuxSessionName)
 	_ = killCmd.Run()
 
-	// Create session using our RestoreWithWorkDir logic on the isolated server
-	session := NewTmuxSessionWithServerSocket(sessionName, "pwd; sleep 1", TmuxPrefix, socketName)
+	// Create session using our RestoreWithWorkDir logic on the isolated server.
+	// Use WithRegistry(nil) so DoesSessionExist() uses subprocess checks rather than
+	// the control-mode registry, which cannot connect to an isolated server that has
+	// no keepalive session. Use a long-running program so the session outlives the test.
+	session := NewTmuxSessionWithServerSocket(sessionName, "pwd; sleep 30", TmuxPrefix, socketName, WithRegistry(nil))
 
 	// This should create the session in the worktree directory
 	err = session.RestoreWithWorkDir(worktreeDir)
 	require.NoError(t, err)
 
-	// Give tmux time to start
-	time.Sleep(500 * time.Millisecond)
+	// Wait for tmux session to start.
+	if err := wait.WaitForCondition(session.DoesSessionExist, wait.WaitConfig{Timeout: 10 * time.Second, PollInterval: 100 * time.Millisecond, Description: "tmux session start"}); err != nil {
+		t.Fatal("session did not start within timeout")
+	}
 
 	// Verify session exists
 	require.True(t, session.DoesSessionExist(), "Session should exist after restore")
@@ -366,8 +383,8 @@ func TestRecoverFromServerFailure_EnsureRunningFails(t *testing.T) {
 	// Inject a failing ensureServerRunning function so we can test the failure branch
 	// without relying on tmux socket behavior (tmux start-server always exits 0).
 	origEnsureServerRunning := ensureServerRunning
-	ensureServerRunning = func(socket string) error {
-		return fmt.Errorf("injected failure for test")
+	ensureServerRunning = func(socket string) (TmuxServerReady, error) {
+		return TmuxServerReady{}, fmt.Errorf("injected failure for test")
 	}
 	t.Cleanup(func() { ensureServerRunning = origEnsureServerRunning })
 
@@ -395,7 +412,7 @@ func TestRecoverFromServerFailure_EnsureRunningFails(t *testing.T) {
 	executor.GetGlobalRegistry().Register(key, cbExec)
 	t.Cleanup(func() { executor.GetGlobalRegistry().Unregister(key) })
 
-	_ = cbExec.Run(exec.Command("tmux", "list-sessions"))
+	_ = cbExec.Run(exec.CommandContext(context.Background(), "tmux", "list-sessions")) //nolint:norawexec executor-mediated; TimeoutExecutor wraps sets WaitDelay internally
 	snaps := executor.GetGlobalRegistry().AllBreakers()
 	tripKey := key + "/tmux-list-sessions"
 	snap, ok := snaps[tripKey]

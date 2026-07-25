@@ -12,8 +12,77 @@ import { useAuditLog } from "@/lib/hooks/useAuditLog";
 import { formatRelativeTime } from "@/lib/utils/datetime";
 import { groupNotifications } from "@/lib/utils/notificationGrouping";
 import { getApiBaseUrl } from "@/lib/config";
-import { NotificationData } from "./NotificationToast";
-import styles from "./NotificationPanel.module.css";
+import { NotificationData } from "@/lib/types/notification";
+import {
+  notificationTypeIcon,
+  notificationTypeLabel,
+  priorityColor,
+  notificationTypeFilter,
+} from "@/lib/utils/notificationMapping";
+import {
+  overlay,
+  panel,
+  panelOpen,
+  header,
+  title,
+  unreadBadge,
+  headerActions,
+  markAllButton,
+  clearButton,
+  closeButton,
+  filterBar,
+  searchInput,
+  filterPills,
+  filterPill,
+  filterPillActive,
+  content,
+  empty,
+  emptyIcon,
+  emptyText,
+  emptySubtext,
+  list,
+  item,
+  read,
+  unread,
+  itemHeader,
+  itemTitle,
+  unreadDot,
+  typeIcon,
+  typeLabel,
+  countBadge,
+  removeButton,
+  itemSubtitle,
+  itemContext,
+  itemMessage,
+  approvalDetails,
+  approvalTool,
+  approvalCommand,
+  approvalCwd,
+  itemWorkingDir,
+  itemFooter,
+  timestamp,
+  itemActions,
+  resolvedBadge,
+  approveButton,
+  denyButton,
+  focusButton,
+  viewButton,
+  loadMore,
+  loadMoreButton,
+  autoHandledSection,
+  autoHandledHeader,
+  autoHandledHeaderLeft,
+  autoHandledBadge,
+  autoHandledChevron,
+  autoHandledChevronOpen,
+  autoHandledList,
+  autoHandledItem,
+  autoHandledDecision,
+  autoHandledContent,
+  autoHandledTitle,
+  autoHandledMeta,
+  autoHandledTimestamp,
+} from "./NotificationPanel.css";
 
 type TypeFilter = "all" | "approval_needed" | "error" | "task_complete" | "info";
 
@@ -38,6 +107,7 @@ export function NotificationPanel() {
     markAsRead,
     markAllAsRead,
     removeFromHistory,
+    acknowledgeNotification,
     clearHistory,
     getUnreadCount,
     historyLoading,
@@ -59,6 +129,7 @@ export function NotificationPanel() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [autoHandledOpen, setAutoHandledOpen] = useState(false);
 
   // Track per-approval resolution state so buttons update after the user decides.
   // "allow" / "deny" = user resolved it; "expired" = already resolved or timed out.
@@ -93,7 +164,8 @@ export function NotificationPanel() {
     try {
       await getClient().resolveApproval(create(ResolveApprovalRequestSchema, { approvalId, decision }));
       setResolvedApprovals(prev => ({ ...prev, [approvalId]: decision }));
-      markAsRead(notificationIds);
+      // Single call: marks as read in history AND closes the active toast
+      acknowledgeNotification(notificationIds);
     } catch (err) {
       console.error("Failed to resolve approval:", err);
       // Approval already timed out or was resolved elsewhere — mark as expired.
@@ -101,32 +173,17 @@ export function NotificationPanel() {
     } finally {
       setPendingApprovals(prev => { const next = { ...prev }; delete next[approvalId]; return next; });
     }
-  }, [getClient, markAsRead]);
-  // Filter notifications by search query and type
+  }, [getClient, acknowledgeNotification]);
+  // Filter notifications by search query and type; auto_approved records are always excluded
+  // from the main list and shown in a separate collapsible section.
   const filteredNotifications = useMemo(() => {
-    let list = notificationHistory;
+    let list = notificationHistory.filter((n) => n.notificationType !== "auto_approved");
 
     if (typeFilter !== "all") {
-      if (typeFilter === "error") {
-        // "Error" pill covers error + task_failed + warning
-        list = list.filter((n) =>
-          n.notificationType === "error" ||
-          n.notificationType === "task_failed" ||
-          n.notificationType === "warning"
-        );
-      } else if (typeFilter === "info") {
-        // "Info" covers everything not covered by the other explicit filters
-        list = list.filter(
-          (n) =>
-            n.notificationType !== "approval_needed" &&
-            n.notificationType !== "error" &&
-            n.notificationType !== "task_failed" &&
-            n.notificationType !== "warning" &&
-            n.notificationType !== "task_complete"
-        );
-      } else {
-        list = list.filter((n) => n.notificationType === typeFilter);
-      }
+      const allowed = new Set(
+        notificationTypeFilter(typeFilter, list.map((n) => n.notificationType))
+      );
+      list = list.filter((n) => allowed.has(n.notificationType));
     }
 
     if (searchQuery.trim()) {
@@ -142,6 +199,10 @@ export function NotificationPanel() {
     return list;
   }, [notificationHistory, typeFilter, searchQuery]);
 
+  const autoHandledNotifications = useMemo(() => {
+    return notificationHistory.filter((n) => n.notificationType === "auto_approved");
+  }, [notificationHistory]);
+
   const unreadCount = getUnreadCount();
 
   const handleNotificationClick = (ids: string | string[], onView?: () => void, sessionId?: string) => {
@@ -156,72 +217,9 @@ export function NotificationPanel() {
     }
   };
 
-  const getPriorityColor = (priority?: string) => {
-    switch (priority) {
-      case "urgent":
-        return "var(--color-error, #f44336)";
-      case "high":
-        return "var(--color-warning, #ff9800)";
-      case "medium":
-        return "var(--color-info, #2196f3)";
-      case "low":
-        return "var(--color-success, #4caf50)";
-      default:
-        return "var(--color-primary, #0070f3)";
-    }
-  };
-
-  const getTypeIcon = (notificationType?: NotificationData["notificationType"]) => {
-    switch (notificationType) {
-      case "approval_needed":
-        return "⚠️";
-      case "error":
-        return "❌";
-      case "warning":
-        return "⚠️";
-      case "task_complete":
-        return "✅";
-      case "task_failed":
-        return "💥";
-      case "progress":
-        return "⏳";
-      case "question":
-        return "❓";
-      case "reminder":
-        return "⏰";
-      case "system":
-        return "⚙️";
-      default:
-        return "🔔";
-    }
-  };
-
-  const getTypeLabel = (notificationType?: NotificationData["notificationType"]) => {
-    switch (notificationType) {
-      case "approval_needed":
-        return "Approval Needed";
-      case "error":
-        return "Error";
-      case "warning":
-        return "Warning";
-      case "task_complete":
-        return "Task Complete";
-      case "task_failed":
-        return "Task Failed";
-      case "progress":
-        return "Progress";
-      case "question":
-        return "Question";
-      case "reminder":
-        return "Reminder";
-      case "system":
-        return "System";
-      case "custom":
-        return "Custom";
-      default:
-        return "Info";
-    }
-  };
+  const getPriorityColor = (priority?: NotificationData["priority"]) => priorityColor(priority);
+  const getTypeIcon = (type?: NotificationData["notificationType"]) => notificationTypeIcon(type);
+  const getTypeLabel = (type?: NotificationData["notificationType"]) => notificationTypeLabel(type);
 
   // Build context string for notification (project/directory via app)
   const getContextString = (notification: NotificationData) => {
@@ -246,30 +244,30 @@ export function NotificationPanel() {
     <>
       {/* Overlay backdrop */}
       {isPanelOpen && (
-        <div className={styles.overlay} onClick={togglePanel} aria-hidden="true" />
+        <div className={overlay} onClick={togglePanel} aria-hidden="true" />
       )}
 
       {/* Notification Panel */}
       <div
-        className={`${styles.panel} ${isPanelOpen ? styles.open : ""}`}
+        className={`${panel} ${isPanelOpen ? panelOpen : ""}`}
         role="dialog"
         aria-label="Notification Panel"
         aria-modal="true"
       >
         {/* Header */}
-        <div className={styles.header}>
-          <h2 className={styles.title}>
+        <div className={header}>
+          <h2 className={title}>
             Notifications
             {unreadCount > 0 && (
-              <span className={styles.unreadBadge}>{unreadCount}</span>
+              <span className={unreadBadge}>{unreadCount}</span>
             )}
           </h2>
-          <div className={styles.headerActions}>
+          <div className={headerActions}>
             {notificationHistory.length > 0 && (
               <>
                 {unreadCount > 0 && (
                   <button
-                    className={styles.markAllButton}
+                    className={markAllButton}
                     onClick={markAllAsRead}
                     aria-label="Mark all as read"
                   >
@@ -277,7 +275,7 @@ export function NotificationPanel() {
                   </button>
                 )}
                 <button
-                  className={styles.clearButton}
+                  className={clearButton}
                   onClick={clearHistory}
                   aria-label="Clear all notifications"
                 >
@@ -286,7 +284,7 @@ export function NotificationPanel() {
               </>
             )}
             <button
-              className={styles.closeButton}
+              className={closeButton}
               onClick={togglePanel}
               aria-label="Close notification panel"
             >
@@ -296,20 +294,20 @@ export function NotificationPanel() {
         </div>
 
         {/* Search + Filter Bar */}
-        <div className={styles.filterBar}>
+        <div className={filterBar}>
           <input
-            className={styles.searchInput}
+            className={searchInput}
             type="search"
             placeholder="Search notifications…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             aria-label="Search notifications"
           />
-          <div className={styles.filterPills} role="group" aria-label="Filter by type">
+          <div className={filterPills} role="group" aria-label="Filter by type">
             {(Object.keys(TYPE_FILTER_LABELS) as TypeFilter[]).map((filter) => (
               <button
                 key={filter}
-                className={`${styles.filterPill} ${typeFilter === filter ? styles.filterPillActive : ""}`}
+                className={`${filterPill} ${typeFilter === filter ? filterPillActive : ""}`}
                 onClick={() => setTypeFilter(filter)}
                 aria-pressed={typeFilter === filter}
               >
@@ -320,26 +318,26 @@ export function NotificationPanel() {
         </div>
 
         {/* Notification List */}
-        <div className={styles.content}>
+        <div className={content}>
           {historyLoading && notificationHistory.length === 0 ? (
-            <div className={styles.empty}>
-              <div className={styles.emptyIcon}>⏳</div>
-              <p className={styles.emptyText}>Loading notifications...</p>
+            <div className={empty}>
+              <div className={emptyIcon}>⏳</div>
+              <p className={emptyText}>Loading notifications...</p>
             </div>
           ) : filteredNotifications.length === 0 ? (
-            <div className={styles.empty}>
-              <div className={styles.emptyIcon}>{searchQuery || typeFilter !== "all" ? "🔍" : "🔔"}</div>
-              <p className={styles.emptyText}>
+            <div className={empty}>
+              <div className={emptyIcon}>{searchQuery || typeFilter !== "all" ? "🔍" : "🔔"}</div>
+              <p className={emptyText}>
                 {searchQuery || typeFilter !== "all" ? "No matching notifications" : "No notifications yet"}
               </p>
-              <p className={styles.emptySubtext}>
+              <p className={emptySubtext}>
                 {searchQuery || typeFilter !== "all"
                   ? "Try adjusting your search or filter"
                   : "You'll see notifications from your sessions here"}
               </p>
             </div>
           ) : (
-            <div className={styles.list}>
+            <div className={list}>
               {groupNotifications(filteredNotifications).map((group) => {
                 const notification = group.notification;
                 const contextString = getContextString(notification);
@@ -363,31 +361,31 @@ export function NotificationPanel() {
                 return (
                   <div
                     key={notification.id}
-                    className={`${styles.item} ${notification.isRead ? styles.read : styles.unread}`}
+                    className={`${item} ${notification.isRead ? read : unread}`}
                     style={
                       {
                         "--priority-color": getPriorityColor(notification.priority),
                       } as React.CSSProperties
                     }
                   >
-                    <div className={styles.itemHeader}>
-                      <div className={styles.itemTitle}>
+                    <div className={itemHeader}>
+                      <div className={itemTitle}>
                         {!notification.isRead && (
-                          <span className={styles.unreadDot} aria-label="Unread" />
+                          <span className={unreadDot} role="img" aria-label="Unread" />
                         )}
-                        <span className={styles.typeIcon}>{getTypeIcon(notification.notificationType)}</span>
+                        <span className={typeIcon}>{getTypeIcon(notification.notificationType)}</span>
                         <strong>{primaryTitle}</strong>
-                        <span className={styles.typeLabel} style={{ backgroundColor: getPriorityColor(notification.priority) }}>
+                        <span className={typeLabel} style={{ backgroundColor: getPriorityColor(notification.priority) }}>
                           {getTypeLabel(notification.notificationType)}
                         </span>
                         {group.count > 1 && (
-                          <span className={styles.countBadge} aria-label={`${group.count} occurrences`}>
+                          <span className={countBadge} aria-label={`${group.count} occurrences`}>
                             x{group.count}
                           </span>
                         )}
                       </div>
                       <button
-                        className={styles.removeButton}
+                        className={removeButton}
                         onClick={() => removeFromHistory(notification.id)}
                         aria-label="Remove notification"
                       >
@@ -397,37 +395,37 @@ export function NotificationPanel() {
 
                     {/* Specific notification title (e.g. "Permission Required: Bash") */}
                     {subtitleText && (
-                      <div className={styles.itemSubtitle}>{subtitleText}</div>
+                      <div className={itemSubtitle}>{subtitleText}</div>
                     )}
 
                     {contextString && (
-                      <div className={styles.itemContext}>
+                      <div className={itemContext}>
                         {contextString}
                       </div>
                     )}
 
-                    <p className={styles.itemMessage}>{notification.message}</p>
+                    <p className={itemMessage}>{notification.message}</p>
 
                     {/* Approval metadata: tool name + command/file details */}
                     {notification.notificationType === "approval_needed" && notification.metadata && (
-                      <div className={styles.approvalDetails}>
+                      <div className={approvalDetails}>
                         {notification.metadata.tool_name && (
-                          <span className={styles.approvalTool}>
+                          <span className={approvalTool}>
                             🔧 {notification.metadata.tool_name}
                           </span>
                         )}
                         {notification.metadata.tool_input_command && (
-                          <code className={styles.approvalCommand}>
+                          <code className={approvalCommand}>
                             {notification.metadata.tool_input_command}
                           </code>
                         )}
                         {notification.metadata.tool_input_file && !notification.metadata.tool_input_command && (
-                          <code className={styles.approvalCommand}>
+                          <code className={approvalCommand}>
                             {notification.metadata.tool_input_file}
                           </code>
                         )}
                         {notification.metadata.cwd && (
-                          <span className={styles.approvalCwd} title={notification.metadata.cwd}>
+                          <span className={approvalCwd} title={notification.metadata.cwd}>
                             📁 {notification.metadata.cwd.split('/').slice(-2).join('/')}
                           </span>
                         )}
@@ -435,16 +433,16 @@ export function NotificationPanel() {
                     )}
 
                     {notification.sourceWorkingDir && (
-                      <div className={styles.itemWorkingDir} title={notification.sourceWorkingDir}>
+                      <div className={itemWorkingDir} title={notification.sourceWorkingDir}>
                         📁 {notification.sourceWorkingDir.split('/').slice(-2).join('/')}
                       </div>
                     )}
 
-                    <div className={styles.itemFooter}>
-                      <span className={styles.timestamp}>
+                    <div className={itemFooter}>
+                      <span className={timestamp}>
                         {formatRelativeTime(notification.timestamp)}
                       </span>
-                      <div className={styles.itemActions}>
+                      <div className={itemActions}>
                         {/* Approve/Deny for approval notifications that have a live approval_id */}
                         {notification.notificationType === "approval_needed" && notification.metadata?.approval_id && (() => {
                           const approvalId = notification.metadata!.approval_id;
@@ -452,18 +450,18 @@ export function NotificationPanel() {
                           const isPending = !!pendingApprovals[approvalId];
 
                           if (resolved === "allow") {
-                            return <span className={styles.resolvedBadge} data-decision="allow">✓ Approved</span>;
+                            return <span className={resolvedBadge} data-decision="allow">✓ Approved</span>;
                           }
                           if (resolved === "deny") {
-                            return <span className={styles.resolvedBadge} data-decision="deny">✗ Denied</span>;
+                            return <span className={resolvedBadge} data-decision="deny">✗ Denied</span>;
                           }
                           if (resolved === "expired") {
-                            return <span className={styles.resolvedBadge} data-decision="expired">Expired</span>;
+                            return <span className={resolvedBadge} data-decision="expired">Expired</span>;
                           }
                           return (
                             <>
                               <button
-                                className={styles.approveButton}
+                                className={approveButton}
                                 onClick={() => resolveApproval(approvalId, "allow", group.allIds)}
                                 disabled={isPending}
                                 title="Approve this tool use"
@@ -471,7 +469,7 @@ export function NotificationPanel() {
                                 {isPending ? "…" : "✓ Approve"}
                               </button>
                               <button
-                                className={styles.denyButton}
+                                className={denyButton}
                                 onClick={() => resolveApproval(approvalId, "deny", group.allIds)}
                                 disabled={isPending}
                                 title="Deny this tool use"
@@ -483,17 +481,30 @@ export function NotificationPanel() {
                         })()}
                         {hasSourceApp && notification.onFocusWindow && (
                           <button
-                            className={styles.focusButton}
+                            className={focusButton}
                             onClick={notification.onFocusWindow}
                             title="Focus the source application window"
                           >
                             🔗 Focus
                           </button>
                         )}
-                        {notification.sessionId && (
+                        {notification.metadata?.["item_id"] && (
+                          <Link
+                            href={`/backlog?item=${encodeURIComponent(notification.metadata["item_id"])}`}
+                            className={viewButton}
+                            onClick={() => {
+                              handleNotificationClick(group.allIds, undefined, notification.sessionId);
+                              togglePanel();
+                            }}
+                            data-testid="notification-view-backlog"
+                          >
+                            View in Backlog
+                          </Link>
+                        )}
+                        {!notification.metadata?.["item_id"] && notification.sessionId && (
                           <Link
                             href={`/?session=${encodeURIComponent(notification.sessionId)}`}
-                            className={styles.viewButton}
+                            className={viewButton}
                             onClick={() => {
                               handleNotificationClick(
                                 group.allIds,
@@ -514,9 +525,9 @@ export function NotificationPanel() {
 
               {/* Load more button */}
               {historyHasMore && (
-                <div className={styles.loadMore}>
+                <div className={loadMore}>
                   <button
-                    className={styles.loadMoreButton}
+                    className={loadMoreButton}
                     onClick={loadMoreHistory}
                     disabled={historyLoading}
                   >
@@ -527,6 +538,54 @@ export function NotificationPanel() {
             </div>
           )}
         </div>
+
+        {/* Auto-handled section — collapsible, always below main list */}
+        {autoHandledNotifications.length > 0 && (
+          <div className={autoHandledSection}>
+            <button
+              className={autoHandledHeader}
+              onClick={() => setAutoHandledOpen((v) => !v)}
+              aria-expanded={autoHandledOpen}
+              aria-controls="auto-handled-list"
+            >
+              <span className={autoHandledHeaderLeft}>
+                Auto-handled
+                <span className={autoHandledBadge}>{autoHandledNotifications.length}</span>
+              </span>
+              <span className={`${autoHandledChevron} ${autoHandledOpen ? autoHandledChevronOpen : ""}`}>
+                ▼
+              </span>
+            </button>
+            {autoHandledOpen && (
+              <div id="auto-handled-list" className={autoHandledList}>
+                {autoHandledNotifications.map((n) => {
+                  const decision = n.metadata?.["approval_decision"] ?? "allow";
+                  const ruleName = n.metadata?.["classifier_rule_name"];
+                  const toolName = n.metadata?.["tool_name"] ?? n.title;
+                  return (
+                    <div key={n.id} className={autoHandledItem}>
+                      <span className={autoHandledDecision}>
+                        {decision === "deny" ? "✗" : "✓"}
+                      </span>
+                      <div className={autoHandledContent}>
+                        <div className={autoHandledTitle}>{toolName}</div>
+                        {(n.message || ruleName) && (
+                          <div className={autoHandledMeta}>
+                            {n.message && <span>{n.message}</span>}
+                            {ruleName && <span>· {ruleName}</span>}
+                          </div>
+                        )}
+                      </div>
+                      <span className={autoHandledTimestamp}>
+                        {formatRelativeTime(n.timestamp)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </>
   );

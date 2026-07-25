@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+import { createVanillaExtractPlugin } from "@vanilla-extract/next-plugin";
+
+const withVanillaExtract = createVanillaExtractPlugin();
 
 const isDevelopmentBuild = process.env.NEXT_BUILD_MODE === 'development';
 
@@ -17,13 +20,6 @@ const nextConfig: NextConfig = {
   experimental: {
     // Optimize package imports to reduce CSS chunking and preload warnings
     optimizePackageImports: ['@/components', '@/lib'],
-    // Turbopack configuration for protobuf .js to .ts resolution
-    turbo: {
-      resolveAlias: {
-        // Note: Turbopack handles this differently - we need symlinks or alias in tsconfig
-      },
-      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
-    },
   },
   // Disable minification for development builds (better debugging)
   ...(isDevelopmentBuild ? {
@@ -74,4 +70,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withVanillaExtract(nextConfig);

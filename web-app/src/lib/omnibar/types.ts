@@ -5,12 +5,20 @@
 
 export enum InputType {
   Unknown = "unknown",
+  Command = "command",
   LocalPath = "local_path",
   PathWithBranch = "path_with_branch",
   GitHubPR = "github_pr",
   GitHubBranch = "github_branch",
   GitHubRepo = "github_repo",
   GitHubShorthand = "github_shorthand",
+  SessionSearch = "session_search",
+  NewSession = "new_session",
+  SpawnShell = "spawn_shell",
+  Workflow = "workflow",
+  Alias = "alias",
+  AliasNotFound = "alias_not_found",
+  AliasBrowse = "alias_browse",
 }
 
 export interface InputTypeInfo {
@@ -24,6 +32,11 @@ export const INPUT_TYPE_INFO: Record<InputType, InputTypeInfo> = {
     label: "Unknown",
     icon: "❓",
     description: "Enter a local path or GitHub URL",
+  },
+  [InputType.Command]: {
+    label: "Command",
+    icon: "⌨️",
+    description: "Run an omnibar command",
   },
   [InputType.LocalPath]: {
     label: "Local Path",
@@ -54,6 +67,41 @@ export const INPUT_TYPE_INFO: Record<InputType, InputTypeInfo> = {
     label: "GitHub",
     icon: "📦",
     description: "owner/repo shorthand",
+  },
+  [InputType.SessionSearch]: {
+    label: "Search Sessions",
+    icon: "🔍",
+    description: "Search existing sessions",
+  },
+  [InputType.NewSession]: {
+    label: "New Session",
+    icon: "✨",
+    description: "Create a new session",
+  },
+  [InputType.SpawnShell]: {
+    label: "Spawn Shell",
+    icon: ">_",
+    description: "Open the new shell dialog",
+  },
+  [InputType.Workflow]: {
+    label: "Workflow",
+    icon: "⚡",
+    description: "Quick workflow invocation",
+  },
+  [InputType.Alias]: {
+    label: "Alias",
+    icon: "@",
+    description: "Named session preset",
+  },
+  [InputType.AliasNotFound]: {
+    label: "Alias Not Found",
+    icon: "@",
+    description: "No alias with that name",
+  },
+  [InputType.AliasBrowse]: {
+    label: "Alias Browse",
+    icon: "@",
+    description: "Browse or filter aliases",
   },
 };
 

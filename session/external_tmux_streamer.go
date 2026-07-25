@@ -9,7 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/linkdata/deadlock"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/session/tmux"
 )
 
 // ExternalTmuxStreamer provides terminal content streaming for external sessions.
@@ -30,18 +34,18 @@ type ExternalTmuxStreamer struct {
 
 	// Content tracking for change detection
 	lastContent   string
-	lastContentMu sync.RWMutex
+	lastContentMu deadlock.RWMutex
 
-	// Consumers receive content updates
-	consumers   []func(content string)
-	consumersMu sync.RWMutex
+	// Consumers receive content updates (keyed by token for reliable removal)
+	consumers   map[string]func(content string)
+	consumersMu deadlock.RWMutex
 
 	// Lifecycle
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	running   bool
-	runningMu sync.Mutex
+	runningMu deadlock.Mutex
 
 	// Control mode infrastructure
 	controlModeCmd    *exec.Cmd
@@ -76,7 +80,7 @@ func (s *ExternalTmuxStreamer) Start() error {
 	// Get initial content
 	content, err := s.capturePane()
 	if err != nil {
-		log.WarningLog.Printf("Initial capture failed for external session '%s': %v", s.tmuxSessionName, err)
+		log.Warn("initial capture failed for external session", "session", s.tmuxSessionName, "err", err)
 		// Continue anyway - session might not be fully ready yet
 	} else {
 		s.lastContentMu.Lock()
@@ -86,11 +90,10 @@ func (s *ExternalTmuxStreamer) Start() error {
 
 	// Try to start control mode for event-driven streaming
 	if s.startControlMode() {
-		log.InfoLog.Printf("ExternalTmuxStreamer started for session '%s' (control mode)", s.tmuxSessionName)
+		log.Info("external tmux streamer started (control mode)", "session", s.tmuxSessionName)
 	} else {
 		// Fall back to polling
-		log.InfoLog.Printf("ExternalTmuxStreamer started for session '%s' (capture-pane polling at %v)",
-			s.tmuxSessionName, s.pollInterval)
+		log.Info("external tmux streamer started (capture-pane polling)", "session", s.tmuxSessionName, "interval", s.pollInterval)
 		s.wg.Add(1)
 		go s.pollLoop()
 	}
@@ -117,7 +120,7 @@ func (s *ExternalTmuxStreamer) Stop() {
 
 	s.wg.Wait()
 
-	log.InfoLog.Printf("ExternalTmuxStreamer stopped for session '%s'", s.tmuxSessionName)
+	log.Info("external tmux streamer stopped", "session", s.tmuxSessionName)
 }
 
 // IsRunning returns whether the streamer is currently running.
@@ -129,9 +132,15 @@ func (s *ExternalTmuxStreamer) IsRunning() bool {
 
 // AddConsumer registers a callback to receive content updates.
 // The consumer will be called with the full terminal content whenever it changes.
-func (s *ExternalTmuxStreamer) AddConsumer(consumer func(content string)) {
+// Returns a token that must be passed to RemoveConsumer to deregister.
+func (s *ExternalTmuxStreamer) AddConsumer(consumer func(content string)) string {
+	key := uuid.New().String()
+
 	s.consumersMu.Lock()
-	s.consumers = append(s.consumers, consumer)
+	if s.consumers == nil {
+		s.consumers = make(map[string]func(content string))
+	}
+	s.consumers[key] = consumer
 	s.consumersMu.Unlock()
 
 	// Send current content immediately to the new consumer
@@ -142,20 +151,15 @@ func (s *ExternalTmuxStreamer) AddConsumer(consumer func(content string)) {
 	if content != "" {
 		go consumer(content)
 	}
+
+	return key
 }
 
-// RemoveConsumer removes a consumer. Note: this uses pointer comparison
-// which may not work for closures.
-func (s *ExternalTmuxStreamer) RemoveConsumer(consumer func(content string)) {
+// RemoveConsumer deregisters a consumer by the token returned from AddConsumer.
+func (s *ExternalTmuxStreamer) RemoveConsumer(key string) {
 	s.consumersMu.Lock()
 	defer s.consumersMu.Unlock()
-
-	for i := range s.consumers {
-		// Can't reliably compare function pointers, but this is the best we can do
-		// In practice, consumers should track their own lifecycle
-		_ = i
-	}
-	// For now, consumers are not removed - they'll fail silently if channel is closed
+	delete(s.consumers, key)
 }
 
 // GetContent returns the current terminal content.
@@ -180,11 +184,16 @@ func (s *ExternalTmuxStreamer) ConsumerCount() int {
 // Returns true if control mode started successfully, false if it failed (caller
 // should fall back to polling).
 func (s *ExternalTmuxStreamer) startControlMode() bool {
-	cmd := exec.Command("tmux", "-C", "attach-session", "-t", s.tmuxSessionName, "-r")
+	// Use s.ctx so the process is killed when the streamer is stopped.
+	// Targets a user-created external session, which by definition lives on the real
+	// ambient tmux socket wherever the user created it -- there is no isolated variant
+	// of an external session to target instead.
+	//nolint:norawexec,tmuxsocketscope long-running control-mode process; pipes set up before cmd.Start(), WaitDelay not applicable; external session has no isolated variant
+	cmd := exec.CommandContext(s.ctx, tmux.Binary(), "-C", "attach-session", "-t", s.tmuxSessionName, "-r")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		log.WarningLog.Printf("Control mode stdout pipe failed for '%s': %v", s.tmuxSessionName, err)
+		log.Warn("control mode stdout pipe failed", "session", s.tmuxSessionName, "err", err)
 		return false
 	}
 
@@ -192,26 +201,27 @@ func (s *ExternalTmuxStreamer) startControlMode() bool {
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		stdout.Close()
-		log.WarningLog.Printf("Control mode stderr pipe failed for '%s': %v", s.tmuxSessionName, err)
+		log.Warn("control mode stderr pipe failed", "session", s.tmuxSessionName, "err", err)
 		return false
 	}
 
 	if err := cmd.Start(); err != nil {
-		log.WarningLog.Printf("Control mode failed to start for '%s': %v", s.tmuxSessionName, err)
+		log.Warn("control mode failed to start", "session", s.tmuxSessionName, "err", err)
 		return false
 	}
+	tmux.TrackChildPID(cmd.Process.Pid, "tmux external control-mode session="+s.tmuxSessionName)
 
 	s.controlModeCmd = cmd
 	s.controlModeActive = true
 
-	log.InfoLog.Printf("Control mode started for external session '%s' (pid: %d)",
-		s.tmuxSessionName, cmd.Process.Pid)
+	log.Info("control mode started for external session", "session", s.tmuxSessionName, "pid", cmd.Process.Pid)
 
 	// Goroutine: read control mode stdout and trigger captures on %output events
 	s.wg.Add(1)
 	go s.readControlMode(stdout)
 
 	// Goroutine: drain stderr
+	s.wg.Add(1)
 	go s.drainStderr(stderr)
 
 	return true
@@ -227,6 +237,7 @@ func (s *ExternalTmuxStreamer) stopControlMode() {
 
 	// Kill the process
 	if s.controlModeCmd.Process != nil {
+		tmux.UntrackChildPID(s.controlModeCmd.Process.Pid)
 		s.controlModeCmd.Process.Kill()
 	}
 
@@ -239,7 +250,7 @@ func (s *ExternalTmuxStreamer) stopControlMode() {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		log.WarningLog.Printf("Control mode process for '%s' did not exit, force killing", s.tmuxSessionName)
+		log.Warn("control mode process did not exit, force killing", "session", s.tmuxSessionName)
 		if s.controlModeCmd.Process != nil {
 			s.controlModeCmd.Process.Kill()
 		}
@@ -287,10 +298,10 @@ func (s *ExternalTmuxStreamer) readControlMode(stdout io.ReadCloser) {
 				// Already signaled, debouncer will handle it
 			}
 		} else if strings.HasPrefix(line, "%exit") {
-			log.InfoLog.Printf("Control mode received %%exit for external session '%s'", s.tmuxSessionName)
+			log.Info("control mode received %exit for external session", "session", s.tmuxSessionName)
 			return
 		} else if strings.HasPrefix(line, "%error") {
-			log.WarningLog.Printf("Control mode error for '%s': %s", s.tmuxSessionName, line)
+			log.Warn("control mode error", "session", s.tmuxSessionName, "line", line)
 		}
 		// Ignore %begin, %end, %session-changed, and other notifications silently
 	}
@@ -300,11 +311,11 @@ func (s *ExternalTmuxStreamer) readControlMode(stdout io.ReadCloser) {
 		case <-s.ctx.Done():
 			// Expected during shutdown
 		default:
-			log.WarningLog.Printf("Control mode scanner error for '%s': %v", s.tmuxSessionName, err)
+			log.Warn("control mode scanner error", "session", s.tmuxSessionName, "err", err)
 		}
 	}
 
-	log.InfoLog.Printf("Control mode reader finished for external session '%s'", s.tmuxSessionName)
+	log.Info("control mode reader finished for external session", "session", s.tmuxSessionName)
 
 	// If control mode exits unexpectedly while we're still running, fall back to polling
 	s.runningMu.Lock()
@@ -313,7 +324,7 @@ func (s *ExternalTmuxStreamer) readControlMode(stdout io.ReadCloser) {
 
 	if stillRunning && s.controlModeActive {
 		s.controlModeActive = false
-		log.WarningLog.Printf("Control mode exited for '%s', falling back to capture-pane polling", s.tmuxSessionName)
+		log.Warn("control mode exited, falling back to capture-pane polling", "session", s.tmuxSessionName)
 		s.wg.Add(1)
 		go s.pollLoop()
 	}
@@ -356,12 +367,13 @@ func (s *ExternalTmuxStreamer) debounceCaptures(notifyCh <-chan struct{}) {
 
 // drainStderr reads and logs stderr from the control mode process.
 func (s *ExternalTmuxStreamer) drainStderr(stderr io.ReadCloser) {
+	defer s.wg.Done()
 	defer stderr.Close()
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line != "" {
-			log.WarningLog.Printf("Control mode stderr for '%s': %s", s.tmuxSessionName, line)
+			log.Warn("control mode stderr", "session", s.tmuxSessionName, "line", line)
 		}
 	}
 }
@@ -396,7 +408,7 @@ func (s *ExternalTmuxStreamer) checkForUpdates() {
 	content, err := s.capturePane()
 	if err != nil {
 		// Session might have ended
-		log.DebugLog.Printf("Capture failed for '%s': %v", s.tmuxSessionName, err)
+		log.Debug("capture failed", "session", s.tmuxSessionName, "err", err)
 		return
 	}
 
@@ -418,7 +430,10 @@ func (s *ExternalTmuxStreamer) capturePane() (string, error) {
 	// Use -e to preserve ANSI escape sequences (colors)
 	// Use -p to print to stdout
 	// Use -J to join wrapped lines
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", s.tmuxSessionName)
+	captureCtx, captureCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer captureCancel()
+	//nolint:tmuxsocketscope targets a user-created external session; no isolated variant exists to target
+	cmd := safeexec.CommandContext(captureCtx, tmux.Binary(), "capture-pane", "-p", "-e", "-J", "-t", s.tmuxSessionName)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -429,15 +444,17 @@ func (s *ExternalTmuxStreamer) capturePane() (string, error) {
 // notifyConsumers sends content to all registered consumers.
 func (s *ExternalTmuxStreamer) notifyConsumers(content string) {
 	s.consumersMu.RLock()
-	consumers := make([]func(string), len(s.consumers))
-	copy(consumers, s.consumers)
+	consumers := make([]func(string), 0, len(s.consumers))
+	for _, c := range s.consumers {
+		consumers = append(consumers, c)
+	}
 	s.consumersMu.RUnlock()
 
 	for _, consumer := range consumers {
 		go func(c func(string)) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.WarningLog.Printf("Consumer panic: %v", r)
+					log.Warn("consumer panic", "err", r)
 				}
 			}()
 			c(content)

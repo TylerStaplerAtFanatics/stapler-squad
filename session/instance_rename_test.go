@@ -91,13 +91,16 @@ func TestInstanceRestart(t *testing.T) {
 			wantErr:        true,
 			errType:        ErrCannotRestart,
 		},
+		// Paused instances can now be restarted (Restart recreates the worktree).
+		// A bare Instance without tmux wired up will fail with a start error,
+		// not ErrCannotRestart.
 		{
 			name:           "restart paused instance",
 			started:        true,
 			status:         Paused,
 			preserveOutput: false,
 			wantErr:        true,
-			errType:        ErrCannotRestart,
+			errType:        nil, // any error is acceptable; ErrCannotRestart is no longer returned
 		},
 	}
 
@@ -105,10 +108,10 @@ func TestInstanceRestart(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create instance with test state
 			inst := &Instance{
-				Title:   "test-session",
-				started: tt.started,
-				Status:  tt.status,
+				Title:  "test-session",
+				Status: tt.status,
 			}
+			inst.started.Store(tt.started)
 
 			// Attempt restart
 			err := inst.Restart(tt.preserveOutput)

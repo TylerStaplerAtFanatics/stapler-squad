@@ -3,13 +3,35 @@ package adapters
 import (
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/session"
+	"github.com/tstapler/stapler-squad/session/detection"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// subStatusFromItem derives the proto SubStatus for a ReviewItem from its ClaudeStatus.
+// This is the fine-grained activity state used by the frontend deriveWorkingState() utility.
+// DetectedStatus → SubStatus mapping lives in detection.DetectedStatusToSubStatus; do not
+// duplicate the switch here (see its doc comment).
+func subStatusFromItem(item *session.ReviewItem) sessionv1.SubStatus {
+	return detection.DetectedStatusToSubStatus(item.ClaudeStatus)
+}
+
 // ReviewItemToProto converts session.ReviewItem to proto ReviewItem.
-func ReviewItemToProto(item *session.ReviewItem) *sessionv1.ReviewItem {
+// extraMetadata entries are merged into the item's Metadata map; callers use
+// this to inject enrichment (e.g. pending_approval_id) at conversion time so
+// that no mutation is needed after the proto is built.
+func ReviewItemToProto(item *session.ReviewItem, extraMetadata map[string]string) *sessionv1.ReviewItem {
 	if item == nil {
 		return nil
+	}
+
+	// Always produce an independent copy of Metadata so concurrent RPC calls
+	// cannot race on the same underlying map.
+	metadata := make(map[string]string, len(item.Metadata)+len(extraMetadata))
+	for k, v := range item.Metadata {
+		metadata[k] = v
+	}
+	for k, v := range extraMetadata {
+		metadata[k] = v
 	}
 
 	protoItem := &sessionv1.ReviewItem{
@@ -20,7 +42,7 @@ func ReviewItemToProto(item *session.ReviewItem) *sessionv1.ReviewItem {
 		DetectedAt:  timestamppb.New(item.DetectedAt),
 		Context:     item.Context,
 		PatternName: item.PatternName,
-		Metadata:    item.Metadata,
+		Metadata:    metadata,
 		// Session details for rich display
 		Program:      item.Program,
 		Branch:       item.Branch,
@@ -30,6 +52,7 @@ func ReviewItemToProto(item *session.ReviewItem) *sessionv1.ReviewItem {
 		Tags:         item.Tags,
 		Category:     item.Category,
 		LastActivity: timestamppb.New(item.LastActivity),
+		SubStatus:    subStatusFromItem(item),
 	}
 
 	// Add diff stats if available
@@ -44,8 +67,10 @@ func ReviewItemToProto(item *session.ReviewItem) *sessionv1.ReviewItem {
 	return protoItem
 }
 
-// ReviewQueueToProto converts session.ReviewQueue to proto ReviewQueue with statistics.
-func ReviewQueueToProto(queue *session.ReviewQueue) *sessionv1.ReviewQueue {
+// ReviewQueueToProto converts session.ReviewQueue to proto ReviewQueue.
+// approvalIDs is a map of sessionID → pending approval ID used to enrich
+// APPROVAL_PENDING items inline; pass nil if no enrichment is needed.
+func ReviewQueueToProto(queue *session.ReviewQueue, approvalIDs map[string]string) *sessionv1.ReviewQueue {
 	if queue == nil {
 		return &sessionv1.ReviewQueue{
 			TotalItems: 0,
@@ -59,7 +84,11 @@ func ReviewQueueToProto(queue *session.ReviewQueue) *sessionv1.ReviewQueue {
 	items := queue.List()
 	protoItems := make([]*sessionv1.ReviewItem, 0, len(items))
 	for _, item := range items {
-		protoItems = append(protoItems, ReviewItemToProto(item))
+		var extra map[string]string
+		if id, ok := approvalIDs[item.SessionID]; ok {
+			extra = map[string]string{"pending_approval_id": id}
+		}
+		protoItems = append(protoItems, ReviewItemToProto(item, extra))
 	}
 
 	// Get statistics

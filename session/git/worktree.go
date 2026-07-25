@@ -1,14 +1,18 @@
 package git
 
 import (
+	"context"
 	"fmt"
-	"github.com/tstapler/stapler-squad/config"
-	"github.com/tstapler/stapler-squad/executor"
-	"github.com/tstapler/stapler-squad/log"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/tstapler/stapler-squad/config"
+	"github.com/tstapler/stapler-squad/executor"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/log"
+	"golang.org/x/sync/singleflight"
 )
 
 func getWorktreeDirectory() (string, error) {
@@ -18,6 +22,25 @@ func getWorktreeDirectory() (string, error) {
 	}
 
 	return filepath.Join(configDir, "worktrees"), nil
+}
+
+// IsDirtyCacheTTL is the duration for which a dirty (has changes) result is considered fresh.
+// 30s keeps the review queue responsive when uncommitted changes are present.
+// InvalidateDirtyCache() is called after commits/pushes so critical paths remain snappy.
+const IsDirtyCacheTTL = 30 * time.Second
+
+// IsDirtyCleanCacheTTL is the TTL when the worktree is known to be clean.
+// Clean worktrees won't change unless Claude commits or a user modifies files;
+// InvalidateDirtyCache() is called on those code paths, so 5 min is safe and
+// cuts subprocess calls by ~10x vs dirty-path TTL for quiescent sessions.
+const IsDirtyCleanCacheTTL = 5 * time.Minute
+
+// dirtyCacheState is the immutable snapshot stored in GitWorktree.isDirtyCache.
+// atomic.Value replaces the previous sync.RWMutex + two fields; readers do a
+// lock-free Load() on the hot per-tick path.
+type dirtyCacheState struct {
+	dirty bool
+	time  time.Time
 }
 
 // GitWorktree manages git worktree operations for a session
@@ -34,6 +57,13 @@ type GitWorktree struct {
 	baseCommitSHA string
 	// cmdExec is used to execute commands for this worktree.
 	cmdExec executor.Executor
+
+	// ponytail: atomic.Value replaces sync.RWMutex+bool+time — lock-free reads on the fast cache-hit path
+	isDirtyCache atomic.Value // stores dirtyCacheState; zero value = cache invalid
+
+	// isDirtySF coalesces concurrent dirty-checks on the same worktree so only
+	// one in-process status check runs at a time.
+	isDirtySF singleflight.Group //nolint:exhaustruct
 }
 
 // NewGitWorktreeFromCommitSHA creates a new GitWorktree that will branch from the given
@@ -46,7 +76,7 @@ func NewGitWorktreeFromCommitSHA(repoPath, sessionName, branchName, commitSHA st
 
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
-		log.ErrorLog.Printf("git worktree path abs error, falling back to repoPath %s: %s", repoPath, err)
+		log.Error("git worktree path abs error, falling back to repoPath", "path", repoPath, "err", err)
 		absPath = repoPath
 	}
 
@@ -132,7 +162,7 @@ func NewGitWorktreeWithBranchAndExecutor(repoPath string, sessionName string, cu
 	// Convert repoPath to absolute path
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
-		log.ErrorLog.Printf("git worktree path abs error, falling back to repoPath %s: %s", repoPath, err)
+		log.Error("git worktree path abs error, falling back to repoPath", "path", repoPath, "err", err)
 		// If we can't get absolute path, use original path as fallback
 		absPath = repoPath
 	}
@@ -150,7 +180,7 @@ func NewGitWorktreeWithBranchAndExecutor(repoPath string, sessionName string, cu
 	// First check if the branch is already checked out in an existing worktree
 	existingWorktreePath, found := findExistingWorktreeForBranch(repoPath, branchName)
 	if found {
-		log.InfoLog.Printf("Found existing worktree for branch '%s' at '%s', reusing it", branchName, existingWorktreePath)
+		log.Info("found existing worktree for branch, reusing it", "branch", branchName, "path", existingWorktreePath)
 		return &GitWorktree{
 			repoPath:     repoPath,
 			sessionName:  sessionName,
@@ -232,7 +262,7 @@ func NewGitWorktreeFromExistingWithExecutor(existingWorktreePath string, session
 	baseCommitSHA, err := getHeadCommitSHA(existingWorktreePath)
 	if err != nil {
 		// This is not critical - we can continue without it
-		log.WarningLog.Printf("Failed to get base commit SHA for worktree '%s': %v", existingWorktreePath, err)
+		log.Warn("failed to get base commit SHA for worktree", "path", existingWorktreePath, "err", err)
 		baseCommitSHA = ""
 	}
 
@@ -250,12 +280,14 @@ func NewGitWorktreeFromExistingWithExecutor(existingWorktreePath string, session
 // Returns the path to the existing worktree and true if found, empty string and false otherwise
 func findExistingWorktreeForBranch(repoPath, branchName string) (string, bool) {
 	// Run git worktree list --porcelain to get detailed worktree information
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	wtCtx, wtCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer wtCancel()
+	cmd := safeexec.CommandContext(wtCtx, "git", "worktree", "list", "--porcelain")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
 		// If the command fails, assume no existing worktrees
-		log.InfoLog.Printf("Failed to list worktrees for branch check: %v", err)
+		log.Info("failed to list worktrees for branch check", "err", err)
 		return "", false
 	}
 

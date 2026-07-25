@@ -6,18 +6,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
-	"github.com/tstapler/stapler-squad/session/ent/claudesession"
-	"github.com/tstapler/stapler-squad/session/ent/diffstats"
-	"github.com/tstapler/stapler-squad/session/ent/session"
-	"github.com/tstapler/stapler-squad/session/ent/tag"
-	"github.com/tstapler/stapler-squad/session/ent/worktree"
 	"reflect"
 	"sync"
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
+	"github.com/tstapler/stapler-squad/session/ent/analyticsevent"
+	"github.com/tstapler/stapler-squad/session/ent/approvalrule"
+	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/backlogstatusevent"
+	"github.com/tstapler/stapler-squad/session/ent/classificationanalytics"
+	"github.com/tstapler/stapler-squad/session/ent/claudemetadata"
+	"github.com/tstapler/stapler-squad/session/ent/claudesession"
+	"github.com/tstapler/stapler-squad/session/ent/diffstats"
+	"github.com/tstapler/stapler-squad/session/ent/errorevent"
+	"github.com/tstapler/stapler-squad/session/ent/escapeevent"
+	"github.com/tstapler/stapler-squad/session/ent/itemsession"
+	"github.com/tstapler/stapler-squad/session/ent/itemsource"
+	"github.com/tstapler/stapler-squad/session/ent/project"
+	"github.com/tstapler/stapler-squad/session/ent/reviewverdict"
+	"github.com/tstapler/stapler-squad/session/ent/session"
+	"github.com/tstapler/stapler-squad/session/ent/sessiongoal"
+	"github.com/tstapler/stapler-squad/session/ent/shell"
+	"github.com/tstapler/stapler-squad/session/ent/sourcesyncevent"
+	"github.com/tstapler/stapler-squad/session/ent/tag"
+	"github.com/tstapler/stapler-squad/session/ent/workflow"
+	"github.com/tstapler/stapler-squad/session/ent/worktree"
 )
 
 // ent aliases to avoid import conflicts in user's code.
@@ -78,12 +93,27 @@ var (
 func checkColumn(t, c string) error {
 	initCheck.Do(func() {
 		columnCheck = sql.NewColumnCheck(map[string]func(string) bool{
-			claudemetadata.Table: claudemetadata.ValidColumn,
-			claudesession.Table:  claudesession.ValidColumn,
-			diffstats.Table:      diffstats.ValidColumn,
-			session.Table:        session.ValidColumn,
-			tag.Table:            tag.ValidColumn,
-			worktree.Table:       worktree.ValidColumn,
+			analyticsevent.Table:          analyticsevent.ValidColumn,
+			approvalrule.Table:            approvalrule.ValidColumn,
+			backlogitem.Table:             backlogitem.ValidColumn,
+			backlogstatusevent.Table:      backlogstatusevent.ValidColumn,
+			classificationanalytics.Table: classificationanalytics.ValidColumn,
+			claudemetadata.Table:          claudemetadata.ValidColumn,
+			claudesession.Table:           claudesession.ValidColumn,
+			diffstats.Table:               diffstats.ValidColumn,
+			errorevent.Table:              errorevent.ValidColumn,
+			escapeevent.Table:             escapeevent.ValidColumn,
+			itemsession.Table:             itemsession.ValidColumn,
+			itemsource.Table:              itemsource.ValidColumn,
+			project.Table:                 project.ValidColumn,
+			reviewverdict.Table:           reviewverdict.ValidColumn,
+			session.Table:                 session.ValidColumn,
+			sessiongoal.Table:             sessiongoal.ValidColumn,
+			shell.Table:                   shell.ValidColumn,
+			sourcesyncevent.Table:         sourcesyncevent.ValidColumn,
+			tag.Table:                     tag.ValidColumn,
+			workflow.Table:                workflow.ValidColumn,
+			worktree.Table:                worktree.ValidColumn,
 		})
 	})
 	return columnCheck(t, c)

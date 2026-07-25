@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/tstapler/stapler-squad/config"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session"
@@ -21,6 +21,8 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+var logLineRegex = regexp.MustCompile(`^\[([^\]]+)\]\s+(\w+):(\d{4}/\d{2}/\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([^:]+:\d+):\s+(.*)$`)
 
 // UtilityService handles miscellaneous utility RPCs: GetLogs, FocusWindow,
 // and CreateDebugSnapshot.
@@ -57,7 +59,16 @@ func (us *UtilityService) GetLogs(
 	var logFilePath string
 	var err error
 	if sid := req.Msg.GetSessionId(); sid != "" {
-		logFilePath, err = log.GetSessionLogFilePath(cfg, sid)
+		// Log files are written using inst.Title as the key (not UUID).
+		// Resolve the incoming ID (which may be a UUID) to the session Title
+		// before constructing the log file path.
+		resolvedID := sid
+		if us.reviewQueuePoller != nil {
+			if inst := us.reviewQueuePoller.FindInstance(sid); inst != nil {
+				resolvedID = inst.Title
+			}
+		}
+		logFilePath, err = log.GetSessionLogFilePath(cfg, resolvedID)
 	} else {
 		logFilePath, err = log.GetLogFilePath(cfg)
 	}
@@ -139,13 +150,12 @@ func (us *UtilityService) FocusWindow(
 	}
 
 	// Execute AppleScript
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	cmd := safeexec.CommandContext(ctx, "osascript", "-e", script)
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 
 	if err != nil {
-		log.WarningLog.Printf("Failed to activate window (bundle=%s, app=%s): %v, output: %s",
-			bundleID, appName, err, outputStr)
+		log.Warn("failed to activate window", "bundle", bundleID, "app", appName, "err", err, "output", outputStr)
 
 		// Check for common permission-related errors
 		message := fmt.Sprintf("failed to activate window: %v", err)
@@ -172,7 +182,7 @@ func (us *UtilityService) FocusWindow(
 		}), nil
 	}
 
-	log.InfoLog.Printf("Window activated successfully (bundle=%s, app=%s)", bundleID, appName)
+	log.Info("window activated successfully", "bundle", bundleID, "app", appName)
 	return connect.NewResponse(&sessionv1.FocusWindowResponse{
 		Success:  true,
 		Message:  "Window activated successfully",
@@ -237,7 +247,7 @@ func (us *UtilityService) CreateDebugSnapshot(
 		summary += fmt.Sprintf(" (%d collection errors)", len(snap.Errors))
 	}
 
-	log.InfoLog.Printf("[DebugSnapshot] Written to %s (%d bytes)", filePath, fileSizeBytes)
+	log.Info("[DebugSnapshot] written", "path", filePath, "bytes", fileSizeBytes)
 
 	return connect.NewResponse(&sessionv1.CreateDebugSnapshotResponse{
 		FilePath:      filePath,
@@ -299,10 +309,6 @@ type parseLogsResult struct {
 
 // parseLogs reads log file and applies filters to return matching entries
 func parseLogs(reader io.Reader, req *sessionv1.GetLogsRequest) (*parseLogsResult, error) {
-	// Log line format: [instance] LEVEL:date time file:line: message
-	// Example: [pid-12345-timestamp] INFO:2025/10/17 14:23:45 app.go:123: Starting session
-	logLineRegex := regexp.MustCompile(`^\[([^\]]+)\]\s+(\w+):(\d{4}/\d{2}/\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([^:]+:\d+):\s+(.*)$`)
-
 	var entries []*sessionv1.LogEntry
 	scanner := bufio.NewScanner(reader)
 
@@ -324,9 +330,17 @@ func parseLogs(reader io.Reader, req *sessionv1.GetLogsRequest) (*parseLogsResul
 		searchQuery = strings.ToLower(*req.SearchQuery)
 	}
 
-	var levelFilter string
-	if req.Level != nil {
-		levelFilter = strings.ToUpper(*req.Level)
+	// Build level filter set: prefer repeated Levels field; fall back to single Level for backward compat.
+	var levelFilterSet map[string]struct{}
+	if len(req.Levels) > 0 {
+		levelFilterSet = make(map[string]struct{}, len(req.Levels))
+		for _, l := range req.Levels {
+			if l != "" {
+				levelFilterSet[strings.ToUpper(l)] = struct{}{}
+			}
+		}
+	} else if req.Level != nil && *req.Level != "" {
+		levelFilterSet = map[string]struct{}{strings.ToUpper(*req.Level): {}}
 	}
 
 	var startTime, endTime *time.Time
@@ -344,7 +358,7 @@ func parseLogs(reader io.Reader, req *sessionv1.GetLogsRequest) (*parseLogsResul
 
 		// Try to parse the log line
 		matches := logLineRegex.FindStringSubmatch(line)
-		if matches == nil || len(matches) < 7 {
+		if len(matches) < 7 {
 			// Skip lines that don't match expected format
 			continue
 		}
@@ -365,9 +379,11 @@ func parseLogs(reader io.Reader, req *sessionv1.GetLogsRequest) (*parseLogsResul
 			continue
 		}
 
-		// Apply level filter
-		if levelFilter != "" && level != levelFilter {
-			continue
+		// Apply level filter (OR logic across multi-level set)
+		if len(levelFilterSet) > 0 {
+			if _, ok := levelFilterSet[strings.ToUpper(level)]; !ok {
+				continue
+			}
 		}
 
 		// Apply time range filters

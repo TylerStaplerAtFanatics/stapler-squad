@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/pkg/classifier"
 )
 
 // ClaudePermissions mirrors the "permissions" key in ~/.claude/settings.json.
@@ -22,13 +23,18 @@ type claudeSettingsFile struct {
 	Permissions *ClaudePermissions `json:"permissions,omitempty"`
 }
 
+var (
+	// ErrSettingsNotFound is returned when the Claude settings file is not found.
+	ErrSettingsNotFound = fmt.Errorf("settings file not found")
+)
+
 // ParseClaudeSettings reads a Claude settings.json file and extracts permissions.
 // Returns nil permissions (no error) if the file does not exist or has no permissions key.
 func ParseClaudeSettings(path string) (*ClaudePermissions, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, ErrSettingsNotFound
 		}
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -50,8 +56,8 @@ func ParseClaudeSettings(path string) (*ClaudePermissions, error) {
 //
 // Project settings take precedence: if both define the same tool pattern, the project
 // rule will be checked first due to higher priority.
-func LoadClaudeSettingsRules(projectDir string) []Rule {
-	var allRules []Rule
+func LoadClaudeSettingsRules(projectDir string) []classifier.Rule {
+	var allRules []classifier.Rule
 
 	home, _ := os.UserHomeDir()
 
@@ -75,7 +81,7 @@ func LoadClaudeSettingsRules(projectDir string) []Rule {
 	for _, p := range paths {
 		perms, err := ParseClaudeSettings(p.path)
 		if err != nil {
-			log.WarningLog.Printf("[ClaudeSettings] Skipping %s: %v", p.path, err)
+			log.Warn("[ClaudeSettings] skipping settings file", "path", p.path, "err", err)
 			continue
 		}
 		if perms == nil || len(perms.Allow) == 0 {
@@ -83,7 +89,7 @@ func LoadClaudeSettingsRules(projectDir string) []Rule {
 		}
 		rules := claudeAllowsToRules(perms.Allow, p.priority, p.label)
 		allRules = append(allRules, rules...)
-		log.InfoLog.Printf("[ClaudeSettings] Loaded %d allow rules from %s", len(rules), p.path)
+		log.Info("[ClaudeSettings] loaded allow rules", "count", len(rules), "path", p.path)
 	}
 	return allRules
 }
@@ -96,14 +102,14 @@ func LoadClaudeSettingsRules(projectDir string) []Rule {
 //   - "Read"           -- allow any Read invocation
 //
 // Glob wildcards (*) are converted to regex (.*).
-func claudeAllowsToRules(allows []string, basePriority int, label string) []Rule {
-	var rules []Rule
+func claudeAllowsToRules(allows []string, basePriority int, label string) []classifier.Rule {
+	var rules []classifier.Rule
 	for i, pattern := range allows {
-		rule := Rule{
+		rule := classifier.Rule{
 			ID:        fmt.Sprintf("claude-settings-%s-%d", label, i),
 			Name:      fmt.Sprintf("Claude settings allow: %s", pattern),
-			Decision:  AutoAllow,
-			RiskLevel: RiskLow,
+			Decision:  classifier.AutoAllow,
+			RiskLevel: classifier.RiskLow,
 			Reason:    fmt.Sprintf("Allowed by Claude settings (%s): %s", label, pattern),
 			Priority:  basePriority,
 			Enabled:   true,
@@ -119,7 +125,7 @@ func claudeAllowsToRules(allows []string, basePriority int, label string) []Rule
 			reStr := globToRegex(glob)
 			re, err := regexp.Compile(reStr)
 			if err != nil {
-				log.WarningLog.Printf("[ClaudeSettings] Skipping invalid pattern %q: %v", pattern, err)
+				log.Warn("[ClaudeSettings] skipping invalid pattern", "pattern", pattern, "err", err)
 				continue
 			}
 			rule.CommandPattern = re

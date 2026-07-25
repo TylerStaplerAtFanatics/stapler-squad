@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -66,8 +67,9 @@ func StartExpectSession(t *testing.T, config ExpectSessionConfig) (*TUISession, 
 		return nil, fmt.Errorf("command not found: %s (did you run 'go build'?)", config.Command)
 	}
 
-	// Create command
-	cmd := exec.Command(config.Command, config.Args...)
+	// Create command (context.Background(): interactive test session with no fixed deadline)
+	//nolint:norawexec long-running interactive TUI session managed via PTY; no WaitDelay needed
+	cmd := exec.CommandContext(context.Background(), config.Command, config.Args...)
 	cmd.Env = config.Env
 	cmd.Dir = config.WorkDir
 

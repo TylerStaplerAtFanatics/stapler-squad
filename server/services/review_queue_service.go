@@ -55,6 +55,11 @@ func (rqs *ReviewQueueService) SetReactiveQueueManager(mgr ReactiveQueueManager)
 	rqs.reactiveQueueMgr = mgr
 }
 
+// GetReactiveQueueManager returns the injected ReactiveQueueManager, or nil if not set.
+func (rqs *ReviewQueueService) GetReactiveQueueManager() ReactiveQueueManager {
+	return rqs.reactiveQueueMgr
+}
+
 // SetReviewQueuePoller injects the ReviewQueuePoller used to refresh instance
 // references after acknowledgement.
 func (rqs *ReviewQueueService) SetReviewQueuePoller(poller *session.ReviewQueuePoller) {
@@ -106,23 +111,24 @@ func (rqs *ReviewQueueService) GetReviewQueue(
 		queue.Add(item)
 	}
 
-	protoQueue := adapters.ReviewQueueToProto(queue)
-
-	// Enrich APPROVAL_PENDING items with their pending_approval_id so the
-	// frontend can show Approve/Deny buttons directly in the review queue.
-	if rqs.approvalStore != nil && protoQueue != nil {
-		for _, item := range protoQueue.Items {
-			if item.Reason == sessionv1.AttentionReason_ATTENTION_REASON_APPROVAL_PENDING {
-				approvals := rqs.approvalStore.GetBySession(item.SessionId)
-				if len(approvals) > 0 {
-					if item.Metadata == nil {
-						item.Metadata = make(map[string]string)
+	// Build approvalID enrichment map before converting so the adapter can
+	// inject pending_approval_id at construction time — no post-conversion
+	// mutation needed (which would race across concurrent RPC calls).
+	var approvalIDs map[string]string
+	if rqs.approvalStore != nil {
+		for _, item := range filteredItems {
+			if item.Reason == session.ReasonApprovalPending {
+				if pending := rqs.approvalStore.GetBySession(item.SessionID); len(pending) > 0 {
+					if approvalIDs == nil {
+						approvalIDs = make(map[string]string)
 					}
-					item.Metadata["pending_approval_id"] = approvals[0].ID
+					approvalIDs[item.SessionID] = pending[0].ID
 				}
 			}
 		}
 	}
+
+	protoQueue := adapters.ReviewQueueToProto(queue, approvalIDs)
 
 	return connect.NewResponse(&sessionv1.GetReviewQueueResponse{
 		ReviewQueue: protoQueue,
@@ -144,48 +150,55 @@ func (rqs *ReviewQueueService) AcknowledgeSession(
 	// (e.g., external sessions, or sessions with corrupt IDs from the TTY detection bug).
 	rqs.reviewQueue.Remove(req.Msg.Id)
 
-	instances, err := rqs.storage.LoadInstances()
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
-	}
-
+	// Look up the live in-memory instance from the poller first. This avoids calling
+	// LoadInstances(), which constructs fresh Instance objects from the database and
+	// discards the live PTY/controller state held by instances already in the poller.
 	var instance *session.Instance
-	var instanceIndex int
-	for i, inst := range instances {
-		if inst.Title == req.Msg.Id {
-			instance = inst
-			instanceIndex = i
-			break
-		}
+	if rqs.reviewQueuePoller != nil {
+		instance = rqs.reviewQueuePoller.FindInstance(req.Msg.Id)
 	}
 
 	if instance == nil {
-		// Session not in storage (external session or unknown ID). Queue item already removed above.
-		log.InfoLog.Printf("[ReviewQueue] AcknowledgeSession: session '%s' not found in storage, removed from queue", req.Msg.Id)
+		// Session is not in the poller (external session, unknown ID, or poller not wired).
+		// Fall back to a direct storage lookup so we can still persist the ack timestamp.
+		dataSlice, err := rqs.storage.ListInstanceData()
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to list instances: %w", err))
+		}
+		sessionTitle := ""
+		for _, data := range dataSlice {
+			if data.Title == req.Msg.Id || data.UUID == req.Msg.Id {
+				sessionTitle = data.Title
+				break
+			}
+		}
+		if sessionTitle == "" {
+			log.Info("[ReviewQueue] AcknowledgeSession: session not found in storage, removed from queue", "session", req.Msg.Id)
+			return connect.NewResponse(&sessionv1.AcknowledgeSessionResponse{
+				Success: true,
+				Message: fmt.Sprintf("Session '%s' removed from review queue", req.Msg.Id),
+			}), nil
+		}
+		// Persist the acknowledged timestamp using Title (the storage key), not the client-supplied ID.
+		if err := rqs.storage.UpdateInstanceAcknowledged(sessionTitle); err != nil {
+			log.Warn("[ReviewQueue] AcknowledgeSession: failed to persist ack", "session", req.Msg.Id, "err", err)
+		}
+		rqs.eventBus.Publish(events.NewSessionAcknowledgedEvent(req.Msg.Id, "user_acknowledged"))
 		return connect.NewResponse(&sessionv1.AcknowledgeSessionResponse{
 			Success: true,
-			Message: fmt.Sprintf("Session '%s' removed from review queue", req.Msg.Id),
+			Message: fmt.Sprintf("Session '%s' acknowledged and removed from review queue", req.Msg.Id),
 		}), nil
 	}
 
+	// Update the live instance in-place — no LoadInstances() required.
 	instance.MarkAcknowledged()
-	instances[instanceIndex] = instance
 
-	if err := rqs.storage.SaveInstances(instances); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save instance: %w", err))
+	// Persist only this instance. UpdateInstance does a targeted UPDATE by title.
+	if err := rqs.storage.UpdateInstance(instance); err != nil {
+		log.Warn("[ReviewQueue] AcknowledgeSession: failed to persist ack", "session", instance.Title, "err", err)
 	}
 
-	// CRITICAL: Update the ReviewQueuePoller's instance references.
-	// When we LoadInstances() above, we create brand new instance objects.
-	// The poller still has references to the OLD objects from initialization.
-	// If we don't update the poller's references, it will continue checking
-	// stale objects with outdated LastAddedToQueue timestamps, causing
-	// notification spam even after the user acknowledges sessions.
-	if rqs.reviewQueuePoller != nil {
-		rqs.reviewQueuePoller.SetInstances(instances)
-		log.InfoLog.Printf("[ReviewQueue] Updated poller instance references after AcknowledgeSession for '%s'", instance.Title)
-	}
-
+	log.Info("[ReviewQueue] AcknowledgeSession: acknowledged live instance", "session", instance.Title)
 	rqs.eventBus.Publish(events.NewSessionAcknowledgedEvent(instance.Title, "user_acknowledged"))
 
 	return connect.NewResponse(&sessionv1.AcknowledgeSessionResponse{
@@ -349,28 +362,4 @@ func convertProtoReasons(protoReasons []sessionv1.AttentionReason) []session.Att
 		}
 	}
 	return result
-}
-
-// formatDuration formats a time.Duration in a human-readable way.
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-	if d < 24*time.Hour {
-		hours := int(d.Hours())
-		minutes := int(d.Minutes()) % 60
-		if minutes == 0 {
-			return fmt.Sprintf("%dh", hours)
-		}
-		return fmt.Sprintf("%dh%dm", hours, minutes)
-	}
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	if hours == 0 {
-		return fmt.Sprintf("%dd", days)
-	}
-	return fmt.Sprintf("%dd%dh", days, hours)
 }

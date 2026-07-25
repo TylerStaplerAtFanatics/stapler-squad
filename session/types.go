@@ -49,8 +49,8 @@ type ExternalInstanceMetadata struct {
 	// OriginalPID is the process ID when first discovered
 	OriginalPID int
 
-	// MuxSocketPath is the path to a claude-mux Unix domain socket
-	// If set, this instance was discovered via claude-mux and supports
+	// MuxSocketPath is the path to an ssq-mux Unix domain socket
+	// If set, this instance was discovered via ssq-mux and supports
 	// full bidirectional terminal access
 	MuxSocketPath string
 
@@ -133,7 +133,7 @@ func GetExternalPermissions(allowAttach bool) InstancePermissions {
 
 // GetMuxExternalPermissions returns permissions for mux-enabled external instances.
 // Mux instances support full bidirectional terminal access and can be destroyed
-// since they're explicitly opted-in by launching through claude-mux with tmux session.
+// since they're explicitly opted-in by launching through ssq-mux with tmux session.
 func GetMuxExternalPermissions() InstancePermissions {
 	return InstancePermissions{
 		CanView:        true,
@@ -299,6 +299,19 @@ func (e ErrTagTooLong) Error() string {
 // MaxTagLength is the maximum allowed length for a single tag.
 const MaxTagLength = 50
 
+// MaxTagCount is the maximum number of tags allowed per session.
+const MaxTagCount = 100
+
+// ErrTooManyTags is returned when setting more tags than MaxTagCount allows.
+type ErrTooManyTags struct {
+	Count    int
+	MaxCount int
+}
+
+func (e ErrTooManyTags) Error() string {
+	return fmt.Sprintf("too many tags: %d (maximum is %d)", e.Count, e.MaxCount)
+}
+
 // isValidTitle validates that a title contains only allowed characters:
 // alphanumeric, spaces, dashes, and underscores
 func isValidTitle(title string) bool {
@@ -308,6 +321,19 @@ func isValidTitle(title string) bool {
 		}
 	}
 	return true
+}
+
+// Workspace describes where a session is operating.
+// Use Instance.Workspace() to obtain this value; do not construct directly.
+type Workspace struct {
+	// EffectivePath is the directory where the session process runs.
+	// For worktree sessions: the worktree directory.
+	// For directory sessions: the session's Path field.
+	EffectivePath string
+
+	// RepoRoot is the git repository root (the main checkout, not the worktree).
+	// For directory sessions, this is the same as EffectivePath.
+	RepoRoot string
 }
 
 // RestartState holds the state needed to restart a session

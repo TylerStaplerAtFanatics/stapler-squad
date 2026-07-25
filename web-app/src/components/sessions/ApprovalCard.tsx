@@ -1,13 +1,36 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { PendingApprovalProto } from "@/gen/session/v1/types_pb";
-import styles from "./ApprovalCard.module.css";
+import type { PlainApproval } from "@/lib/api/approvalsApi";
+import {
+  card,
+  cardExpired,
+  header,
+  toolName,
+  toolIcon,
+  countdown,
+  countdownNormal,
+  countdownWarning,
+  countdownUrgent,
+  body,
+  detail,
+  detailLabel,
+  detailValue,
+  toolInputPreview,
+  detailsToggle,
+  detailsButton,
+  fullDetails,
+  actions,
+  approveButton,
+  denyButton,
+  dismissButton,
+} from "./ApprovalCard.css";
 
 interface ApprovalCardProps {
-  approval: PendingApprovalProto;
+  approval: PlainApproval;
   onApprove: () => void;
   onDeny: () => void;
+  sessionTitle?: string; // Human-readable session name; falls back to approval.sessionId
 }
 
 /**
@@ -16,7 +39,7 @@ interface ApprovalCardProps {
  * Shows the tool name, relevant input preview, working directory,
  * and a live countdown timer. Provides Approve (green) and Deny (red) buttons.
  */
-export function ApprovalCard({ approval, onApprove, onDeny }: ApprovalCardProps) {
+export function ApprovalCard({ approval, onApprove, onDeny, sessionTitle }: ApprovalCardProps) {
   const [secondsLeft, setSecondsLeft] = useState(approval.secondsRemaining);
   const [showDetails, setShowDetails] = useState(false);
   const toggleDetails = useCallback(() => setShowDetails((v) => !v), []);
@@ -61,10 +84,12 @@ export function ApprovalCard({ approval, onApprove, onDeny }: ApprovalCardProps)
 
   // Countdown styling based on urgency
   const getCountdownClass = (): string => {
-    if (secondsLeft <= 10) return styles.countdownUrgent;
-    if (secondsLeft <= 30) return styles.countdownWarning;
-    return styles.countdownNormal;
+    if (secondsLeft <= 10) return countdownUrgent;
+    if (secondsLeft <= 30) return countdownWarning;
+    return countdownNormal;
   };
+
+  const isUrgent = secondsLeft > 0 && secondsLeft <= 10;
 
   const formatCountdown = (seconds: number): string => {
     if (seconds <= 0) return "Expired";
@@ -76,41 +101,45 @@ export function ApprovalCard({ approval, onApprove, onDeny }: ApprovalCardProps)
     return `${secs}s`;
   };
 
+  const isExpired = secondsLeft <= 0;
+
   return (
-    <div className={styles.card} data-testid={`approval-card-${approval.id}`}>
-      <div className={styles.header}>
-        <div className={styles.toolName}>
-          <span className={styles.toolIcon} aria-hidden="true">&#x1F527;</span>
+    <div className={`${card} ${isExpired ? cardExpired : ""}`} data-testid={`approval-card-${approval.id}`} data-context="approval">
+      <div className={header}>
+        <div className={toolName}>
+          <span className={toolIcon} aria-hidden="true">&#x1F527;</span>
           {approval.toolName}
         </div>
         <span
-          className={`${styles.countdown} ${getCountdownClass()}`}
+          className={`${countdown} ${getCountdownClass()}`}
           title={`Expires in ${formatCountdown(secondsLeft)}`}
+          aria-label={isUrgent ? `Urgent: ${formatCountdown(secondsLeft)} remaining` : `${formatCountdown(secondsLeft)} remaining`}
         >
+          {isUrgent && <span aria-hidden="true">⚠️ </span>}
           {formatCountdown(secondsLeft)}
         </span>
       </div>
 
-      <div className={styles.body}>
-        {approval.sessionId && (
-          <div className={styles.detail}>
-            <span className={styles.detailLabel}>Session:</span>
-            <span className={styles.detailValue} title={approval.sessionId}>
-              {approval.sessionId}
+      <div className={body}>
+        {(sessionTitle || approval.sessionId) && (
+          <div className={detail}>
+            <span className={detailLabel}>Session:</span>
+            <span className={detailValue} title={approval.sessionId}>
+              {sessionTitle || approval.sessionId}
             </span>
           </div>
         )}
 
         {inputPreview && (
-          <div className={styles.toolInputPreview} title={inputPreview.value}>
+          <div className={toolInputPreview} title={inputPreview.value}>
             {inputPreview.value}
           </div>
         )}
 
         {approval.cwd && (
-          <div className={styles.detail}>
-            <span className={styles.detailLabel}>Directory:</span>
-            <span className={styles.detailValue} title={approval.cwd}>
+          <div className={detail}>
+            <span className={detailLabel}>Directory:</span>
+            <span className={detailValue} title={approval.cwd}>
               {approval.cwd}
             </span>
           </div>
@@ -118,12 +147,12 @@ export function ApprovalCard({ approval, onApprove, onDeny }: ApprovalCardProps)
       </div>
 
       {approval.toolInput && Object.keys(approval.toolInput).length > 0 && (
-        <div className={styles.detailsToggle}>
-          <button className={styles.detailsButton} onClick={toggleDetails}>
+        <div className={detailsToggle}>
+          <button className={detailsButton} onClick={toggleDetails}>
             {showDetails ? "Hide details ▲" : "Show full details ▼"}
           </button>
           {showDetails && (
-            <pre className={styles.fullDetails}>
+            <pre className={fullDetails}>
               {Object.entries(approval.toolInput)
                 .map(([k, v]) => `${k}: ${v}`)
                 .join("\n")}
@@ -132,34 +161,35 @@ export function ApprovalCard({ approval, onApprove, onDeny }: ApprovalCardProps)
         </div>
       )}
 
-      <div className={styles.actions}>
-        <button
-          className={styles.approveButton}
-          onClick={onApprove}
-          disabled={secondsLeft <= 0}
-          title="Allow this tool use"
-          aria-label={`Approve ${approval.toolName}`}
-        >
-          Approve
-        </button>
-        <button
-          className={styles.denyButton}
-          onClick={onDeny}
-          disabled={secondsLeft <= 0}
-          title="Deny this tool use"
-          aria-label={`Deny ${approval.toolName}`}
-        >
-          Deny
-        </button>
-        {secondsLeft <= 0 && (
+      <div className={actions}>
+        {isExpired ? (
           <button
-            className={styles.dismissButton}
+            className={dismissButton}
             onClick={onDeny}
             title="Remove this expired approval"
             aria-label="Dismiss expired approval"
           >
             Dismiss
           </button>
+        ) : (
+          <>
+            <button
+              className={approveButton}
+              onClick={onApprove}
+              title="Allow this tool use"
+              aria-label={`Approve ${approval.toolName}`}
+            >
+              Approve
+            </button>
+            <button
+              className={denyButton}
+              onClick={onDeny}
+              title="Deny this tool use"
+              aria-label={`Deny ${approval.toolName}`}
+            >
+              Deny
+            </button>
+          </>
         )}
       </div>
     </div>

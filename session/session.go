@@ -48,7 +48,7 @@ func NewSession(title, program string) *Session {
 		Title:     title,
 		CreatedAt: now,
 		UpdatedAt: now,
-		Status:    Loading,
+		Status:    Creating,
 		Program:   program,
 		AutoYes:   false,
 		Prompt:    "",
@@ -381,6 +381,7 @@ func SessionToInstance(s *Session) *Instance {
 	// CloudContext has no Instance equivalent - data is lost in conversion
 	// This is acceptable during migration; cloud sessions should use Session directly
 
+	finishInstanceConstruction(i)
 	return i
 }
 

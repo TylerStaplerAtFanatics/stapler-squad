@@ -15,6 +15,7 @@ type HistoryFileWatcher struct {
 	watchDir string
 	callback func(filePath string)
 	watcher  *fsnotify.Watcher
+	stopped  chan struct{}
 }
 
 // NewHistoryFileWatcher creates a watcher for the given directory.
@@ -29,6 +30,7 @@ func NewHistoryFileWatcher(watchDir string, callback func(filePath string)) *His
 	return &HistoryFileWatcher{
 		watchDir: watchDir,
 		callback: callback,
+		stopped:  make(chan struct{}),
 	}
 }
 
@@ -36,18 +38,21 @@ func NewHistoryFileWatcher(watchDir string, callback func(filePath string)) *His
 // directory does not exist (degraded mode — polling fallback still works).
 func (w *HistoryFileWatcher) Start(ctx context.Context) error {
 	if _, err := os.Stat(w.watchDir); os.IsNotExist(err) {
-		log.WarningLog.Printf("HistoryFileWatcher: watch directory does not exist: %s", w.watchDir)
+		log.Warn("history file watcher: watch directory does not exist", "path", w.watchDir)
+		close(w.stopped)
 		return nil
 	}
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
+		close(w.stopped)
 		return err
 	}
 	w.watcher = watcher
 
 	if err := watcher.Add(w.watchDir); err != nil {
 		watcher.Close()
+		close(w.stopped)
 		return err
 	}
 
@@ -65,7 +70,13 @@ func (w *HistoryFileWatcher) Start(ctx context.Context) error {
 	return nil
 }
 
+// Stopped returns a channel that is closed when the watcher goroutine has exited.
+func (w *HistoryFileWatcher) Stopped() <-chan struct{} {
+	return w.stopped
+}
+
 func (w *HistoryFileWatcher) run(ctx context.Context) {
+	defer close(w.stopped)
 	defer func() {
 		if w.watcher != nil {
 			w.watcher.Close()
@@ -85,14 +96,14 @@ func (w *HistoryFileWatcher) run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			log.WarningLog.Printf("HistoryFileWatcher error: %v", err)
+			log.Warn("history file watcher error", "err", err)
 		}
 	}
 }
 
 func (w *HistoryFileWatcher) handleEvent(event fsnotify.Event) {
-	// Only care about CREATE and RENAME events
-	if event.Op&(fsnotify.Create|fsnotify.Rename) == 0 {
+	// Care about CREATE, RENAME, and WRITE events (WRITE fires as JSONL is appended).
+	if event.Op&(fsnotify.Create|fsnotify.Rename|fsnotify.Write) == 0 {
 		return
 	}
 

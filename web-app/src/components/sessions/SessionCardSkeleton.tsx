@@ -1,5 +1,5 @@
 import { Skeleton } from "../ui/Skeleton";
-import styles from "./SessionCard.module.css";
+import * as styles from "./SessionCard.css";
 
 export function SessionCardSkeleton() {
   return (
@@ -40,8 +40,7 @@ export function SessionCardSkeleton() {
           <Skeleton width="40%" height={14} />
         </div>
 
-        <div className={styles.actions}>
-          <Skeleton width={80} height={36} />
+        <div className={styles.desktopActions}>
           <Skeleton width={80} height={36} />
         </div>
       </div>

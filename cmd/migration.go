@@ -2,13 +2,13 @@ package cmd
 
 import (
 	"fmt"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/tstapler/stapler-squad/cmd/commands"
+	"strings"
+	"sync"
+	"sync/atomic"
+
 	"github.com/tstapler/stapler-squad/cmd/interfaces"
 	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/log"
-	"strings"
-	"sync"
 )
 
 // Bridge provides compatibility between old and new command systems
@@ -20,7 +20,7 @@ type Bridge struct {
 	contextStack []ContextID
 
 	// Legacy mappings - disabled since keys package is removed
-	initialized bool
+	initialized atomic.Bool
 
 	// Performance optimization: cache expensive help generation per context
 	cacheMutex         sync.RWMutex
@@ -34,18 +34,18 @@ func NewBridge() *Bridge {
 
 	// Debug: Check if registry is properly initialized
 	allCommands := registry.GetAllCommands()
-	log.InfoLog.Printf("Bridge initialized with %d commands", len(allCommands))
+	log.Info("bridge initialized", "command_count", len(allCommands))
 
 	// Check for navigation commands specifically
 	upCmd := registry.ResolveCommand(ContextList, "up")
 	downCmd := registry.ResolveCommand(ContextList, "down")
-	log.InfoLog.Printf("Navigation commands - up: %v, down: %v", upCmd != nil, downCmd != nil)
+	log.Info("navigation commands resolved", "up", upCmd != nil, "down", downCmd != nil)
 
 	bridge := &Bridge{
-		registry:           registry,
-		config:             cfg,
-		contextStack:       []ContextID{ContextGlobal}, // Start with global context
-		initialized:        false,
+		registry:     registry,
+		config:       cfg,
+		contextStack: []ContextID{ContextGlobal}, // Start with global context
+
 		keyCategoriesCache: make(map[ContextID]map[string][]string),
 	}
 
@@ -53,36 +53,6 @@ func NewBridge() *Bridge {
 	go bridge.prewarmKeyCategories()
 
 	return bridge
-}
-
-// Initialize sets up the bridge with handler callbacks
-func (b *Bridge) Initialize(
-	sessionHandlers *commands.SessionHandlers,
-	gitHandlers *commands.GitHandlers,
-	navigationHandlers *commands.NavigationHandlers,
-	organizationHandlers *commands.OrganizationHandlers,
-	systemHandlers *commands.SystemHandlers,
-) {
-	if b.initialized {
-		log.InfoLog.Printf("Bridge.Initialize: already initialized, skipping")
-		return
-	}
-
-	log.InfoLog.Printf("Bridge.Initialize: setting up handlers")
-	log.InfoLog.Printf("Bridge.Initialize: sessionHandlers.OnNewSession != nil: %v", sessionHandlers != nil && sessionHandlers.OnNewSession != nil)
-
-	// Configure command handlers
-	commands.SetSessionHandlers(sessionHandlers)
-	commands.SetGitHandlers(gitHandlers)
-	commands.SetNavigationHandlers(navigationHandlers)
-	commands.SetOrganizationHandlers(organizationHandlers)
-	commands.SetSystemHandlers(systemHandlers)
-
-	b.initialized = true
-	log.InfoLog.Printf("Bridge.Initialize: completed successfully")
-
-	// Now that we're initialized, pre-warm cache in background
-	go b.prewarmKeyCategories()
 }
 
 // GetCurrentContext returns the current context
@@ -99,17 +69,17 @@ func (b *Bridge) GetRegistry() *CommandRegistry {
 }
 
 // HandleLegacyKey is disabled since legacy keys package has been removed
-func (b *Bridge) HandleLegacyKey(keyName interface{}) (tea.Model, tea.Cmd, error) {
+func (b *Bridge) HandleLegacyKey(keyName interface{}) error {
 	// Legacy key handling disabled - use HandleKeyString directly
-	return nil, nil, nil
+	return nil
 }
 
 // HandleKeyString processes a key string through the new command system
-func (b *Bridge) HandleKeyString(key string) (tea.Model, tea.Cmd, error) {
+func (b *Bridge) HandleKeyString(key string) error {
 	currentContext := b.GetCurrentContext()
-	log.DebugLog.Printf("HandleKeyString: key=%s, context=%s", key, currentContext)
+	log.Debug("HandleKeyString", "key", key, "context", currentContext)
 	command := b.registry.ResolveCommand(currentContext, key)
-	log.DebugLog.Printf("HandleKeyString: command resolved: %v (handler: %v)", command != nil, command != nil && command.Handler != nil)
+	log.Debug("HandleKeyString command resolved", "found", command != nil, "has_handler", command != nil && command.Handler != nil)
 
 	if command != nil && command.Handler != nil {
 		// Create command context
@@ -118,36 +88,10 @@ func (b *Bridge) HandleKeyString(key string) (tea.Model, tea.Cmd, error) {
 		}
 
 		// Execute the command
-		err := command.Handler(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		// Extract results from context
-		var model tea.Model
-		var teaCmd tea.Cmd
-
-		if m, ok := ctx.Args["model"]; ok {
-			if teaModel, ok := m.(tea.Model); ok {
-				model = teaModel
-			}
-		}
-
-		if c, ok := ctx.Args["cmd"]; ok {
-			if tCmd, ok := c.(tea.Cmd); ok {
-				teaCmd = tCmd
-			}
-		}
-
-		// Check if handler executed but didn't set model/cmd
-		if model == nil && teaCmd == nil {
-			log.InfoLog.Printf("Command handler for '%s' executed but returned no model/cmd - handlers may not be initialized", key)
-		}
-
-		return model, teaCmd, nil
+		return command.Handler(ctx)
 	}
 
-	return nil, nil, nil
+	return nil
 }
 
 // GetLegacyStatusLine generates status line compatible with old menu system
@@ -163,13 +107,13 @@ func (b *Bridge) GetContextualHelp() string {
 
 // SetContext switches to a different application context
 func (b *Bridge) SetContext(contextID ContextID) {
-	log.InfoLog.Printf("SetContext: changing context from %s to %s", b.GetCurrentContext(), contextID)
+	log.Info("SetContext: changing context", "from", b.GetCurrentContext(), "to", contextID)
 	// Clear stack and set new context
 	b.contextStack = []ContextID{ContextGlobal}
 	if contextID != ContextGlobal {
 		b.contextStack = append(b.contextStack, contextID)
 	}
-	log.InfoLog.Printf("SetContext: context stack is now %v", b.contextStack)
+	log.Info("SetContext: context stack updated", "stack", b.contextStack)
 	// No need to invalidate cache - it's per-context
 }
 
@@ -194,7 +138,7 @@ func (b *Bridge) PopContext() ContextID {
 func (b *Bridge) ValidateSetup() []string {
 	var issues []string
 
-	if !b.initialized {
+	if !b.initialized.Load() {
 		issues = append(issues, "Bridge not initialized - call Initialize() first")
 	}
 
@@ -318,14 +262,16 @@ func (b *Bridge) ReloadConfig() {
 
 // invalidateKeyCategories clears all cached key categories
 func (b *Bridge) invalidateKeyCategories() {
+	b.cacheMutex.Lock()
 	b.keyCategoriesCache = make(map[ContextID]map[string][]string)
+	b.cacheMutex.Unlock()
 }
 
 // prewarmKeyCategories populates the key categories cache in background during startup
 func (b *Bridge) prewarmKeyCategories() {
 	// Wait for registry to be fully initialized
 	// This ensures all commands and contexts are registered before we cache
-	if !b.initialized {
+	if !b.initialized.Load() {
 		// If not initialized yet, we'll cache after Initialize() is called
 		return
 	}
@@ -372,7 +318,7 @@ func (b *Bridge) prewarmKeyCategories() {
 		b.cacheMutex.Unlock()
 	}
 
-	log.DebugLog.Printf("Prewarmed key categories cache for %d contexts", len(commonContexts))
+	log.Debug("prewarmed key categories cache", "context_count", len(commonContexts))
 }
 
 // DetectKeyConflicts checks for duplicate key bindings within the current context

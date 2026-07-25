@@ -1,7 +1,7 @@
 package config
 
 import (
-	"github.com/tstapler/stapler-squad/log"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/log"
 )
 
 // TestMain runs before all tests to set up the test environment
@@ -35,7 +37,7 @@ func (m *mockCommandExecutor) Command(name string, args ...string) *exec.Cmd {
 	if m.CommandFunc != nil {
 		return m.CommandFunc(name, args...)
 	}
-	return exec.Command("echo", "mock")
+	return safeexec.CommandContext(context.Background(), "echo", "mock")
 }
 
 func (m *mockCommandExecutor) Output(cmd *exec.Cmd) ([]byte, error) {
@@ -72,7 +74,7 @@ func newMockCommandExecutorWithClaudeNotFound() *mockCommandExecutor {
 	return &mockCommandExecutor{
 		CommandFunc: func(name string, args ...string) *exec.Cmd {
 			// Return a mock command that won't actually execute
-			return exec.Command("true")
+			return safeexec.CommandContext(context.Background(), "true")
 		},
 		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
 			// Simulate command not found for both proxy-claude and claude
@@ -88,17 +90,6 @@ func newMockCommandExecutorWithClaudeNotFound() *mockCommandExecutor {
 	}
 }
 
-// setupTest sets up a test environment with a mock command executor
-func setupTest(t *testing.T) func() {
-	// Store original executor
-	originalExecutor := globalCommandExecutor
-
-	// Return cleanup function
-	return func() {
-		SetCommandExecutor(originalExecutor)
-	}
-}
-
 func TestGetClaudeCommand(t *testing.T) {
 	originalShell := os.Getenv("SHELL")
 	defer func() {
@@ -106,25 +97,18 @@ func TestGetClaudeCommand(t *testing.T) {
 	}()
 
 	t.Run("finds claude via shell command", func(t *testing.T) {
-		cleanup := setupTest(t)
-		defer cleanup()
-
 		claudePath := "/usr/local/bin/claude"
 		mockExecutor := newMockCommandExecutorWithClaudeFound(claudePath)
-		SetCommandExecutor(mockExecutor)
 
 		os.Setenv("SHELL", "/bin/bash")
 
-		result, err := GetClaudeCommand()
+		result, err := NewConfigWithExecutor(mockExecutor).GetClaudeCommand()
 
 		assert.NoError(t, err)
 		assert.Equal(t, claudePath, result)
 	})
 
 	t.Run("finds claude via LookPath when shell command fails", func(t *testing.T) {
-		cleanup := setupTest(t)
-		defer cleanup()
-
 		claudePath := "/usr/local/bin/claude"
 		mockExecutor := &mockCommandExecutor{
 			OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
@@ -138,26 +122,21 @@ func TestGetClaudeCommand(t *testing.T) {
 				return "", exec.ErrNotFound
 			},
 		}
-		SetCommandExecutor(mockExecutor)
 
 		os.Setenv("SHELL", "/bin/bash")
 
-		result, err := GetClaudeCommand()
+		result, err := NewConfigWithExecutor(mockExecutor).GetClaudeCommand()
 
 		assert.NoError(t, err)
 		assert.Equal(t, claudePath, result)
 	})
 
 	t.Run("handles missing claude command", func(t *testing.T) {
-		cleanup := setupTest(t)
-		defer cleanup()
-
 		mockExecutor := newMockCommandExecutorWithClaudeNotFound()
-		SetCommandExecutor(mockExecutor)
 
 		os.Setenv("SHELL", "/bin/bash")
 
-		result, err := GetClaudeCommand()
+		result, err := NewConfigWithExecutor(mockExecutor).GetClaudeCommand()
 
 		assert.Error(t, err)
 		assert.Equal(t, "", result)
@@ -165,25 +144,18 @@ func TestGetClaudeCommand(t *testing.T) {
 	})
 
 	t.Run("handles empty SHELL environment", func(t *testing.T) {
-		cleanup := setupTest(t)
-		defer cleanup()
-
 		claudePath := "/usr/local/bin/claude"
 		mockExecutor := newMockCommandExecutorWithClaudeFound(claudePath)
-		SetCommandExecutor(mockExecutor)
 
 		os.Unsetenv("SHELL")
 
-		result, err := GetClaudeCommand()
+		result, err := NewConfigWithExecutor(mockExecutor).GetClaudeCommand()
 
 		assert.NoError(t, err)
 		assert.Equal(t, claudePath, result)
 	})
 
 	t.Run("handles alias parsing", func(t *testing.T) {
-		cleanup := setupTest(t)
-		defer cleanup()
-
 		// Test alias output parsing
 		aliasOutput := "claude: aliased to /usr/local/bin/claude"
 		mockExecutor := &mockCommandExecutor{
@@ -191,31 +163,26 @@ func TestGetClaudeCommand(t *testing.T) {
 				return []byte(aliasOutput), nil
 			},
 		}
-		SetCommandExecutor(mockExecutor)
 
 		os.Setenv("SHELL", "/bin/bash")
 
-		result, err := GetClaudeCommand()
+		result, err := NewConfigWithExecutor(mockExecutor).GetClaudeCommand()
 
 		assert.NoError(t, err)
 		assert.Equal(t, "/usr/local/bin/claude", result)
 	})
 
 	t.Run("handles direct path output", func(t *testing.T) {
-		cleanup := setupTest(t)
-		defer cleanup()
-
 		claudePath := "/usr/local/bin/claude"
 		mockExecutor := &mockCommandExecutor{
 			OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
 				return []byte(claudePath), nil
 			},
 		}
-		SetCommandExecutor(mockExecutor)
 
 		os.Setenv("SHELL", "/bin/bash")
 
-		result, err := GetClaudeCommand()
+		result, err := NewConfigWithExecutor(mockExecutor).GetClaudeCommand()
 
 		assert.NoError(t, err)
 		assert.Equal(t, claudePath, result)
@@ -240,14 +207,10 @@ func TestGetClaudeCommand(t *testing.T) {
 
 func TestDefaultConfig(t *testing.T) {
 	t.Run("creates config with default values when claude found", func(t *testing.T) {
-		cleanup := setupTest(t)
-		defer cleanup()
-
 		claudePath := "/usr/local/bin/claude"
 		mockExecutor := newMockCommandExecutorWithClaudeFound(claudePath)
-		SetCommandExecutor(mockExecutor)
 
-		config := DefaultConfig()
+		config := defaultConfigWithExecutor(mockExecutor)
 
 		assert.NotNil(t, config)
 		assert.Equal(t, claudePath, config.DefaultProgram)
@@ -258,13 +221,9 @@ func TestDefaultConfig(t *testing.T) {
 	})
 
 	t.Run("creates config with fallback program when claude not found", func(t *testing.T) {
-		cleanup := setupTest(t)
-		defer cleanup()
-
 		mockExecutor := newMockCommandExecutorWithClaudeNotFound()
-		SetCommandExecutor(mockExecutor)
 
-		config := DefaultConfig()
+		config := defaultConfigWithExecutor(mockExecutor)
 
 		assert.NotNil(t, config)
 		assert.Equal(t, "proxy-claude", config.DefaultProgram) // Falls back to default
@@ -308,6 +267,31 @@ func TestGetConfigDir(t *testing.T) {
 	})
 
 	t.Run("uses test mode isolation for tests", func(t *testing.T) {
+		// GetConfigDir checks STAPLER_SQUAD_TEST_DIR (priority 1) and
+		// STAPLER_SQUAD_INSTANCE (priority 2) before falling through to test
+		// mode auto-detection (priority 3). Both can be set in the ambient
+		// environment this test process inherits (e.g. a stapler-squad
+		// session sets STAPLER_SQUAD_INSTANCE for its own tooling), which
+		// would otherwise short-circuit test mode detection and make this
+		// test order- and environment-dependent. Clear both explicitly so
+		// this test always exercises pure test mode auto-detection.
+		originalTestDir := os.Getenv("STAPLER_SQUAD_TEST_DIR")
+		originalInstance := os.Getenv("STAPLER_SQUAD_INSTANCE")
+		os.Unsetenv("STAPLER_SQUAD_TEST_DIR")
+		os.Unsetenv("STAPLER_SQUAD_INSTANCE")
+		defer func() {
+			if originalTestDir == "" {
+				os.Unsetenv("STAPLER_SQUAD_TEST_DIR")
+			} else {
+				os.Setenv("STAPLER_SQUAD_TEST_DIR", originalTestDir)
+			}
+			if originalInstance == "" {
+				os.Unsetenv("STAPLER_SQUAD_INSTANCE")
+			} else {
+				os.Setenv("STAPLER_SQUAD_INSTANCE", originalInstance)
+			}
+		}()
+
 		// This test itself triggers test mode auto-detection
 		configDir, err := GetConfigDir()
 
@@ -468,8 +452,6 @@ func TestSaveConfig(t *testing.T) {
 
 // TestGetClaudeCommand_Timeout verifies that GetClaudeCommand respects timeout
 func TestGetClaudeCommand_Timeout(t *testing.T) {
-	defer setupTest(t)()
-
 	t.Run("Timeout on hanging command", func(t *testing.T) {
 		// Create a mock executor that hangs indefinitely
 		hangingExecutor := &mockCommandExecutor{
@@ -483,11 +465,9 @@ func TestGetClaudeCommand_Timeout(t *testing.T) {
 			},
 		}
 
-		SetCommandExecutor(hangingExecutor)
-
 		// This should complete quickly even though the command "hangs"
 		// because our timeout executor wrapper kills hanging commands
-		result, err := GetClaudeCommand()
+		result, err := NewConfigWithExecutor(hangingExecutor).GetClaudeCommand()
 
 		// Should return error (command not found)
 		assert.Error(t, err)
@@ -495,17 +475,15 @@ func TestGetClaudeCommand_Timeout(t *testing.T) {
 	})
 
 	t.Run("Default executor uses timeout protection", func(t *testing.T) {
-		// Reset to default executor
-		ResetCommandExecutor()
+		// Verify that NewConfig() creates a config with a non-nil executor.
+		cfg := NewConfig()
+		assert.NotNil(t, cfg.executor)
 
-		// Verify that the global executor is using timeout protection
-		// We can't easily test the actual timeout without real hanging commands,
-		// but we can verify the type
-		assert.NotNil(t, globalCommandExecutor)
-
-		// The default should be timeoutCommandExecutor
-		_, ok := globalCommandExecutor.(*timeoutCommandExecutor)
-		assert.True(t, ok, "Default executor should be timeoutCommandExecutor")
+		// In test mode the default executor is lookPathOnlyExecutor (avoids slow
+		// shell config sourcing); in production it is timeoutCommandExecutor.
+		_, isTimeout := cfg.executor.(*timeoutCommandExecutor)
+		_, isLookPath := cfg.executor.(*lookPathOnlyExecutor)
+		assert.True(t, isTimeout || isLookPath, "Default executor should be timeoutCommandExecutor or lookPathOnlyExecutor, got %T", cfg.executor)
 	})
 }
 
@@ -514,7 +492,7 @@ func TestTimeoutCommandExecutor_RealBehavior(t *testing.T) {
 	t.Run("Fast command completes successfully", func(t *testing.T) {
 		executor := newTimeoutCommandExecutor(2 * time.Second)
 
-		cmd := exec.Command("echo", "hello")
+		cmd := safeexec.CommandContext(context.Background(), "echo", "hello")
 		output, err := executor.Output(cmd)
 
 		assert.NoError(t, err)
@@ -525,7 +503,7 @@ func TestTimeoutCommandExecutor_RealBehavior(t *testing.T) {
 		executor := newTimeoutCommandExecutor(500 * time.Millisecond)
 
 		// Command that takes longer than timeout
-		cmd := exec.Command("sleep", "2")
+		cmd := safeexec.CommandContext(context.Background(), "sleep", "2")
 		_, err := executor.Output(cmd)
 
 		require.Error(t, err)
@@ -536,11 +514,304 @@ func TestTimeoutCommandExecutor_RealBehavior(t *testing.T) {
 		executor := newTimeoutCommandExecutor(2 * time.Second)
 
 		// Command that fails
-		cmd := exec.Command("sh", "-c", "exit 1")
+		cmd := safeexec.CommandContext(context.Background(), "sh", "-c", "exit 1")
 		_, err := executor.Output(cmd)
 
 		require.Error(t, err)
 		// Should be a command error, not a timeout error
 		assert.NotContains(t, err.Error(), "timed out")
 	})
+}
+
+// ─── UT-4.x: NotificationPrefs ───────────────────────────────────────────────
+
+// UT-4.1 — NotificationPrefs round-trip in Config [R8]
+func TestNotificationPrefsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := &Config{
+		ConfigVersion: 2,
+		Notifications: NotificationPrefs{PushEnabled: true},
+	}
+	require.NoError(t, saveConfig(cfg, path))
+
+	loaded, err := LoadConfigFromPath(path)
+	require.NoError(t, err)
+	assert.True(t, loaded.Notifications.PushEnabled)
+}
+
+// UT-4.2 — v1 config loads with NotificationPrefs defaults [R8]
+func TestV1ConfigLoadsWithNotificationDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	v1JSON := `{"configVersion": 1, "session_defaults": {}}`
+	require.NoError(t, os.WriteFile(path, []byte(v1JSON), 0600))
+
+	cfg, err := LoadConfigFromPath(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.Notifications.PushEnabled, "default must be push disabled")
+}
+
+// UT-4.3 — PushEnabled=false is the zero-value default [R8]
+func TestNotificationPrefsDefault(t *testing.T) {
+	var prefs NotificationPrefs
+	assert.False(t, prefs.PushEnabled, "push must be disabled by default")
+}
+
+// UT-4.4 — saveConfig is atomic: no .tmp file left on disk after success [R9]
+func TestSaveConfigAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	initial := &Config{ConfigVersion: 2}
+	require.NoError(t, saveConfig(initial, path))
+
+	// No .tmp file must remain after a successful write.
+	_, err := os.Stat(path + ".tmp")
+	assert.True(t, os.IsNotExist(err), ".tmp file must be cleaned up after successful save")
+
+	// The config file must be valid JSON.
+	loaded, err := LoadConfigFromPath(path)
+	require.NoError(t, err)
+	assert.Equal(t, 2, loaded.ConfigVersion)
+}
+
+func TestOneOffBaseDirOrDefault_Empty(t *testing.T) {
+	cfg := &Config{}
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	result, err := cfg.OneOffBaseDirOrDefault()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "oneoff"), result)
+}
+
+func TestOneOffBaseDirOrDefault_TildeExpansion(t *testing.T) {
+	cfg := &Config{OneOffBaseDir: "~/my-oneoffs"}
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	result, err := cfg.OneOffBaseDirOrDefault()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "my-oneoffs"), result)
+	assert.False(t, strings.HasPrefix(result, "~"), "result must not contain literal tilde")
+}
+
+func TestOneOffBaseDirOrDefault_CustomAbsolutePath(t *testing.T) {
+	cfg := &Config{OneOffBaseDir: "/tmp/my-custom-oneoffs"}
+
+	result, err := cfg.OneOffBaseDirOrDefault()
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/my-custom-oneoffs", result)
+}
+
+func TestOneOffBaseDir_JSONRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	cfg := &Config{OneOffBaseDir: "~/oneoff"}
+	require.NoError(t, saveConfig(cfg, path))
+
+	loaded, err := LoadConfigFromPath(path)
+	require.NoError(t, err)
+	assert.Equal(t, "~/oneoff", loaded.OneOffBaseDir)
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"one_off_base_dir"`)
+
+	// omitempty: empty value omits key
+	emptyCfg := &Config{}
+	emptyPath := filepath.Join(dir, "empty-config.json")
+	require.NoError(t, saveConfig(emptyCfg, emptyPath))
+	emptyRaw, err := os.ReadFile(emptyPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(emptyRaw), `"one_off_base_dir"`)
+}
+
+// ─── Escape analytics config tests ───────────────────────────────────────────
+
+// TestEscapeAnalyticsDefaults verifies that zero-value configs get the correct defaults
+// applied by LoadConfigFromPath.
+func TestEscapeAnalyticsDefaults(t *testing.T) {
+	writeAndLoad := func(t *testing.T, jsonContent string) *Config {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		require.NoError(t, os.WriteFile(path, []byte(jsonContent), 0600))
+		cfg, err := LoadConfigFromPath(path)
+		require.NoError(t, err)
+		return cfg
+	}
+
+	t.Run("default CaptureLevel is summary when unset", func(t *testing.T) {
+		cfg := writeAndLoad(t, `{}`)
+		assert.Equal(t, "summary", cfg.EscapeAnalyticsCaptureLevel)
+	})
+
+	t.Run("default SamplingRate is 1.0 when zero", func(t *testing.T) {
+		cfg := writeAndLoad(t, `{}`)
+		require.NotNil(t, cfg.EscapeAnalyticsSamplingRate)
+		assert.Equal(t, 1.0, *cfg.EscapeAnalyticsSamplingRate)
+	})
+
+	t.Run("default MaxRowsPerSession is 10000 when zero", func(t *testing.T) {
+		cfg := writeAndLoad(t, `{}`)
+		assert.Equal(t, 10000, cfg.EscapeAnalyticsMaxRowsPerSession)
+	})
+
+	t.Run("default RetentionDays is 7 when zero", func(t *testing.T) {
+		cfg := writeAndLoad(t, `{}`)
+		assert.Equal(t, 7, cfg.EscapeAnalyticsRetentionDays)
+	})
+
+	t.Run("explicit values are preserved", func(t *testing.T) {
+		cfg := writeAndLoad(t, `{
+			"escapeAnalyticsCaptureLevel": "full",
+			"escapeAnalyticsSamplingRate": 0.5,
+			"escapeAnalyticsMaxRowsPerSession": 5000,
+			"escapeAnalyticsRetentionDays": 14
+		}`)
+		assert.Equal(t, "full", cfg.EscapeAnalyticsCaptureLevel)
+		require.NotNil(t, cfg.EscapeAnalyticsSamplingRate)
+		assert.Equal(t, 0.5, *cfg.EscapeAnalyticsSamplingRate)
+		assert.Equal(t, 5000, cfg.EscapeAnalyticsMaxRowsPerSession)
+		assert.Equal(t, 14, cfg.EscapeAnalyticsRetentionDays)
+	})
+}
+
+// TestDefaultConfigMirrorsEscapeAnalyticsDefaults is a regression test for BUG-025:
+// DefaultConfig() must produce the same escape analytics defaults as
+// LoadConfigFromPath's post-decode defaulting (see the comment above the
+// SessionDefaults init in DefaultConfig — the two code paths must be
+// equivalent). Before this fix, DefaultConfig() left these fields at their Go
+// zero values, so a fresh install's very first LoadConfig() call (which
+// returns DefaultConfig() directly, before any config.json exists) would pass
+// EscapeAnalyticsMaxRowsPerSession=0 into the batch writer at server startup —
+// disabling the per-session row cap instead of applying the intended default.
+func TestDefaultConfigMirrorsEscapeAnalyticsDefaults(t *testing.T) {
+	fresh := DefaultConfig()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{}`), 0600))
+	loaded, err := LoadConfigFromPath(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, loaded.EscapeAnalyticsCaptureLevel, fresh.EscapeAnalyticsCaptureLevel)
+	require.NotNil(t, fresh.EscapeAnalyticsSamplingRate)
+	require.NotNil(t, loaded.EscapeAnalyticsSamplingRate)
+	assert.Equal(t, *loaded.EscapeAnalyticsSamplingRate, *fresh.EscapeAnalyticsSamplingRate)
+	assert.Equal(t, loaded.EscapeAnalyticsMaxRowsPerSession, fresh.EscapeAnalyticsMaxRowsPerSession)
+	assert.Equal(t, loaded.EscapeAnalyticsRetentionDays, fresh.EscapeAnalyticsRetentionDays)
+}
+
+// TestEscapeAnalyticsCaptureLevel_Validation verifies that invalid capture level values
+// are reset to "summary".
+func TestEscapeAnalyticsCaptureLevel_Validation(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"full is valid", "full", "full"},
+		{"summary is valid", "summary", "summary"},
+		{"off is valid", "off", "off"},
+		{"invalid value resets to summary", "verbose", "summary"},
+		{"empty resets to summary", "", "summary"},
+		{"unknown resets to summary", "ALL", "summary"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			content := `{"escapeAnalyticsCaptureLevel": "` + tc.input + `"}`
+			if tc.input == "" {
+				content = `{}`
+			}
+			require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+			cfg, err := LoadConfigFromPath(path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, cfg.EscapeAnalyticsCaptureLevel)
+		})
+	}
+}
+
+// TestEscapeAnalyticsSamplingRate_Clamping verifies that sampling rate values outside
+// [0.0, 1.0] are clamped.
+func TestEscapeAnalyticsSamplingRate_Clamping(t *testing.T) {
+	cases := []struct {
+		name     string
+		json     string
+		expected float64
+	}{
+		{"zero becomes 1.0 (default)", `{}`, 1.0},
+		{"0.5 is valid", `{"escapeAnalyticsSamplingRate": 0.5}`, 0.5},
+		{"1.0 is valid", `{"escapeAnalyticsSamplingRate": 1.0}`, 1.0},
+		{"negative clamped to 0", `{"escapeAnalyticsSamplingRate": -0.1}`, 0},
+		{"above 1.0 clamped to 1.0", `{"escapeAnalyticsSamplingRate": 1.5}`, 1.0},
+		{"explicit 0.0 captures nothing", `{"escapeAnalyticsSamplingRate": 0.0}`, 0.0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			require.NoError(t, os.WriteFile(path, []byte(tc.json), 0600))
+			cfg, err := LoadConfigFromPath(path)
+			require.NoError(t, err)
+			require.NotNil(t, cfg.EscapeAnalyticsSamplingRate)
+			assert.Equal(t, tc.expected, *cfg.EscapeAnalyticsSamplingRate)
+		})
+	}
+}
+
+// TestOSCPayloadsAreRedacted verifies that OSCPayloadsAreRedacted returns correct values
+// based on the EscapeAnalyticsDisableOSCRedaction field.
+func TestOSCPayloadsAreRedacted(t *testing.T) {
+	t.Run("returns true by default (redaction on)", func(t *testing.T) {
+		cfg := &Config{}
+		assert.True(t, cfg.OSCPayloadsAreRedacted())
+	})
+
+	t.Run("returns true when DisableOSCRedaction is false", func(t *testing.T) {
+		cfg := &Config{EscapeAnalyticsDisableOSCRedaction: false}
+		assert.True(t, cfg.OSCPayloadsAreRedacted())
+	})
+
+	t.Run("returns false when DisableOSCRedaction is true", func(t *testing.T) {
+		cfg := &Config{EscapeAnalyticsDisableOSCRedaction: true}
+		assert.False(t, cfg.OSCPayloadsAreRedacted())
+	})
+
+	t.Run("loaded config with disableOSCRedaction=true returns false", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		content := `{"escapeAnalyticsDisableOSCRedaction": true}`
+		require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+		cfg, err := LoadConfigFromPath(path)
+		require.NoError(t, err)
+		assert.False(t, cfg.OSCPayloadsAreRedacted())
+	})
+}
+
+// ─── U-GO-16, U-GO-17, U-GO-18: GetFeatureFlag default-off ─────────────────
+
+// TestGetFeatureFlag_defaultsFalse verifies backlog flag defaults to false on empty Config.
+func TestGetFeatureFlag_defaultsFalse(t *testing.T) {
+	cfg := &Config{}
+	assert.False(t, cfg.GetFeatureFlag("backlog"), "backlog feature flag should be false by default")
+	assert.False(t, cfg.GetFeatureFlag("nonexistent"), "unknown feature flag should be false")
+}
+
+// TestGetFeatureFlag_unknownKeyDefaultsFalse verifies that any unrecognized key returns false.
+func TestGetFeatureFlag_unknownKeyDefaultsFalse(t *testing.T) {
+	cfg := &Config{FeatureFlags: map[string]bool{"other": true}}
+	assert.False(t, cfg.GetFeatureFlag("nonexistent"))
+}
+
+// TestGetFeatureFlag_knownKeyReturnsValue verifies that an explicitly set flag returns its value.
+func TestGetFeatureFlag_knownKeyReturnsValue(t *testing.T) {
+	cfg := &Config{FeatureFlags: map[string]bool{"backlog": true}}
+	assert.True(t, cfg.GetFeatureFlag("backlog"))
 }

@@ -24,6 +24,21 @@ func (d *DiffStats) IsEmpty() bool {
 	return d.Added == 0 && d.Removed == 0 && d.Content == ""
 }
 
+// resolveBaseCommitSHA finds a base commit SHA for diff by looking for the merge-base
+// with common default branches. Used as a fallback when baseCommitSHA was not set at
+// worktree creation time (e.g., sessions created with setupFromExistingBranch before the fix).
+func (g *GitWorktree) resolveBaseCommitSHA() string {
+	for _, branch := range []string{"main", "master", "develop", "trunk"} {
+		output, err := g.runGitCommand(g.worktreePath, "merge-base", "HEAD", branch)
+		if err == nil {
+			if sha := strings.TrimSpace(output); sha != "" {
+				return sha
+			}
+		}
+	}
+	return ""
+}
+
 // Diff returns the git diff between the worktree and the base branch along with statistics
 func (g *GitWorktree) Diff() *DiffStats {
 	stats := &DiffStats{}
@@ -45,8 +60,14 @@ func (g *GitWorktree) Diff() *DiffStats {
 	// Check if base commit SHA is set (required for diff operations)
 	baseCommitSHA := g.GetBaseCommitSHA()
 	if baseCommitSHA == "" {
-		// Base commit not set yet (common during setup), return empty stats
-		return stats
+		// Base commit not set (e.g., sessions created before this was tracked).
+		// Try to resolve it from merge-base so existing worktrees still get diffs.
+		if resolved := g.resolveBaseCommitSHA(); resolved != "" {
+			g.baseCommitSHA = resolved // cache for future calls
+			baseCommitSHA = resolved
+		} else {
+			return stats
+		}
 	}
 
 	// -N stages untracked files (intent to add), including them in the diff
@@ -66,6 +87,12 @@ func (g *GitWorktree) Diff() *DiffStats {
 		// Check if this is a "not a git repository" error and handle gracefully
 		if strings.Contains(err.Error(), "not a git repository") {
 			// The directory lost its git status or was corrupted, return empty stats
+			return stats
+		}
+		// Stored SHA is no longer readable (e.g., after repo rename, rebase, or gc).
+		// Clear it so the next call re-resolves via resolveBaseCommitSHA().
+		if strings.Contains(err.Error(), "unable to read") {
+			g.baseCommitSHA = ""
 			return stats
 		}
 		stats.Error = err

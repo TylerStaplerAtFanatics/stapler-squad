@@ -48,7 +48,7 @@ type HooksMetadata struct {
 	SocketPath string
 	// TmuxSession is the tmux session name for this mux instance
 	TmuxSession string
-	// PID is the process ID of the claude-mux wrapper
+	// PID is the process ID of the ssq-mux wrapper
 	PID int
 	// Cwd is the current working directory
 	Cwd string
@@ -56,7 +56,7 @@ type HooksMetadata struct {
 	Command string
 }
 
-// GenerateHooksFile creates a temporary hooks configuration file for claude-mux.
+// GenerateHooksFile creates a temporary hooks configuration file for ssq-mux.
 // The file enables Claude Code hooks to send notifications to stapler-squad with
 // proper session context for correlation and deep linking.
 //
@@ -136,7 +136,7 @@ func GenerateHooksFile(meta *HooksMetadata) (string, error) {
 
 	// Create temporary file for hooks configuration
 	// Use OS temp directory for proper cleanup and permissions
-	hooksPath := filepath.Join(os.TempDir(), fmt.Sprintf("claude-mux-hooks-%d.json", meta.PID))
+	hooksPath := filepath.Join(os.TempDir(), fmt.Sprintf("ssq-mux-hooks-%d.json", meta.PID))
 
 	// Write configuration file
 	if err := os.WriteFile(hooksPath, configData, 0600); err != nil {
@@ -147,7 +147,7 @@ func GenerateHooksFile(meta *HooksMetadata) (string, error) {
 }
 
 // CleanupHooksFile removes the generated hooks configuration file.
-// This should be called when claude-mux exits.
+// This should be called when ssq-mux exits.
 func CleanupHooksFile(path string) error {
 	if path == "" {
 		return nil
@@ -161,10 +161,10 @@ func CleanupHooksFile(path string) error {
 	return os.Remove(path)
 }
 
-// CleanupStaleHooksFiles removes any hooks files left behind by crashed claude-mux instances.
+// CleanupStaleHooksFiles removes any hooks files left behind by crashed ssq-mux instances.
 // This should be called on startup to clean up orphaned files.
 func CleanupStaleHooksFiles() error {
-	pattern := filepath.Join(os.TempDir(), "claude-mux-hooks-*.json")
+	pattern := filepath.Join(os.TempDir(), "ssq-mux-hooks-*.json")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return fmt.Errorf("failed to glob hooks files: %w", err)
@@ -173,7 +173,7 @@ func CleanupStaleHooksFiles() error {
 	for _, match := range matches {
 		// Extract PID from filename and check if process is still running
 		var pid int
-		_, err := fmt.Sscanf(filepath.Base(match), "claude-mux-hooks-%d.json", &pid)
+		_, err := fmt.Sscanf(filepath.Base(match), "ssq-mux-hooks-%d.json", &pid)
 		if err != nil {
 			continue // Skip files that don't match pattern
 		}
@@ -187,49 +187,63 @@ func CleanupStaleHooksFiles() error {
 	return nil
 }
 
-// findHooksHandler locates the cs-hook-handler script.
+// findHooksHandler locates the ssq-hook-handler script.
 // Search order:
-// 1. Same directory as the current executable
-// 2. ~/.local/bin/cs-hook-handler
-// 3. PATH lookup
+// 1. Same directory as the current executable (ssq-hook-handler, then cs-hook-handler for compat)
+// 2. scripts/ subdirectory relative to the executable's parent (project root, for dev)
+// 3. scripts/ subdirectory relative to the current working directory (running from project root)
+// 4. ~/.local/bin/ssq-hook-handler
+// 5. ~/.stapler-squad/scripts/ssq-hook-handler
 func findHooksHandler() (string, error) {
+	names := []string{"ssq-hook-handler", "cs-hook-handler"}
+
 	// Try same directory as executable
 	execPath, err := os.Executable()
 	if err == nil {
 		execDir := filepath.Dir(execPath)
-		handlerPath := filepath.Join(execDir, "cs-hook-handler")
-		if fileExists(handlerPath) {
-			return handlerPath, nil
+		for _, name := range names {
+			if p := filepath.Join(execDir, name); fileExists(p) {
+				return p, nil
+			}
 		}
-		// Also check scripts subdirectory (for development)
-		scriptsPath := filepath.Join(filepath.Dir(execDir), "scripts", "cs-hook-handler")
-		if fileExists(scriptsPath) {
-			return scriptsPath, nil
+		// scripts/ sibling of executable's parent (e.g. project root when built to ./ssq-mux)
+		for _, name := range names {
+			if p := filepath.Join(filepath.Dir(execDir), "scripts", name); fileExists(p) {
+				return p, nil
+			}
 		}
 	}
+
+	// Try scripts/ relative to cwd (useful when running from the project root)
+	if cwd, err := os.Getwd(); err == nil {
+		for _, name := range names {
+			if p := filepath.Join(cwd, "scripts", name); fileExists(p) {
+				return p, nil
+			}
+		}
+	}
+
+	homeDir, _ := os.UserHomeDir()
 
 	// Try ~/.local/bin
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		localBinPath := filepath.Join(homeDir, ".local", "bin", "cs-hook-handler")
-		if fileExists(localBinPath) {
-			return localBinPath, nil
-		}
-	}
-
-	// Try stapler-squad directory
 	if homeDir != "" {
-		csPath := filepath.Join(homeDir, ".stapler-squad", "scripts", "ssq-hook-handler")
-		if fileExists(csPath) {
-			return csPath, nil
+		for _, name := range names {
+			if p := filepath.Join(homeDir, ".local", "bin", name); fileExists(p) {
+				return p, nil
+			}
 		}
 	}
 
-	// PATH lookup using which
-	// Note: We don't use exec.LookPath here to avoid import cycle issues
-	// The cs-hook-handler should be installed in a standard location
+	// Try ~/.stapler-squad/scripts
+	if homeDir != "" {
+		for _, name := range names {
+			if p := filepath.Join(homeDir, ".stapler-squad", "scripts", name); fileExists(p) {
+				return p, nil
+			}
+		}
+	}
 
-	return "", fmt.Errorf("cs-hook-handler not found in standard locations")
+	return "", fmt.Errorf("ssq-hook-handler not found in standard locations")
 }
 
 // buildEnvPrefix creates environment variable exports for the hook command.

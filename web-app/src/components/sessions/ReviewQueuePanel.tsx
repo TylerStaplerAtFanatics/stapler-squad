@@ -1,12 +1,77 @@
 "use client";
+// +feature: review-queue-pr-creation
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useReviewQueueContext } from "@/lib/contexts/ReviewQueueContext";
 import { useApprovalsContext } from "@/lib/contexts/ApprovalsContext";
 import { useReviewQueueNavigation } from "@/lib/hooks/useReviewQueueNavigation";
+import { useGenerateRule } from "@/lib/hooks/useGenerateRule";
 import { ReviewQueueBadge } from "./ReviewQueueBadge";
-import { Priority, AttentionReason, ReviewItem } from "@/gen/session/v1/types_pb";
-import styles from "./ReviewQueuePanel.module.css";
+import { SuggestedRuleCard } from "./SuggestedRuleCard";
+import { getAttentionReasonInfo } from "./StatusBadge";
+import { Priority, AttentionReason, ReviewItem, WorkingState, SuggestionSource } from "@/gen/session/v1/types_pb";
+import { deriveWorkingState } from "@/lib/utils/deriveWorkingState";
+import {
+  panel,
+  header,
+  titleRow,
+  title,
+  count,
+  refreshButton,
+  stats,
+  stat,
+  filters,
+  filterGroup,
+  filterLabel,
+  filterButtons,
+  filterButton,
+  filterButtonActive,
+  items as itemsClass,
+  item,
+  itemClickable,
+  currentItem,
+  itemActions,
+  itemHeader,
+  itemTitle,
+  itemBody,
+  itemContext,
+  commandPreview,
+  expiredBadge,
+  itemPattern,
+  sessionDetails,
+  detailRow,
+  detailLabel,
+  detailValue,
+  tags,
+  tag,
+  itemFooter,
+  itemAge,
+  diffStats,
+  diffAdded,
+  diffRemoved,
+  loading as loadingClass,
+  empty as emptyClass,
+  error as errorClass,
+  emptySubtext,
+  completionState,
+  completionIcon,
+  retryButton,
+  visuallyHidden,
+  oldestCallout,
+  newItemsBanner,
+  filterToggleRow,
+  filterToggle,
+  filterToggleActive,
+  filterClear,
+  autoAdvanceToggle,
+  savedIndicator,
+  modalOverlay,
+  modalContent,
+  ruleModalContent,
+  divergedBadge,
+} from "./ReviewQueuePanel.css";
+import { Button } from "@/components/ui";
 
 interface ReviewQueuePanelProps {
   onSessionClick?: (sessionId: string) => void;
@@ -15,6 +80,9 @@ interface ReviewQueuePanelProps {
   refreshInterval?: number;
   onItemsChange?: (items: ReviewItem[]) => void; // Callback to expose queue items for navigation
   onAcknowledged?: (sessionId: string) => void; // Notifies parent when a session is acknowledged (for auto-advance)
+  onRunOneShot?: (sessionId: string, prompt: string) => Promise<{ prUrl?: string; error?: string } | null>; // S3-3
+  autoAdvance?: boolean;
+  onAutoAdvanceChange?: (value: boolean) => void;
 }
 
 /**
@@ -34,6 +102,8 @@ interface ReviewQueuePanelProps {
  * />
  * ```
  */
+const DEFAULT_PR_PROMPT = "Create a pull request for the changes in this session. Use a descriptive title and include a summary of the changes made.";
+
 export function ReviewQueuePanel({
   onSessionClick,
   onSkipSession,
@@ -41,13 +111,27 @@ export function ReviewQueuePanel({
   refreshInterval = 5000,
   onItemsChange,
   onAcknowledged,
+  onRunOneShot,
+  autoAdvance,
+  onAutoAdvanceChange,
 }: ReviewQueuePanelProps) {
+  // S3-3: PR creation modal state
+  const [prModal, setPrModal] = useState<{ sessionId: string; prompt: string } | null>(null);
+  const [prRunning, setPrRunning] = useState(false);
+  const [prResult, setPrResult] = useState<{ prUrl?: string; error?: string } | null>(null);
+
+  // Epic 4: Create Rule modal state
+  // activeRuleItemId tracks which item's "Create Rule" modal is currently open.
+  const [activeRuleItemId, setActiveRuleItemId] = useState<string | null>(null);
+  const [ruleSaved, setRuleSaved] = useState(false);
+  const { suggestions, loading: ruleLoading, error: ruleError, generate: generateRule, clear: clearRule } = useGenerateRule();
   const [priorityFilter, setPriorityFilter] = useState<Priority | undefined>(
     undefined
   );
   const [reasonFilter, setReasonFilter] = useState<AttentionReason | undefined>(
     undefined
   );
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   // Track whether queue ever had items so we can show "all done" vs generic empty state
   const [hadItems, setHadItems] = useState(false);
 
@@ -55,6 +139,8 @@ export function ReviewQueuePanel({
   const [liveAnnouncement, setLiveAnnouncement] = useState('');
   // Prevent announcement on initial mount
   const hasMountedRef = useRef(false);
+  // "Saved" flash for auto-advance toggle
+  const [autoAdvanceSaved, setAutoAdvanceSaved] = useState(false);
 
   const {
     items: allItems,
@@ -69,9 +155,72 @@ export function ReviewQueuePanel({
     acknowledgeSession,
   } = useReviewQueueContext();
 
-  // Apply client-side filtering
-  const items = useMemo(() => {
-    let filtered = allItems;
+  // ─── Snapshot-on-enter pattern ────────────────────────────────────────────
+  // Captures the session IDs present when the user enters the queue.
+  // New items arriving while reviewing appear in a banner rather than being
+  // injected mid-list, preventing queue jumps during triage (Twitter-style).
+  const [reviewingIdsSnapshot, setReviewingIdsSnapshot] = useState<Set<string> | null>(null);
+
+  // Initialize snapshot when the queue first loads with items
+  useEffect(() => {
+    if (reviewingIdsSnapshot === null && allItems.length > 0) {
+      setReviewingIdsSnapshot(new Set(allItems.map((item) => item.sessionId)));
+    }
+  }, [allItems, reviewingIdsSnapshot]);
+
+  // Remove acknowledged/resolved items from snapshot (forward-only — no re-injection)
+  useEffect(() => {
+    if (reviewingIdsSnapshot === null) return;
+    const liveIds = new Set(allItems.map((item) => item.sessionId));
+    const pruned = new Set([...reviewingIdsSnapshot].filter((id) => liveIds.has(id)));
+    if (pruned.size !== reviewingIdsSnapshot.size) {
+      setReviewingIdsSnapshot(pruned);
+    }
+  }, [allItems, reviewingIdsSnapshot]);
+
+  const refreshSnapshot = useCallback(() => {
+    setReviewingIdsSnapshot(new Set(allItems.map((item) => item.sessionId)));
+    refresh();
+  }, [allItems, refresh]);
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Separate working sessions from waiting sessions for count display.
+  // Items with INPUT_REQUIRED or APPROVAL_PENDING reason need user action — exclude from "working" count.
+  const workingCount = useMemo(
+    () =>
+      allItems.filter((item) => {
+        const ws = deriveWorkingState(item);
+        return (
+          (ws === WorkingState.ACTIVE || ws === WorkingState.PROCESSING) &&
+          item.reason !== AttentionReason.INPUT_REQUIRED &&
+          item.reason !== AttentionReason.APPROVAL_PENDING
+        );
+      }).length,
+    [allItems]
+  );
+  const stuckCount = useMemo(
+    () =>
+      allItems.filter(
+        (item) => deriveWorkingState(item) === WorkingState.WAITING
+      ).length,
+    [allItems]
+  );
+
+  // Apply client-side filtering to all live items, excluding actively-working sessions
+  // so the queue only shows sessions that need user attention.
+  // Exception: INPUT_REQUIRED and APPROVAL_PENDING items always show — they need immediate action
+  // even though deriveWorkingState maps their subStatus to WorkingState.PROCESSING.
+  const allFilteredItems = useMemo(() => {
+    let filtered = allItems.filter((item) => {
+      const ws = deriveWorkingState(item);
+      if (ws === WorkingState.ACTIVE || ws === WorkingState.PROCESSING) {
+        return (
+          item.reason === AttentionReason.INPUT_REQUIRED ||
+          item.reason === AttentionReason.APPROVAL_PENDING
+        );
+      }
+      return true;
+    });
     if (priorityFilter !== undefined) {
       filtered = filtered.filter((item) => item.priority === priorityFilter);
     }
@@ -80,6 +229,18 @@ export function ReviewQueuePanel({
     }
     return filtered;
   }, [allItems, priorityFilter, reasonFilter]);
+
+  // Items that are in the snapshot (stable ordered list for the main queue)
+  const items = useMemo(() => {
+    if (reviewingIdsSnapshot === null) return allFilteredItems;
+    return allFilteredItems.filter((item) => reviewingIdsSnapshot.has(item.sessionId));
+  }, [allFilteredItems, reviewingIdsSnapshot]);
+
+  // New items not yet in snapshot — shown in the refresh banner
+  const newItemsCount = useMemo(() => {
+    if (reviewingIdsSnapshot === null) return 0;
+    return allFilteredItems.filter((item) => !reviewingIdsSnapshot.has(item.sessionId)).length;
+  }, [allFilteredItems, reviewingIdsSnapshot]);
 
   // Approval actions for APPROVAL_PENDING items
   const { approve: approveRequest, deny: denyRequest } = useApprovalsContext();
@@ -125,6 +286,7 @@ export function ReviewQueuePanel({
   // Format duration in seconds (e.g., averageAgeSeconds, oldestAgeSeconds)
   const formatDuration = (durationSeconds: bigint): string => {
     const duration = Number(durationSeconds);
+    // eslint-disable-next-line no-restricted-syntax -- duration-formatting fallback (clock skew guard), unrelated to DetectedStatus/AttentionReason
     if (duration < 0 || duration > 31_536_000) return "Unknown"; // Cap at 1 year; guards clock skew / unit mismatch
     if (duration < 60) return `${duration}s`;
     if (duration < 3600) return `${Math.floor(duration / 60)}m`;
@@ -162,6 +324,13 @@ export function ReviewQueuePanel({
     }
   };
 
+  // Short filter-chip labels. These are intentionally more compact than
+  // StatusBadge's getAttentionReasonInfo() labels (e.g. "Approval" vs.
+  // "Approval Pending") to fit the filter button UI — that is a deliberate
+  // difference in intended text, not drift. Where the text is identical to
+  // StatusBadge's canonical label (Error, Idle, Tests Failing), delegate to
+  // getAttentionReasonInfo() instead of re-declaring the literal, so the two
+  // stay in sync automatically.
   const getReasonLabel = (reason: AttentionReason): string => {
     switch (reason) {
       case AttentionReason.APPROVAL_PENDING:
@@ -169,14 +338,18 @@ export function ReviewQueuePanel({
       case AttentionReason.INPUT_REQUIRED:
         return "Input";
       case AttentionReason.ERROR_STATE:
-        return "Error";
+        return getAttentionReasonInfo(reason).label;
       case AttentionReason.IDLE_TIMEOUT:
       case AttentionReason.IDLE:
-        return "Idle";
+        return getAttentionReasonInfo(reason).label;
       case AttentionReason.TASK_COMPLETE:
         return "Complete";
       case AttentionReason.STALE:
         return "Stale";
+      case AttentionReason.WAITING_FOR_USER:
+        return "Waiting";
+      case AttentionReason.TESTS_FAILING:
+        return getAttentionReasonInfo(reason).label;
       default:
         return "All";
     }
@@ -192,36 +365,77 @@ export function ReviewQueuePanel({
     setPriorityFilter(undefined); // Clear priority filter when changing reason
   };
 
+  const summaryCount = useMemo(() => {
+    const parts: string[] = [];
+    const reasonFormatters: [AttentionReason, (n: number) => string][] = [
+      [AttentionReason.APPROVAL_PENDING, (n) => `${n} approval${n !== 1 ? "s" : ""}`],
+      [AttentionReason.INPUT_REQUIRED, (n) => `${n} input${n !== 1 ? "s" : ""} needed`],
+      [AttentionReason.ERROR_STATE, (n) => `${n} error${n !== 1 ? "s" : ""}`],
+      [AttentionReason.IDLE_TIMEOUT, (n) => `${n} timed out`],
+      [AttentionReason.IDLE, (n) => `${n} idle`],
+      [AttentionReason.STALE, (n) => `${n} stale`],
+      [AttentionReason.TASK_COMPLETE, (n) => `${n} complete`],
+      [AttentionReason.WAITING_FOR_USER, (n) => `${n} waiting`],
+      [AttentionReason.TESTS_FAILING, (n) => `${n} test${n !== 1 ? "s" : ""} failing`],
+    ];
+    for (const [reason, format] of reasonFormatters) {
+      const n = byReason.get(reason) ?? 0;
+      if (n > 0) parts.push(format(n));
+    }
+    return parts.join(", ");
+  }, [byReason]);
+
+  const activeFilterLabel = useMemo(() => {
+    if (priorityFilter !== undefined) return `Filter: ${getPriorityLabel(priorityFilter)}`;
+    if (reasonFilter !== undefined) return `Filter: ${getReasonLabel(reasonFilter)}`;
+    return "Filter";
+  }, [priorityFilter, reasonFilter]);
+
+  const hasActiveFilter = priorityFilter !== undefined || reasonFilter !== undefined;
+
   if (error) {
     return (
-      <div className={styles.error}>
+      <div className={errorClass}>
         <p>Failed to load review queue: {error.message}</p>
-        <button onClick={refresh} className={styles.retryButton}>
+        <Button onClick={refresh} intent="secondary" size="md">
           Retry
-        </button>
+        </Button>
       </div>
     );
   }
 
   return (
-    <div className={styles.panel} data-testid="review-queue">
+    <div className={panel} data-testid="review-queue">
       {/* Screen reader live region for queue count changes */}
-      <div aria-live="polite" aria-atomic="true" className={styles.visuallyHidden}>
+      <div aria-live="polite" aria-atomic="true" className={visuallyHidden}>
         {liveAnnouncement}
       </div>
-      <div className={styles.header}>
-        <div className={styles.titleRow}>
-          <h2 className={styles.title}>
+      <div className={header}>
+        <div className={titleRow}>
+          <h2 className={title}>
             Review Queue{" "}
-            {totalItems > 0 && (
-              <span className={styles.count} data-testid="review-queue-badge">
-                ({totalItems})
-              </span>
-            )}
+            <span className={count} data-testid="review-queue-badge">
+              {totalItems}
+            </span>
           </h2>
+          {onAutoAdvanceChange !== undefined && (
+            <label className={autoAdvanceToggle}>
+              <input
+                type="checkbox"
+                checked={autoAdvance ?? true}
+                onChange={(e) => {
+                  onAutoAdvanceChange(e.target.checked);
+                  setAutoAdvanceSaved(true);
+                  setTimeout(() => setAutoAdvanceSaved(false), 2000);
+                }}
+              />
+              Auto-advance
+              {autoAdvanceSaved && <span className={savedIndicator}>Saved</span>}
+            </label>
+          )}
           <button
-            onClick={refresh}
-            className={styles.refreshButton}
+            onClick={refreshSnapshot}
+            className={refreshButton}
             disabled={loading}
             aria-label="Refresh review queue"
           >
@@ -230,265 +444,573 @@ export function ReviewQueuePanel({
         </div>
 
         {totalItems > 0 && (
-          <div className={styles.stats} data-testid="queue-statistics">
-            <span className={styles.stat} data-testid="total-items">
-              {totalItems} {totalItems === 1 ? "item" : "items"} need attention
+          <div className={stats} data-testid="queue-statistics">
+            <span className={stat} data-testid="total-items">
+              {summaryCount || `${totalItems} ${totalItems === 1 ? "item" : "items"}`}
             </span>
-            <span className={styles.stat}>
-              Avg age: {formatDuration(averageAgeSeconds)}
-            </span>
-            {oldestAgeSeconds > BigInt(0) && (
-              <span className={styles.stat}>
-                Oldest: {formatDuration(oldestAgeSeconds)}
+            {(workingCount > 0 || stuckCount > 0) && (
+              <span className={stat} data-testid="working-state-counts">
+                {items.filter(i => deriveWorkingState(i) !== WorkingState.WAITING).length} waiting
+                {workingCount > 0 && ` · ${workingCount} working`}
+                {stuckCount > 0 && ` · ${stuckCount} stuck`}
               </span>
             )}
           </div>
         )}
+
+        {/* Heads-up callout when oldest item is over 5 minutes old */}
+        {oldestAgeSeconds > BigInt(300) && (
+          <div className={oldestCallout} role="status">
+            Oldest item: {formatDuration(oldestAgeSeconds)}
+          </div>
+        )}
+
+        {/* New-items banner: shows when items arrive after snapshot was taken */}
+        {newItemsCount > 0 && (
+          <button
+            className={newItemsBanner}
+            onClick={refreshSnapshot}
+            aria-label={`${newItemsCount} new item${newItemsCount !== 1 ? "s" : ""} added. Click to refresh the list.`}
+          >
+            {newItemsCount} new item{newItemsCount !== 1 ? "s" : ""} added — click to refresh
+          </button>
+        )}
       </div>
 
-      <div className={styles.filters}>
-        <div className={styles.filterGroup}>
-          <label className={styles.filterLabel}>Priority:</label>
-          <div className={styles.filterButtons}>
+      {allItems.length > 0 && (
+        <div className={filterToggleRow}>
+          <button
+            className={`${filterToggle} ${hasActiveFilter ? filterToggleActive : ""}`}
+            onClick={() => setIsFiltersOpen((o) => !o)}
+            aria-expanded={isFiltersOpen}
+            aria-controls="review-queue-filters"
+          >
+            {activeFilterLabel} {isFiltersOpen ? "▲" : "▼"}
+          </button>
+          {hasActiveFilter && (
             <button
-              className={`${styles.filterButton} ${priorityFilter === undefined ? styles.active : ""}`}
-              onClick={() => handleFilterByPriority(undefined)}
-              aria-pressed={priorityFilter === undefined}
+              className={filterClear}
+              onClick={() => { setPriorityFilter(undefined); setReasonFilter(undefined); }}
+              aria-label="Clear active filter"
             >
-              All ({totalItems})
+              ✕ Clear
             </button>
-            {[Priority.URGENT, Priority.HIGH, Priority.MEDIUM, Priority.LOW].map(
-              (priority) => {
-                const count = byPriority.get(priority) ?? 0;
+          )}
+        </div>
+      )}
+
+      {isFiltersOpen && (
+        <div id="review-queue-filters" className={filters}>
+          <div className={filterGroup}>
+            <label className={filterLabel}>Priority:</label>
+            <div className={filterButtons}>
+              <button
+                className={`${filterButton} ${priorityFilter === undefined ? filterButtonActive : ""}`}
+                onClick={() => handleFilterByPriority(undefined)}
+                aria-pressed={priorityFilter === undefined}
+              >
+                All ({totalItems})
+              </button>
+              {[Priority.URGENT, Priority.HIGH, Priority.MEDIUM, Priority.LOW].map(
+                (priority) => {
+                  const priorityCount = byPriority.get(priority) ?? 0;
+                  return (
+                    <button
+                      key={priority}
+                      className={`${filterButton} ${priorityFilter === priority ? filterButtonActive : ""}`}
+                      onClick={() => handleFilterByPriority(priority)}
+                      disabled={priorityCount === 0}
+                      aria-pressed={priorityFilter === priority}
+                    >
+                      {getPriorityLabel(priority)} ({priorityCount})
+                    </button>
+                  );
+                }
+              )}
+            </div>
+          </div>
+
+          <div className={filterGroup}>
+            <label className={filterLabel}>Reason:</label>
+            <div className={filterButtons}>
+              <button
+                className={`${filterButton} ${reasonFilter === undefined ? filterButtonActive : ""}`}
+                onClick={() => handleFilterByReason(undefined)}
+                aria-pressed={reasonFilter === undefined}
+              >
+                All ({totalItems})
+              </button>
+              {[
+                AttentionReason.APPROVAL_PENDING,
+                AttentionReason.INPUT_REQUIRED,
+                AttentionReason.WAITING_FOR_USER,
+                AttentionReason.ERROR_STATE,
+                AttentionReason.TESTS_FAILING,
+                AttentionReason.IDLE_TIMEOUT,
+                AttentionReason.IDLE,
+                AttentionReason.STALE,
+                AttentionReason.TASK_COMPLETE,
+              ].map((reason) => {
+                const reasonCount = byReason.get(reason) ?? 0;
+                // Hide TESTS_FAILING when count is 0 (detection may be disabled)
+                if (reason === AttentionReason.TESTS_FAILING && reasonCount === 0) return null;
                 return (
                   <button
-                    key={priority}
-                    className={`${styles.filterButton} ${priorityFilter === priority ? styles.active : ""}`}
-                    onClick={() => handleFilterByPriority(priority)}
-                    disabled={count === 0}
-                    aria-pressed={priorityFilter === priority}
+                    key={reason}
+                    className={`${filterButton} ${reasonFilter === reason ? filterButtonActive : ""}`}
+                    onClick={() => handleFilterByReason(reason)}
+                    disabled={reasonCount === 0}
+                    aria-pressed={reasonFilter === reason}
                   >
-                    {getPriorityLabel(priority)} ({count})
+                    {getReasonLabel(reason)} ({reasonCount})
                   </button>
                 );
-              }
-            )}
+              })}
+            </div>
           </div>
         </div>
+      )}
 
-        <div className={styles.filterGroup}>
-          <label className={styles.filterLabel}>Reason:</label>
-          <div className={styles.filterButtons}>
-            <button
-              className={`${styles.filterButton} ${reasonFilter === undefined ? styles.active : ""}`}
-              onClick={() => handleFilterByReason(undefined)}
-              aria-pressed={reasonFilter === undefined}
-            >
-              All ({totalItems})
-            </button>
-            {[
-              AttentionReason.APPROVAL_PENDING,
-              AttentionReason.INPUT_REQUIRED,
-              AttentionReason.ERROR_STATE,
-              AttentionReason.IDLE_TIMEOUT,
-              AttentionReason.IDLE,
-              AttentionReason.STALE,
-              AttentionReason.TASK_COMPLETE,
-            ].map((reason) => {
-              const count = byReason.get(reason) ?? 0;
-              return (
-                <button
-                  key={reason}
-                  className={`${styles.filterButton} ${reasonFilter === reason ? styles.active : ""}`}
-                  onClick={() => handleFilterByReason(reason)}
-                  disabled={count === 0}
-                  aria-pressed={reasonFilter === reason}
-                >
-                  {getReasonLabel(reason)} ({count})
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      <div className={styles.items}>
+      <div className={itemsClass}>
         {loading && items.length === 0 ? (
-          <div className={styles.loading}>Loading review queue...</div>
+          <div className={loadingClass}>Loading review queue...</div>
         ) : items.length === 0 ? (
-          hadItems ? (
-            <div className={`${styles.empty} ${styles.completionState}`}>
-              <p className={styles.completionIcon}>[✓]</p>
+          hasActiveFilter ? (
+            <div className={emptyClass}>
+              <p>No items match the current filter.</p>
+              <p className={emptySubtext}>
+                {totalItems} {totalItems === 1 ? "item" : "items"} in queue
+              </p>
+              <Button
+                intent="secondary"
+                size="md"
+                onClick={() => { setPriorityFilter(undefined); setReasonFilter(undefined); }}
+              >
+                Clear filter
+              </Button>
+            </div>
+          ) : hadItems ? (
+            <div className={`${emptyClass} ${completionState}`}>
+              <p className={completionIcon}>[✓]</p>
               <p>All done! 0 items remaining.</p>
-              <p className={styles.emptySubtext}>
+              <p className={emptySubtext}>
                 Queue cleared.
               </p>
             </div>
           ) : (
-            <div className={styles.empty}>
+            <div className={emptyClass}>
               <p>No sessions need attention!</p>
-              <p className={styles.emptySubtext}>
+              <p className={emptySubtext}>
                 All sessions are running smoothly.
               </p>
             </div>
           )
         ) : (
           <>
-            {items.map((item, index) => (
+            {!loading && <div data-testid="review-queue-loaded" aria-hidden="true" />}
+            {items.map((queueItem, index) => (
               <div
-                key={item.sessionId}
-                className={styles.item}
+                key={queueItem.sessionId}
+                className={item}
                 data-testid={index === currentIndex ? "current-item" : "review-item"}
-                data-session-id={item.sessionId}
+                data-session-id={queueItem.sessionId}
               >
                 <div
-                  className={`${styles.itemClickable} ${index === currentIndex ? styles.currentItem : ""}`}
-                  onClick={() => onSessionClick?.(item.sessionId)}
-                  data-testid={`review-item-${item.sessionId}`}
+                  className={`${itemClickable} ${index === currentIndex ? currentItem : ""}`}
+                  onClick={() => onSessionClick?.(queueItem.sessionId)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSessionClick?.(queueItem.sessionId);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  data-testid={`review-item-${queueItem.sessionId}`}
                   data-current={index === currentIndex ? "true" : undefined}
                 >
-                  <div className={styles.itemHeader}>
-                    <h3 className={styles.itemTitle}>{item.sessionName}</h3>
+                  <div className={itemHeader}>
+                    <h3 className={itemTitle}>{queueItem.sessionName}</h3>
                     <ReviewQueueBadge
-                      priority={item.priority}
-                      reason={item.reason}
+                      priority={queueItem.priority}
+                      reason={queueItem.reason}
                       compact={true}
                     />
                   </div>
-                  <div className={styles.itemBody}>
+                  <div className={itemBody}>
                     <ReviewQueueBadge
-                      priority={item.priority}
-                      reason={item.reason}
+                      priority={queueItem.priority}
+                      reason={queueItem.reason}
                       compact={false}
                     />
-                    {item.context && !item.metadata?.["pending_approval_id"] && (
-                      <p className={styles.itemContext}>{item.context}</p>
+                    {queueItem.context && !queueItem.metadata?.["pending_approval_id"] && (
+                      <p className={itemContext}>{queueItem.context}</p>
                     )}
-                    {item.patternName && (
-                      <span className={styles.itemPattern}>
-                        Pattern: {item.patternName}
+                    {queueItem.patternName && (
+                      <span className={itemPattern}>
+                        Pattern: {queueItem.patternName}
                       </span>
                     )}
-                    {item.metadata?.["pending_approval_id"] && (
+                    {queueItem.metadata?.["pending_approval_id"] && (
                       <>
-                        {(item.metadata["tool_input_command"] || item.metadata["tool_input_file"]) && (
-                          <pre className={styles.commandPreview}>
-                            {item.metadata["tool_input_command"] || item.metadata["tool_input_file"]}
+                        {(queueItem.metadata["tool_input_command"] || queueItem.metadata["tool_input_file"]) && (
+                          <pre className={commandPreview}>
+                            {queueItem.metadata["tool_input_command"] || queueItem.metadata["tool_input_file"]}
                           </pre>
                         )}
-                        {item.metadata["cwd"] && (
-                          <div className={styles.detailRow}>
-                            <span className={styles.detailLabel}>Directory:</span>
-                            <span className={styles.detailValue}>{item.metadata["cwd"]}</span>
+                        {queueItem.metadata["cwd"] && (
+                          <div className={detailRow}>
+                            <span className={detailLabel}>Directory:</span>
+                            <span className={detailValue}>{queueItem.metadata["cwd"]}</span>
                           </div>
                         )}
-                        {item.metadata["orphaned"] === "true" && (
-                          <span className={styles.expiredBadge}>Expired</span>
+                        {queueItem.metadata["orphaned"] === "true" && (
+                          <span className={expiredBadge}>Expired</span>
                         )}
                       </>
                     )}
                     {/* Session details */}
-                    <div className={styles.sessionDetails}>
-                      <div className={styles.detailRow}>
-                        <span className={styles.detailLabel}>Program:</span>
-                        <span className={styles.detailValue}>{item.program}</span>
+                    <div className={sessionDetails}>
+                      <div className={detailRow}>
+                        <span className={detailLabel}>Program:</span>
+                        <span className={detailValue}>{queueItem.program}</span>
                       </div>
-                      <div className={styles.detailRow}>
-                        <span className={styles.detailLabel}>Branch:</span>
-                        <span className={styles.detailValue}>{item.branch}</span>
+                      <div className={detailRow}>
+                        <span className={detailLabel}>Branch:</span>
+                        <span className={detailValue}>{queueItem.branch}</span>
                       </div>
-                      <div className={styles.detailRow}>
-                        <span className={styles.detailLabel}>Path:</span>
-                        <span className={styles.detailValue} title={item.path}>{item.path}</span>
+                      <div className={detailRow}>
+                        <span className={detailLabel}>Path:</span>
+                        <span className={detailValue} title={queueItem.path}>{queueItem.path}</span>
                       </div>
-                      {item.tags && item.tags.length > 0 && (
-                        <div className={styles.detailRow}>
-                          <span className={styles.detailLabel}>Tags:</span>
-                          <div className={styles.tags}>
-                            {item.tags.map((tag, idx) => (
-                              <span key={idx} className={styles.tag}>{tag}</span>
+                      {queueItem.tags && queueItem.tags.length > 0 && (
+                        <div className={detailRow}>
+                          <span className={detailLabel}>Tags:</span>
+                          <div className={tags}>
+                            {queueItem.tags.map((t, idx) => (
+                              <span key={idx} className={tag}>{t}</span>
                             ))}
                           </div>
                         </div>
                       )}
                     </div>
                   </div>
-                  <div className={styles.itemFooter}>
-                    <span className={styles.itemAge}>
-                      Last Activity: {formatTimestamp(item.lastActivity?.seconds ?? BigInt(0))}{" "}
+                  <div className={itemFooter}>
+                    <span className={itemAge}>
+                      Last Activity: {formatTimestamp(queueItem.lastActivity?.seconds ?? BigInt(0))}{" "}
                       ago
                     </span>
-                    {item.diffStats && (item.diffStats.added > 0 || item.diffStats.removed > 0) && (
-                      <span className={styles.diffStats}>
-                        <span className={styles.diffAdded}>+{item.diffStats.added}</span>
-                        <span className={styles.diffRemoved}>-{item.diffStats.removed}</span>
+                    {queueItem.diffStats && (queueItem.diffStats.added > 0 || queueItem.diffStats.removed > 0) && (
+                      <span className={diffStats}>
+                        <span className={diffAdded}>+{queueItem.diffStats.added}</span>
+                        <span className={diffRemoved}>-{queueItem.diffStats.removed}</span>
                       </span>
                     )}
                   </div>
                 </div>
-                <div className={styles.itemActions}>
-                  {item.metadata?.["pending_approval_id"] && (
+                <div className={itemActions} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {queueItem.metadata?.["pending_approval_id"] && (
                     <>
-                      <button
-                        className={styles.approveButton}
+                      <Button
+                        intent="primary"
+                        size="lg"
                         onClick={(e) => {
                           e.stopPropagation();
-                          approveRequest(item.metadata!["pending_approval_id"]).finally(() => {
-                            acknowledgeSession(item.sessionId);
-                            onAcknowledged?.(item.sessionId);
+                          approveRequest(queueItem.metadata!["pending_approval_id"]).finally(() => {
+                            acknowledgeSession(queueItem.sessionId);
+                            onAcknowledged?.(queueItem.sessionId);
                           });
                         }}
                         title="Approve this tool-use request"
                         aria-label="Approve"
-                        data-testid={`approve-${item.sessionId}`}
+                        data-testid={`approve-${queueItem.sessionId}`}
                       >
-                        ✓
-                      </button>
-                      <button
-                        className={styles.denyButton}
+                        ✓ Approve
+                      </Button>
+                      <Button
+                        intent="danger"
+                        size="lg"
                         onClick={(e) => {
                           e.stopPropagation();
-                          denyRequest(item.metadata!["pending_approval_id"]).finally(() => {
-                            acknowledgeSession(item.sessionId);
-                            onAcknowledged?.(item.sessionId);
+                          denyRequest(queueItem.metadata!["pending_approval_id"]).finally(() => {
+                            acknowledgeSession(queueItem.sessionId);
+                            onAcknowledged?.(queueItem.sessionId);
                           });
                         }}
                         title="Deny this tool-use request"
                         aria-label="Deny"
-                        data-testid={`deny-${item.sessionId}`}
+                        data-testid={`deny-${queueItem.sessionId}`}
                       >
-                        ✗
-                      </button>
+                        ✗ Deny
+                      </Button>
+                      {queueItem.metadata?.["tool_input_command"] && (
+                        <Button
+                          intent="ghost"
+                          size="md"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRuleSaved(false);
+                            setActiveRuleItemId(queueItem.sessionId);
+                            void generateRule({
+                              source: SuggestionSource.COMMAND_SAMPLE,
+                              commandSample: queueItem.metadata!["tool_input_command"],
+                              toolNameFilter: queueItem.metadata?.["tool_name"] ?? "",
+                            });
+                          }}
+                          title="Generate an auto-approval rule from this command"
+                          aria-label="Create Rule"
+                          data-testid={`create-rule-${queueItem.sessionId}`}
+                        >
+                          ✦ Create Rule
+                        </Button>
+                      )}
                     </>
                   )}
                   {/* Skip button: only shown for non-approval items.
                       Approval items already have explicit ✓ Approve / ✗ Deny buttons above. */}
-                  {!item.metadata?.["pending_approval_id"] && (
-                    <button
-                      className={styles.skipButton}
+                  {!queueItem.metadata?.["pending_approval_id"] && (
+                    <Button
+                      intent="ghost"
+                      size="md"
                       onClick={(e) => {
                         e.stopPropagation();
                         if (onSkipSession) {
-                          onSkipSession(item.sessionId);
+                          onSkipSession(queueItem.sessionId);
                         } else {
-                          acknowledgeSession(item.sessionId);
+                          acknowledgeSession(queueItem.sessionId);
                         }
-                        onAcknowledged?.(item.sessionId);
+                        onAcknowledged?.(queueItem.sessionId);
                       }}
                       title="Acknowledge session (remove from queue)"
                       aria-label="Acknowledge session"
-                      data-testid={`acknowledge-${item.sessionId}`}
+                      data-testid={`acknowledge-${queueItem.sessionId}`}
                     >
-                      ⏭
-                    </button>
+                      ⏭ Skip
+                    </Button>
                   )}
+                  {/* S3-3: Create PR button — only for TASK_COMPLETE items without an existing PR URL */}
+                  {queueItem.reason === AttentionReason.TASK_COMPLETE &&
+                    !queueItem.githubPrUrl &&
+                    onRunOneShot && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        {queueItem.branchDivergedFromBase && (
+                          <span className={divergedBadge}>
+                            ⚠ Diverged from main
+                          </span>
+                        )}
+                        <Button
+                          intent="primary"
+                          size="md"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPrResult(null);
+                            setPrModal({ sessionId: queueItem.sessionId, prompt: DEFAULT_PR_PROMPT });
+                          }}
+                          title="Create a pull request for this session"
+                          aria-label="Create PR"
+                          data-testid={`create-pr-${queueItem.sessionId}`}
+                        >
+                          🔀 Create PR
+                        </Button>
+                      </div>
+                    )}
                 </div>
               </div>
             ))}
-            {!loading && <div data-testid="review-queue-loaded" aria-hidden="true" />}
           </>
         )}
       </div>
+
+      {/* S3-3: Create PR confirmation modal */}
+      {prModal && createPortal(
+        <div
+          className={modalOverlay}
+          onClick={() => {
+            if (!prRunning) {
+              setPrModal(null);
+              setPrResult(null);
+            }
+          }}
+        >
+          <div
+            className={modalContent}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Create Pull Request"
+          >
+            <h3 style={{ margin: 0, fontSize: "1.125rem", fontWeight: 600, color: "var(--text-primary)" }}>
+              Create Pull Request
+            </h3>
+            <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--text-secondary)" }}>
+              Review and edit the prompt that will be used to create the PR. This may take up to 30 seconds.
+            </p>
+            <textarea
+              value={prModal.prompt}
+              onChange={(e) => setPrModal((m) => m ? { ...m, prompt: e.target.value } : null)}
+              disabled={prRunning}
+              rows={5}
+              style={{
+                padding: "0.625rem 0.875rem",
+                border: "1px solid var(--modal-border)",
+                borderRadius: "6px",
+                fontSize: "0.875rem",
+                resize: "vertical",
+                background: "var(--input-background)",
+                color: "var(--text-primary)",
+                fontFamily: "inherit",
+              }}
+            />
+            {prRunning && (
+              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--text-secondary)", fontStyle: "italic" }}>
+                ⏳ Creating PR, this may take up to 30 seconds…
+              </p>
+            )}
+            {prResult?.prUrl && (
+              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--success)" }}>
+                ✓ PR created:{" "}
+                <a href={prResult.prUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)" }}>
+                  {prResult.prUrl}
+                </a>
+              </p>
+            )}
+            {prResult?.error && (
+              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--error)" }}>
+                ✗ {prResult.error}
+              </p>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
+              <Button
+                intent="secondary"
+                size="md"
+                onClick={() => { setPrModal(null); setPrResult(null); }}
+                disabled={prRunning}
+              >
+                {prResult?.prUrl ? "Close" : "Cancel"}
+              </Button>
+              {!prResult?.prUrl && (
+                <Button
+                  intent="primary"
+                  size="md"
+                  disabled={prRunning || !prModal.prompt.trim()}
+                  onClick={async () => {
+                    if (!onRunOneShot) return;
+                    setPrRunning(true);
+                    setPrResult(null);
+                    try {
+                      const result = await onRunOneShot(prModal.sessionId, prModal.prompt);
+                      if (result?.prUrl) {
+                        setPrResult({ prUrl: result.prUrl });
+                      } else {
+                        setPrResult({ error: result?.error || "No PR URL found in output. The command may have failed." });
+                      }
+                    } catch (err) {
+                      setPrResult({ error: err instanceof Error ? err.message : "An unexpected error occurred." });
+                    } finally {
+                      setPrRunning(false);
+                    }
+                  }}
+                >
+                  {prRunning ? "Creating…" : "Run"}
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Epic 4: Create Rule modal */}
+      {activeRuleItemId && createPortal(
+        <div
+          className={modalOverlay}
+          onClick={() => {
+            setActiveRuleItemId(null);
+            clearRule();
+          }}
+        >
+          <div
+            className={ruleModalContent}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Create Auto-Approval Rule"
+            data-testid="create-rule-modal"
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0, fontSize: "1.125rem", fontWeight: 600, color: "var(--text-primary)" }}>
+                Create Auto-Approval Rule
+              </h3>
+              <button
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "var(--text-secondary)",
+                  fontSize: "1.25rem",
+                  padding: "0.25rem",
+                  lineHeight: 1,
+                }}
+                onClick={() => {
+                  setActiveRuleItemId(null);
+                  clearRule();
+                }}
+                aria-label="Close"
+                data-testid="create-rule-modal-close"
+              >
+                ✕
+              </button>
+            </div>
+
+            {ruleSaved && (
+              <p
+                role="status"
+                style={{ margin: 0, fontSize: "0.875rem", color: "var(--success)" }}
+                data-testid="rule-saved-indicator"
+              >
+                ✓ Rule saved
+              </p>
+            )}
+
+            {ruleLoading && (
+              <p
+                style={{ margin: 0, fontSize: "0.875rem", color: "var(--text-secondary)", fontStyle: "italic" }}
+                data-testid="create-rule-loading"
+              >
+                ⏳ Generating suggestion…
+              </p>
+            )}
+
+            {ruleError && !ruleLoading && (
+              <p role="alert" style={{ margin: 0, fontSize: "0.875rem", color: "var(--error)" }}>
+                ✗ {ruleError.message}
+              </p>
+            )}
+
+            {!ruleLoading && suggestions.length > 0 && (
+              <SuggestedRuleCard
+                suggestion={suggestions[0]}
+                onAccept={() => {
+                  setRuleSaved(true);
+                  setActiveRuleItemId(null);
+                  clearRule();
+                }}
+                onDiscard={() => {
+                  setActiveRuleItemId(null);
+                  clearRule();
+                }}
+              />
+            )}
+
+            {!ruleLoading && suggestions.length === 0 && !ruleError && (
+              <p style={{ margin: 0, fontSize: "0.875rem", color: "var(--text-secondary)", fontStyle: "italic" }}>
+                Waiting for suggestion…
+              </p>
+            )}
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
