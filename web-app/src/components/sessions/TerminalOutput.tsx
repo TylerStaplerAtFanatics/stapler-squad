@@ -469,7 +469,9 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     setShowReconnectButton,
     setShowReconnectBanner,
   });
-  notifyResyncOutputReceivedRef.current = notifyResyncOutputReceived;
+  useEffect(() => {
+    notifyResyncOutputReceivedRef.current = notifyResyncOutputReceived;
+  }, [notifyResyncOutputReceived]);
 
   // Sync terminalState into a ref so handleOutput can read it without recreating the callback.
   // Also flushes queued output when transitioning from RESIZING to STABLE (Task 4.2.2).

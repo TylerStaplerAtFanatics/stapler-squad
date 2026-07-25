@@ -182,13 +182,6 @@ export function useVisibilityResync(params: UseVisibilityResyncParams): UseVisib
     };
   }, [debouncedResync]);
 
-  useEffect(() => {
-    return () => {
-      clearStallTimer();
-      clearBannerTimer();
-    };
-  }, [clearStallTimer, clearBannerTimer]);
-
   // sessionId-keyed cleanup: a watchdog/resync armed for the previous session
   // must never fire against the next one's connect()/disconnect() (adversarial
   // review Blocker 1 / research features.md race #4).
