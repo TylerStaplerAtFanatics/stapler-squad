@@ -181,6 +181,91 @@ describe('useTerminalFlowControl', () => {
       const followUp = pushMessageFn.mock.calls[pushMessageFn.mock.calls.length - 1][0];
       expect(followUp.data.case).toBe('currentPaneRequest');
     });
+
+    // Task 4.3.1, AC3: value-dedup against lastSentDimsRef, isolated from the
+    // 200ms time throttle by advancing well past it before the repeat call.
+    it('does not resend TerminalResize when (cols, rows) equals lastSentDimsRef even after the 200ms throttle window has elapsed', () => {
+      const { options, pushMessageFn } = createTestOptions();
+      const { result } = renderHook(() => useTerminalFlowControl(options));
+
+      act(() => {
+        result.current.resize(120, 40);
+      });
+
+      expect(pushMessageFn.mock.calls.length).toBeGreaterThan(0);
+
+      act(() => {
+        // Past both the 200ms resize throttle AND the 100ms follow-up
+        // CurrentPaneRequest scheduled by the first resize() call.
+        jest.advanceTimersByTime(201);
+      });
+
+      const beforeSecondCall = pushMessageFn.mock.calls.length;
+
+      act(() => {
+        result.current.resize(120, 40);
+      });
+
+      // Same (cols, rows) as last sent -- dedup should skip it even though
+      // the time throttle window has long since elapsed.
+      expect(pushMessageFn.mock.calls.length).toBe(beforeSecondCall);
+    });
+
+    // Task 4.3.2, AC4: force:true bypasses both value-dedup and the time
+    // throttle, mirroring the existing 'should allow urgent resync to bypass
+    // throttle' test for requestFullResync.
+    it('force:true bypasses both value-dedup and the time throttle and still sends TerminalResize', () => {
+      const { options, pushMessageFn } = createTestOptions();
+      const { result } = renderHook(() => useTerminalFlowControl(options));
+
+      act(() => {
+        result.current.resize(100, 30);
+      });
+
+      const afterFirst = pushMessageFn.mock.calls.length;
+      expect(afterFirst).toBeGreaterThan(0);
+
+      act(() => {
+        // Immediately (0ms elapsed), same value, but forced.
+        result.current.resize(100, 30, true);
+      });
+
+      expect(pushMessageFn.mock.calls.length).toBeGreaterThan(afterFirst);
+      const forcedMsg = pushMessageFn.mock.calls[pushMessageFn.mock.calls.length - 1][0];
+      expect(forcedMsg.data.case).toBe('resize');
+      expect(forcedMsg.data.value.cols).toBe(100);
+      expect(forcedMsg.data.value.rows).toBe(30);
+    });
+
+    // Task 4.3.3: reordered lastResizeTimeRef/lastSentDimsRef update timing
+    // (Task 2.1.4) -- a throwing send must not update lastSentDimsRef, so a
+    // subsequent identical resize() call is not falsely deduped.
+    it('does not dedupe a same-value resize following a failed send, since lastSentDimsRef only updates after pushMessage succeeds', () => {
+      const { options, pushMessageFn } = createTestOptions();
+      pushMessageFn.mockImplementationOnce(() => {
+        throw new Error('send failed');
+      });
+      const { result } = renderHook(() => useTerminalFlowControl(options));
+
+      act(() => {
+        result.current.resize(90, 20);
+      });
+
+      expect(options.onError).toHaveBeenCalledTimes(1);
+      const callsAfterFailure = pushMessageFn.mock.calls.length;
+
+      act(() => {
+        // Same (cols, rows) as the failed attempt -- must NOT be deduped,
+        // since the throwing call never reached the lastSentDimsRef update.
+        result.current.resize(90, 20);
+      });
+
+      expect(pushMessageFn.mock.calls.length).toBeGreaterThan(callsAfterFailure);
+      const msg = pushMessageFn.mock.calls[pushMessageFn.mock.calls.length - 1][0];
+      expect(msg.data.case).toBe('resize');
+      expect(msg.data.value.cols).toBe(90);
+      expect(msg.data.value.rows).toBe(20);
+    });
   });
 
   describe('requestFullResync', () => {
