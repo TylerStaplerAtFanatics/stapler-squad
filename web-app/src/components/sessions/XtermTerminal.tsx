@@ -10,19 +10,25 @@ import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import styles from "./XtermTerminal.module.css";
 import { loadTerminalConfig, darkTerminalTheme, lightTerminalTheme, type TerminalConfig } from "@/lib/config/terminalConfig";
-import { isFiniteResizeDimensions, type ResizeDimensions } from "@/lib/terminal/types";
+import { dimensionsEqual, isFiniteResizeDimensions, type ResizeDimensions } from "@/lib/terminal/types";
 
 /**
  * Fixed cadence (ms) of the decoupled resize sampler. See
  * project_plans/terminal-resize-fit-loop/decisions/ADR-002-decoupled-sampler-tick-semantics.md
+ *
+ * Exported so tests import the real cadence instead of redeclaring a local
+ * copy that could silently desync from the implementation.
  */
-const SAMPLE_INTERVAL_MS = 50;
+export const SAMPLE_INTERVAL_MS = 50;
 
 /**
  * Bounded give-up threshold (~1s of sampling) for sustained oscillation. See
  * project_plans/terminal-resize-fit-loop/decisions/ADR-002-decoupled-sampler-tick-semantics.md
+ *
+ * Exported so tests import the real threshold instead of redeclaring a local
+ * copy that could silently desync from the implementation.
  */
-const MAX_SAMPLES = 20;
+export const MAX_SAMPLES = 20;
 
 /**
  * Tolerance (px) and consecutive-sample threshold for the WebGL actual-vs-
@@ -56,10 +62,10 @@ export function shouldScheduleFit(
   pending: ResizeDimensions | null
 ): ShouldScheduleFitResult {
   if (!proposed) return { schedule: false, nextPending: null };
-  if (proposed.cols === applied.cols && proposed.rows === applied.rows) {
+  if (dimensionsEqual(proposed, applied)) {
     return { schedule: false, nextPending: null };
   }
-  if (pending && pending.cols === proposed.cols && pending.rows === proposed.rows) {
+  if (pending && dimensionsEqual(pending, proposed)) {
     return { schedule: true, nextPending: null };
   }
   return { schedule: false, nextPending: proposed };
@@ -239,6 +245,10 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
     // project_plans/terminal-resize-fit-loop/decisions/ADR-001-add-xterm-addon-canvas-dependency.md
     let webglMismatchCount = 0;
     let webglFallbackTriggered = false;
+    // RAF handle for the post-fallback fit() scheduled inside
+    // triggerCanvasFallback()'s success path, so it can be cancelled on
+    // unmount if the component tears down before the RAF fires.
+    let postFallbackRafId: number | null = null;
 
     const triggerCanvasFallback = () => {
       if (webglFallbackTriggered) return; // one-directional latch, never re-arms (pitfalls §4)
@@ -261,7 +271,8 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
         // Wait one RAF frame after the addon swap before fitting, per the
         // historical xterm.js #1416 crash precedent (measuring against a
         // not-yet-initialized renderer).
-        requestAnimationFrame(() => {
+        postFallbackRafId = requestAnimationFrame(() => {
+          postFallbackRafId = null;
           const proposed = fitAddonRef.current?.proposeDimensions();
           if (fitAddonRef.current && isFiniteResizeDimensions(proposed)) {
             fitAddonRef.current.fit();
@@ -279,12 +290,39 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
       }
     };
 
+    // Single check-and-maybe-trigger-fallback sequence, shared by both the
+    // startup double-RAF check and the sampler's per-confirmed-resize check
+    // (previously duplicated with inconsistent guard placement). `inputs` is
+    // null when the renderer hasn't measured cell dimensions yet -- that's
+    // "no sample", not a clean sample, so it neither increments nor resets
+    // the counter. A genuinely clean (non-mismatching) sample resets the
+    // counter to 0, making MISMATCH_THRESHOLD a true consecutive-sample
+    // threshold rather than a cumulative one (AC5's "sustained" mismatch).
+    const recordMismatchSample = (inputs: CellMismatchInputs | null) => {
+      if (webglFallbackTriggered || !inputs) return;
+      if (isSustainedMismatch(inputs.actualPxPerCol, inputs.expectedPxPerCol, MISMATCH_TOLERANCE_PX)) {
+        console.error(`[XtermTerminal] ⚠️ SIZING MISMATCH! Container width doesn't match cell width calculation`);
+        webglMismatchCount++;
+        if (webglMismatchCount >= MISMATCH_THRESHOLD) {
+          triggerCanvasFallback();
+        }
+      } else {
+        webglMismatchCount = 0;
+      }
+    };
+
     // Dev-only manual trigger (Task 3.2.1a): lets a human visually confirm
     // the Canvas tier renders correctly without waiting for the mismatch
     // heuristic or a real WebGL context loss (jsdom cannot exercise either
     // path for real, so this is otherwise unverifiable pre-ship).
-    if (typeof window !== "undefined" && localStorage.getItem("debug-terminal") === "true") {
-      (window as any).__staplerSquadForceCanvasFallback = () => triggerCanvasFallback();
+    //
+    // Scoped to this instance's container DOM node (not `window`) so that
+    // multiple concurrently mounted XtermTerminal instances -- the normal
+    // case in this multi-session app -- each get their own independent
+    // trigger instead of clobbering one another's global hook on mount/
+    // unmount (Task 5.2 step 7 manual multi-instance verification).
+    if (typeof window !== "undefined" && localStorage.getItem("debug-terminal") === "true" && containerRef.current) {
+      (containerRef.current as any).__staplerSquadForceCanvasFallback = () => triggerCanvasFallback();
     }
 
     // Create and load addons
@@ -346,16 +384,8 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
             if (mismatchInputs) {
               console.log(`[XtermTerminal] Actual pixels per column: ${mismatchInputs.actualPxPerCol.toFixed(2)}px`);
               console.log(`[XtermTerminal] Expected pixels per column: ${mismatchInputs.expectedPxPerCol.toFixed(2)}px`);
-              if (isSustainedMismatch(mismatchInputs.actualPxPerCol, mismatchInputs.expectedPxPerCol, MISMATCH_TOLERANCE_PX)) {
-                console.error(`[XtermTerminal] ⚠️ SIZING MISMATCH! Container width doesn't match cell width calculation`);
-                if (!webglFallbackTriggered) {
-                  webglMismatchCount++;
-                  if (webglMismatchCount >= MISMATCH_THRESHOLD) {
-                    triggerCanvasFallback();
-                  }
-                }
-              }
             }
+            recordMismatchSample(mismatchInputs);
           }
 
           // Force one more fit after a short delay to ensure accurate sizing
@@ -456,17 +486,9 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
 
         // AC5: accumulate mismatch across confirmed resize events, not just
         // a single startup check (architecture research point 2).
-        if (containerRef.current && !webglFallbackTriggered) {
+        if (containerRef.current) {
           const mismatchInputs = extractCellMismatchInputs(terminalRef.current, containerRef.current);
-          if (
-            mismatchInputs &&
-            isSustainedMismatch(mismatchInputs.actualPxPerCol, mismatchInputs.expectedPxPerCol, MISMATCH_TOLERANCE_PX)
-          ) {
-            webglMismatchCount++;
-            if (webglMismatchCount >= MISMATCH_THRESHOLD) {
-              triggerCanvasFallback();
-            }
-          }
+          recordMismatchSample(mismatchInputs);
         }
 
         stopSampler();
@@ -550,6 +572,10 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
         clearTimeout(resizeTimeout);
       }
       stopSampler();
+      if (postFallbackRafId !== null) {
+        cancelAnimationFrame(postFallbackRafId);
+        postFallbackRafId = null;
+      }
       resizeObserver.disconnect();
       dataDisposable.dispose();
       selectionDisposable.dispose();
@@ -559,8 +585,8 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
       fitAddonRef.current = null;
       searchAddonRef.current = null;
       webglAddonRef.current = null;
-      if (typeof window !== "undefined") {
-        delete (window as any).__staplerSquadForceCanvasFallback;
+      if (containerRef.current) {
+        delete (containerRef.current as any).__staplerSquadForceCanvasFallback;
       }
     };
     // Only recreate terminal if scrollback changes (requires full recreation)

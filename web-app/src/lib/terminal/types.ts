@@ -26,3 +26,13 @@ export function isFiniteResizeDimensions(
 ): d is ResizeDimensions {
   return d !== undefined && Number.isFinite(d.cols) && Number.isFinite(d.rows);
 }
+
+/**
+ * Structural cols/rows equality. Replaces the hand-rolled `a.cols === b.cols
+ * && a.rows === b.rows` comparisons duplicated across the resize pipeline
+ * (shouldScheduleFit's two checks, useTerminalFlowControl's resize()
+ * value-dedup guard).
+ */
+export function dimensionsEqual(a: ResizeDimensions, b: ResizeDimensions): boolean {
+  return a.cols === b.cols && a.rows === b.rows;
+}

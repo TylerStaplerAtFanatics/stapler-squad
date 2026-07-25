@@ -5,7 +5,7 @@ import { TerminalData, TerminalDataSchema, TerminalInput, TerminalInputSchema, T
 import { create } from "@bufbuild/protobuf";
 import { StateApplicator } from "@/lib/terminal/StateApplicator";
 import { EchoOverlay } from "@/lib/terminal/EchoOverlay";
-import type { ResizeDimensions } from "@/lib/terminal/types";
+import { dimensionsEqual, type ResizeDimensions } from "@/lib/terminal/types";
 import type { Terminal } from '@xterm/xterm';
 
 export interface UseTerminalFlowControlOptions {
@@ -376,8 +376,7 @@ export function useTerminalFlowControl({
     if (
       !force &&
       lastSentDimsRef.current !== null &&
-      lastSentDimsRef.current.cols === cols &&
-      lastSentDimsRef.current.rows === rows
+      dimensionsEqual(lastSentDimsRef.current, { cols, rows })
     ) {
       console.log(`[useTerminalFlowControl] Resize skipped, value unchanged (${cols}x${rows})`);
       return;

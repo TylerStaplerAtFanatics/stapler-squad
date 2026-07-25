@@ -129,6 +129,8 @@ import {
   shouldScheduleFit,
   isSustainedMismatch,
   extractCellMismatchInputs,
+  SAMPLE_INTERVAL_MS,
+  MAX_SAMPLES,
   type XtermTerminalHandle,
 } from "../XtermTerminal";
 
@@ -165,9 +167,6 @@ const MockCanvasAddon = CanvasAddon as unknown as {
   instances: MockCanvasAddonInstance[];
   shouldThrow: boolean;
 };
-
-const SAMPLE_INTERVAL_MS = 50;
-const MAX_SAMPLES = 20;
 
 // ---- ResizeObserver capture harness (Task 4.1.1/4.1.2) ----
 // The global MockResizeObserver installed in jest.setup.js is intentionally
@@ -438,6 +437,34 @@ describe("XtermTerminal WebGL->Canvas fallback (mocked renderer, not real WebGL)
       jest.advanceTimersByTime(SAMPLE_INTERVAL_MS);
     });
     expect(fitAddon.fit).toHaveBeenCalledTimes(4);
+  });
+
+  // Guards the fix for the semantic bug where webglMismatchCount was
+  // cumulative instead of consecutive: a clean (non-mismatching) sample
+  // between two mismatching ones must reset the counter to 0, so the
+  // fallback does NOT trip on "2 mismatches with a clean sample between
+  // them" -- only on genuinely consecutive mismatches. Limited to 3 RO
+  // deliveries (matching every other test in this file, per
+  // fireResizeAndStartSampler's <=3 adaptive-debounce assumption).
+  it("resets the consecutive mismatch count on a clean sample, so the fallback does not trip on 2 mismatches separated by a clean sample", () => {
+    const { fitAddon, ro, terminal } = mountAndSettle();
+
+    // Cycle 1: mismatch (count -> 1).
+    setMismatch(terminal, 9.2, 8.0);
+    driveConvergentResize(ro, fitAddon, 81, 24, 800);
+
+    // Cycle 2: clean sample resets the count back to 0.
+    setMismatch(terminal, 8.0, 8.0);
+    driveConvergentResize(ro, fitAddon, 82, 24, 900);
+
+    // Cycle 3: mismatch again -- count restarts at 1, not 3, so no trip.
+    setMismatch(terminal, 9.2, 8.0);
+    driveConvergentResize(ro, fitAddon, 83, 24, 1000);
+
+    expect(fitAddon.fit).toHaveBeenCalledTimes(3);
+    expect(MockCanvasAddon.instances).toHaveLength(0);
+    const webglInstance = MockWebglAddon.instances[MockWebglAddon.instances.length - 1];
+    expect(webglInstance.dispose).not.toHaveBeenCalled();
   });
 
   it("does not call dispose()/loadAddon() again on a 4th mismatch sample once the fallback is already triggered", () => {
