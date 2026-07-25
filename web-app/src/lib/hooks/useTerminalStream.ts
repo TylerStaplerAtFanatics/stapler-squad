@@ -57,8 +57,8 @@ interface TerminalStreamResult {
   error: Error | null;
   sendInput: (input: string) => void;
   resize: (cols: number, rows: number) => void;
-  connect: (cols?: number, rows?: number) => void; // Optional dimensions to override initial values
-  disconnect: () => void;
+  connect: (cols?: number, rows?: number) => Promise<void>; // Optional dimensions to override initial values
+  disconnect: () => Promise<void>;
   scrollbackLoaded: boolean; // Indicates if scrollback has been loaded
   requestScrollback: (fromSequence: number, limit: number) => void; // Request historical scrollback
   sendFlowControl: (paused: boolean, watermark?: number) => void; // Send flow control signal to server
@@ -68,6 +68,9 @@ interface TerminalStreamResult {
   terminalState: TerminalState;
   isHardFailed: boolean;
   handleManualReconnect: () => void;
+  requestFullResync: (urgent?: boolean) => void;
+  markResyncComplete: () => void;
+  markPaneResponseReceived: () => void;
 }
 
 export function useTerminalStream({
@@ -470,5 +473,8 @@ export function useTerminalStream({
     terminalState,
     isHardFailed,
     handleManualReconnect,
+    requestFullResync: flowControl.requestFullResync,
+    markResyncComplete: flowControl.markResyncComplete,
+    markPaneResponseReceived: flowControl.markPaneResponseReceived,
   };
 }
