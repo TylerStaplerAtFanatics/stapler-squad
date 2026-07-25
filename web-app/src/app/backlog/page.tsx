@@ -24,6 +24,7 @@ import {
   type BacklogItem,
   type BacklogItemStatus,
   type BacklogItemInput,
+  type GitHubIssue,
 } from "@/lib/hooks/useBacklogService";
 import { useWatchBacklogItems } from "@/lib/hooks/useWatchBacklogItems";
 import { useAppDispatch } from "@/lib/store";
@@ -578,14 +579,37 @@ function BacklogPageInner() {
   );
 
   const handlePickerSelect = useCallback(
-    async (owner: string, repo: string, issue: { number: number; title: string; url: string }) => {
-      const url = issue.url || `https://github.com/${owner}/${repo}/issues/${issue.number}`;
+    async (owner: string, repo: string, issues: GitHubIssue[]) => {
+      setGithubImportError(null);
+      const createdIds: string[] = [];
+      let failures = 0;
+      for (const issue of issues) {
+        const url = issue.url || `https://github.com/${owner}/${repo}/issues/${issue.number}`;
+        const result = await importGitHubIssue(url.trim());
+        if (result) {
+          await hydrateItemIntoStore(result.item.id);
+          createdIds.push(result.item.id);
+        } else {
+          failures++;
+        }
+      }
+      if (failures > 0) {
+        // Leave the modal open (don't setShowForm(false) below) so this error
+        // is actually visible — closing the form first would unmount it
+        // before the message could ever render.
+        setGithubImportError(
+          issues.length === 1
+            ? "Import failed. Check that this is a real issue, not a pull request, and try again."
+            : `Imported ${createdIds.length} of ${issues.length} — ${failures} failed. Pull requests can't be imported as backlog items.`
+        );
+        return;
+      }
       setShowForm(false);
-      const result = await importGitHubIssue(url.trim());
-      if (result) {
-        await hydrateItemIntoStore(result.item.id);
+      // Only navigate to the item detail when a single issue was imported —
+      // with multiple, there's no single item to land on.
+      if (createdIds.length === 1) {
         const params = new URLSearchParams(searchParams.toString());
-        params.set("item", result.item.id);
+        params.set("item", createdIds[0]);
         router.push(`/backlog?${params.toString()}`);
       }
     },
@@ -870,10 +894,17 @@ function BacklogPageInner() {
                 onCancel={() => setShowForm(false)}
               />
             ) : (
-              <GitHubIssuePicker
-                onSelect={handlePickerSelect}
-                onCancel={() => { setShowForm(false); setGithubIssueUrl(""); setGithubImportError(null); }}
-              />
+              <>
+                <GitHubIssuePicker
+                  onSelect={handlePickerSelect}
+                  onCancel={() => { setShowForm(false); setGithubIssueUrl(""); setGithubImportError(null); }}
+                />
+                {githubImportError && (
+                  <p style={{ fontSize: "12px", color: "var(--error)", margin: "8px 0 0" }}>
+                    {githubImportError}
+                  </p>
+                )}
+              </>
             )}
 
             {false && (
