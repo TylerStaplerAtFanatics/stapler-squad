@@ -446,7 +446,12 @@ And the analogous test for handleManualResize asserts
   rather than duplicating the dispose/load-`CanvasAddon` sequence inline here — this is also
   where the `try/catch` around `CanvasAddon` construction lives (adversarial-review.md
   Blocker: one call site, one guard, not two un-caught `new CanvasAddon()` invocations to keep
-  in sync). *Files*: `XtermTerminal.tsx`. *Size*: ~4 min.
+  in sync). Note: `onContextLoss` (real GPU-context-loss) is a distinct trigger from AC5's
+  literal "sustained pixel mismatch" condition — wiring it is an intentional, cheap extension
+  (per build-vs-buy.md: "both mechanisms should exist side by side... official, cheap, should
+  be wired regardless"), not scope creep against AC5, since it shares the same
+  `triggerCanvasFallback()` path and one-directional latch rather than introducing a second,
+  parallel fallback mechanism. *Files*: `XtermTerminal.tsx`. *Size*: ~4 min.
 
 - **Task 3.1.3** — Update the cleanup function (mount effect return, ~lines 300-312) to also
   set `webglAddonRef.current = null` (the addon itself is disposed via `terminal.dispose()`,
@@ -456,8 +461,26 @@ And the analogous test for handleManualResize asserts
 #### Story 3.2: Bespoke `Number.isFinite`-guarded mismatch tracker + fallback sequence
 
 - **Task 3.2.1** — Add module-level constants `MISMATCH_TOLERANCE_PX = 1` and
-  `MISMATCH_THRESHOLD = 3` next to the Epic 1 sampler constants. *Files*: `XtermTerminal.tsx`.
-  *Size*: ~1 min.
+  `MISMATCH_THRESHOLD = 3` next to the Epic 1 sampler constants, with a one-line comment
+  flagging them as **provisional values, not yet validated against a real browser** (pre-mortem
+  P1 #1: jsdom cannot reproduce real WebGL glyph-width mismatch magnitude, especially under
+  fractional OS display scaling — Windows 125%/150%, macOS non-integer zoom — which is exactly
+  the condition that produces this mismatch in the first place; the value chosen here is a
+  reasonable starting point from the requirements' own "warns above a 1px tolerance" precedent,
+  not measured data). Point the comment at Task 5.2 step 7 (added below) for the real-device
+  validation/tuning step. *Files*: `XtermTerminal.tsx`. *Size*: ~1 min.
+
+- **Task 3.2.1a** — Add a dev-only forced-fallback trigger so `triggerCanvasFallback()` (Task
+  3.2.3) can be exercised manually without waiting for the mismatch heuristic to fire naturally
+  (pre-mortem P1 #1 prevention, also closes pre-mortem #4 which is otherwise unverifiable —
+  jsdom cannot run real WebGL/Canvas rendering, so this is the only way a human can visually
+  confirm the Canvas tier renders correctly before shipping): guard it behind the existing
+  `localStorage.getItem('debug-terminal') === 'true'` convention already used elsewhere in this
+  codebase (e.g. `TerminalOutput.tsx`'s predictive-echo debug logging) — expose a
+  `window.__staplerSquadForceCanvasFallback` function (or equivalent debug-menu hook, matching
+  whatever debug-affordance convention is idiomatic here) that calls `triggerCanvasFallback()`
+  directly, only registered when the debug flag is set. Referenced by Task 5.2 step 7. *Files*:
+  `XtermTerminal.tsx`. *Size*: ~4 min.
 
 - **Task 3.2.2** — Split the mismatch check into two functions (architecture-review.md
   Concern 2: separates DOM/xterm-internals extraction from the pure decision logic, so the
@@ -762,8 +785,30 @@ And no test uses jest.runAllTimers() or jest.runOnlyPendingTimers() (grep-verifi
      a pre-fix baseline if available.
   6. Click the manual "Fit" button in each terminal once; confirm it still resizes correctly
      (force-bypass path still works end-to-end, not just in unit tests).
-  Record pass/fail for each of the 6 steps in the PR description or a comment on the backlog
-  item; this task has no file changes.
+  7. **(Pre-mortem P1 #1)** Using the dev-only trigger from Task 3.2.1a
+     (`localStorage.setItem('debug-terminal', 'true')` then invoke the forced-fallback hook),
+     force a WebGL→Canvas trip on at least one real display and visually confirm the terminal
+     keeps rendering correctly afterward (readable glyphs, correct cursor, correct
+     selection/theme colors) — this is the only verification path for `CanvasAddon`'s actual
+     rendering correctness, since jsdom cannot run real WebGL/Canvas (pre-mortem #4). If a
+     display with fractional OS scaling (Windows 125%/150%, macOS non-integer zoom) is
+     available, additionally observe the real (non-forced) `actualPxPerCol`/`expectedPxPerCol`
+     console log values on that display and compare them against `MISMATCH_TOLERANCE_PX = 1`
+     — if real measured mismatch is consistently far below or far above the constant, file a
+     follow-up to retune `MISMATCH_TOLERANCE_PX`/`MISMATCH_THRESHOLD` rather than silently
+     shipping unvalidated values (pre-mortem P1 #1). Absence of a fractionally-scaled display in
+     the verifier's environment is an acceptable reason to skip only the comparison half of this
+     step, not the forced-trip rendering check.
+
+  **(Pre-mortem P1 #3 — hard gate, not a self-reported checkbox)**: this task is not complete
+  until the PR description includes actual evidence for steps 2, 3, and 7 — a pasted browser
+  console log excerpt (with `debug-terminal` enabled) showing the resize/sample log lines
+  settling to zero, and a screenshot or brief description of the post-fallback terminal render
+  from step 7. Record pass/fail for all 7 steps. The `/backlog/done-N` criterion corresponding
+  to AC7 (per `.backlog-context.md`'s acceptance-criteria numbering) must not be marked complete
+  without this evidence present in the PR description or a linked comment — a plain
+  "manually verified, LGTM" note without the pasted log/screenshot does not satisfy this task.
+  This task has no file changes beyond the PR description itself.
 
 **GWT — AC7** (verbatim: "Manual repro from the ticket ... no longer pegs CPU or freezes
 input"):
@@ -855,3 +900,18 @@ Consequences section, restated here for visibility:
    real rendered flex/grid layout end-to-end — this is the practical ceiling of what a jsdom
    component test can exercise for this scenario; the corrected Task 5.2 manual checklist
    (same-page session cards, not tabs) is the remaining real-browser confirmation.
+5. **`MISMATCH_TOLERANCE_PX`/`MISMATCH_THRESHOLD` are provisional, not measured** (pre-mortem
+   P1 #1) — jsdom cannot reproduce real WebGL glyph-width mismatch magnitude, so these constants
+   could not be validated against real fractional-display-scaling data before implementation.
+   Mitigated, not eliminated, by: (a) Task 3.2.1a's dev-only forced-fallback trigger, letting a
+   human visually confirm the Canvas tier renders correctly regardless of whether the heuristic
+   fires naturally; (b) Task 5.2 step 7's real-display comparison, which surfaces a follow-up
+   retuning task if measured mismatch diverges meaningfully from the constant. If step 7 finds a
+   large divergence, treat the constants as a known-open follow-up, not a blocker to shipping
+   this fix — the loop-prevention mechanism (Epic 1's sampler) is the primary fix and does not
+   depend on these constants being perfectly tuned; a mistuned tolerance only affects *when* the
+   Canvas fallback trips, not whether the resize loop itself is bounded.
+6. **Task 5.2's manual verification now requires pasted evidence, not a self-reported
+   checkbox** (pre-mortem P1 #3) — the PR description must include console log excerpts and a
+   screenshot before the corresponding `/backlog/done-N` criterion for AC7 can be marked
+   complete.

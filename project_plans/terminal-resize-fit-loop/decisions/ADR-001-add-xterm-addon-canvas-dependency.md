@@ -51,11 +51,14 @@ and load a real `CanvasAddon` as the fallback target when the WebGL mismatch-tra
    acceleration (2x faster than canvas)" — implying DOM < Canvas < WebGL was always the
    intended hierarchy, and "falling back" from WebGL was always meant to land on Canvas, not
    skip past it to DOM).
-2. **Real, not cosmetic, performance value.** A canvas fallback is a meaningfully faster
-   perf tier than the DOM renderer for a terminal actively receiving high-frequency output —
-   exactly the kind of session this bug report describes (multiple terminals, heavy scrollback).
-   Falling all the way back to DOM would recover correctness (no more sizing feedback loop
-   from mismeasurement) but needlessly sacrifice throughput that Canvas would have preserved.
+2. **Performance is an incidental benefit of satisfying #1, not an independent goal of this
+   fix.** requirements.md's Out-of-Scope list explicitly excludes "general terminal performance
+   work beyond what's needed to stop the specific feedback loop" — this ADR is not proposing
+   Canvas *for* its speed; it is required regardless because AC5's literal wording names
+   "canvas renderer." That the chosen (mandatory) fallback target also happens to preserve more
+   throughput than the DOM-only alternative is a welcome side effect of literal-compliance,
+   worth noting so a reader understands the fallback isn't a cosmetic downgrade — but it does
+   not independently justify the dependency addition; only Rationale #1 does that.
 3. **Peer-dependency compatibility is confirmed, low-risk.** `^5.0.0` peer range covers the
    installed `@xterm/xterm@^5.5.0` with no version pin conflicts against the other installed
    `@xterm/addon-*` packages (fit `^0.10.0`, search `^0.15.0`, web-links `^0.11.0`, webgl
