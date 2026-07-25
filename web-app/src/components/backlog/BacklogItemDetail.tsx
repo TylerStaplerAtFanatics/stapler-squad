@@ -37,6 +37,7 @@ import { BacklogFileBrowserModal } from "./BacklogFileBrowserModal";
 import { LifecycleSummary } from "./detail/LifecycleSummary";
 import { PlanningSection } from "./detail/PlanningSection";
 import { ReviewingSection } from "./detail/ReviewingSection";
+import { LastReviewResultSection } from "./detail/LastReviewResultSection";
 import { PullRequestSection } from "./detail/PullRequestSection";
 import { DescriptionSection } from "./detail/DescriptionSection";
 import { ActionsSection } from "./detail/ActionsSection";
@@ -311,6 +312,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
   // the actual loaded status. Sections with a static default (not
   // status-dependent) are unaffected and get it directly.
   const [reviewingExpanded, setReviewingExpanded] = useSectionExpandState(itemId, "reviewing", false);
+  const [lastReviewResultExpanded, setLastReviewResultExpanded] = useSectionExpandState(itemId, "last-review-result", false);
   const [pullRequestExpanded, setPullRequestExpanded] = useSectionExpandState(itemId, "pull-request", true);
   const [planArtifactsExpanded, setPlanArtifactsExpanded] = useSectionExpandState(itemId, "plan-artifacts", false);
   const [versionControlExpanded, setVersionControlExpanded] = useSectionExpandState(itemId, "version-control", false);
@@ -347,6 +349,9 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
     if (item.status === "review" && !hasStoredPreference("reviewing")) {
       setReviewingExpanded(true);
     }
+    if (item.status !== "review" && item.gateVerdict && !hasStoredPreference("last-review-result")) {
+      setLastReviewResultExpanded(true);
+    }
     if (
       ["in_progress", "review", "pr_pending"].includes(item.status) &&
       !hasStoredPreference("version-control")
@@ -364,6 +369,7 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
 
   const sectionExpandEntries: Array<[string, boolean, (next: boolean) => void]> = [
     ["reviewing", reviewingExpanded, setReviewingExpanded],
+    ["last-review-result", lastReviewResultExpanded, setLastReviewResultExpanded],
     ["pull-request", pullRequestExpanded, setPullRequestExpanded],
     ["description", descriptionExpanded, setDescriptionExpanded],
     ["plan-artifacts", planArtifactsExpanded, setPlanArtifactsExpanded],
@@ -1191,6 +1197,10 @@ export function BacklogItemDetail({ itemId, onClose }: BacklogItemDetailProps) {
               onReReview={() => triggerReReview(item.id).then(() => load())}
               readOnly={terminalState !== null}
             />
+          )}
+
+          {item.status !== "review" && item.gateVerdict && (
+            <LastReviewResultSection item={item} defaultExpanded={lastReviewResultExpanded} />
           )}
 
           {item.status === "pr_pending" && (
