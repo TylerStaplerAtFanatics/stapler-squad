@@ -469,6 +469,50 @@ func EnsureServerRunning(serverSocket string) (TmuxServerReady, error) {
 	return TmuxServerReady{}, nil
 }
 
+// KillOrphanedControlModeClients terminates every control-mode ("-C") client already
+// attached to the tmux server at the moment this is called. Safe only at process
+// startup, before any session has (re)started its own control mode: a freshly-started
+// process cannot have spawned a control-mode client yet, so any control-mode client
+// already attached is necessarily a leftover from a previous process instance that
+// --tmux-keep-server intentionally kept alive across the restart (see
+// docs/bugs/open/BUG-042-orphaned-control-mode-clients-overload-tmux-server.md).
+// Left unreconciled, these accumulate one per restart and eventually crash the tmux
+// server outright. Plain (non-control-mode) attach-session clients are left alone --
+// those can be real interactive users and are not this app's to manage.
+func KillOrphanedControlModeClients(serverSocket string) (int, error) {
+	args := prependSocket(serverSocket, []string{"list-clients", "-F", "#{client_pid} #{client_control_mode}"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := safeexec.CommandContext(ctx, Binary(), args...).Output()
+	if err != nil {
+		// No server running yet, or no clients at all -- nothing to clean up.
+		return 0, nil
+	}
+
+	killed := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[1] != "1" {
+			continue // not a control-mode client
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		if err := proc.Kill(); err == nil {
+			killed++
+		}
+	}
+	if killed > 0 {
+		log.Info("[tmux] killed orphaned control-mode clients from a prior process instance", "count", killed)
+	}
+	return killed, nil
+}
+
 // ensureServerRunning is a package-level variable holding the function called by
 // recoverFromServerFailure. Tests can replace it to inject a controlled failure
 // without depending on real tmux socket behavior.

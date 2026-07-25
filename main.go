@@ -279,6 +279,18 @@ var (
 					}
 					log.Warn("Failed to ensure tmux server running", "err", tmuxReadyErr)
 				}
+				// --tmux-keep-server intentionally keeps the tmux server (and anything
+				// attached to it) alive across this restart, but any control-mode client
+				// this process spawns will be brand new -- so any control-mode client
+				// still attached at this exact point is necessarily a leftover from the
+				// previous process instance (BUG-042). Reconcile before restoring any
+				// session, which is the earliest point a fresh control-mode client could
+				// be spawned.
+				if killed, err := tmux.KillOrphanedControlModeClients(""); err != nil {
+					log.Warn("Failed to clean up orphaned control-mode clients", "err", err)
+				} else if killed > 0 {
+					log.Info("Cleaned up orphaned control-mode clients left over from a prior process instance", "count", killed)
+				}
 				// Create a keepalive session so the tmux server does not exit when all user sessions close.
 				if err := tmux.CreateKeepaliveSession(""); err != nil {
 					if strictStartup {
