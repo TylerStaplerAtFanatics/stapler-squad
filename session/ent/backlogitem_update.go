@@ -284,6 +284,26 @@ func (_u *BacklogItemUpdate) ClearExternalID() *BacklogItemUpdate {
 	return _u
 }
 
+// SetExternalURL sets the "external_url" field.
+func (_u *BacklogItemUpdate) SetExternalURL(v string) *BacklogItemUpdate {
+	_u.mutation.SetExternalURL(v)
+	return _u
+}
+
+// SetNillableExternalURL sets the "external_url" field if the given value is not nil.
+func (_u *BacklogItemUpdate) SetNillableExternalURL(v *string) *BacklogItemUpdate {
+	if v != nil {
+		_u.SetExternalURL(*v)
+	}
+	return _u
+}
+
+// ClearExternalURL clears the value of the "external_url" field.
+func (_u *BacklogItemUpdate) ClearExternalURL() *BacklogItemUpdate {
+	_u.mutation.ClearExternalURL()
+	return _u
+}
+
 // SetUserModifiedStatusAt sets the "user_modified_status_at" field.
 func (_u *BacklogItemUpdate) SetUserModifiedStatusAt(v time.Time) *BacklogItemUpdate {
 	_u.mutation.SetUserModifiedStatusAt(v)
@@ -599,6 +619,12 @@ func (_u *BacklogItemUpdate) sqlSave(ctx context.Context) (_node int, err error)
 	}
 	if _u.mutation.ExternalIDCleared() {
 		_spec.ClearField(backlogitem.FieldExternalID, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExternalURL(); ok {
+		_spec.SetField(backlogitem.FieldExternalURL, field.TypeString, value)
+	}
+	if _u.mutation.ExternalURLCleared() {
+		_spec.ClearField(backlogitem.FieldExternalURL, field.TypeString)
 	}
 	if value, ok := _u.mutation.UserModifiedStatusAt(); ok {
 		_spec.SetField(backlogitem.FieldUserModifiedStatusAt, field.TypeTime, value)
@@ -1050,6 +1076,26 @@ func (_u *BacklogItemUpdateOne) ClearExternalID() *BacklogItemUpdateOne {
 	return _u
 }
 
+// SetExternalURL sets the "external_url" field.
+func (_u *BacklogItemUpdateOne) SetExternalURL(v string) *BacklogItemUpdateOne {
+	_u.mutation.SetExternalURL(v)
+	return _u
+}
+
+// SetNillableExternalURL sets the "external_url" field if the given value is not nil.
+func (_u *BacklogItemUpdateOne) SetNillableExternalURL(v *string) *BacklogItemUpdateOne {
+	if v != nil {
+		_u.SetExternalURL(*v)
+	}
+	return _u
+}
+
+// ClearExternalURL clears the value of the "external_url" field.
+func (_u *BacklogItemUpdateOne) ClearExternalURL() *BacklogItemUpdateOne {
+	_u.mutation.ClearExternalURL()
+	return _u
+}
+
 // SetUserModifiedStatusAt sets the "user_modified_status_at" field.
 func (_u *BacklogItemUpdateOne) SetUserModifiedStatusAt(v time.Time) *BacklogItemUpdateOne {
 	_u.mutation.SetUserModifiedStatusAt(v)
@@ -1395,6 +1441,12 @@ func (_u *BacklogItemUpdateOne) sqlSave(ctx context.Context) (_node *BacklogItem
 	}
 	if _u.mutation.ExternalIDCleared() {
 		_spec.ClearField(backlogitem.FieldExternalID, field.TypeString)
+	}
+	if value, ok := _u.mutation.ExternalURL(); ok {
+		_spec.SetField(backlogitem.FieldExternalURL, field.TypeString, value)
+	}
+	if _u.mutation.ExternalURLCleared() {
+		_spec.ClearField(backlogitem.FieldExternalURL, field.TypeString)
 	}
 	if value, ok := _u.mutation.UserModifiedStatusAt(); ok {
 		_spec.SetField(backlogitem.FieldUserModifiedStatusAt, field.TypeTime, value)

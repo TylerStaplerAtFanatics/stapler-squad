@@ -34,6 +34,7 @@ func backlogItemToData(item *ent.BacklogItem) BacklogItemData {
 		PlanArtifactsPath:  item.PlanArtifactsPath,
 		Notes:              item.Notes,
 		ExternalID:         item.ExternalID,
+		ExternalURL:        item.ExternalURL,
 		ArchivedAt:         item.ArchivedAt,
 		CreatedAt:          item.CreatedAt,
 		UpdatedAt:          item.UpdatedAt,
@@ -92,6 +93,7 @@ func (r *EntRepository) CreateBacklogItem(ctx context.Context, data BacklogItemD
 		SetNillablePlanArtifactsPath(&data.PlanArtifactsPath).
 		SetNillableNotes(&data.Notes).
 		SetNillableExternalID(&data.ExternalID).
+		SetNillableExternalURL(&data.ExternalURL).
 		SetNillableArchivedAt(data.ArchivedAt)
 
 	if data.SourceID != "" {
@@ -231,6 +233,9 @@ func (r *EntRepository) UpdateBacklogItem(ctx context.Context, id string, update
 	}
 	if update.Notes != nil {
 		u.SetNotes(*update.Notes)
+	}
+	if update.ExternalURL != nil {
+		u.SetExternalURL(*update.ExternalURL)
 	}
 	if update.PlanApproved != nil {
 		u.SetPlanApproved(*update.PlanApproved)
