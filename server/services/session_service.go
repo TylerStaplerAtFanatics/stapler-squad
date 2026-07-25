@@ -3893,25 +3893,26 @@ func (s *SessionService) rateLimitLinkedItemID(inst *session.Instance) string {
 // Hidden instances (e.g. headless review sessions) never surface a
 // notification for this.
 func (s *SessionService) onRateLimitDetected(inst *session.Instance, sessionID string, resetTime time.Time) {
-	if inst.Hidden {
-		return
-	}
-	linkedItemID := s.rateLimitLinkedItemID(inst)
+	if !inst.Hidden {
+		linkedItemID := s.rateLimitLinkedItemID(inst)
 
-	var resetMsg string
-	if !resetTime.IsZero() {
-		resetMsg = fmt.Sprintf(" — resumes at %s", resetTime.Format("3:04 PM"))
+		var resetMsg string
+		if !resetTime.IsZero() {
+			resetMsg = fmt.Sprintf(" — resumes at %s", resetTime.Format("3:04 PM"))
+		}
+		title := fmt.Sprintf("Session \"%s\" rate limited%s", inst.Title, resetMsg)
+		notifID := fmt.Sprintf("rl-detect-%s", sessionID)
+		s.eventBus.Publish(events.NewNotificationEvent(
+			sessionID, inst.Title, notifID,
+			int32(8), // NotificationType_WARNING
+			int32(3), // NotificationPriority_HIGH
+			title,
+			fmt.Sprintf("Session hit the usage limit%s.", resetMsg),
+			events.SessionScopedMetadata(nil, linkedItemID),
+		))
 	}
-	title := fmt.Sprintf("Session \"%s\" rate limited%s", inst.Title, resetMsg)
-	notifID := fmt.Sprintf("rl-detect-%s", sessionID)
-	s.eventBus.Publish(events.NewNotificationEvent(
-		sessionID, inst.Title, notifID,
-		int32(8), // NotificationType_WARNING
-		int32(3), // NotificationPriority_HIGH
-		title,
-		fmt.Sprintf("Session hit the usage limit%s.", resetMsg),
-		events.SessionScopedMetadata(nil, linkedItemID),
-	))
+	// Session state sync (rate_limit_state/rate_limit_reset_time) must fire
+	// regardless of Hidden — only the Notifications-page entry above is gated.
 	s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"rate_limit_state", "rate_limit_reset_time"}))
 }
 
@@ -3919,31 +3920,32 @@ func (s *SessionService) onRateLimitDetected(inst *session.Instance, sessionID s
 // Hidden instances (e.g. headless review sessions) never surface a
 // notification for this.
 func (s *SessionService) onRateLimitRecovery(inst *session.Instance, sessionID string, success bool, errMsg string) {
-	if inst.Hidden {
-		return
-	}
-	linkedItemID := s.rateLimitLinkedItemID(inst)
+	if !inst.Hidden {
+		linkedItemID := s.rateLimitLinkedItemID(inst)
 
-	var title, message string
-	notifID := fmt.Sprintf("rl-recover-%s", sessionID)
-	if success {
-		title = fmt.Sprintf("Session \"%s\" resumed after rate limit", inst.Title)
-		message = "Session auto-resumed after rate limit expiry."
-	} else {
-		title = fmt.Sprintf("Session \"%s\" failed to resume after rate limit", inst.Title)
-		message = fmt.Sprintf("Auto-resume failed: %s", errMsg)
+		var title, message string
+		notifID := fmt.Sprintf("rl-recover-%s", sessionID)
+		if success {
+			title = fmt.Sprintf("Session \"%s\" resumed after rate limit", inst.Title)
+			message = "Session auto-resumed after rate limit expiry."
+		} else {
+			title = fmt.Sprintf("Session \"%s\" failed to resume after rate limit", inst.Title)
+			message = fmt.Sprintf("Auto-resume failed: %s", errMsg)
+		}
+		notifType := int32(10) // NotificationType_INFO
+		if !success {
+			notifType = int32(9) // NotificationType_FAILURE
+		}
+		s.eventBus.Publish(events.NewNotificationEvent(
+			sessionID, inst.Title, notifID,
+			notifType,
+			int32(2), // NotificationPriority_MEDIUM
+			title, message,
+			events.SessionScopedMetadata(nil, linkedItemID),
+		))
 	}
-	notifType := int32(10) // NotificationType_INFO
-	if !success {
-		notifType = int32(9) // NotificationType_FAILURE
-	}
-	s.eventBus.Publish(events.NewNotificationEvent(
-		sessionID, inst.Title, notifID,
-		notifType,
-		int32(2), // NotificationPriority_MEDIUM
-		title, message,
-		events.SessionScopedMetadata(nil, linkedItemID),
-	))
+	// Session state sync (rate_limit_state) must fire regardless of Hidden —
+	// only the Notifications-page entry above is gated.
 	s.eventBus.Publish(events.NewSessionUpdatedEvent(inst, []string{"rate_limit_state"}))
 }
 
