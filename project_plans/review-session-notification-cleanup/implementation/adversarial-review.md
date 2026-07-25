@@ -1,31 +1,114 @@
 # Adversarial Review: review-session-notification-cleanup
 
-**Date**: 2026-07-25
-**Verdict**: BLOCKED
+**Date**: 2026-07-25 (re-review, iteration 1 of repair loop — scoped to the 2 prior blockers)
+**Verdict**: CONCERNS
 
 ## Blockers
 
-- [ ] **Data race / fatal-crash risk: `OnItemAdded` mutates a `*ReviewItem.Metadata` map that is already shared, unlocked, with concurrent readers.**
-  `session/queue/queue.go`'s `Add()` stores `item` directly into `rq.items[item.SessionID]` (line 230), releases `rq.mu` (line 258), and *then* calls `observer.OnItemAdded(item)` unlocked (lines 261-264) — the same `*ReviewItem` pointer. Tasks 2.1.1b and 2.2.1a have `OnItemAdded` write to that same shared object after the lock is gone (`item.Metadata = make(map[string]string)` / `item.Metadata["item_id"] = ...` / `item.Metadata["session_scoped"] = "true"`). This is not theoretical: `server/adapters/review_queue_adapter.go:47-53` already ranges over `item.Metadata` (`for k, v := range item.Metadata`) from `ReviewItemToProto`, reached via `sendInitialSnapshot` → `rqm.queue.List()` (RLock-protected list, but the *item pointers* it returns are unprotected) → per-item `reviewItemToProto` — itself invoked from `AddStreamClient`, i.e. a `WatchReviewQueue` RPC handler running on a *different goroutine* than the poller goroutine executing `OnItemAdded`. A concurrent map write (`OnItemAdded`) racing a concurrent map read/range (`ReviewItemToProto`) is a Go runtime **fatal error: concurrent map read and map write** — this crashes the whole process, not a benign data race.
-  **Recommendation**: never mutate `item.Metadata` in place. Build a local `map[string]string` (copying `item.Metadata` plus the new `item_id`/`session_scoped` keys) and pass that local map as the last argument to `events.NewNotificationEvent(...)`, exactly the pattern `ReviewItemToProto` already uses for this same reason ("Always produce an independent copy of Metadata so concurrent RPC calls..."). Do not write back onto the shared `*ReviewItem`.
+Both previously-identified blockers are **RESOLVED**.
 
-- [ ] **AC3's `PruneOrphaned` is an N+1-under-lock, not "fetch once, filter in memory."**
-  `session.Storage.FindInstanceDataByID` (`session/storage.go:407-418`) calls `ListInstanceData()` → `EntRepository.List(ctx)` (`session/ent_repository.go:737-758`) — a full ent query eager-loading `Worktree`/`Tags`/`Project`/`ClaudeSession+Metadata` for *every* stored session — fresh, uncached, on every single call, and (per Task 4.3.1a's wiring) with no context/timeout at all. Task 4.2.1a's `pruneOrphanedRecords` calls this `exists(...)` closure once per `SessionScoped` record inside a loop over up to `MaxNotifications` (500) records — exactly the per-record existence-check pattern `research/pitfalls.md` §3(c) explicitly warned against ("fetch the set... once per pass and filter in memory, not do one DB/registry lookup per stored notification record"). Worse, Task 4.2.1b hooks this into `enforceRetention()`, which runs inside `Append()` while `NotificationHistoryStore.mu.Lock()` (a write lock) is already held (`store.go:118-153`) — so *any* notification append anywhere in the app (approval-pending, rework-cap-hit, anything, not just session-scoped ones) can trigger up to 500 synchronous full-table ent scans in serial, while blocking every other reader (`List`, `GetUnreadCount`, `MarkRead` all take `s.mu`).
-  **Recommendation**: change the injected predicate's shape to a batch call — e.g. `existingSessionIDs func() map[string]struct{}` (or similar), called once per prune pass to fetch the full session ID set, then filtered in memory per pitfalls.md's own recommendation — and/or skip the prune pass unless a `SessionScoped`-eligible record is actually present, rather than gating solely on "did an Append happen."
+- [x] **RESOLVED — Data race / fatal-crash risk in `OnItemAdded`.** The updated plan (Story 2.1's
+  "data-race note", Task 2.1.1a/2.1.1b/2.2.1a) no longer writes to `item.Metadata` anywhere.
+  Task 2.1.1a introduces a **local** `linkedItemID string`; Task 2.1.1b's linkage lookup assigns
+  only that local; Task 2.2.1a builds a **fresh** map via
+  `metadata := events.SessionScopedMetadata(item.Metadata, linkedItemID)` and passes `metadata`
+  (not `item.Metadata`) as `events.NewNotificationEvent(...)`'s trailing argument. The new shared
+  helper `events.SessionScopedMetadata` (Task 2.1.1c, `pkg/events`) does
+  `m := make(map[string]string, len(base)+2); for k, v := range base { m[k] = v }` — ranging over
+  a `nil` `base` (the common case, since `item.Metadata` is usually unset) is a safe no-op in Go,
+  so there is no nil-map panic risk either. Verified against the real source: `session/queue/queue.go`'s
+  `Add()` (lines 217-273) does exactly what the plan claims — stores `item` into `rq.items` at
+  line 230, unlocks at line 258, then calls `observer.OnItemAdded(item)` unlocked at line 263 — so
+  the race premise is real. `server/adapters/review_queue_adapter.go`'s `ReviewItemToProto` (lines
+  42-55) already builds its own independent copy of `item.Metadata` for exactly this reason ("Always
+  produce an independent copy of Metadata so concurrent RPC calls cannot race on the same
+  underlying map") — the plan's citation of this pattern as precedent is accurate, and the new
+  `OnItemAdded` code now mirrors it instead of writing back onto the shared pointer. Prose and code
+  snippets in the current plan.md contain no remaining `item.Metadata[...] = ...` or
+  `item.Metadata = make(...)` assignment.
+
+- [x] **RESOLVED — `PruneOrphaned` N+1-under-lock.** The updated plan (Story 4.2, Task 4.2.1a/
+  4.2.1b, Task 4.3.1a) replaced the per-record `func(sessionID string) bool` predicate with a
+  batch `existingSessionIDs func() map[string]struct{}`, renamed to
+  `NotificationHistoryStore.SetSessionExistenceLookup`. `pruneOrphanedRecords` now calls
+  `existingSessionIDs()` **exactly once** per invocation, then checks each candidate record via
+  in-memory `map[string]struct{}` membership — no per-record ent query. This also addresses the
+  "runs on every single `Append()`" half of the original finding: Task 4.2.1b adds a
+  `lastOrphanPruneAt time.Time` / `orphanPruneInterval = 1 * time.Minute` cadence gate inside
+  `enforceRetention()` (`if s.existenceChecker != nil && time.Since(s.lastOrphanPruneAt) >=
+  orphanPruneInterval`), so the batch fetch runs on a coarse timer rather than on every append.
+  Verified against the real `server/notifications/store.go`: `Append()` (lines 118-156) does hold
+  `s.mu.Lock()` for its full body (line 119-120, `defer s.mu.Unlock()`) and calls
+  `s.enforceRetention()` (line 153) while that write lock is held, and `enforceRetention()` (lines
+  437-454) already computes `now := time.Now()` at its top — exactly the local the plan says
+  Task 4.2.1b reuses rather than calling `time.Now()` a second time. The design is a genuine fix
+  matching the reviews' own recommendation ("fetch once, filter in memory"), not a relabeling.
+
+**New blocker-level issues introduged by the repair**: none found. Specific things checked and
+ruled out:
+- No nil-map panic in `events.SessionScopedMetadata` (ranging a nil map is safe; see above).
+- No double-locking/deadlock between the exported `PruneOrphaned` (which itself takes `s.mu.Lock()`
+  then calls `pruneOrphanedRecords`) and the direct `enforceRetention()` call path (which calls
+  `pruneOrphanedRecords` directly, already holding the lock via `Append`) — `pruneOrphanedRecords`
+  itself never locks, only its two callers do, each exactly once.
+- The `nil`-vs-empty-set sentinel distinction (`pruneOrphanedRecords` returns `0` immediately if
+  `existingSessionIDs()` returns `nil`, never treating "not ready" as "everything is gone") is
+  preserved correctly through both the `pruneOrphanedMinUptime` startup gate and a `ListInstanceData`
+  fetch-failure path.
 
 ## Concerns
 
-- [ ] **No structural guard against a 4th suppression-decision path drifting out of sync.** The plan itself documents 3 separate places `Hidden` gating must be applied by hand (`Determine()`, `OnItemAdded`, one branch of `onAutonomousDriverComplete`) and explicitly rejects a centralizing `NotificationPolicy` interface (reasonably, per the interface-pollution checklist). But this is exactly the failure class that produced the bug being fixed (`StartupScanner.Scan` silently bypassing `shouldSkipSession`) — there's no lint/test/registry enforcing that a future 5th `events.NewNotificationEvent(` call site also gets gated. Recommend at minimum a comment convention at every such call site (the plan's own `architecture.md` already produced the exact call-site catalog needed) or a table-driven test enumerating all known producers, mirroring this repo's existing `session-creation-registry.md`/`feature-testing-registry.md` pattern for "N touchpoints must all be updated."
+Carried forward from the previous round — none of these were in scope for this repair pass and
+none appear to have been addressed by the plan.md changes reviewed here.
 
-- [ ] **Synchronous DB lookup added to `OnItemAdded`'s critical path is mischaracterized as matching `maybeAutoCreatePR`'s pattern.** Risk Control claims the new `itemSessionLookupTimeout` (Task 2.1.1b) is "the same pattern as maybeAutoCreatePR's autoCreatePRLookupTimeout" — but `maybeAutoCreatePR`'s DB calls run inside an async goroutine (`rqm.wg.Add(1); go func(){...}()`), never blocking the caller, while Task 2.1.1b's `GetItemSessionBySessionUUID` call is synchronous, inline, inside `OnItemAdded`, which itself runs inside one of up to 5 concurrent `checkSession` goroutines (`session/review_queue_poller.go:500,513-520`). A slow DB round-trip (up to the full 2s) throttles that semaphore slot for the whole timeout, which matters most exactly when it's least wanted — a burst of many simultaneous transitions (e.g. right after a restart). `research/pitfalls.md` §2 already proposed the safer alternative (cache the resolved `(item_id, sessionRole)` pair on `Instance` at session-creation time, since it's immutable for the session's life) and the plan's "Step 0.5 — Alternatives Considered" never discusses or explicitly rejects it. Adopting that alternative would also eliminate BLOCKER #1 above (nothing would need to mutate `item.Metadata` at notification time at all).
+- [ ] **No structural guard against a 4th suppression-decision path drifting out of sync.** The
+  plan still documents 3 separate hand-applied `Hidden`-gating call sites (`Determine()`,
+  `OnItemAdded`, one branch of `onAutonomousDriverComplete`) with no lint/test/registry enforcing
+  that a future 5th `events.NewNotificationEvent(` call site also gets gated — the same failure
+  class that produced the bug being fixed. Recommend at minimum a comment convention or a
+  table-driven test enumerating all known producers, mirroring this repo's
+  `session-creation-registry.md`/`feature-testing-registry.md` pattern.
 
-- [ ] **Epic 3 spends a full Story + dedicated regression test on code the plan's own research confirms is unreachable in production.** Story 3.1 (+ Task 3.3.1a's test) fixes/tests the `SessionRoleTriage` "stuck" branch in `autonomous_orchestration_service.go`, which `features.md` and `architecture.md` both independently confirm no live caller can reach today. Design Decision 6 uses exactly this unreachability to justify *not* adding a Hidden-gate to the same branch ("adding suppression logic to an unreachable path would be unverifiable and untestable... the metadata fix is cheap, always-correct insurance") — yet the plan still commits to writing and maintaining a dedicated unit test asserting behavior of code nothing can exercise. The one-line metadata fix itself is cheap insurance and fine to keep; the dedicated test for it adds review/maintenance surface disproportionate to a "small, targeted bug-fix" plan and would be better split into a follow-up chore.
+- [ ] **Synchronous DB lookup added to `OnItemAdded`'s critical path is still mischaracterized as
+  matching `maybeAutoCreatePR`'s pattern.** Task 2.1.1b's `itemSessionLookupTimeout` (2s) is still
+  a synchronous, inline call inside `OnItemAdded`, itself running inside one of up to 5 concurrent
+  `checkSession` goroutines — unlike `maybeAutoCreatePR`'s async-goroutine DB calls. `pitfalls.md`'s
+  proposed alternative (cache the resolved `(item_id, sessionRole)` pair on `Instance` at
+  session-creation time) is still not discussed/rejected in Step 0.5. Note: this alternative, if
+  adopted, would also have sidestepped Blocker 1 entirely (nothing would need to build metadata at
+  notification time) — but the plan instead fixed Blocker 1 directly, which is a valid resolution
+  on its own terms; this Concern is about lookup latency/contention, not correctness.
 
-- [ ] **AC2's "not a dead link" premise for a deleted backlog item rests on a code trace, not an executed test.** `research/ux.md` §3 traces `BacklogItemDetail.tsx:391-408`/`:911-928`'s "Item not found." state by reading the code, and the plan adds no test (unit, integration, or e2e) exercising a notification whose `item_id` points at an already-deleted backlog item. This is a reasoned, explicit "no test needed" call, not an oversight — but this exact scenario becomes materially more common after this fix ships (item_id-bearing notifications for completed sessions will now routinely outlive their backlog items once the item is closed/deleted). A single low-cost e2e assertion (navigate to `/backlog?item=<deleted-id>`, assert the `role="alert"` text renders) would close this gap cheaply and is worth adding given how central this fallback is to AC2's whole justification.
+- [ ] **Epic 3 still spends a full Story + dedicated regression test (Task 3.3.1a) on the
+  `SessionRoleTriage` "stuck" branch that the plan's own research confirms is unreachable in
+  production.** Design Decision 6 uses this same unreachability to justify *not* adding a
+  `Hidden` gate to that branch, yet a dedicated unit test for the metadata fix remains. The
+  one-line metadata fix itself is fine; the dedicated test is disproportionate maintenance surface
+  for unreachable code.
 
-- [ ] **AC3's pruning is bounded by "whenever the next notification happens to be appended," not by any fixed time window.** The chosen design piggybacks `pruneOrphanedRecords` on `enforceRetention()`, itself only invoked from `Append()` (Task 4.2.1b) — deliberately avoiding a new ticker/goroutine (a reasonable simplicity trade-off per `architecture.md` Q3). But AC3's own wording ("pruned rather than sitting untouched for up to 7 days") implies a bounded improvement, and this design provides no such bound: on a quiet system with long gaps between notifications, an orphaned record could sit far longer than the 7-day age-based retention it's meant to improve on. The plan's "Unresolved Questions" section addresses only the unrelated `pruneOrphanedMinUptime` startup-gate constant and never acknowledges this trade-off. Recommend either explicitly documenting this as an accepted "opportunistic, not time-bounded" GC model, or adding a cheap independent trigger (e.g. a prune pass from the existing poll loop, or one at server startup once the reload window closes).
+- [ ] **AC2's "not a dead link" premise for a deleted backlog item still rests on a code trace, not
+  an executed test.** No unit/integration/e2e test exercises a notification whose `item_id` points
+  at an already-deleted backlog item, even though this scenario becomes materially more common
+  once this fix ships (item_id-bearing notifications for completed sessions routinely outlive
+  their backlog items after closure/deletion).
+
+- [ ] **AC3's pruning is still bounded only by "whenever the next notification happens to be
+  appended," not by any independent time trigger.** The new `orphanPruneInterval` cadence gate
+  bounds how *often* a sweep can run, but the sweep is still only ever invoked from inside
+  `Append()` (via `enforceRetention()`) — on a quiet system with no new notifications for days, an
+  orphaned record can still sit well past the 7-day age-based retention AC3 is meant to improve on.
+  This is an acceptable "opportunistic GC" trade-off if explicitly documented as such, but the plan
+  still does not call it out as an accepted limitation.
 
 ## Minors
 
-- ADR-001's explicit `metadata["session_scoped"]` convention is a real improvement over ID-prefix sniffing (its failure mode is safe — forgetting the key just leaves a record un-prunable, never causes accidental deletion) — but there's still no automated enforcement (lint/test) that a new `NewNotificationEvent` call site sets one of `session_scoped`/`item_id` correctly. Purely tribal knowledge today, the same category of gap that caused the bug this plan fixes.
-- Story 3.2's acceptance criteria constructs "a hypothetical future Hidden autonomous-driver-run instance" to justify testing its `Hidden`-gate on the generic notifier — but per the plan's own research, this exact combination (Hidden *and* reaching the generic notifier) is equally unreachable today, since `SessionRoleReview` always early-returns before the generic notifier is ever reached. This is the identical "currently dead" situation Design Decision 6 uses to justify skipping a gate on the Triage-stuck branch — an inconsistent internal standard, though harmless since the added gate itself is free.
+- ADR-001's `metadata["session_scoped"]` convention remains unenforced by any lint/test — a new
+  `NewNotificationEvent` call site that forgets to set `session_scoped`/`item_id` fails silently
+  (record just becomes un-prunable, not incorrectly deleted — a safe failure mode, but still
+  tribal knowledge).
+- Story 3.2's acceptance criteria still constructs "a hypothetical future Hidden
+  autonomous-driver-run instance" to justify testing a `Hidden` gate that, per the plan's own
+  research, is equally unreachable today (since `SessionRoleReview` always early-returns before the
+  generic notifier is reached) — the same "currently dead code" situation Design Decision 6 uses to
+  justify *skipping* a test for the Triage-stuck branch. Inconsistent internal standard, though
+  harmless since the added gate itself is free.

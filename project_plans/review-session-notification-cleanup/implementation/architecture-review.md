@@ -1,6 +1,7 @@
 # Architecture Review: review-session-notification-cleanup
-**Date**: 2026-07-25
-**Verdict**: BLOCKED
+
+**Date**: 2026-07-25 (iteration 1 — scoped re-review of prior BLOCKERs/Concern only)
+**Verdict**: CONCERNS
 
 ## Constitution Violations
 - None. `docs/adr/ADR-000-architecture-constitution.md` does not exist in this repository
@@ -8,118 +9,113 @@
 
 ## Blockers
 
-- [ ] **Task 4.3.1a / Story 4.3 (`server/server.go`)** — the plan's code snippet closes over
-  `startTime` as "already bound at server/server.go:111," but `startTime` is a local variable
-  scoped to `NewServer` (lines 107-121). The insertion point the plan names —
-  `wireDepsIntoServer` (line 138+), where `notifStore` is actually constructed — is a **different
-  function** with no `startTime` in scope; as written this is a compile error (undefined
-  identifier). It's worse than a typo: `NewServerWithDeps` (the second, Warren-lifecycle
-  construction entry point, called directly by external callers with pre-built deps) invokes
-  `wireDepsIntoServer` without ever computing a `startTime` at all, so there is no single
-  "process start" instant available at the point the closure needs one. This directly
-  undermines the plan's own named Risk Control mitigation for AC3's most dangerous failure mode
-  (mass-pruning live notifications for sessions that exist but haven't finished reconciling after
-  a restart).
-  **Remediation**: add a `startedAt time.Time` field to the `Server` struct, set once in
-  `newServerBase` (shared by both `NewServer` and `NewServerWithDeps`), and have the
-  `SetSessionExistenceChecker` closure in `wireDepsIntoServer` reference `srv.startedAt` instead
-  of a function-local `startTime`.
+None remain. Both blockers from the previous round are resolved.
 
-- [ ] **Story 4.2 / Task 4.2.1b (`server/notifications/store.go`, `enforceRetention`)** — wiring
-  `s.pruneOrphanedRecords(s.existenceChecker)` into `enforceRetention()`, which runs on **every**
-  `Append()` call, means the injected existence check
-  (`storage.FindInstanceDataByID` → `Storage.ListInstanceData()` →
-  `EntRepository.List(ctx)` — confirmed at `session/ent_repository.go:737`, a
-  `Session.Query().WithWorktree().WithTags().WithProject().WithClaudeSession(...).All(ctx)`, a
-  real multi-edge-eager-loaded SQL query, not a cheap map lookup) executes **once per eligible
-  record** (`SessionScoped && item_id == ""`) in the up-to-500-record store, **on every single
-  append**, while holding the store's global `s.mu` lock (blocking all concurrent notification
-  reads/writes for the duration). `Append()` fires roughly every 500ms in a busy system (the
-  subscriber's coalesce-flush interval, `server/notifications/subscriber.go`'s
-  `DefaultCoalesceInterval`). This is an O(eligible-records) DB-query storm on a hot path, not
-  analyzed anywhere in the plan's Risk Control table (which only reasons about I/O added to
-  `OnItemAdded`, never this compounding cost inside the notification store's own retention pass).
-  It will look fine in development (0-1 orphan candidates) and silently degrade under the exact
-  production scenario this feature exists to fix — a growing backlog of stale session-scoped
-  notifications.
-  **Remediation**: (a) call `storage.ListInstanceData()` **once** per prune pass, build an
-  in-memory `map[string]struct{}` of existing stable IDs, and check membership instead of calling
-  `FindInstanceDataByID` (which re-queries) per record; and (b) decouple the orphan sweep from the
-  `Append()` hot path — run it on its own periodic ticker (matching the existing age-based
-  retention's already-coarse cadence) rather than synchronously on every single append.
+- [x] **RESOLVED — Task 4.3.1a / Story 4.3 (`server/server.go`), `startedAt` scoping.** The plan
+  now adds `startedAt time.Time` to the `Server` struct and sets it once in `newServerBase`
+  (Story 4.3 / Task 4.3.1a, plan.md:936-991), which both `NewServer` and `NewServerWithDeps`
+  call before either does anything server-specific. Verified directly against
+  `server/server.go`: `newServerBase` (line 65) constructs `srv := &Server{...}` (lines 68-82)
+  then `srv.addr.Store(&addr)` (line 83) — exactly the insertion point the plan names ("right
+  after `srv := &Server{...}` is constructed... before `srv.addr.Store(&addr)`"). `NewServer`
+  (line 107) and `NewServerWithDeps` (line 127) both call `newServerBase` first, then
+  `wireDepsIntoServer(srv, deps, connCtx)` (lines 118, 129) — confirming both entry points
+  genuinely converge on the shared base function. `wireDepsIntoServer` (line 138) is a function
+  parameter `srv *Server`, so `srv.startedAt` is a valid, in-scope field reference inside the
+  closure the plan adds at lines 949-970 (right after the real `notifStore, storeErr =
+  notifications.NewNotificationHistoryStore(...)` success branch at server.go:203-214, which the
+  plan's line citations match exactly). No undefined identifiers, correct receiver — this
+  compiles as described. The old `NewServer`-local `startTime` (line 111) is explicitly called
+  out in the plan as unrelated dependency-build timing instrumentation, untouched by this task —
+  correctly distinguished from the new `srv.startedAt`.
+
+- [x] **RESOLVED — Story 4.2 / Task 4.2.1a/4.2.1b (`server/notifications/store.go`), N+1-under-lock
+  existence check.** The plan now injects a **batch** `existingSessionIDs func() map[string]struct{}`
+  (renamed to `SetSessionExistenceLookup`, replacing the earlier per-record
+  `SetSessionExistenceChecker`/`exists(sessionID string) bool` shape), called exactly **once** per
+  prune pass inside `pruneOrphanedRecords` (plan.md:850-875), building an in-memory set checked via
+  map membership per record — not a per-record `FindInstanceDataByID` call. Verified against the
+  real `server/notifications/store.go`: `Append` (line 118) takes `s.mu.Lock()` and calls
+  `s.enforceRetention()` (line 153) while holding it; `enforceRetention()` (line 437) is documented
+  "must be called with the write lock held" and already computes `now := time.Now()` at its top —
+  exactly what the plan's new gated block (plan.md:886-892) reuses, matching the real function's
+  current structure. The plan also decouples the sweep from every single `Append()` via
+  `lastOrphanPruneAt`/`orphanPruneInterval` (1 min default), gating the batch fetch inside
+  `enforceRetention()`. Internal consistency verified: the setter name (`SetSessionExistenceLookup`),
+  the struct field (`existenceChecker func() map[string]struct{}`), and both call sites
+  (`enforceRetention()`'s `s.existenceChecker` and `PruneOrphaned`'s public `existingSessionIDs`
+  parameter) all agree on the same batch function shape. `server/server.go`'s wiring in Task 4.3.1a
+  calls `notifStore.SetSessionExistenceLookup(func() map[string]struct{} { ... })` — the new
+  batch-shaped closure, not the old per-record predicate — and its body calls
+  `storage.ListInstanceData()` (confirmed real method, `session/storage.go:381`, a thin wrapper over
+  `s.repo.List(context.Background())`) exactly once per invocation, matching both `GetStableID()`
+  and `Title` into the returned set, mirroring `InstanceData.MatchesID`'s existing two-way match
+  (confirmed at `session/storage.go:388-403`). `PruneOrphaned` locks `s.mu.Lock()` and delegates to
+  the (non-locking) `pruneOrphanedRecords`, matching the "assumes lock already held" contract used
+  by both call paths — no double-lock or missing-lock defect.
 
 ## Concerns
 
-- [ ] **ADR-001 / Tasks 2.2.1a, 3.2.1b, 4.1.1b — magic-string metadata convention duplicated with
-  no shared constant.** ADR-001 rejects ID-prefix sniffing as "an inferred, unaudited signal" a
-  future producer could silently violate, choosing an explicit typed `SessionScoped` field
-  instead — but the mechanism that *populates* that field is itself an inferred, unaudited
-  signal one level down: `metadata["session_scoped"] = "true"` is written as an independent
-  string literal in `server/review_queue_manager.go` (Task 2.2.1a) and
-  `server/services/autonomous_orchestration_service.go` (Task 3.2.1b), and read back via a
-  separate literal comparison in `server/notifications/subscriber.go` (Task 4.1.1b), with no
-  shared constant anywhere. A typo divergence (`"sessionScoped"`, a stray space, `"True"`) between
-  producer and consumer silently defaults `SessionScoped` to `false` — not data-loss, but a
-  silent per-producer regression of AC3 with zero compiler or lint signal.
-  **Remediation**: define one exported constant pair near `pkg/events.NewNotificationEvent`
-  (`MetadataKeySessionScoped`, `MetadataValueTrue`) used at all three sites. Better: since
-  `OnItemAdded` and the generic autonomous notifier already build near-identical metadata maps
-  (`{"item_id": ..., "session_scoped": "true"}`), extract one shared helper (e.g.
-  `events.SessionScopedMetadata(itemID string) map[string]string`) — the "generalize once 2+ real
-  call sites need identical logic" case the design-patterns skill endorses, and materially cheaper
-  than the already-correctly-rejected `NotificationPolicy` interface (Alternative B).
+- [x] **RESOLVED — magic-string metadata convention duplicated with no shared constant.** The plan
+  now defines `events.SessionScopedMetadata(base map[string]string, itemID string) map[string]string`
+  plus exported constants `MetadataKeySessionScoped`/`MetadataKeyItemID` in `pkg/events` (Task
+  2.1.1c, plan.md:565-603), forwarded through `server/events/forward.go` alongside the existing
+  `NewNotificationEvent`/`EventNotification` forwards. Verified `server/events/forward.go` already
+  forwards `EventNotification` and `NewNotificationEvent` from `pkgevents` in exactly the pattern
+  the plan describes, confirming the forwarding mechanism it extends is real, not hypothetical.
+  All three original call sites now route through the one helper/constants:
+  producer Task 2.2.1a (`server/review_queue_manager.go`) calls
+  `events.SessionScopedMetadata(item.Metadata, linkedItemID)`; producer Task 3.2.1b
+  (`server/services/autonomous_orchestration_service.go`) calls
+  `events.SessionScopedMetadata(nil, linkedItemID)`; consumer Task 4.1.1b
+  (`server/notifications/subscriber.go`'s `eventToRecord`) reads back via
+  `event.NotificationMetadata[events.MetadataKeySessionScoped] == "true"` — the exported constant,
+  not a raw string literal, at all three sites. No divergent literal remains.
 
-- [ ] **No enforcement ladder for a third, future producer forgetting to opt in.** The plan/ADR-001
-  knowingly accepts that any future notification producer must remember to set
-  `session_scoped` — there is no compile-time, lint-time, or test-time check that every
-  session-identified `events.NewNotificationEvent(...)` call site sets the key. This is a
-  documented trade-off (ADR-001 Consequences), not an oversight, so it does not block this plan,
-  but it is the exact "eliminate the class, not the instance" gap worth naming.
-  **Recommendation**: add one test in the `notifications`/producer packages asserting the two
-  known-current producer call sites include the metadata key, so a future new producer at least
-  has a place a reviewer would think to update, even though nothing forces it before merge.
+The following Concerns from the previous round are **carried forward unaddressed** — the current
+plan's text is unchanged on each of these points (confirmed by re-reading the corresponding
+sections: Design Decision 6, the Risk Control table, and Story 2.1's acceptance criteria):
 
-- [ ] **Design Decision 6 applies an inconsistent reachability standard.** The plan declines to add
-  a `Hidden` gate to the "Triage stuck" call site (Story 3.1) because it's "currently dead code in
-  practice... unverifiable and untestable," yet adds exactly that category of gate to the generic
-  done/stuck notifier (Story 3.2), whose own acceptance-criteria example is explicitly labeled "a
-  hypothetical future Hidden autonomous-driver-run instance" — also unreachable today, since
-  `SessionRoleReview`/`SessionRoleTriage` both `return` before reaching this notifier and
-  `SessionRoleWork`-linked instances are never `Hidden`. The two decisions apply opposite
-  reachability standards to structurally the same "defensive guard against an unreachable state"
-  situation without acknowledging it.
-  **Recommendation**: no code change needed (the 3.2 gate is cheap, correct, harmless insurance
-  worth keeping) — just have the plan's write-up either apply the same reasoning to both sites or
-  explain why 3.2 gets the benefit of the doubt that 3.1 didn't.
-
-- [ ] **Story 2.1 — burst-transition latency not analyzed.** `OnItemAdded`'s new
-  `GetItemSessionBySessionUUID` lookup (Task 2.1.1b) runs synchronously in the calling goroutine
-  (unlike `maybeAutoCreatePR`'s async-goroutine pattern it otherwise mirrors), bounded to 2s.
-  `ReviewQueue.Add()` (confirmed at `session/queue/queue.go:258-264`) releases its own lock before
-  notifying observers, so there's no deadlock risk, but observer notification is sequential — N
-  simultaneous new queue entries in one tick or one `StartupScanner.Scan` pass (e.g., a fleet
-  reconciling after a service restart) would serially block the calling goroutine for up to
-  N×2s. The Risk Control table only justifies "once per transition, not per tick," not the
-  cumulative burst case.
-  **Recommendation**: document why the realistic worst-case N is acceptable (likely small in
-  steady state), or move the lookup to a bounded async dispatch if startup-fleet-size N could
-  ever be large enough to matter.
+- [ ] **No enforcement ladder for a third, future producer forgetting to opt in.** Still no
+  compile-time, lint-time, or test-time check that every session-identified
+  `events.NewNotificationEvent(...)` call site sets the `session_scoped`/`item_id` metadata via
+  `events.SessionScopedMetadata`. Documented trade-off in ADR-001, not blocking. Recommendation
+  unchanged: add one test asserting the two known-current producer call sites include the metadata
+  key.
+- [ ] **Design Decision 6 still applies an inconsistent reachability standard.** The plan declines a
+  `Hidden` gate on the "Triage stuck" call site (Story 3.1) as unreachable/untestable, but adds
+  exactly that category of gate to the generic done/stuck notifier (Story 3.2) whose own example is
+  explicitly "a hypothetical future Hidden autonomous-driver-run instance" — also unreachable today.
+  No code change needed; just reconcile the write-up's reasoning across the two sites.
+- [ ] **Story 2.1 — burst-transition latency still not analyzed.** `OnItemAdded`'s synchronous,
+  2s-bounded `GetItemSessionBySessionUUID` lookup (Task 2.1.1b) still runs inline in the observer
+  callback; the Risk Control table still only justifies "once per transition, not per tick," not
+  the cumulative burst case (N simultaneous transitions after a restart serially blocking up to
+  N×2s). No new text addresses this in the current revision.
 
 ## Nitpicks
 
+Carried forward unchanged from the previous round (still applicable, not addressed by this
+repair — none were in scope for this iteration):
+
 - `NotificationRecord.SessionID` overloading two domain concepts (real session ID vs. backlog item
   ID) would be more cleanly modeled as two distinct optional fields or a small discriminated
-  `NotificationSubject` type rather than a sibling `SessionScoped bool`. The ADR's minimal patch is
-  a reasonable, proportionate trade-off given `SessionID` is already read elsewhere (`ListOptions`
-  filtering, subscriber coalescing) — a full remodel would be disproportionate to this plan's
-  scope. Flagging for awareness, not action.
-- Parse-at-boundary is only half-applied: the new `SessionScoped bool` is a good typed field at
-  the persisted-record boundary, but the upstream signal (`event.NotificationMetadata`) remains a
-  raw `map[string]string` end-to-end. Correctly out of scope here (fixing it broadly would touch
-  ~9 unrelated `NewNotificationEvent` call sites, per Alternative B's rejection) — noted for a
-  future, larger notification-metadata cleanup.
-- Task 2.1.1b: when `rqm.poller.FindInstance(item.SessionID)` returns `nil`, `resolvedID` stays
-  the raw title string, and `GetItemSessionBySessionUUID(lookupCtx, resolvedID)` is queried with a
-  title rather than a UUID — it will simply miss (`ErrNotFound`), silently skipping `item_id`
-  enrichment even for a genuinely backlog-linked session in that edge case. Low severity (largely
-  foreclosed by Epic 1's fix), but worth a one-line comment at the call site.
+  `NotificationSubject` type rather than a sibling `SessionScoped bool`. Proportionate trade-off
+  given scope; flagging for awareness, not action.
+- Parse-at-boundary is only half-applied: `SessionScoped bool` is a good typed field at the
+  persisted-record boundary, but the upstream signal (`event.NotificationMetadata`) remains a raw
+  `map[string]string` end-to-end. Correctly out of scope here; noted for a future, larger
+  notification-metadata cleanup.
+- Task 2.1.1b: when `rqm.poller.FindInstance(item.SessionID)` returns `nil`, `resolvedID` stays the
+  raw title string, and `GetItemSessionBySessionUUID(lookupCtx, resolvedID)` is queried with a title
+  rather than a UUID — it will simply miss (`ErrNotFound`), silently skipping `item_id` enrichment
+  even for a genuinely backlog-linked session in that edge case. Low severity, worth a one-line
+  comment at the call site.
+
+## New Issues From This Round's Repair
+
+None found. The repaired sections (Story 4.2, Story 4.3, Task 2.1.1c, and the three metadata-helper
+call sites) were checked line-by-line against the real `server/server.go` and
+`server/notifications/store.go` for naming/signature consistency (setter name vs. usage, closure
+shape vs. field type, lock-holding contract between `Append`/`enforceRetention`/`PruneOrphaned`) —
+no new compile error, race, or cross-section inconsistency was introduced.
