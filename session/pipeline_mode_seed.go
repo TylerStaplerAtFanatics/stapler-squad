@@ -346,7 +346,13 @@ back BLOCKED, resolve every blocker before continuing.
 start writing code if the gate reports FAIL.
 5. Implement: write the code and tests the plan calls for. Run /backlog/done-N after
 each acceptance criterion is genuinely satisfied, and /backlog/fail-N if you determine
-one cannot be met as written (say why in your summary later).
+one cannot be met as written (say why in your summary later). If you need to manually
+run a standalone stapler-squad instance to click through a change by hand, see
+CLAUDE.md's "Manual/interactive testing without touching the live deployed instance"
+section - use a distinct PORT and STAPLER_SQUAD_INSTANCE every time, and kill that
+instance yourself once you are done with it. Never leave one running in the background.
+Other sessions in this same workspace will not know it exists, and repeated unclosed
+instances have previously exhausted this machine's memory.
 6. Verify: once every criterion is addressed, invoke the sdd:6-verify skill (idiom and
 architecture review, then the correctness and test gate) and resolve what it finds.
 7. Review and ship: use /backlog/review and /backlog/ship exactly as documented in

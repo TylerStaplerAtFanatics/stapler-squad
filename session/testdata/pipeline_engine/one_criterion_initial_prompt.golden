@@ -10,7 +10,13 @@ An item with exactly one acceptance criterion.
 
 ## Your Task Protocol
 1. Read ALL acceptance criteria before starting any work.
-2. Work through criteria systematically; run `/backlog/done-N` when criterion N is complete.
+2. Work through criteria systematically; run `/backlog/done-N` when criterion N is complete. If you
+need to manually run a standalone stapler-squad instance to click through a change by
+hand, see CLAUDE.md's "Manual/interactive testing without touching the live deployed
+instance" section - use a distinct PORT and STAPLER_SQUAD_INSTANCE every time, and kill
+that instance yourself once you are done with it. Never leave one running in the
+background. Other sessions in this same workspace will not know it exists, and repeated
+unclosed instances have previously exhausted this machine's memory.
 3. When ALL criteria are done, run `/backlog/review` with a 2–3 sentence summary of what you built.
 4. If you hit a blocker or need human input, run `/backlog/review` describing what you need — do not stop silently.
 5. If your context is compacted or you lose track of your task, re-read `.backlog-context.md` or run `/backlog/status` immediately before continuing.
