@@ -54,15 +54,18 @@ total diff. **Rejected.**
 | `itemSessionLookupTimeout` | New `const` (`server/review_queue_manager.go`), a short bounded timeout (2s) for the synchronous `GetItemSessionBySessionUUID` call added to `OnItemAdded`'s observer path. |
 | `NotificationRecord` | Existing flat-JSON-persisted struct (`server/notifications/store.go:34-52`). Gains a new `SessionScoped bool` field (ADR-001). |
 | `NotificationRecord.SessionScoped` | New field, `true` only when the record's producer explicitly marked `metadata["session_scoped"] = "true"` — the positive signal that `SessionID` is a real session identifier, not an overloaded backlog-item ID. See ADR-001. |
-| `NotificationHistoryStore.PruneOrphaned` | New exported method — removes `SessionScoped` records with no `item_id` whose session no longer exists per an injected `exists` predicate. Returns the count removed. |
-| `NotificationHistoryStore.SetSessionExistenceChecker` | New exported setter — wires the `exists func(sessionID string) bool` predicate used by `enforceRetention`'s internal prune pass. `nil` (the default) makes pruning a no-op. |
+| `NotificationHistoryStore.PruneOrphaned` | New exported method — removes `SessionScoped` records with no `item_id` whose `SessionID` is absent from a batch-fetched in-memory set of existing session IDs. Returns the count removed. |
+| `NotificationHistoryStore.SetSessionExistenceLookup` | New exported setter (renamed from an earlier per-record-predicate design after architecture review flagged the N+1 cost) — wires a **batch** `existingSessionIDs func() map[string]struct{}` function, called ONCE per prune pass (not once per eligible record) to fetch the full existing-ID set, which all eligible records are then checked against via map membership. `nil` (the default, or the closure itself returning `nil` for a given call) makes that pass a no-op — see `pruneOrphanedMinUptime` below for the one case the closure intentionally returns `nil`. |
+| `NotificationHistoryStore.lastOrphanPruneAt` / `orphanPruneInterval` | New unexported field + `const` (`server/notifications/store.go`, default 1 minute) — decouples the orphan sweep (a real batch fetch) from firing on literally every `Append()` call (roughly every 500ms under the subscriber's coalesce interval). `enforceRetention()` only invokes the orphan sweep when `time.Since(lastOrphanPruneAt) >= orphanPruneInterval`; the pre-existing age/count trim in the same function stays unconditional because it is pure in-memory slice work with no I/O cost. |
+| `events.SessionScopedMetadata` | New helper function (`pkg/events`, forwarded through `server/events` alongside `NewNotificationEvent`) — `func(base map[string]string, itemID string) map[string]string`. Builds and returns a **fresh** map (copying `base`'s entries, never mutating `base`) with `MetadataKeySessionScoped` set to `"true"` and `MetadataKeyItemID` set to `itemID` when non-empty. The single shared call site for the `"session_scoped"`/`"item_id"` metadata convention (Tasks 2.2.1a, 3.2.1b); `MetadataKeySessionScoped`/`MetadataKeyItemID` are the paired exported constants `eventToRecord` (Task 4.1.1b) reads back. |
 | `eventToRecord` | Existing conversion function (`server/notifications/subscriber.go:135-164`) — the sole place an `*events.Event` becomes a `*NotificationRecord` before `Append`. Modified to populate `SessionScoped`. |
-| `metadata["session_scoped"]` | New convention key on the `map[string]string` passed to `events.NewNotificationEvent`, set only by the two producers whose `SessionID` is a real session identifier. |
+| `metadata["session_scoped"]` (`events.MetadataKeySessionScoped`) | New convention key on the `map[string]string` passed to `events.NewNotificationEvent`, set only by the two producers whose `SessionID` is a real session identifier — both via `events.SessionScopedMetadata`, never as an independent string literal per-producer. |
 | `metadata["item_id"]` | Existing convention key (already used throughout `backlog_service_triage.go`) identifying the backlog item a notification is about; the frontend already prefers this for "View in Backlog" routing (`NotificationsPage.tsx:377-393`, no change needed). |
 | `StartupScanner.Scan` | Existing method (`session/startup_scanner.go:31-53`) that runs `Determine()` on every loaded instance before the first poll tick. Gains a cheap `Hidden` pre-check (belt-and-suspenders; the `Determine()` fix alone already makes this behaviorally redundant, but it's free and closes the specific reproducible bypass at its own source). |
 | `onAutonomousDriverComplete` | Existing method (`server/services/autonomous_orchestration_service.go:228-546`) — a second, independent generic-completion notifier for `AutonomousDriver`-run sessions. Two call sites inside it are fixed: the "Triage stuck" notice (~line 310, metadata only) and the generic done/stuck notice (~line 540, metadata + `Hidden` gate). |
 | `linkedItemID` | New outer-scope local `string` in `onAutonomousDriverComplete`, threading the resolved backlog item ID from the nested `ItemSession`/`BacklogItem` lookup block out to the generic notifier call at the bottom of the function. |
-| `pruneOrphanedMinUptime` | New `const` (`server/server.go`, 5 minutes) — a defensive minimum-process-uptime gate before the wired existence-checker ever returns `false`, guarding against any future regression that makes instance loading asynchronous (see Risk Control). |
+| `pruneOrphanedMinUptime` | New `const` (`server/server.go`, 5 minutes) — a defensive minimum-process-uptime gate: while `time.Since(srv.startedAt) < pruneOrphanedMinUptime`, the wired existence-lookup closure returns `nil` (meaning "not ready to judge, skip this pass") instead of the real batch-fetched set, guarding against any future regression that makes instance loading asynchronous (see Risk Control). |
+| `Server.startedAt` | New `time.Time` field on the `Server` struct (`server/server.go`), set once in `newServerBase` — the single shared construction path `NewServer` and `NewServerWithDeps` both call before either computes anything server-specific. Replaces a `NewServer`-local `startTime` variable that `wireDepsIntoServer` (where the existence-lookup closure is actually built) could never have seen, since `NewServerWithDeps` calls `wireDepsIntoServer` directly without ever going through `NewServer` at all. |
 | `AttentionReason` | Existing type alias (`session/review_queue.go:12`) for `queue.AttentionReason`; `ReasonTaskComplete`/`ReasonIdle`/`ReasonStale` are the three reasons this feature suppresses for `Hidden` sessions specifically called out in the requirements (though the actual suppression, once `Hidden`, is unconditional on reason — see Design Decision 1 below). |
 
 ---
@@ -74,8 +77,9 @@ total diff. **Rejected.**
 | Where to gate on `Hidden` | Pure-function early-return (`Determine`) + defense-in-depth guard at the publish call site (`OnItemAdded`) — two independent checks, not one relied on twice | Single check only in `shouldSkipSession` (poller) | Requirements explicitly forbid relying solely on the poller's existing `shouldSkipSession`; `StartupScanner.Scan` proven to bypass it entirely (architecture.md Q1) |
 | Resolving `item_id`/`SessionRole` | Reuse existing single-query DTO (`GetItemSessionBySessionUUID` → `ItemSessionSummary`) | New dedicated query/dedicated repository method | Interface-pollution checklist: don't add a second query for data one call already returns; `maybeAutoCreatePR` in the same file already calls this exact method for the same session |
 | Session-scoped vs. item-scoped notification discrimination (AC3) | New explicit typed field (`NotificationRecord.SessionScoped`), see ADR-001 | Infer from `review-queue-<sessionID>-<timestamp>` ID-prefix string matching | Prefix-matching is an inferred, unaudited signal that silently breaks if any future producer picks a colliding ID scheme; an explicit field makes the eligibility decision visible and mandatory-opt-in at the producer |
-| Orphan existence check | Inject a plain `func(sessionID string) bool` predicate into `NotificationHistoryStore`, wired from `server.go` using `session.Storage.FindInstanceDataByID` | Import `*session.Storage`/`*session.ReviewQueuePoller` directly into the `notifications` package | Interface-pollution checklist (define at consumption point) + pitfalls.md's package-layering note: `server/notifications` currently has zero dependency on `session` and should stay that way |
-| Existence check function choice | `session.Storage.FindInstanceDataByID` (durable, synchronously loaded) | `session.ReviewQueuePoller.FindInstance` (live in-memory only) | `FindInstance` only reflects the poller's currently-monitored set — absent after a restart before reconciliation even though the session is real; `FindInstanceDataByID` reflects the durable record set loaded synchronously in `BuildRuntimeDeps` before the async tmux-start goroutine even begins (see Design Decision 2) |
+| Orphan existence check | Inject a batch `func() map[string]struct{}` (`existingSessionIDs`) into `NotificationHistoryStore`, called ONCE per prune pass and wired from `server.go` around `session.Storage.ListInstanceData()` | (a) A plain per-record `func(sessionID string) bool` predicate; (b) Import `*session.Storage`/`*session.ReviewQueuePoller` directly into the `notifications` package | (a) rejected by architecture + adversarial review: a per-record predicate backed by `FindInstanceDataByID` re-runs a full multi-edge-eager-loaded ent query (`ListInstanceData` → `EntRepository.List`) once per eligible record, up to 500 times per prune pass, while `s.mu` is held — an O(eligible-records) DB-query storm on a hot path; (b) still rejected per the interface-pollution checklist (define at consumption point) + pitfalls.md's package-layering note: `server/notifications` currently has zero dependency on `session` and should stay that way |
+| Existence check data source | `session.Storage.ListInstanceData()` (durable, synchronously loaded), fetched once per prune pass into an in-memory `map[string]struct{}` keyed by both stable ID and title | `session.ReviewQueuePoller.FindInstance` (live in-memory only) | `FindInstance` only reflects the poller's currently-monitored set — absent after a restart before reconciliation even though the session is real; `ListInstanceData` reflects the durable record set loaded synchronously in `BuildRuntimeDeps` before the async tmux-start goroutine even begins (see Design Decision 2) |
+| Orphan sweep cadence | Gated inside `enforceRetention()` by `time.Since(lastOrphanPruneAt) >= orphanPruneInterval` (1 min default), so the batch fetch runs on a coarse timer, not on every `Append()` | Run the batch fetch unconditionally on every `Append()` (the plan's original shape) | `Append()` fires roughly every 500ms under the subscriber's coalesce interval; even a single once-per-pass batch fetch is a real ent query and should not run twice a second while `s.mu` (a write lock) is held, blocking all concurrent notification reads/writes |
 | Suppression scope once `Hidden==true` | Unconditional on `Reason` (matches the pre-existing `shouldSkipSession` invariant: "Hidden sessions are never shown in the review queue", any reason) | Scope suppression to only `ReasonTaskComplete`/`ReasonIdle`/`ReasonStale`, leaving `ReasonErrorState`/`ReasonTestsFailing` notifying | A narrower carve-out would create a second, inconsistent policy divergent from what `shouldSkipSession` already enforces in steady state, and would notify for conditions on a one-shot ephemeral process nobody is watching anyway (see Design Decision 1) |
 | Suppression trigger boolean | `Hidden` as the sole necessary-and-sufficient gate at both `Determine()` and `OnItemAdded`; `SessionRole` used only as enrichment/corroboration, never an independent OR | Suppress independently on `SessionRole == review \|\| SessionRole == triage`, per the requirements' literal "OR" wording | pitfalls.md: `SessionRoleReview` is also used for a session that becomes the review session on reopen in *non-Hidden* flows (`backlog_lifecycle.go:3141` pairs `SessionRoleWork`/`SessionRoleReview`); an independent Role-only OR risks silently swallowing a real, visible session's notifications (see Design Decision 1) |
 
@@ -129,30 +133,46 @@ independent suppression path.
 
 ### 2. AC3's existence check function + post-restart reload window
 
-**Resolution**: `session.Storage.FindInstanceDataByID(sessionID)` (`session/storage.go:407-418`),
-**not** `ReviewQueuePoller.FindInstance` alone.
+**Resolution**: `session.Storage.ListInstanceData()` (`session/storage.go:381`), fetched **once
+per prune pass** and filtered in memory — **not** a per-record call to `FindInstanceDataByID`,
+and **not** `ReviewQueuePoller.FindInstance` alone.
 
-`FindInstanceDataByID` reads the durable, disk/ent-backed instance record list
-(`ListInstanceData()`), which is populated **synchronously** in `BuildRuntimeDeps`
-(`server/dependencies.go:462`, `instances, err := storage.LoadInstances()`) **before** the async
-background goroutine that starts tmux processes and reconciles Stopped sessions even begins
-(`server/dependencies.go:~592` onward). The specific race pitfalls.md warns about —
-`DoesSessionExist()`/`recoverFromServerFailure` treating "not yet visible in some in-memory
-collection at this exact moment" as "gone forever" — is a *different* mechanism (the live
-actor/tmux registry), not the durable storage list this plan checks. `FindInstanceDataByID`
-therefore does not depend on the async reload step completing at all.
+*(Revised after architecture + adversarial review both independently flagged the original
+per-record-predicate shape as an N+1-under-lock: `FindInstanceDataByID` itself calls
+`ListInstanceData()` → `EntRepository.List(ctx)`, a full ent query eager-loading
+`Worktree`/`Tags`/`Project`/`ClaudeSession+Metadata` for every stored session — not a cheap
+lookup — so calling it once per eligible `SessionScoped` record inside `pruneOrphanedRecords`'s
+loop, on every single `Append()`, is a DB-query storm on a hot path while the store's write lock
+is held. The fix keeps the same underlying data source but calls it once and checks membership.)*
 
-As defensive belt-and-suspenders against any *future* change that makes storage loading
-asynchronous too, the wired existence-checker closure additionally treats every session as
-existing for the first `pruneOrphanedMinUptime` (5 minutes) of process uptime, measured from the
-`startTime := time.Now()` already captured at `server/server.go:111`.
+`ListInstanceData()` reads the durable, disk/ent-backed instance record list, which is populated
+**synchronously** in `BuildRuntimeDeps` (`server/dependencies.go:462`, `instances, err :=
+storage.LoadInstances()`) **before** the async background goroutine that starts tmux processes
+and reconciles Stopped sessions even begins (`server/dependencies.go:~592` onward). The specific
+race pitfalls.md warns about — `DoesSessionExist()`/`recoverFromServerFailure` treating "not yet
+visible in some in-memory collection at this exact moment" as "gone forever" — is a *different*
+mechanism (the live actor/tmux registry), not the durable storage list this plan checks. Reading
+`ListInstanceData()` therefore does not depend on the async reload step completing at all.
+
+The wired existence-lookup closure (`NotificationHistoryStore.SetSessionExistenceLookup`, a
+`func() map[string]struct{}`) fetches `storage.ListInstanceData()` exactly once each time it is
+invoked (once per gated prune pass — see the new `orphanPruneInterval` cadence in Story 4.2),
+builds a `map[string]struct{}` keyed by each instance's stable ID and title (mirroring
+`InstanceData.MatchesID`'s own two-way match), and returns that set. As defensive
+belt-and-suspenders against any *future* change that makes storage loading asynchronous too, the
+closure additionally returns `nil` (a distinct sentinel from "the real set, which happens to be
+empty," meaning "not ready to judge existence this pass, prune nothing") for the first
+`pruneOrphanedMinUptime` (5 minutes) of process uptime, measured from the new `srv.startedAt`
+field (see Task 4.3.1a for why this replaced a `NewServer`-local `startTime`).
 
 ### 3. AC3's `SessionID`-overload discriminator
 
 **Resolution**: new explicit `NotificationRecord.SessionScoped bool` field, set only by the two
 producers whose `SessionID` is a genuine session identifier. Full justification in
-`decisions/ADR-001-notification-record-session-scoped-field.md`. `PruneOrphaned`'s predicate:
-`record.SessionScoped && record.Metadata["item_id"] == "" && !exists(record.SessionID)`.
+`decisions/ADR-001-notification-record-session-scoped-field.md`. `PruneOrphaned`'s eligibility
+check: `record.SessionScoped && record.Metadata["item_id"] == "" && !existingIDs[record.SessionID]`,
+where `existingIDs` is the single batch-fetched `map[string]struct{}` for the current prune pass
+(see Design Decision 2), not a per-record function call.
 
 ### 4. Exact insertion point for `Determine()`'s `Hidden` check
 
@@ -229,8 +249,19 @@ notifier is the functional twin of AC1's generic-completion notification for
 resolved earlier in the function via `a.instanceFinder(instanceName)`) is already in scope with
 zero extra lookup cost. A new outer-scope `linkedItemID string` variable is set inside the
 nested `ItemSession`/`BacklogItem` lookup block (where `item.ID` is available) and threaded down
-to this call site's metadata map, alongside `metadata["session_scoped"] = "true"`. The whole
-publish is wrapped in `if !inst.Hidden { ... }`.
+to this call site's call to the shared `events.SessionScopedMetadata(nil, linkedItemID)` helper
+(see the Concern fix below) in place of a hand-built map literal. The whole publish is wrapped in
+`if !inst.Hidden { ... }`.
+
+**Shared metadata helper (architecture-review Concern fix, applied here and in Epic 2).** Both
+this call site and `OnItemAdded` (Task 2.2.1a) build a near-identical
+`{"item_id": ..., "session_scoped": "true"}` map; per the design-patterns skill's "generalize once
+2+ real call sites need identical logic" guidance, this plan extracts one shared helper —
+`events.SessionScopedMetadata(base map[string]string, itemID string) map[string]string`
+(`pkg/events`, forwarded through `server/events`) — instead of leaving `"session_scoped"` as an
+independent string literal in three files with no shared constant. `base` is only ever read
+(copied into a fresh map), never mutated — see Blocker-A fix in Story 2.1/2.2 below for why that
+matters here too.
 
 ---
 
@@ -244,9 +275,9 @@ publish is wrapped in `if !inst.Hidden { ... }`.
 | `BacklogLinkedSessionResolved` | Linkage lookup returns `BacklogItemID != ""` | `StampItemIDMetadata` | `ReactiveQueueManager.OnItemAdded` |
 | `HiddenSessionResolved` | Resolved `*Instance` is non-nil and `Hidden == true` | `SuppressNotificationPublish` (skip `eventBus.Publish`, unconditional on reason) | `ReactiveQueueManager.OnItemAdded` |
 | `AutonomousDriverCompleted` | `onAutonomousDriverComplete` fires for a real, driver-run `Instance` | `StampItemIDMetadata` always; `SuppressIfHidden` on the generic done/stuck notifier only | `AutonomousOrchestrationService.onAutonomousDriverComplete` |
-| `NotificationAppended` | Every `Append()` call | `EnforceRetention` (existing age/count) then `PruneOrphanedRecords` (new) | `NotificationHistoryStore.Append` |
-| `OrphanCheckRequested` | Prune pass reaches a `SessionScoped`, `item_id`-less record | `ExistenceCheck` (injected predicate → `storage.FindInstanceDataByID`, gated by `pruneOrphanedMinUptime`) | `NotificationHistoryStore` (via `existenceChecker`) |
-| `SessionRecordConfirmedGone` | `ExistenceCheck` returns `false` | `DeleteNotificationRecord` | `NotificationHistoryStore.PruneOrphaned` |
+| `NotificationAppended` | Every `Append()` call | `EnforceRetention` (existing age/count, unconditional) then, only when `time.Since(lastOrphanPruneAt) >= orphanPruneInterval`, `PruneOrphanedRecords` (new) | `NotificationHistoryStore.Append` |
+| `OrphanSweepDue` | Gated prune pass fires (`orphanPruneInterval` elapsed since the last sweep) | `FetchExistingSessionIDs` (batch call to the injected `existingSessionIDs func() map[string]struct{}` → `storage.ListInstanceData()` once, gated by `pruneOrphanedMinUptime`) then filter all eligible records in memory | `NotificationHistoryStore` (via `existenceChecker`) |
+| `SessionRecordConfirmedGone` | Filtered record's `SessionID` absent from the fetched set | `DeleteNotificationRecord` | `NotificationHistoryStore.PruneOrphaned` |
 
 ---
 
@@ -276,8 +307,9 @@ publish is wrapped in `if !inst.Hidden { ... }`.
 |---|---|---|
 | Over-suppression: a real, visible session's notifications silently disappear | `Hidden` (not `SessionRole` alone) is the sole trigger; confirmed both real `Hidden=true` call sites also carry `SessionRole=review`, so no behavior gap; `SessionRole` never checked independently | Design Decision 1 |
 | Hot-loop I/O: adding a DB lookup to a 2s-tick concurrent poll loop | `ItemSession` lookup lives only in `OnItemAdded` (fires once per queue *transition*, not per tick) — `Determine()`/`checkSession` gain zero new I/O, `Hidden` is an in-memory field check | Design Decision 1, Task 1.3.1 |
-| Post-restart mass-pruning: treating "not yet reloaded" as "gone forever" | `FindInstanceDataByID` reads the durable, synchronously-loaded storage list (not the async-reconciled live registry) + defensive `pruneOrphanedMinUptime` (5 min) belt-and-suspenders | Design Decision 2, Task 3.2.2 |
+| Post-restart mass-pruning: treating "not yet reloaded" as "gone forever" | `ListInstanceData()` reads the durable, synchronously-loaded storage list (not the async-reconciled live registry) + defensive `pruneOrphanedMinUptime` (5 min) belt-and-suspenders, where the existence-lookup closure returns `nil` (not an empty set) to mean "skip this pass" | Design Decision 2, Task 4.3.1a |
 | SessionID overload: pruning deletes legitimate item-scoped notifications | Explicit `SessionScoped` field, opt-in only at the two real session-scoped producers (ADR-001) | Design Decision 3, Epic 3 |
+| DB-query storm on a hot path: an existence check per eligible record, on every `Append()`, under the store's write lock | (a) Existence check is a **batch** fetch (`existingSessionIDs func() map[string]struct{}`), called once per prune pass and checked via in-memory map membership, not once per record; (b) the sweep itself is gated to run at most once per `orphanPruneInterval` (1 min default) inside `enforceRetention()`, not on every single `Append()` | Design Decision 2, Task 4.2.1a, Task 4.2.1b |
 | Blocking the synchronous `OnItemAdded` observer callback on a slow DB call | Bounded `itemSessionLookupTimeout` (2s) via `context.WithTimeout(rqm.baseContext(), ...)`, same pattern as `maybeAutoCreatePR`'s `autoCreatePRLookupTimeout` | Task 1.3.1 |
 | Regression: existing `ReasonApprovalPending`/`ReasonInputRequired`/`ReasonErrorState` tests break | New suppression is additive (`&& !hiddenSession`) alongside the existing `&& item.Reason != session.ReasonApprovalPending` condition; `TestOnItemAdded_EventBusBehavior_BUG001`'s three existing cases use non-Hidden fixture instances (no `poller.SetInstances` call in that test → `FindInstance` returns nil → `hiddenSession` is always `false`) so all three continue to pass unmodified | Task 1.3.3 |
 | Dead-code fix (Triage-stuck `Hidden` gating) impossible to verify | Deliberately *not* added (Design Decision 6) — verified-unreachable logic isn't worth an untestable diff; metadata-only fix is cheap and always correct | Design Decision 6 |
@@ -286,12 +318,16 @@ publish is wrapped in `if !inst.Hidden { ... }`.
 
 ## Unresolved Questions
 
-None blocking implementation. One tunable left as a documented default rather than a hard
-constraint: `pruneOrphanedMinUptime = 5 * time.Minute` (Task 3.2.2) is a defensive margin, not a
+None blocking implementation. Two tunables left as documented defaults rather than hard
+constraints: `pruneOrphanedMinUptime = 5 * time.Minute` (Task 4.3.1a) is a defensive margin, not a
 value derived from a measured startup-reload duration — if a future, much-larger instance count
 made `BuildRuntimeDeps`'s synchronous `LoadInstances()` call itself take longer than 5 minutes
 (implausible at current scale — it's a single JSON/SQLite read, not per-instance I/O), this
-constant would need to grow. Flagging for awareness, not blocking.
+constant would need to grow. Similarly, `orphanPruneInterval = 1 * time.Minute` (Task 4.2.1b) is a
+proportionate-feeling default for how often the batch existence-fetch runs, not a value derived
+from measuring `ListInstanceData()`'s actual cost at scale — if that call ever becomes expensive
+enough that even once-a-minute is too frequent, this constant would need to grow. Flagging both
+for awareness, not blocking.
 
 ---
 
@@ -327,19 +363,25 @@ Epic 4: NotificationRecord.SessionScoped + PruneOrphaned (AC3)
   reads it) and Epic 3's Task 3.2.1b (same key, second producer)
   Story 4.1: SessionScoped field + eventToRecord wiring
     Task 4.1.1a → 4.1.1b
-  Story 4.2: PruneOrphaned + SetSessionExistenceChecker + enforceRetention hook
+  Story 4.2: PruneOrphaned + SetSessionExistenceLookup + gated enforceRetention hook
     Task 4.2.1a → 4.2.1b
   Story 4.3: wire in server.go with uptime guard ── depends on 4.2
     Task 4.3.1a
   Story 4.4: tests ── depends on 4.1, 4.2
-    Task 4.4.1a → 4.4.1b → 4.4.1c
+    Task 4.4.1a → 4.4.1b → 4.4.1c → 4.4.1d
 
 Epic 1 and Epic 2 touch disjoint files (session/review_queue_determiner.go + session/startup_scanner.go
-vs. server/review_queue_manager.go) and can be implemented/reviewed in parallel. Epic 3 is fully
-independent of Epics 1-2 (different file, different struct) and can also proceed in parallel.
-Epic 4 is the only epic with a real ordering dependency: it needs the "session_scoped" metadata
-convention established by Epics 2 and 3 before eventToRecord/PruneOrphaned have anything
-meaningful to read.
+vs. server/review_queue_manager.go) and can be implemented/reviewed in parallel. Epic 3 is
+independent of Epics 1-2 in every file it touches (different file, different struct) and can also
+proceed in parallel, **except** for one narrow dependency: Epic 3's Task 3.2.1b calls
+`events.SessionScopedMetadata`, defined by Epic 2's Task 2.1.1c (`pkg/events`/`server/events`,
+shared by both epics precisely so `"session_scoped"` is not a duplicated string literal — see the
+architecture-review Concern fix). Task 2.1.1c has no dependency on the rest of Epic 2 and is cheap
+to land first/standalone if Epic 3 needs to start before Epic 2's other tasks are done.
+Epic 4 is the epic with the broadest ordering dependency: it needs the `events.SessionScopedMetadata`
+helper (Task 2.1.1c) landed and consumed by both real producers (Epic 2's Task 2.2.1a, Epic 3's
+Task 3.2.1b) before `eventToRecord`/`PruneOrphaned` (Task 4.1.1b) have anything meaningful to
+read.
 ```
 
 ---
@@ -434,7 +476,8 @@ Hidden instances out.
 **As a** maintainer, **I want** `OnItemAdded` to resolve both "is this session Hidden" and "what
 backlog item is this session linked to" in one place, using the instance resolution it already
 performs, **so that** the suppression and enrichment logic in Story 2.2 have everything they need
-with no additional lookups.
+with no additional lookups — **and without ever writing onto the shared `*ReviewItem` itself**
+(see the data-race note below).
 **Acceptance Criteria**:
 - `OnItemAdded` (`server/review_queue_manager.go:319`) captures the resolved `*session.Instance`
   (not just its stable ID string) from the existing `rqm.poller.FindInstance(item.SessionID)`
@@ -442,10 +485,23 @@ with no additional lookups.
 - A new bounded-timeout call to `rqm.storage.GetItemSessionBySessionUUID(ctx, resolvedID)` is
   added (guarded by `rqm.storage != nil`, mirroring `maybeAutoCreatePR`'s existing nil-guard
   style), using a new `itemSessionLookupTimeout = 2 * time.Second` constant and
-  `rqm.baseContext()` (the existing helper at `server/review_queue_manager.go:459-464`).
-- A lookup failure (including "not found") is handled silently (no metadata stamped, no
+  `rqm.baseContext()` (the existing helper at `server/review_queue_manager.go:459-464`). A
+  resolved backlog item ID is captured into a new **local** `linkedItemID string` — `item.Metadata`
+  itself is never read into, written to, or reassigned by this lookup.
+- A lookup failure (including "not found") is handled silently (no `linkedItemID`, no
   suppression from this signal) except a real (non-`ErrNotFound`) error, which is logged at
   `Warn`.
+- **Never mutate `item.Metadata` in place, at any point in `OnItemAdded`.** `ReviewQueue.Add()`
+  (`session/queue/queue.go:230`) stores this exact `*ReviewItem` pointer into `rq.items` and, after
+  releasing `rq.mu` (`queue.go:258`), calls `observer.OnItemAdded(item)` unlocked (`queue.go:262`)
+  — the same pointer is independently reachable from a concurrent `WatchReviewQueue` RPC handler
+  goroutine via `rqm.queue.List()` → `reviewItemToProto` → `adapters.ReviewItemToProto`, which
+  ranges over `item.Metadata` (`server/adapters/review_queue_adapter.go:50`). Writing to
+  `item.Metadata` here while that goroutine ranges over the same map is a Go runtime **fatal
+  error: concurrent map read and map write** (process crash, not a benign race). `Story 2.2`
+  builds an independent local map instead, mirroring `ReviewItemToProto`'s own "Always produce an
+  independent copy of Metadata so concurrent RPC calls cannot race on the same underlying map"
+  pattern.
 **Files**: `server/review_queue_manager.go`
 
 ##### Task 2.1.1a: Capture `inst`/`hiddenSession` in `OnItemAdded` (~3 min)
@@ -469,6 +525,7 @@ with no additional lookups.
       }
   }
   hiddenSession := inst != nil && inst.Hidden
+  var linkedItemID string
   ```
 - Files: `server/review_queue_manager.go`
 
@@ -493,45 +550,95 @@ with no additional lookups.
               log.Warn("OnItemAdded: ItemSession lookup failed", "session", resolvedID, "err", err)
           }
       } else if itemSession.BacklogItemID != "" {
-          if item.Metadata == nil {
-              item.Metadata = make(map[string]string)
-          }
-          item.Metadata["item_id"] = itemSession.BacklogItemID
+          linkedItemID = itemSession.BacklogItemID
       }
   }
   ```
+  Note this assigns the **local** `linkedItemID` declared in Task 2.1.1a — `item.Metadata` is
+  never touched here (see Story 2.1's data-race note); Story 2.2's `events.SessionScopedMetadata`
+  call is the only place `linkedItemID` and any pre-existing `item.Metadata` entries are combined,
+  into a brand-new map.
   (`"time"` is already imported in this file for `autoCreatePRRunTimeout`/`baseContext`; add
   `"errors"` to the import block — it is not currently imported.)
 - Files: `server/review_queue_manager.go`
 
-#### Story 2.2: Gate the publish on `hiddenSession`, stamp `session_scoped` metadata
+##### Task 2.1.1c: Add the shared `events.SessionScopedMetadata` helper + metadata key constants (~5 min)
+- Addresses the architecture-review Concern that `"session_scoped"` was otherwise duplicated as
+  an independent string literal in three files with no shared constant. In `pkg/events` (e.g. a
+  new small file `pkg/events/notification_metadata.go`, or added directly in `types.go` near
+  `NewNotificationEvent`), add:
+  ```go
+  const (
+      MetadataKeySessionScoped = "session_scoped"
+      MetadataKeyItemID        = "item_id"
+  )
+
+  // SessionScopedMetadata builds a fresh metadata map for a session-scoped notification,
+  // copying any entries from base (never mutating base — base may be a map read concurrently
+  // elsewhere, e.g. session.ReviewItem.Metadata) and adding the session_scoped marker plus
+  // item_id when non-empty.
+  func SessionScopedMetadata(base map[string]string, itemID string) map[string]string {
+      m := make(map[string]string, len(base)+2)
+      for k, v := range base {
+          m[k] = v
+      }
+      m[MetadataKeySessionScoped] = "true"
+      if itemID != "" {
+          m[MetadataKeyItemID] = itemID
+      }
+      return m
+  }
+  ```
+  Then, in `server/events/forward.go`, forward both constants (alongside the existing
+  `EventNotification = pkgevents.EventNotification` const block) and the function (alongside the
+  existing `NewNotificationEvent = pkgevents.NewNotificationEvent` var block), so
+  `server/review_queue_manager.go` and `server/services/autonomous_orchestration_service.go`
+  (both of which import `server/events`, not `pkg/events`, directly) can call
+  `events.SessionScopedMetadata(...)` / reference `events.MetadataKeySessionScoped` without a new
+  import.
+- This task has no dependency on Task 2.1.1a/2.1.1b's `OnItemAdded` changes and can be implemented
+  first/independently; Epic 3's Task 3.2.1b and Epic 4's Task 4.1.1b both consume this task's
+  output (a narrow, one-file-each dependency — see the updated Dependency Visualization note
+  below), so land this task before either.
+- Files: `pkg/events/types.go` (or a new `pkg/events/notification_metadata.go`), `server/events/forward.go`
+
+#### Story 2.2: Gate the publish on `hiddenSession`, stamp `session_scoped` metadata via a local map
 **As an** operator, **I want** the Notifications page to never receive a card for a `Hidden`
 session's completion, and every genuine session-scoped notification to carry a positive
 `session_scoped` signal for AC3's pruner, **so that** AC1 and the AC3 groundwork land together
-in the same guarded block.
+in the same guarded block — **without mutating the shared `*ReviewItem.Metadata` map** (Story
+2.1's data-race note).
 **Acceptance Criteria**:
 - The existing guard `if rqm.eventBus != nil && item.Reason != session.ReasonApprovalPending {`
   (`server/review_queue_manager.go:337`) becomes
   `if rqm.eventBus != nil && item.Reason != session.ReasonApprovalPending && !hiddenSession {`.
-- Inside that block, before constructing `notifEvent`, stamp
-  `item.Metadata["session_scoped"] = "true"` (initializing `item.Metadata` if nil) — set
-  unconditionally for every notification that reaches this point, since `resolvedID` here is
-  always a real session identifier (either `item.SessionID`, the queue-key title, or
-  `inst.GetStableID()`), never a backlog item ID.
+- Inside that block, before constructing `notifEvent`, build a **fresh, independent** metadata map
+  via `metadata := events.SessionScopedMetadata(item.Metadata, linkedItemID)` — this copies any
+  existing `item.Metadata` entries into a new map (never reading concurrently-written state,
+  never writing back into `item.Metadata`), sets `MetadataKeySessionScoped` to `"true"`
+  unconditionally (since `resolvedID` here is always a real session identifier — either
+  `item.SessionID`, the queue-key title, or `inst.GetStableID()` — never a backlog item ID), and
+  sets `MetadataKeyItemID` from `linkedItemID` only when non-empty (Story 2.1's lookup result).
+- `events.NewNotificationEvent(...)`'s trailing metadata argument becomes this local `metadata`
+  map, not `item.Metadata` directly.
 - **Given** a real (non-Hidden) work session `Instance{UUID: "bbbb2222-3333-4444-5555-666677778888",
   Hidden: false}` linked via `ItemSessionData{SessionUUID: "bbbb2222-...", SessionRole: "work",
   ItemID: "153f8eac-c454-4fa3-a8f4-83b070b9a035"}`, reaching `ReasonIdle`, **when**
   `OnItemAdded(&session.ReviewItem{SessionID: <title>, Reason: session.ReasonIdle, ...})` runs,
   **then** the published `events.NewNotificationEvent`'s metadata includes
-  `{"item_id": "153f8eac-c454-4fa3-a8f4-83b070b9a035", "session_scoped": "true"}`.
+  `{"item_id": "153f8eac-c454-4fa3-a8f4-83b070b9a035", "session_scoped": "true"}`, and
+  `item.Metadata` itself is left unchanged (still nil, or whatever it was before the call).
 - **Given** the `Hidden: true` review `Instance` from Story 1.1's example, **when**
   `OnItemAdded` is called with a `ReviewItem{Reason: session.ReasonTaskComplete}` resolved to
   that instance, **then** `rqm.eventBus.Publish` is never called.
 **Files**: `server/review_queue_manager.go`
 
-##### Task 2.2.1a: Update the publish guard and stamp `session_scoped` (~4 min)
-- In `server/review_queue_manager.go`, change the guard at line 337 and add the metadata stamp
-  as described above, immediately before the existing `notifID := fmt.Sprintf(...)` line.
+##### Task 2.2.1a: Update the publish guard and build the local `session_scoped` metadata map (~5 min)
+- In `server/review_queue_manager.go`, change the guard at line 337 as described above. Then,
+  immediately before the existing `notifID := fmt.Sprintf(...)` line, add
+  `metadata := events.SessionScopedMetadata(item.Metadata, linkedItemID)`, and change the trailing
+  argument of the `events.NewNotificationEvent(...)` call from `item.Metadata` to `metadata`. Do
+  **not** assign into `item.Metadata` anywhere in this task — see Story 2.1's data-race note.
 - Files: `server/review_queue_manager.go`
 
 ##### Task 2.2.1b: Verify existing `OnItemAdded` tests still pass unmodified (~2 min, verification only)
@@ -621,9 +728,10 @@ Epic 1/2 close for the primary review-queue notifier.
   and set to `item.ID` at the point inside the nested `GetItemSessionBySessionUUID`/
   `GetBacklogItem` block where `item` is first successfully resolved.
 - The final `a.bus.Publish(events.NewNotificationEvent(...))` call (~line 540) is wrapped in
-  `if !inst.Hidden { ... }`, and its trailing `nil` metadata argument becomes a constructed map:
-  `map[string]string{"session_scoped": "true"}`, with `["item_id"] = linkedItemID` added only
-  when `linkedItemID != ""`.
+  `if !inst.Hidden { ... }`, and its trailing `nil` metadata argument becomes
+  `events.SessionScopedMetadata(nil, linkedItemID)` — the same shared helper Task 2.2.1a uses,
+  rather than a second hand-built `map[string]string{"session_scoped": "true", ...}` literal (see
+  the architecture-review Concern fix in Design Decision 6).
 - **Given** `inst := &session.Instance{UUID: "cccc3333-4444-5555-6666-777788889999", Hidden:
   true}` (a hypothetical future Hidden autonomous-driver-run instance) and
   `outcome := session.AutonomousDriverOutcome{Done: true}`, **when**
@@ -642,10 +750,11 @@ Epic 1/2 close for the primary review-queue notifier.
   concreteStorage.GetBacklogItem(ctx, is.BacklogItemID)` succeeds, add `linkedItemID = item.ID`.
 - Files: `server/services/autonomous_orchestration_service.go`
 
-##### Task 3.2.1b: Gate the generic notifier on `!inst.Hidden` and build its metadata map (~4 min)
+##### Task 3.2.1b: Gate the generic notifier on `!inst.Hidden` and build its metadata via the shared helper (~4 min)
 - Wrap the final `a.bus.Publish(events.NewNotificationEvent(sessionUUID, instanceName, ...))`
-  call in `if !inst.Hidden { ... }`, replacing the trailing `nil` with a constructed
-  `map[string]string` as described in the story's acceptance criteria.
+  call in `if !inst.Hidden { ... }`, replacing the trailing `nil` with
+  `events.SessionScopedMetadata(nil, linkedItemID)` as described in the story's acceptance
+  criteria — not a second hand-built map literal.
 - Files: `server/services/autonomous_orchestration_service.go`
 
 #### Story 3.3: Tests for Epic 3
@@ -679,7 +788,8 @@ actually a backlog item ID," **so that** AC3's pruner has a positive, non-inferr
 - `NotificationRecord` (`server/notifications/store.go:34-52`) gains
   `SessionScoped bool \`json:"session_scoped,omitempty"\`` as its final field.
 - `eventToRecord` (`server/notifications/subscriber.go:152-163`) sets
-  `SessionScoped: event.NotificationMetadata["session_scoped"] == "true"` in the returned
+  `SessionScoped: event.NotificationMetadata[events.MetadataKeySessionScoped] == "true"` (the
+  exported constant from Task 2.1.1c, not a raw string literal) in the returned
   `*NotificationRecord`.
 - **Given** an `*events.Event` with `NotificationMetadata: map[string]string{"session_scoped":
   "true", "item_id": ""}`, **when** `eventToRecord(event)` runs, **then** the returned record has
@@ -696,25 +806,33 @@ actually a backlog item ID," **so that** AC3's pruner has a positive, non-inferr
 
 ##### Task 4.1.1b: Populate `SessionScoped` in `eventToRecord` (~3 min)
 - In `server/notifications/subscriber.go`, add `SessionScoped:
-  event.NotificationMetadata["session_scoped"] == "true",` to the `&NotificationRecord{...}`
-  literal returned by `eventToRecord` (currently lines 152-163).
+  event.NotificationMetadata[events.MetadataKeySessionScoped] == "true",` to the
+  `&NotificationRecord{...}` literal returned by `eventToRecord` (currently lines 152-163) —
+  reference the exported constant from Task 2.1.1c, not a raw `"session_scoped"` string literal,
+  so producer and consumer cannot silently diverge on the key's spelling.
 - Files: `server/notifications/subscriber.go`
 
-#### Story 4.2: `PruneOrphaned` + `SetSessionExistenceChecker` + `enforceRetention` hook
+#### Story 4.2: `PruneOrphaned` + `SetSessionExistenceLookup` (batch) + gated `enforceRetention` hook
 **As an** operator, **I want** stale session-scoped notifications automatically removed on the
 existing retention pass, **so that** the Notifications page doesn't accumulate dead-link entries
-for up to 7 days.
+for up to 7 days — **without turning every single `Append()` call into an O(eligible-records) DB
+query storm while the store's write lock is held** (the architecture-review and adversarial-review
+blocker this story's original per-record-predicate design triggered independently in both
+reviews).
 **Acceptance Criteria**:
 - New exported method, mirroring `Clear`'s locking/save shape
-  (`server/notifications/store.go:306-331`):
+  (`server/notifications/store.go:306-331`), but taking a **batch** existence-lookup function
+  (called exactly once per call, not once per record):
   ```go
   // PruneOrphaned removes records that are positively marked session-scoped
   // (SessionScoped==true, see ADR-001), carry no item_id (Metadata["item_id"] == ""), and whose
-  // exists(sessionID) predicate returns false. Returns the number of records removed.
-  func (s *NotificationHistoryStore) PruneOrphaned(exists func(sessionID string) bool) (int, error) {
+  // SessionID is absent from existingSessionIDs()'s returned set. existingSessionIDs is called
+  // exactly ONCE per call (a single batch fetch), never once per record — see
+  // pruneOrphanedRecords. Returns the number of records removed.
+  func (s *NotificationHistoryStore) PruneOrphaned(existingSessionIDs func() map[string]struct{}) (int, error) {
       s.mu.Lock()
       defer s.mu.Unlock()
-      removed := s.pruneOrphanedRecords(exists)
+      removed := s.pruneOrphanedRecords(existingSessionIDs)
       if removed > 0 {
           if err := s.saveToDisk(); err != nil {
               return removed, err
@@ -724,17 +842,31 @@ for up to 7 days.
   }
 
   // pruneOrphanedRecords assumes s.mu is already held by the caller (Append's enforceRetention
-  // path, or PruneOrphaned's own lock above).
-  func (s *NotificationHistoryStore) pruneOrphanedRecords(exists func(sessionID string) bool) int {
-      if exists == nil {
+  // path, or PruneOrphaned's own lock above). Calls existingSessionIDs() exactly once (a single
+  // batch fetch, e.g. storage.ListInstanceData()) and checks each candidate record via in-memory
+  // map membership — NOT one existence-check call per record, which would re-run a full
+  // multi-edge-eager-loaded ent query per eligible record on every Append (the N+1-under-lock
+  // this design replaced; see architecture-review.md / adversarial-review.md).
+  func (s *NotificationHistoryStore) pruneOrphanedRecords(existingSessionIDs func() map[string]struct{}) int {
+      if existingSessionIDs == nil {
+          return 0
+      }
+      existing := existingSessionIDs()
+      if existing == nil {
+          // The lookup was not ready to judge existence this pass (e.g. still inside
+          // pruneOrphanedMinUptime, or the batch fetch itself failed) — treat as "prune
+          // nothing," never as "nothing exists" (a nil map is a distinct sentinel from a
+          // real, merely-empty map.Get(map[string]struct{}{})).
           return 0
       }
       var kept []*NotificationRecord
       removed := 0
       for _, r := range s.records {
-          if r.SessionScoped && r.Metadata["item_id"] == "" && !exists(r.SessionID) {
-              removed++
-              continue
+          if r.SessionScoped && r.Metadata["item_id"] == "" {
+              if _, ok := existing[r.SessionID]; !ok {
+                  removed++
+                  continue
+              }
           }
           kept = append(kept, r)
       }
@@ -742,93 +874,161 @@ for up to 7 days.
       return removed
   }
   ```
-- A new unexported field `existenceChecker func(sessionID string) bool` and setter
-  `SetSessionExistenceChecker(fn func(sessionID string) bool)` (locking, mirrors
-  `SetNotificationStore`'s late-wiring style) are added.
-- `enforceRetention()` (`server/notifications/store.go:437-454`) gains a call to
-  `s.pruneOrphanedRecords(s.existenceChecker)` after its existing age/count trim, using the
-  stored checker (nil-safe no-op by default).
-- **Given** a stored `NotificationRecord{ID: "review-queue-review:153f8eac-1690000000000",
-  SessionID: "cccc3333-4444-5555-6666-777788889999", SessionScoped: true, Metadata: map[string]string{}}`
-  (no `item_id`) whose session was deleted (`exists("cccc3333-...")` returns `false`), **when**
-  `PruneOrphaned(exists)` is called, **then** the record is removed and the returned count is
-  `1`.
-- **Given** a second stored record with `SessionScoped: true`, `Metadata: {"item_id":
-  "153f8eac-..."}`, and the same dead `SessionID`, **when** the same `PruneOrphaned(exists)` call
-  runs, **then** that record is **kept** (has an alternate "View in Backlog" navigation target).
-- **Given** a third stored record with `SessionScoped: false` (an item-scoped
-  rework-cap-hit notification whose `SessionID` happens to be a UUID that also fails
-  `exists(...)`), **when** `PruneOrphaned(exists)` runs, **then** that record is **kept**
-  (never eligible — the SessionID-overload trap ADR-001 exists to avoid).
-**Files**: `server/notifications/store.go`
-
-##### Task 4.2.1a: Implement `PruneOrphaned`/`pruneOrphanedRecords`/`SetSessionExistenceChecker` (~5 min)
-- Add the code shown above to `server/notifications/store.go`, plus the `existenceChecker` field
-  on the `NotificationHistoryStore` struct.
-- Files: `server/notifications/store.go`
-
-##### Task 4.2.1b: Hook `pruneOrphanedRecords` into `enforceRetention` (~2 min)
-- In `enforceRetention()` (`server/notifications/store.go:437-454`), after the existing
-  `MaxNotifications` trim, add:
+- A new unexported field `existenceChecker func() map[string]struct{}` and setter
+  `SetSessionExistenceLookup(fn func() map[string]struct{})` (locking, mirrors
+  `SetNotificationStore`'s late-wiring style) are added — replacing the earlier per-record
+  `exists func(sessionID string) bool` shape and its `SetSessionExistenceChecker` setter.
+- A new unexported field `lastOrphanPruneAt time.Time` and `const orphanPruneInterval = 1 *
+  time.Minute` are added.
+- `enforceRetention()` (`server/notifications/store.go:437-454`) gains a **gated** call to the
+  orphan sweep, immediately after its existing (unconditional) age/count trim:
   ```go
-  if removed := s.pruneOrphanedRecords(s.existenceChecker); removed > 0 {
-      log.Info("NotificationHistoryStore: pruned orphaned records", "count", removed)
+  if s.existenceChecker != nil && time.Since(s.lastOrphanPruneAt) >= orphanPruneInterval {
+      s.lastOrphanPruneAt = now // `now` is already computed at the top of enforceRetention
+      if removed := s.pruneOrphanedRecords(s.existenceChecker); removed > 0 {
+          log.Info("NotificationHistoryStore: pruned orphaned records", "count", removed)
+      }
   }
   ```
+  This decouples the batch fetch (a real DB query) from firing on literally every `Append()`
+  (roughly every 500ms under the subscriber's coalesce interval) — it now runs at most once per
+  `orphanPruneInterval`, reusing the same "cheap, coarse, in-memory-only" cadence philosophy as
+  the pre-existing age/count trim (which stays unconditional since it costs nothing extra).
+- **Given** a stored `NotificationRecord{ID: "review-queue-review:153f8eac-1690000000000",
+  SessionID: "cccc3333-4444-5555-6666-777788889999", SessionScoped: true, Metadata: map[string]string{}}`
+  (no `item_id`) whose session was deleted, and a stub `existingSessionIDs` returning
+  `map[string]struct{}{}` (i.e. not containing `"cccc3333-..."`), **when**
+  `PruneOrphaned(existingSessionIDs)` is called, **then** the record is removed and the returned
+  count is `1`, and `existingSessionIDs` was called exactly once.
+- **Given** a second stored record with `SessionScoped: true`, `Metadata: {"item_id":
+  "153f8eac-..."}`, and the same dead `SessionID`, **when** the same `PruneOrphaned(existingSessionIDs)`
+  call runs, **then** that record is **kept** (has an alternate "View in Backlog" navigation
+  target).
+- **Given** a third stored record with `SessionScoped: false` (an item-scoped
+  rework-cap-hit notification whose `SessionID` happens to be a UUID that also is not in the
+  returned set), **when** `PruneOrphaned(existingSessionIDs)` runs, **then** that record is
+  **kept** (never eligible — the SessionID-overload trap ADR-001 exists to avoid).
+- **Given** `existingSessionIDs` returns `nil` (the `pruneOrphanedMinUptime` or fetch-failure
+  case), **when** `PruneOrphaned(existingSessionIDs)` or the gated `enforceRetention()` path runs,
+  **then** zero records are removed regardless of how many would otherwise be eligible.
+**Files**: `server/notifications/store.go`
+
+##### Task 4.2.1a: Implement `PruneOrphaned`/`pruneOrphanedRecords`/`SetSessionExistenceLookup` (~6 min)
+- Add the code shown above to `server/notifications/store.go`, plus the `existenceChecker` and
+  `lastOrphanPruneAt` fields on the `NotificationHistoryStore` struct and the
+  `orphanPruneInterval` const.
 - Files: `server/notifications/store.go`
 
-#### Story 4.3: Wire the existence checker in `server.go`
+##### Task 4.2.1b: Hook the gated orphan sweep into `enforceRetention` (~3 min)
+- In `enforceRetention()` (`server/notifications/store.go:437-454`), after the existing
+  `MaxNotifications` trim, add the interval-gated block shown above (reusing the function's
+  existing `now := time.Now()` local rather than calling `time.Now()` again).
+- Files: `server/notifications/store.go`
+
+#### Story 4.3: Wire the existence lookup in `server.go` via a `Server.startedAt` field
 **As an** operator, **I want** the pruner backed by the real, durable instance-record store,
 gated against the post-restart reload window, **so that** AC3 works in production without
-mass-pruning notifications for sessions that still exist but haven't finished reconciling yet.
+mass-pruning notifications for sessions that still exist but haven't finished reconciling yet —
+**and I want this to actually compile**, which the plan's original closure (referencing a
+`NewServer`-local `startTime` from inside `wireDepsIntoServer`, a different function that
+`NewServerWithDeps` can also reach without ever computing a `startTime` at all) did not.
 **Acceptance Criteria**:
+- `Server` (`server/server.go:44-60`) gains a new field: `startedAt time.Time`.
+- `newServerBase` (`server/server.go:65-85`) — the function both `NewServer` (line 107) and
+  `NewServerWithDeps` (line 127) call before either does anything server-specific — sets
+  `srv.startedAt = time.Now()` once, immediately after constructing `srv`.
+- `wireDepsIntoServer` (`server/server.go:138`, where `notifStore` is actually constructed —
+  **not** `NewServer`, which never reaches this closure's construction point) references
+  `srv.startedAt`, not a function-local `startTime`.
 - Immediately after `notifStore, storeErr = notifications.NewNotificationHistoryStore(...)`
   succeeds (`server/server.go:203-211`, inside the `else` branch), add a call to
-  `notifStore.SetSessionExistenceChecker(...)` using a closure over `storage` (already bound at
-  `server/server.go:172`) and `startTime` (already bound at `server/server.go:111`):
+  `notifStore.SetSessionExistenceLookup(...)` using a closure over `storage` (already bound at
+  `server/server.go:172`) and `srv.startedAt`:
   ```go
   const pruneOrphanedMinUptime = 5 * time.Minute
-  notifStore.SetSessionExistenceChecker(func(sessionID string) bool {
-      if time.Since(startTime) < pruneOrphanedMinUptime {
-          // Defensive margin: treat every session as existing until well past
-          // BuildRuntimeDeps's synchronous LoadInstances() call, even though that call
-          // (not the async tmux-start goroutine) is what backs FindInstanceDataByID.
-          return true
+  notifStore.SetSessionExistenceLookup(func() map[string]struct{} {
+      if time.Since(srv.startedAt) < pruneOrphanedMinUptime {
+          // Defensive margin: not ready to judge existence yet. nil is a distinct sentinel
+          // from "the real set, which happens to be empty" — pruneOrphanedRecords treats nil
+          // as "skip this pass," never as "nothing exists" (which would mass-prune every
+          // session-scoped record in the store).
+          return nil
       }
-      _, err := storage.FindInstanceDataByID(sessionID)
-      return err == nil
+      all, err := storage.ListInstanceData()
+      if err != nil {
+          log.Warn("SetSessionExistenceLookup: ListInstanceData failed; skipping this prune pass", "err", err)
+          return nil
+      }
+      ids := make(map[string]struct{}, len(all)*2)
+      for i := range all {
+          ids[all[i].GetStableID()] = struct{}{}
+          if all[i].Title != "" {
+              ids[all[i].Title] = struct{}{}
+          }
+      }
+      return ids
   })
   ```
+  `ListInstanceData()` is called exactly once per invocation of this closure (i.e. once per gated
+  prune pass, per `orphanPruneInterval` — not once per notification record), matching both
+  `all[i].GetStableID()` and `all[i].Title` into the set so membership checks behave the same
+  as `InstanceData.MatchesID`'s existing two-way match (`session/storage.go:398-403`).
+- **Given** a server less than 5 minutes past `startedAt`, **when** the existence-lookup closure
+  is invoked, **then** it returns `nil` without calling `storage.ListInstanceData()` at all.
+- **Given** a server past `pruneOrphanedMinUptime` uptime with two stored instances (stable IDs
+  `"bbbb2222-..."` and `"cccc3333-..."`), **when** the closure is invoked, **then** it returns a
+  set containing both stable IDs (and both titles, if set).
 **Files**: `server/server.go`
 
-##### Task 4.3.1a: Wire `SetSessionExistenceChecker` in `server.go` (~4 min)
-- Add the code above inside the existing `if storeErr != nil { ... } else { ... }` block at
-  `server/server.go:203-211`.
+##### Task 4.3.1a: Add `Server.startedAt`, set it in `newServerBase`, and wire `SetSessionExistenceLookup` from `wireDepsIntoServer` (~6 min)
+- In `server/server.go`, add `startedAt time.Time` to the `Server` struct (near `addr`/`httpServer`),
+  set it in `newServerBase` right after `srv := &Server{...}` is constructed (before
+  `srv.addr.Store(&addr)`), and remove any reliance on a function-local `startTime` for this
+  purpose — `NewServer`'s own existing `startTime := time.Now()` (line 111) is unrelated
+  dependency-build timing instrumentation and is untouched by this task.
+- Add the code shown above inside the existing `if storeErr != nil { ... } else { ... }` block at
+  `server/server.go:203-211` (inside `wireDepsIntoServer`), referencing `srv.startedAt`.
 - Files: `server/server.go`
 
 #### Story 4.4: Tests for Epic 4
 **Acceptance Criteria**:
-- Unit tests for `PruneOrphaned` covering the three Given-When-Then cases in Story 4.2's
-  acceptance criteria (orphaned-and-eligible removed, backlog-linked-and-eligible kept,
-  not-session-scoped-and-eligible kept).
+- Unit tests for `PruneOrphaned` covering the four Given-When-Then cases in Story 4.2's
+  acceptance criteria (orphaned-and-eligible removed with the batch fetch called exactly once,
+  backlog-linked-and-eligible kept, not-session-scoped-and-eligible kept, `nil` existence-set
+  prunes nothing).
+- A test proving the orphan sweep inside `enforceRetention()` is cadence-gated (does not re-fetch
+  on every `Append()`).
 - A test for `eventToRecord`'s new `SessionScoped` population (positive and negative case).
 **Files**: `server/notifications/store_test.go`, `server/notifications/subscriber_test.go`
 
 ##### Task 4.4.1a: Add `TestPruneOrphaned_RemovesEligibleRecord_KeepsItemLinkedAndNonSessionScoped` (~6 min)
 - In `server/notifications/store_test.go`, construct a store, `Append` the three records
-  described in Story 4.2's acceptance criteria, call `PruneOrphaned` with a stub `exists` func
-  returning `false` for the dead session ID, and assert the exact kept/removed set.
+  described in Story 4.2's acceptance criteria, call `PruneOrphaned` with a stub
+  `existingSessionIDs func() map[string]struct{}` that returns a set not containing the dead
+  session ID (and asserts, via a call counter, that it was invoked exactly once), and assert the
+  exact kept/removed set.
 - Files: `server/notifications/store_test.go`
 
-##### Task 4.4.1b: Add `TestEnforceRetention_CallsPruneOrphaned_When_ExistenceCheckerSet` (~4 min)
-- In `server/notifications/store_test.go`, verify `SetSessionExistenceChecker` + `Append` (which
-  triggers `enforceRetention`) results in an eligible orphaned record being removed without an
-  explicit `PruneOrphaned` call.
+##### Task 4.4.1b: Add `TestPruneOrphaned_PrunesNothing_When_ExistingSessionIDsReturnsNil` (~3 min)
+- In `server/notifications/store_test.go`, `Append` an eligible orphaned record, call
+  `PruneOrphaned` with a stub `existingSessionIDs` that returns `nil`, and assert the record is
+  kept and the returned count is `0` — proving the `pruneOrphanedMinUptime`/fetch-failure
+  sentinel never mass-prunes.
 - Files: `server/notifications/store_test.go`
 
-##### Task 4.4.1c: Add `eventToRecord` `SessionScoped` tests (~4 min)
+##### Task 4.4.1c: Add `TestEnforceRetention_GatesOrphanSweep_ByOrphanPruneInterval` (~5 min)
+- In `server/notifications/store_test.go`, set a store's `existenceChecker` to a call-counting
+  stub, call `Append` twice in immediate succession (well within `orphanPruneInterval`), and
+  assert the stub was invoked at most once across both calls. Then advance `lastOrphanPruneAt`
+  (directly, or via a test-only setter/clock seam) past `orphanPruneInterval` and call `Append`
+  again, asserting the stub is now invoked a second time — proving Task 4.2.1b's gate actually
+  decouples the sweep from firing on every single append.
+- Files: `server/notifications/store_test.go`
+
+##### Task 4.4.1d: Add `eventToRecord` `SessionScoped` tests (~4 min)
 - In `server/notifications/subscriber_test.go` (create if it doesn't exist — check first), add
-  positive (`metadata["session_scoped"] == "true"`) and negative (key absent) cases.
+  positive (`metadata[events.MetadataKeySessionScoped] == "true"`) and negative (key absent)
+  cases.
 - Files: `server/notifications/subscriber_test.go`
 
 ---
