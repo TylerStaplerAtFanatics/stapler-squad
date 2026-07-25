@@ -117,6 +117,9 @@ type StreamMock = {
   stopRecording: jest.Mock;
   output: string;
   terminalState: string;
+  requestFullResync: jest.Mock;
+  markResyncComplete: jest.Mock;
+  markPaneResponseReceived: jest.Mock;
 };
 
 function makeStreamMock(overrides: Partial<StreamMock> = {}): StreamMock {
@@ -135,6 +138,9 @@ function makeStreamMock(overrides: Partial<StreamMock> = {}): StreamMock {
     stopRecording: jest.fn(),
     output: '',
     terminalState: 'STABLE',
+    requestFullResync: jest.fn(),
+    markResyncComplete: jest.fn(),
+    markPaneResponseReceived: jest.fn(),
     ...overrides,
   };
 }
