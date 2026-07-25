@@ -5,6 +5,7 @@ import { TerminalData, TerminalDataSchema, TerminalInput, TerminalInputSchema, T
 import { create } from "@bufbuild/protobuf";
 import { StateApplicator } from "@/lib/terminal/StateApplicator";
 import { EchoOverlay } from "@/lib/terminal/EchoOverlay";
+import type { ResizeDimensions } from "@/lib/terminal/types";
 import type { Terminal } from '@xterm/xterm';
 
 export interface UseTerminalFlowControlOptions {
@@ -22,7 +23,7 @@ export interface UseTerminalFlowControlOptions {
 export interface UseTerminalFlowControlResult {
   sendInput: (input: string) => void;
   sendInputWithEcho: (input: string) => bigint;
-  resize: (cols: number, rows: number) => void;
+  resize: (cols: number, rows: number, force?: boolean) => void;
   requestScrollback: (fromSequence: number, limit: number) => void;
   sendFlowControl: (paused: boolean, watermark?: number) => void;
   requestFullResync: (urgent?: boolean) => void;
@@ -68,6 +69,7 @@ export function useTerminalFlowControl({
   const waitingForPaneResponseRef = useRef(false);
   const lastResyncTimeRef = useRef<number>(0);
   const lastResizeTimeRef = useRef<number>(0);
+  const lastSentDimsRef = useRef<ResizeDimensions | null>(null);
   const dimensionSyncRef = useRef<{ cols?: number; rows?: number }>({});
 
   // StateApplicator (lazy init) - kept in same hook as resync refs per Bug Risk 1
@@ -361,9 +363,23 @@ export function useTerminalFlowControl({
     }
   }, [sessionId, enablePredictiveEcho, pushMessage, pushMessageRef, isConnectedRef, handleError]);
 
-  const resize = useCallback((cols: number, rows: number) => {
+  const resize = useCallback((cols: number, rows: number, force: boolean = false) => {
     if (!pushMessageRef.current || !isConnectedRef.current) {
       console.warn("Cannot resize terminal: stream not connected");
+      return;
+    }
+
+    // Value-dedup: skip if this exact (cols, rows) pair was the last one actually
+    // sent, independent of (and checked before) the time throttle below. An
+    // unchanged value must not keep the throttle window "warm" — lastResizeTimeRef
+    // is deliberately left untouched here.
+    if (
+      !force &&
+      lastSentDimsRef.current !== null &&
+      lastSentDimsRef.current.cols === cols &&
+      lastSentDimsRef.current.rows === rows
+    ) {
+      console.log(`[useTerminalFlowControl] Resize skipped, value unchanged (${cols}x${rows})`);
       return;
     }
 
@@ -371,14 +387,13 @@ export function useTerminalFlowControl({
     const timeSinceLastResize = now - lastResizeTimeRef.current;
     const THROTTLE_MS = 200;
 
-    if (timeSinceLastResize < THROTTLE_MS && lastResizeTimeRef.current !== 0) {
+    if (!force && timeSinceLastResize < THROTTLE_MS && lastResizeTimeRef.current !== 0) {
       console.log(`[useTerminalFlowControl] Resize throttled (${timeSinceLastResize}ms since last, need ${THROTTLE_MS}ms)`);
       return;
     }
 
     try {
       console.log(`[useTerminalFlowControl] Sending resize to server: ${cols}x${rows}`);
-      lastResizeTimeRef.current = now;
       pushMessage(
         create(TerminalDataSchema, {
           sessionId,
@@ -389,26 +404,35 @@ export function useTerminalFlowControl({
         })
       );
 
+      // Only record success (and refresh the throttle/dedup state) after the
+      // send above completed without throwing.
+      lastResizeTimeRef.current = now;
+      lastSentDimsRef.current = { cols, rows };
+
       // After resizing, request fresh terminal content
       setTimeout(() => {
         if (!pushMessageRef.current || !isConnectedRef.current) return;
 
-        console.log(`[useTerminalFlowControl] Requesting fresh pane content after resize`);
-        pushMessage(
-          create(TerminalDataSchema, {
-            sessionId,
-            data: {
-              case: "currentPaneRequest",
-              value: create(CurrentPaneRequestSchema, {
-                lines: 50,
-                includeEscapes: true,
-                targetCols: cols,
-                targetRows: rows,
-                streamingMode: streamingMode || "raw-compressed",
-              }),
-            },
-          })
-        );
+        try {
+          console.log(`[useTerminalFlowControl] Requesting fresh pane content after resize`);
+          pushMessage(
+            create(TerminalDataSchema, {
+              sessionId,
+              data: {
+                case: "currentPaneRequest",
+                value: create(CurrentPaneRequestSchema, {
+                  lines: 50,
+                  includeEscapes: true,
+                  targetCols: cols,
+                  targetRows: rows,
+                  streamingMode: streamingMode || "raw-compressed",
+                }),
+              },
+            })
+          );
+        } catch (err) {
+          handleError(err);
+        }
       }, 100);
     } catch (err) {
       handleError(err);
