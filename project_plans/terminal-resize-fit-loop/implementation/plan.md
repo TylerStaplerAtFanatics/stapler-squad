@@ -708,6 +708,27 @@ Then the try/catch added in Task 3.2.3 contains the exception: no uncaught error
 
 #### Story 4.3: Extend `useTerminalFlowControl.test.ts`
 
+- **Task 4.3.0** — **(Prerequisite, discovered during Phase 4 engineering triad review, fixed
+  and verified during planning — `git log`/PR diff will show this predates Epic 1-3
+  implementation)**: `useTerminalFlowControl.test.ts`'s `jest.mock('@/gen/session/v1/events_pb', ...)`
+  exported plain classes (a protobuf-es v1 shape) but the hook's real code calls
+  `create(TerminalDataSchema, init)` from `@bufbuild/protobuf` (a v2-style schema-descriptor
+  API, introduced by the "adopt Redux Toolkit + protobuf-es v2" migration commit `53327064`) —
+  since the mock never exported `TerminalDataSchema`/`TerminalResizeSchema`/etc., every
+  `create(...)` call in the hook received `undefined` as its schema argument, threw, and was
+  silently swallowed by the hook's own `try/catch`, meaning `pushMessage` was never actually
+  invoked. This was **not caused by this project's changes** but was a real, pre-existing
+  defect (6 of 11 tests in this file failed before Epic 1-4 touched anything, verified by
+  running the suite directly) that Epic 2 Task 2.1.4 and Epic 4 Tasks 4.3.1-4.3.3 would
+  otherwise have silently inherited — new tests added to the same `describe('resize', ...)`
+  block would fail for a reason unrelated to whether the new dedup/force logic is correct,
+  defeating AC6's "every test passes" gate. Fix: add
+  `jest.mock('@bufbuild/protobuf', () => ({ create: (_schema: any, init: any) => init }))`
+  above the existing `events_pb` mock, bypassing real schema-based construction entirely (the
+  test only needs the resulting plain object's shape, not real protobuf serialization).
+  Verified: all 11 pre-existing tests in this file pass after the fix, with no other change to
+  the file. *Files*: `useTerminalFlowControl.test.ts`. *Size*: ~3 min (already applied).
+
 - **Task 4.3.1** — Add to the existing `describe('resize', ...)` block (lines 126-177): a test
   for value-dedup — call `resize(120, 40)`, then `resize(120, 40)` again with
   `jest.advanceTimersByTime(201)` in between (past the 200ms throttle, isolating dedup as the

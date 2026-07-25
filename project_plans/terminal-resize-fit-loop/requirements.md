@@ -61,7 +61,7 @@ Directly from the backlog item's acceptance criteria (verbatim numbering preserv
 | `XtermTerminal` | `web-app/src/components/sessions/XtermTerminal.tsx` | Owns the `ResizeObserver` → `fitAddon.fit()` loop (~line 259) and the WebGL addon init + cell-width diagnostics (~lines 148–197) |
 | `useTerminalFlowControl` | `web-app/src/lib/hooks/useTerminalFlowControl.ts` | Owns `resize()` (~line 364), the existing 200ms time-throttle, and the follow-up `currentPaneRequest` after a resize |
 | `useTerminalStream` | `web-app/src/lib/hooks/useTerminalStream.ts` | Composes `useTerminalFlowControl`; re-exports `resize` unchanged (~line 350) |
-| `TerminalOutput` | `web-app/src/components/sessions/TerminalOutput.tsx` | Consumer of `resize()`; contains `handleTerminalResize` (value-changed path, ~line 257), the post-connection resync call site (~line 351), and the manual "Fit" button handler (~line 496) |
+| `TerminalOutput` | `web-app/src/components/sessions/TerminalOutput.tsx` | Consumer of `resize()`; contains `handleTerminalResize` (value-changed path, ~line 257), the post-connection resync call site (~line 351), and the manual "Fit" button handler (`handleManualResize`, ~line 496) — note: the backlog item's own AC4 wording calls this the "Fit" button, but the live UI label is "↔️ Resize" (`aria-label="Resize terminal"`, `TerminalOutput.tsx:596`); this doc follows the AC's naming for traceability, the code follows the UI's actual label |
 | Existing tests | `web-app/src/lib/hooks/__tests__/useTerminalFlowControl.test.ts` | Current coverage for `resize()`; extend rather than replace |
 
 ### Acceptance Criteria Traceability

@@ -7,6 +7,13 @@
 import { renderHook, act } from '@testing-library/react';
 import { useRef } from 'react';
 
+// Mock @bufbuild/protobuf's create() to bypass real schema-based construction — the
+// events_pb mock below exports plain classes, not GenMessage schema descriptors, so the
+// real create(SomeSchema, init) would receive `undefined` for the schema and throw.
+jest.mock('@bufbuild/protobuf', () => ({
+  create: (_schema: any, init: any) => init,
+}));
+
 // Mock protobuf modules
 jest.mock('@/gen/session/v1/events_pb', () => {
   class MockTerminalData {
