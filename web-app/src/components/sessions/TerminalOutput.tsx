@@ -1540,11 +1540,11 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
                         track({ name: "toolbar_button_click", category: "user_action", sessionId, component: "TerminalOutput", labels: { button: "log-stream", state: logStreamEnabled ? "off" : "on" } });
                         handleToggleLogStream();
                       }}
-                      title={logStreamEnabled ? "Stop forwarding console logs to server" : "Forward console logs to server (Remote Debug)"}
-                      aria-label={logStreamEnabled ? "Disable remote log streaming" : "Enable remote log streaming"}
+                      title={logStreamEnabled ? "Stop forwarding verbose debug logs to server (info/warn/error always stream)" : "Also forward verbose debug logs to server (info/warn/error already stream automatically)"}
+                      aria-label={logStreamEnabled ? "Disable verbose debug log streaming" : "Enable verbose debug log streaming"}
                       style={logStreamEnabled ? { backgroundColor: '#2a4', color: 'white', fontWeight: 'bold' } : {}}
                     >
-                      📡 {logStreamEnabled ? 'Log Stream ON' : 'Log Stream'}
+                      📡 {logStreamEnabled ? 'Debug Log Stream ON' : 'Debug Log Stream'}
                     </button>
                     <button
                       className={`${styles.toolbarButton} ${styles.devOnly}`}
