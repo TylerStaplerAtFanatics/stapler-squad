@@ -66,7 +66,11 @@ total diff. **Rejected.**
 | `linkedItemID` | New outer-scope local `string` in `onAutonomousDriverComplete`, threading the resolved backlog item ID from the nested `ItemSession`/`BacklogItem` lookup block out to the generic notifier call at the bottom of the function. |
 | `pruneOrphanedMinUptime` | New `const` (`server/server.go`, 5 minutes) — a defensive minimum-process-uptime gate: while `time.Since(srv.startedAt) < pruneOrphanedMinUptime`, the wired existence-lookup closure returns `nil` (meaning "not ready to judge, skip this pass") instead of the real batch-fetched set, guarding against any future regression that makes instance loading asynchronous (see Risk Control). |
 | `Server.startedAt` | New `time.Time` field on the `Server` struct (`server/server.go`), set once in `newServerBase` — the single shared construction path `NewServer` and `NewServerWithDeps` both call before either computes anything server-specific. Replaces a `NewServer`-local `startTime` variable that `wireDepsIntoServer` (where the existence-lookup closure is actually built) could never have seen, since `NewServerWithDeps` calls `wireDepsIntoServer` directly without ever going through `NewServer` at all. |
-| `AttentionReason` | Existing type alias (`session/review_queue.go:12`) for `queue.AttentionReason`; `ReasonTaskComplete`/`ReasonIdle`/`ReasonStale` are the three reasons this feature suppresses for `Hidden` sessions specifically called out in the requirements (though the actual suppression, once `Hidden`, is unconditional on reason — see Design Decision 1 below). |
+| `AttentionReason` | Existing type alias (`session/review_queue.go:12`) for `queue.AttentionReason`; `ReasonTaskComplete`/`ReasonIdle`/`ReasonStale` are the three reasons this feature suppresses for `Hidden` sessions — and, per the narrowed Design Decision 1, the *only* reasons suppressed: `ReasonErrorState`/`ReasonTestsFailing` still notify even when `Hidden`, as a safety net for an alive-but-stuck review session with no other durable detector watching it (see Design Decision 1 below). |
+| `reconcileStuckReviewItems` / `markAbandonedReview` / `StuckReasonAbandonedReview` | Existing durable stuck-detection machinery (`session/backlog_lifecycle.go:1568-1642`, `:1772-1828`), run periodically by `BacklogLifecycleListener.ReconcileStuck`'s sweep — entirely independent of the review-queue/`OnItemAdded` notification path this plan modifies. Detects a review-status backlog item with no active (`EndedAt`-nil) review/work session (`FindStuckReviewItems`) or a confirmed-dead zombie session (`FindZombieReviewItems`), and durably marks + notifies (once) + can auto-respawn review. Covers a `Hidden` review session that **crashes or exits** before calling `submit_review_verdict`; does **not** cover one that is still *alive* but stuck (see Design Decision 1's narrowing). |
+| `wireRateLimitCallbacks` / `onDetected` / `onRecovery` | Existing method (`server/services/session_service.go:3848-3898`) and its two closures, registered on every `Instance` via `wireCallbacks` — including `Hidden=true` review sessions, since `CreateDirectorySession`/`CreateWorktreeSession`/`WireInstanceCallbacks` have no `Hidden` branch. A third unguarded `events.NewNotificationEvent` producer identified during the Phase 4 pre-mortem (Failure #1, Finding 1) and closed by this plan's new Epic 5. |
+| `rateLimitLookupTimeout` | New `const` (`server/services/session_service.go`, 2s, Epic 5) — bounds the `GetItemSessionBySessionUUID` lookup added inside `wireRateLimitCallbacks`'s closures, which (unlike `OnItemAdded`) receive no `ctx` parameter from their caller, so `context.WithTimeout(context.Background(), ...)` is used directly rather than a `baseContext()`-style helper. |
+| `concStorage` | Existing field (`server/services/session_service.go:82`, `*session.Storage`) — "the concrete backing store...used for operations...not part of the `InstanceStore` interface...nil when storage is a fake `InstanceStore` (tests)". Reused by Epic 5's `wireRateLimitCallbacks` fix to call `GetItemSessionBySessionUUID`, which `s.storage`'s `session.InstanceStore` interface type does not expose — the same "lookup already cheaply available at this call site" pattern `rqm.storage` (a `*session.Storage` field, not an interface) already uses in `server/review_queue_manager.go`. |
 
 ---
 
@@ -80,7 +84,7 @@ total diff. **Rejected.**
 | Orphan existence check | Inject a batch `func() map[string]struct{}` (`existingSessionIDs`) into `NotificationHistoryStore`, called ONCE per prune pass and wired from `server.go` around `session.Storage.ListInstanceData()` | (a) A plain per-record `func(sessionID string) bool` predicate; (b) Import `*session.Storage`/`*session.ReviewQueuePoller` directly into the `notifications` package | (a) rejected by architecture + adversarial review: a per-record predicate backed by `FindInstanceDataByID` re-runs a full multi-edge-eager-loaded ent query (`ListInstanceData` → `EntRepository.List`) once per eligible record, up to 500 times per prune pass, while `s.mu` is held — an O(eligible-records) DB-query storm on a hot path; (b) still rejected per the interface-pollution checklist (define at consumption point) + pitfalls.md's package-layering note: `server/notifications` currently has zero dependency on `session` and should stay that way |
 | Existence check data source | `session.Storage.ListInstanceData()` (durable, synchronously loaded), fetched once per prune pass into an in-memory `map[string]struct{}` keyed by both stable ID and title | `session.ReviewQueuePoller.FindInstance` (live in-memory only) | `FindInstance` only reflects the poller's currently-monitored set — absent after a restart before reconciliation even though the session is real; `ListInstanceData` reflects the durable record set loaded synchronously in `BuildRuntimeDeps` before the async tmux-start goroutine even begins (see Design Decision 2) |
 | Orphan sweep cadence | Gated inside `enforceRetention()` by `time.Since(lastOrphanPruneAt) >= orphanPruneInterval` (1 min default), so the batch fetch runs on a coarse timer, not on every `Append()` | Run the batch fetch unconditionally on every `Append()` (the plan's original shape) | `Append()` fires roughly every 500ms under the subscriber's coalesce interval; even a single once-per-pass batch fetch is a real ent query and should not run twice a second while `s.mu` (a write lock) is held, blocking all concurrent notification reads/writes |
-| Suppression scope once `Hidden==true` | Unconditional on `Reason` (matches the pre-existing `shouldSkipSession` invariant: "Hidden sessions are never shown in the review queue", any reason) | Scope suppression to only `ReasonTaskComplete`/`ReasonIdle`/`ReasonStale`, leaving `ReasonErrorState`/`ReasonTestsFailing` notifying | A narrower carve-out would create a second, inconsistent policy divergent from what `shouldSkipSession` already enforces in steady state, and would notify for conditions on a one-shot ephemeral process nobody is watching anyway (see Design Decision 1) |
+| Suppression scope once `Hidden==true` | Scoped to only `Reason ∈ {ReasonTaskComplete, ReasonIdle, ReasonStale}` (AC1's literal three reasons), leaving `ReasonErrorState`/`ReasonTestsFailing` notifying even for `Hidden` sessions | Unconditional on `Reason` (the plan's original choice, matching the pre-existing `shouldSkipSession` invariant "any reason") | Verified (Phase 4 pre-mortem Failure #3) that this repo's durable stuck-detection sweep (`reconcileStuckReviewItems`/`markAbandonedReview`, `session/backlog_lifecycle.go`) only fires once a review session has *ended* or is a confirmed zombie — it does not watch a still-alive session stuck in an error state. Leaving `ReasonErrorState`/`ReasonTestsFailing` notifying for `Hidden` sessions is the only signal covering that residual gap (see Design Decision 1) |
 | Suppression trigger boolean | `Hidden` as the sole necessary-and-sufficient gate at both `Determine()` and `OnItemAdded`; `SessionRole` used only as enrichment/corroboration, never an independent OR | Suppress independently on `SessionRole == review \|\| SessionRole == triage`, per the requirements' literal "OR" wording | pitfalls.md: `SessionRoleReview` is also used for a session that becomes the review session on reopen in *non-Hidden* flows (`backlog_lifecycle.go:3141` pairs `SessionRoleWork`/`SessionRoleReview`); an independent Role-only OR risks silently swallowing a real, visible session's notifications (see Design Decision 1) |
 
 ---
@@ -101,12 +105,20 @@ touched anywhere in this plan.
 
 ### 1. `Hidden` vs. `SessionRole` — the exact boolean
 
-**Resolution**: `Hidden` is the sole necessary-and-sufficient suppression trigger, applied
-identically (unconditional on `Reason`) at both `Determine()` and `OnItemAdded`. `SessionRole`
-is never checked as an independent OR branch anywhere in this plan.
+**Resolution**: `Hidden` is the sole necessary-and-sufficient suppression *trigger* — `SessionRole`
+is never checked as an independent OR branch anywhere in this plan — but the suppression it gates
+is **narrowed to `Reason ∈ {ReasonTaskComplete, ReasonIdle, ReasonStale}`**, not unconditional on
+`Reason`. A `Hidden` session that reaches `ReasonErrorState`, `ReasonTestsFailing`,
+`ReasonApprovalPending`, or `ReasonInputRequired` still notifies, applied identically at both
+`Determine()` and `OnItemAdded`.
 
-This is not a weakening of AC1's intent — it is a *strengthening* of correctness, and in
-practice produces the identical suppression set the "OR" wording asked for, because:
+*(Revised during the Phase 4 pre-mortem's P1 Failure #3: the plan's original "unconditional on
+Reason" choice was verified against this repo's actual durable stuck-detection machinery — see the
+narrowing rationale below — and found to leave a real gap for a specific sub-case, not a
+hypothetical one.)*
+
+**`Hidden` vs. `SessionRole` as the trigger** — unchanged from the original resolution and still
+correct:
 
 - The only two call sites that ever set `Hidden = true`
   (`server/services/session_service.go:827` `SpawnReviewSession`, and
@@ -130,6 +142,42 @@ practice produces the identical suppression set the "OR" wording asked for, beca
 `SessionRole` is still fetched (via `GetItemSessionBySessionUUID`, already required for AC2's
 `item_id` enrichment) and used for corroboration in tests and logging, but never as a second,
 independent suppression path.
+
+**Cross-reference (Finding 4, plan-repair pass)**: `requirements.md`'s Acceptance Criterion 1 was
+amended to state this resolved `Hidden`-as-sole-trigger boolean precisely (it previously read as a
+literal `Hidden == true OR SessionRole ∈ {review, triage}`, which this Design Decision already
+correctly did not implement) — the two documents now agree; see AC1 there for the exact wording.
+
+**Why "unconditional on Reason" was narrowed** — verified against this repo's actual stuck-review
+machinery, not assumed: `session/backlog_lifecycle.go`'s periodic `ReconcileStuck` sweep already
+runs a `reconcileStuckReviewItems` detector (`session/backlog_lifecycle.go:1568-1642`) wired to two
+durable, DB-backed queries — `EntRepository.FindStuckReviewItems`
+(`session/storage_backlog.go:700-715`, items in "review" status with no active, i.e.
+`EndedAt`-nil, review/work session) and `EntRepository.FindZombieReviewItems`
+(`session/storage_backlog.go:1043`, an `EndedAt`-nil session whose underlying process is confirmed
+dead via a liveness checker) — both feeding `markAbandonedReview`
+(`session/backlog_lifecycle.go:1772-1828`), which writes a durable `StuckReasonAbandonedReview`
+row, sends a notify-once operator notification (`l.notify(itemID, "Review item needs attention",
+...)`, already `item_id`-tagged, never subject to this plan's `PruneOrphaned`/`SessionScoped`
+machinery), and can auto-respawn the review. **This mechanism already covers a `Hidden` review
+session that crashes or exits before calling `submit_review_verdict`** — the moment its
+`ItemSession` row's `EndedAt` is set (normal exit) or its process is confirmed dead (zombie), the
+next `ReconcileStuck` tick picks it up independent of the review-queue/`OnItemAdded` path this plan
+touches.
+
+**What it does *not* cover**: a `Hidden` review session that is still *alive* — tmux process still
+running, `ItemSession.EndedAt` still nil — but stuck in `ReasonErrorState`/`ReasonTestsFailing`
+(detected by `Determine()`, `session/review_queue_determiner.go:138-147`, while
+`statusInfo.IsControllerActive` is true or content-detection finds the same pattern) and never
+progressing to a verdict. Both `FindStuckReviewItems` and `FindZombieReviewItems` require the
+session to have already ended or be confirmably dead — neither fires for a session that is simply
+alive-but-erroring. For this specific sub-case, the review-queue's own error/tests-failing
+detection was the *only* signal watching an alive session's health; suppressing it unconditionally
+for `Hidden` sessions (the plan's original choice) would have removed that signal with nothing else
+picking up the slack. Narrowing suppression to only `ReasonTaskComplete`/`ReasonIdle`/`ReasonStale`
+(AC1's literal three reasons) leaves `ReasonErrorState`/`ReasonTestsFailing` notifying for `Hidden`
+sessions specifically to close this residual gap, while `ReasonApprovalPending`/`ReasonInputRequired`
+were never suppressed to begin with (pre-existing `OnItemAdded` guard, unrelated to this plan).
 
 ### 2. AC3's existence check function + post-restart reload window
 
@@ -176,58 +224,70 @@ where `existingIDs` is the single batch-fetched `map[string]struct{}` for the cu
 
 ### 4. Exact insertion point for `Determine()`'s `Hidden` check
 
-**Resolution**: the very first statement inside `func (d *DefaultStatusDeterminer) Determine(...)
-DetectionResult` (`session/review_queue_determiner.go:97-101`), **before** `claudeStatus :=
-statusInfo.ClaudeStatus` (currently line 106) and before either the
-`statusInfo.IsControllerActive` or no-controller branch is reached:
+**Resolution (revised — see Design Decision 1's narrowing)**: because suppression is now
+*reason-scoped*, not unconditional, the check can no longer be a first-statement early-return —
+`reason` isn't known until the existing detection logic has run. Instead, gate the final
+`action` computation at the bottom of `func (d *DefaultStatusDeterminer) Determine(...)
+DetectionResult` (`session/review_queue_determiner.go:288-300`), immediately before the
+function's single terminal `return`:
 
 ```go
-func (d *DefaultStatusDeterminer) Determine(
-	inst *Instance,
-	content string,
-	statusInfo InstanceStatusInfo,
-	detector detection.TerminalDetector,
-) DetectionResult {
-	// Hidden (system/background) sessions are never shown in the review queue —
-	// mirrors ReviewQueuePoller.shouldSkipSession's existing invariant (review_queue_poller.go:629),
-	// but applied here too so StartupScanner.Scan (which calls Determine() directly without going
-	// through shouldSkipSession) cannot bypass it. Unconditional on reason: a Hidden session should
-	// never surface a TASK_COMPLETE/Idle/Stale/error/etc. notification for any detected condition.
-	if inst.Hidden {
-		return DetectionResult{Action: DetectionActionSkip, ClaudeStatus: statusInfo.ClaudeStatus}
+	action := DetectionActionSkip
+	if shouldAdd {
+		action = DetectionActionAdd
 	}
 
-	claudeStatus := statusInfo.ClaudeStatus
-	// ... existing body unchanged ...
+	// Hidden (system/background) sessions never surface a generic completion/idle/stale
+	// notification — mirrors ReviewQueuePoller.shouldSkipSession's existing invariant
+	// (review_queue_poller.go:629), but applied here too so StartupScanner.Scan (which calls
+	// Determine() directly without going through shouldSkipSession) cannot bypass it. Narrowed
+	// to exactly these three reasons (not unconditional on reason, see Design Decision 1):
+	// ReasonErrorState/ReasonTestsFailing still notify even when Hidden, because this repo's
+	// durable stuck-review sweep (reconcileStuckReviewItems, session/backlog_lifecycle.go) only
+	// detects a review session once it has ended or is a confirmed zombie — it does not watch
+	// a still-alive session stuck in an error state, and this is the only signal that does.
+	if inst.Hidden && action == DetectionActionAdd &&
+		(reason == ReasonTaskComplete || reason == ReasonIdle || reason == ReasonStale) {
+		action = DetectionActionSkip
+	}
+
+	return DetectionResult{
+		Action:        action,
+		Reason:        reason,
+		Priority:      priority,
+		Context:       ctx,
+		ClaudeStatus:  claudeStatus,
+		CleanWorktree: cleanWorktree,
+	}
+}
 ```
 
-No interaction with the existing `IsControllerActive`/no-controller branches — the early-return
-happens strictly before either is evaluated.
+The two existing early `return DetectionResult{Action: DetectionActionRemove, ...}` statements
+inside the `IsControllerActive`/no-controller branches (`IdleStateActive` at line ~163;
+`StatusExecuting`/`StatusProcessing`/`StatusWaitingForAgent` at line ~231) are untouched — they
+already return `Remove`, never `Add`, so they can never produce a notification and need no Hidden
+gate. Unlike the plan's original first-statement early-return, this shape means `Determine()` runs
+its full detection logic even for `Hidden` instances (a `Hidden` instance no longer short-circuits
+before `claudeStatus := statusInfo.ClaudeStatus`) — a deliberate, small extra amount of in-memory
+CPU work per poll tick (no new I/O), traded for the ability to still classify and act on
+`ReasonErrorState`/`ReasonTestsFailing` for a `Hidden` instance.
 
 ### 5. `StartupScanner.Scan`'s exact fix
 
-**Resolution**: `session/startup_scanner.go:35`, change:
-
-```go
-if !inst.Started() || inst.Paused() {
-    continue
-}
-```
-
-to:
-
-```go
-if !inst.Started() || inst.Paused() || inst.Hidden {
-    continue
-}
-```
-
-This makes the skip explicit and cheap at its own source (avoids the `statusManager.GetStatus` +
-`contentProvider.GetContent` calls entirely for Hidden instances), even though Design Decision 4's
-`Determine()` fix alone already makes the outcome behaviorally identical (Decision 4 returns
-`DetectionActionSkip`, so `result.Action == DetectionActionAdd` would already be false). Kept as
-belt-and-suspenders per architecture.md's explicit recommendation and because it is a one-token
-diff with no downside.
+**Resolution (revised — no change to `StartupScanner.Scan` after all, see Design Decision 1's
+narrowing)**: the plan originally proposed adding `|| inst.Hidden` to
+`session/startup_scanner.go:35`'s skip condition as "belt-and-suspenders." That addition is now
+**dropped** — it would unconditionally skip `GetStatus`/`GetContent`/`Determine()` for every
+`Hidden` instance at startup regardless of reason, silently reintroducing exactly the
+over-suppression Design Decision 1's narrowing exists to prevent (a `Hidden` instance sitting in
+`ReasonErrorState` at the moment of a server restart would never be evaluated at all, and so would
+never notify, even though Design Decision 4's `Determine()` fix says it should). `Determine()`
+itself is now the single, sufficient place `Hidden` + `Reason` are both known and the narrowed
+gate can be correctly applied — `StartupScanner.Scan` calling `Determine()` unmodified is no
+longer a bypass, it's simply delegating to the one function equipped to decide correctly. No code
+change to `session/startup_scanner.go` is required by this plan. (Story 1.2 below is retained only
+as a regression test proving `StartupScanner.Scan` still calls `Determine()` for a `Hidden`
+instance and gets the narrowed result back, not as a source-code change.)
 
 ### 6. `autonomous_orchestration_service.go`'s two call sites
 
@@ -269,12 +329,13 @@ matters here too.
 
 | Domain Event | Policy Trigger | Command | Actor |
 |---|---|---|---|
-| `HiddenInstanceEvaluated` | `Determine()` invoked with `inst.Hidden == true` | `SkipDetection` (early-return `DetectionActionSkip`, unconditional on reason) | `DefaultStatusDeterminer.Determine` |
-| `HiddenInstanceLoadedAtStartup` | `StartupScanner.Scan` iterates an instance with `Hidden == true` | `SkipStartupScan` (continue before `GetStatus`/`GetContent`) | `StartupScanner.Scan` |
+| `HiddenInstanceEvaluated` | `Determine()` reaches its final action computation with `inst.Hidden == true` | `SkipDetection` (force `DetectionActionSkip`) **only when** `reason ∈ {ReasonTaskComplete, ReasonIdle, ReasonStale}`; `ReasonErrorState`/`ReasonTestsFailing` still produce `DetectionActionAdd` | `DefaultStatusDeterminer.Determine` |
+| `HiddenInstanceLoadedAtStartup` | `StartupScanner.Scan` iterates an instance with `Hidden == true` | *(no separate command — `StartupScanner.Scan` still calls `Determine()` unmodified, which applies `HiddenInstanceEvaluated`'s narrowed gate itself; see Design Decision 5)* | `StartupScanner.Scan` |
 | `ReviewQueueItemAdded` | `queue.Add()` transitions `exists:false → true` for `Reason != ReasonApprovalPending` | `ResolveSessionLinkage` (`FindInstance` + `GetItemSessionBySessionUUID`) | `ReactiveQueueManager.OnItemAdded` |
 | `BacklogLinkedSessionResolved` | Linkage lookup returns `BacklogItemID != ""` | `StampItemIDMetadata` | `ReactiveQueueManager.OnItemAdded` |
-| `HiddenSessionResolved` | Resolved `*Instance` is non-nil and `Hidden == true` | `SuppressNotificationPublish` (skip `eventBus.Publish`, unconditional on reason) | `ReactiveQueueManager.OnItemAdded` |
-| `AutonomousDriverCompleted` | `onAutonomousDriverComplete` fires for a real, driver-run `Instance` | `StampItemIDMetadata` always; `SuppressIfHidden` on the generic done/stuck notifier only | `AutonomousOrchestrationService.onAutonomousDriverComplete` |
+| `HiddenSessionResolved` | Resolved `*Instance` is non-nil, `Hidden == true`, and `item.Reason ∈ {ReasonTaskComplete, ReasonIdle, ReasonStale}` | `SuppressNotificationPublish` (skip `eventBus.Publish`) — **not** triggered for `ReasonErrorState`/`ReasonTestsFailing`, which still publish even when `Hidden` | `ReactiveQueueManager.OnItemAdded` |
+| `AutonomousDriverCompleted` | `onAutonomousDriverComplete` fires for a real, driver-run `Instance` | `StampItemIDMetadata` always; `SuppressIfHidden` on the generic done/stuck notifier only (unconditional on reason here — this notifier only ever encodes done/stuck semantics, never a distinct error-class signal, see Design Decision 6) | `AutonomousOrchestrationService.onAutonomousDriverComplete` |
+| `RateLimitCallbackFired` | `inst.SetRateLimitCallbacks`'s `onDetected`/`onRecovery` closures fire for a rate-limit transition | `StampItemIDMetadata` when backlog-linked; `SuppressIfHidden` (unconditional on reason — a rate-limit event has no `AttentionReason`/error-class distinction to preserve, see Epic 5) | `SessionService.wireRateLimitCallbacks` |
 | `NotificationAppended` | Every `Append()` call | `EnforceRetention` (existing age/count, unconditional) then, only when `time.Since(lastOrphanPruneAt) >= orphanPruneInterval`, `PruneOrphanedRecords` (new) | `NotificationHistoryStore.Append` |
 | `OrphanSweepDue` | Gated prune pass fires (`orphanPruneInterval` elapsed since the last sweep) | `FetchExistingSessionIDs` (batch call to the injected `existingSessionIDs func() map[string]struct{}` → `storage.ListInstanceData()` once, gated by `pruneOrphanedMinUptime`) then filter all eligible records in memory | `NotificationHistoryStore` (via `existenceChecker`) |
 | `SessionRecordConfirmedGone` | Filtered record's `SessionID` absent from the fetched set | `DeleteNotificationRecord` | `NotificationHistoryStore.PruneOrphaned` |
@@ -311,8 +372,10 @@ matters here too.
 | SessionID overload: pruning deletes legitimate item-scoped notifications | Explicit `SessionScoped` field, opt-in only at the two real session-scoped producers (ADR-001) | Design Decision 3, Epic 3 |
 | DB-query storm on a hot path: an existence check per eligible record, on every `Append()`, under the store's write lock | (a) Existence check is a **batch** fetch (`existingSessionIDs func() map[string]struct{}`), called once per prune pass and checked via in-memory map membership, not once per record; (b) the sweep itself is gated to run at most once per `orphanPruneInterval` (1 min default) inside `enforceRetention()`, not on every single `Append()` | Design Decision 2, Task 4.2.1a, Task 4.2.1b |
 | Blocking the synchronous `OnItemAdded` observer callback on a slow DB call | Bounded `itemSessionLookupTimeout` (2s) via `context.WithTimeout(rqm.baseContext(), ...)`, same pattern as `maybeAutoCreatePR`'s `autoCreatePRLookupTimeout` | Task 1.3.1 |
-| Regression: existing `ReasonApprovalPending`/`ReasonInputRequired`/`ReasonErrorState` tests break | New suppression is additive (`&& !hiddenSession`) alongside the existing `&& item.Reason != session.ReasonApprovalPending` condition; `TestOnItemAdded_EventBusBehavior_BUG001`'s three existing cases use non-Hidden fixture instances (no `poller.SetInstances` call in that test → `FindInstance` returns nil → `hiddenSession` is always `false`) so all three continue to pass unmodified | Task 1.3.3 |
+| Regression: existing `ReasonApprovalPending`/`ReasonInputRequired`/`ReasonErrorState` tests break | New suppression is additive and reason-scoped (`&& !(hiddenSession && item.Reason is TaskComplete/Idle/Stale)`) alongside the existing `&& item.Reason != session.ReasonApprovalPending` condition; `TestOnItemAdded_EventBusBehavior_BUG001`'s three existing cases use non-Hidden fixture instances (no `poller.SetInstances` call in that test → `FindInstance` returns nil → `hiddenSession` is always `false`) so all three continue to pass unmodified | Task 1.3.3 |
 | Dead-code fix (Triage-stuck `Hidden` gating) impossible to verify | Deliberately *not* added (Design Decision 6) — verified-unreachable logic isn't worth an untestable diff; metadata-only fix is cheap and always correct | Design Decision 6 |
+| Under-suppression: a `Hidden` review session stuck in a genuine error state (`ReasonErrorState`/`ReasonTestsFailing`) has no other durable signal watching it while still alive | Narrowed Design Decision 1: these two reasons are excluded from the `Hidden` suppression scope, so they still notify; separately, this repo's `reconcileStuckReviewItems`/`markAbandonedReview` sweep (`session/backlog_lifecycle.go`) already covers the *exited-or-zombie* sub-case (a `Hidden` review session that crashes/exits before calling `submit_review_verdict`) via a fully independent, durable, notify-once path | Design Decision 1, Story 1.1, Story 2.2 |
+| Incomplete producer audit: a further unguarded `events.NewNotificationEvent` call site reproduces the same dead-link bug this plan exists to fix | Epic 2/3/5 close the three session-scoped, currently-unguarded producers identified by name so far (`OnItemAdded`, `autonomous_orchestration_service.go`'s generic notifier, `wireRateLimitCallbacks`). This plan-repair pass's grep of all `events.NewNotificationEvent(` call sites also surfaced at least two more session-scoped, currently-unguarded producers **not** fixed by this plan and left as an explicitly out-of-scope follow-up: `CapacityMonitor.handleTransitionTrigger` (`server/services/capacity_monitor.go:288`, "Capacity Alert" notice keyed on `snap.UUID`/`snap.Title`, no `Hidden` check) and `SessionService.UpdateSession`'s steer-message confirmation (`server/services/session_service.go:1763-1768`, "Steering input sent," gated behind an explicit user-initiated `SteerMessage` RPC call so practically low-risk against a `Hidden` session, but structurally the same unguarded shape). No structural, compiler-enforced guard exists against *any* future producer (including these two) being added/staying unguarded — this remains a code-review checklist item, not a type-system guarantee, and closing these two specific instances is out of this item's scope | Epic 2, Epic 3, Epic 5 |
 
 ---
 
@@ -334,20 +397,23 @@ for awareness, not blocking.
 ## Dependency Visualization
 
 ```
-Epic 1: Determine()/StartupScanner Hidden gate (AC1, structural)
-  Story 1.1: Determine() early-return ─────────────┐
-    Task 1.1.1a → 1.1.1b                            │
-  Story 1.2: StartupScanner belt-and-suspenders ────┤ (independent of 1.1, same file family)
-    Task 1.2.1a → 1.2.1b                            │
-                                                     ▼
+Epic 1: Determine() reason-scoped Hidden gate (AC1, structural)
+  Story 1.1: Determine() end-of-function reason-scoped gate ──┐
+    Task 1.1.1a → 1.1.1b                                       │
+  Story 1.2: StartupScanner regression test only, no source change ┤ (no longer a code dependency
+    Task 1.2.1a                                                 │  on 1.1 — see Design Decision 5 —
+                                                                 │  but the test still exercises 1.1's fix)
+                                                                 ▼
 Epic 2: OnItemAdded suppression + item_id enrichment (AC1 defense-in-depth, AC2)
   depends on nothing in Epic 1 (separate call path) but ships together
   Story 2.1: resolve inst/hiddenSession + ItemSession linkage lookup
-    Task 2.1.1a → 2.1.1b
-  Story 2.2: gate publish + stamp item_id/session_scoped metadata ── depends on 2.1
+    Task 2.1.1a → 2.1.1b → 2.1.1c
+  Story 2.2: gate publish (reason-scoped) + stamp item_id/session_scoped metadata ── depends on 2.1
     Task 2.2.1a → 2.2.1b
   Story 2.3: regression tests (AC4 primary) ── depends on 2.2
-    Task 2.3.1a → 2.3.1b → 2.3.1c
+    Task 2.3.1a → 2.3.1b → 2.3.1c → 2.3.1d
+  Story 2.4: headless-triage negative-proof regression test (AC4, Finding 3) ── independent of 2.1-2.3
+    Task 2.4.1a
                                                      │
 Epic 3: autonomous_orchestration_service.go fixes (AC1/AC2, independent of Epic 1/2 files)
   Story 3.1: "Triage stuck" metadata fix
@@ -360,7 +426,8 @@ Epic 3: autonomous_orchestration_service.go fixes (AC1/AC2, independent of Epic 
                                                      ▼
 Epic 4: NotificationRecord.SessionScoped + PruneOrphaned (AC3)
   depends on Epic 2's Task 2.2.1b (session_scoped metadata key must exist before eventToRecord
-  reads it) and Epic 3's Task 3.2.1b (same key, second producer)
+  reads it), Epic 3's Task 3.2.1b (same key, second producer), and Epic 5's Task 5.1.1a (same key,
+  third producer)
   Story 4.1: SessionScoped field + eventToRecord wiring
     Task 4.1.1a → 4.1.1b
   Story 4.2: PruneOrphaned + SetSessionExistenceLookup + gated enforceRetention hook
@@ -370,6 +437,14 @@ Epic 4: NotificationRecord.SessionScoped + PruneOrphaned (AC3)
   Story 4.4: tests ── depends on 4.1, 4.2
     Task 4.4.1a → 4.4.1b → 4.4.1c → 4.4.1d
 
+Epic 5: wireRateLimitCallbacks Hidden gate + metadata (AC1/AC2, Finding 1 — third unguarded producer)
+  independent of Epics 1-2 in every file it touches (server/services/session_service.go); depends
+  only on Epic 2's Task 2.1.1c (events.SessionScopedMetadata helper)
+  Story 5.1: gate onDetected/onRecovery on inst.Hidden + stamp item_id/session_scoped metadata
+    Task 5.1.1a → 5.1.1b
+  Story 5.2: tests
+    Task 5.2.1a
+
 Epic 1 and Epic 2 touch disjoint files (session/review_queue_determiner.go + session/startup_scanner.go
 vs. server/review_queue_manager.go) and can be implemented/reviewed in parallel. Epic 3 is
 independent of Epics 1-2 in every file it touches (different file, different struct) and can also
@@ -377,11 +452,12 @@ proceed in parallel, **except** for one narrow dependency: Epic 3's Task 3.2.1b 
 `events.SessionScopedMetadata`, defined by Epic 2's Task 2.1.1c (`pkg/events`/`server/events`,
 shared by both epics precisely so `"session_scoped"` is not a duplicated string literal — see the
 architecture-review Concern fix). Task 2.1.1c has no dependency on the rest of Epic 2 and is cheap
-to land first/standalone if Epic 3 needs to start before Epic 2's other tasks are done.
+to land first/standalone if Epic 3 needs to start before Epic 2's other tasks are done. Epic 5 has
+the exact same narrow dependency on Task 2.1.1c and is otherwise independent of every other epic.
 Epic 4 is the epic with the broadest ordering dependency: it needs the `events.SessionScopedMetadata`
-helper (Task 2.1.1c) landed and consumed by both real producers (Epic 2's Task 2.2.1a, Epic 3's
-Task 3.2.1b) before `eventToRecord`/`PruneOrphaned` (Task 4.1.1b) have anything meaningful to
-read.
+helper (Task 2.1.1c) landed and consumed by all three real producers (Epic 2's Task 2.2.1a, Epic 3's
+Task 3.2.1b, Epic 5's Task 5.1.1a) before `eventToRecord`/`PruneOrphaned` (Task 4.1.1b) have anything
+meaningful to read.
 ```
 
 ---
@@ -390,76 +466,96 @@ read.
 
 ### Epic 1: Close the `Determine()`/`StartupScanner` structural bypass (AC1)
 
-**Goal**: A `Hidden` instance can never produce a `DetectionActionAdd` result from `Determine()`,
-regardless of which caller (`ReviewQueuePoller.checkSession` or `StartupScanner.Scan`) invokes it
-— closing the confirmed reproducible bypass where a service restart lets `StartupScanner.Scan`
-call `Determine()` on a still-`Hidden`, still-running review session with zero `Hidden` check
-(architecture.md Q1).
+**Goal**: A `Hidden` instance can never produce a `DetectionActionAdd` result from `Determine()`
+for `ReasonTaskComplete`/`ReasonIdle`/`ReasonStale`, regardless of which caller
+(`ReviewQueuePoller.checkSession` or `StartupScanner.Scan`) invokes it — closing the confirmed
+reproducible bypass where a service restart lets `StartupScanner.Scan` call `Determine()` on a
+still-`Hidden`, still-running review session with zero `Hidden` check (architecture.md Q1) — while
+narrowly *preserving* `ReasonErrorState`/`ReasonTestsFailing` notifications even when `Hidden`, per
+Design Decision 1's narrowing (Phase 4 pre-mortem Failure #3: no other durable detector watches a
+still-alive, stuck-in-error `Hidden` review session; see Design Decision 1 for the full
+justification and the citation of `reconcileStuckReviewItems`/`markAbandonedReview` as the
+mechanism that *does* cover the exited/zombie sub-case).
 
-#### Story 1.1: Add `Determine()`'s `Hidden` early-return
-**As an** operator, **I want** `Determine()` itself to refuse to flag a `Hidden` instance for any
-reason, **so that** no current or future caller of `Determine()` can re-introduce the
-`StartupScanner` bypass by accident.
+#### Story 1.1: Add `Determine()`'s reason-scoped `Hidden` gate
+**As an** operator, **I want** `Determine()` itself to refuse to flag a `Hidden` instance as
+`TaskComplete`/`Idle`/`Stale`, while still flagging a genuine error/tests-failing condition even
+for a `Hidden` instance, **so that** no current or future caller of `Determine()` can re-introduce
+the `StartupScanner` bypass by accident, without silencing the one signal that watches an
+alive-but-stuck `Hidden` review session.
 **Acceptance Criteria**:
-- `DefaultStatusDeterminer.Determine` (`session/review_queue_determiner.go:97`) returns
-  `DetectionResult{Action: DetectionActionSkip, ClaudeStatus: statusInfo.ClaudeStatus}`
-  immediately when `inst.Hidden`, before `claudeStatus := statusInfo.ClaudeStatus` and before
-  either the `IsControllerActive` or no-controller branch runs.
+- `DefaultStatusDeterminer.Determine` (`session/review_queue_determiner.go:288-300`) forces
+  `action = DetectionActionSkip` when `inst.Hidden && action == DetectionActionAdd && reason ∈
+  {ReasonTaskComplete, ReasonIdle, ReasonStale}`, applied immediately before the function's single
+  terminal `return DetectionResult{...}` (see Design Decision 4's revised code).
 - **Given** an `Instance{Title: "review:153f8eac", UUID: "aaaa1111-2222-3333-4444-555566667777",
   Hidden: true}` (matching `SpawnReviewSession`'s title convention `"review:"+item.ID[:8]` for
   backlog item `153f8eac-c454-4fa3-a8f4-83b070b9a035`), with
   `statusInfo.ClaudeStatus == detection.StatusSuccess` and `statusInfo.IsControllerActive ==
   true` (i.e., every input that would otherwise produce `ReasonTaskComplete`),
   **when** `DefaultStatusDeterminer.Determine(inst, "", statusInfo, detector)` is called,
-  **then** it returns `DetectionResult{Action: DetectionActionSkip}` and never evaluates the
-  `switch` on `statusInfo.ClaudeStatus`.
+  **then** it returns `DetectionResult{Action: DetectionActionSkip, Reason: ReasonTaskComplete}`.
+- **Given** the same `Hidden: true` instance, but `statusInfo.ClaudeStatus ==
+  detection.StatusError` (i.e., every input that would otherwise produce `ReasonErrorState`),
+  **when** `Determine()` is called, **then** it returns `DetectionResult{Action:
+  DetectionActionAdd, Reason: ReasonErrorState}` — the `Hidden` gate does **not** suppress this
+  reason, proving the narrowing's safety-net case.
 - Existing `Determine()` tests for non-Hidden instances (e.g. approval/error/idle detection)
   pass unmodified.
 **Files**: `session/review_queue_determiner.go`, `session/review_queue_determiner_test.go`
 
-##### Task 1.1.1a: Add the `Hidden` early-return to `Determine()` (~3 min)
-- In `session/review_queue_determiner.go`, insert the early-return shown in Design Decision 4
-  as the first statement of `Determine()` (before line 106's `claudeStatus :=
-  statusInfo.ClaudeStatus`).
+##### Task 1.1.1a: Add the reason-scoped `Hidden` gate to `Determine()`'s final return (~4 min)
+- In `session/review_queue_determiner.go`, insert the gate shown in Design Decision 4's revised
+  code, immediately before the existing terminal `return DetectionResult{...}` (currently around
+  line 293) — **not** as a first-statement early-return (that shape can no longer work now that
+  the gate depends on `reason`, which isn't known until the rest of the function has run).
 - Files: `session/review_queue_determiner.go`
 
-##### Task 1.1.1b: Add `TestDetermine_ReturnsSkip_When_InstanceHidden` (~4 min)
+##### Task 1.1.1b: Add `TestDetermine_ReturnsSkip_When_InstanceHiddenAndReasonIsTaskCompleteIdleOrStale` + a `ReasonErrorState` safety-net case (~7 min)
 - In `session/review_queue_determiner_test.go`, add a table-driven or standalone test
   constructing a bare `&Instance{Title: "review:153f8eac", UUID:
   "aaaa1111-2222-3333-4444-555566667777", Hidden: true}` (no live tmux, following the
   `session/review_queue_reactive_test.go` bare-`&Instance{}` pattern) with `InstanceStatusInfo{
   IsControllerActive: true, ClaudeStatus: detection.StatusSuccess }` and assert
-  `result.Action == DetectionActionSkip`. Add a second case with `IsControllerActive: false` and
-  `content` containing a success-pattern string, asserting the same skip result, to cover both
-  branches the early-return now bypasses.
+  `result.Action == DetectionActionSkip`. Add cases for `ClaudeStatus: detection.StatusIdle`-shaped
+  idle timeout and staleness (`ReasonIdle`/`ReasonStale`), all asserting `DetectionActionSkip`.
+  **Then add the safety-net case**: the same `Hidden: true` instance with `ClaudeStatus:
+  detection.StatusError`, asserting `result.Action == DetectionActionAdd && result.Reason ==
+  ReasonErrorState` — proving the narrowing does not over-suppress. Add a parallel case for
+  `detection.StatusTestsFailing` → `ReasonTestsFailing` staying `DetectionActionAdd`.
 - Files: `session/review_queue_determiner_test.go`
 
-#### Story 1.2: `StartupScanner.Scan` belt-and-suspenders skip
-**As a** maintainer, **I want** the specific reproducible bypass (`StartupScanner.Scan` calling
-`Determine()` on a `Hidden` instance with zero pre-check) closed at its own source too, **so
-that** the fix isn't solely reliant on `Determine()`'s internal behavior remaining correct
-forever.
+#### Story 1.2: `StartupScanner.Scan` regression coverage (no source change)
+**As a** maintainer, **I want** a test proving `StartupScanner.Scan` still delegates correctly to
+`Determine()`'s narrowed `Hidden` gate for a `Hidden` instance loaded at startup, **so that** the
+specific reproducible bypass (architecture.md Q1) stays closed **without** reintroducing a
+separate, reason-blind `Hidden` skip at `StartupScanner.Scan`'s own call site.
 **Acceptance Criteria**:
-- `StartupScanner.Scan`'s per-instance skip condition (`session/startup_scanner.go:35`) becomes
-  `if !inst.Started() || inst.Paused() || inst.Hidden { continue }`.
+- **No source change to `session/startup_scanner.go`** (see Design Decision 5, revised): the plan
+  originally proposed adding `|| inst.Hidden` to `Scan`'s skip condition at line 35, but that
+  addition was dropped once suppression became reason-scoped — it would skip `Determine()`
+  entirely for a `Hidden` instance regardless of reason, silently defeating Story 1.1's
+  `ReasonErrorState`/`ReasonTestsFailing` safety net for exactly the startup-scan path Design
+  Decision 5 was originally trying to protect.
 - **Given** `instances := []*Instance{{Title: "review:153f8eac", Hidden: true,
-  /* started, unpaused */}}`, **when** `(&StartupScanner{}).Scan(instances, queue)` is called,
-  **then** `queue.Add` is never invoked for that instance and `statusManager.GetStatus`/
-  `contentProvider.GetContent` are never called for it either (verifiable via a call-counting
-  fake `StatusProvider`/`ContentProvider`).
-**Files**: `session/startup_scanner.go`, `session/startup_scanner_test.go`
+  /* started, unpaused */}}` with fixture status content that would otherwise produce
+  `ReasonTaskComplete`, **when** `(&StartupScanner{}).Scan(instances, queue)` is called, **then**
+  `queue.Add` is never invoked for that instance (via `Determine()`'s narrowed gate, not via a
+  separate startup-scanner-level skip).
+- **Given** the same `Hidden: true` instance but with fixture status content that would otherwise
+  produce `ReasonErrorState`, **when** `Scan` is called, **then** `queue.Add` **is** invoked —
+  proving `StartupScanner.Scan` does not independently block the safety-net reason at its own
+  call site.
+**Files**: `session/startup_scanner_test.go`
 
-##### Task 1.2.1a: Add `inst.Hidden` to `Scan`'s skip condition (~2 min)
-- In `session/startup_scanner.go:35`, change `if !inst.Started() || inst.Paused() {` to
-  `if !inst.Started() || inst.Paused() || inst.Hidden {`.
-- Files: `session/startup_scanner.go`
-
-##### Task 1.2.1b: Add `TestScan_SkipsHiddenInstance_AndNeverCallsStatusProvider` (~5 min)
+##### Task 1.2.1a: Add `TestScan_SkipsHiddenInstance_ForSuppressedReasonsOnly` (~6 min)
 - In `session/startup_scanner_test.go` (create if it does not already exist, following the
   `StatusProvider`/`ContentProvider` fake-interface pattern from
-  `session/review_queue_reactive_test.go`), construct a call-counting fake `StatusProvider`,
-  build a `Hidden: true`, `Started()`-true instance, call `Scan`, and assert both
-  `added == 0` and the fake's `GetStatus` call count is `0`.
+  `session/review_queue_reactive_test.go`), build a `Hidden: true`, `Started()`-true instance with
+  a fake `StatusProvider`/`ContentProvider` returning `ReasonTaskComplete`-shaped status, call
+  `Scan`, and assert `added == 0`. Add a second case with `ReasonErrorState`-shaped status and
+  assert `added == 1` — together proving `Scan`'s unmodified call to `Determine()` produces the
+  narrowed result, not an over-broad startup-level skip.
 - Files: `session/startup_scanner_test.go`
 
 ---
@@ -467,10 +563,15 @@ forever.
 ### Epic 2: `OnItemAdded` suppression + `item_id` enrichment (AC1 defense-in-depth, AC2)
 
 **Goal**: Independent of Epic 1's structural fix, `OnItemAdded` itself refuses to publish a
-notification for any `ReviewItem` resolved to a `Hidden` `Instance`, and stamps `item_id` +
-`session_scoped` metadata onto every notification tied to a backlog-linked session — satisfying
-the requirement that suppression not rely solely on upstream callers having already filtered
-Hidden instances out.
+`ReasonTaskComplete`/`ReasonIdle`/`ReasonStale` notification for any `ReviewItem` resolved to a
+`Hidden` `Instance` (while still publishing for `ReasonErrorState`/`ReasonTestsFailing`, per Design
+Decision 1's narrowing), and stamps `item_id` + `session_scoped` metadata onto every notification
+tied to a backlog-linked session — satisfying the requirement that suppression not rely solely on
+upstream callers having already filtered Hidden instances out. Story 2.4 additionally closes AC4's
+"review/triage" wording for the headless-triage half of the requirement (Finding 3), which turns
+out to need a provable-negative test rather than a suppression fix, since that path never
+constructs a `session.Instance` and was never reachable by `Determine()`/`OnItemAdded` to begin
+with.
 
 #### Story 2.1: Resolve `inst`/`hiddenSession` and the `ItemSession` linkage lookup
 **As a** maintainer, **I want** `OnItemAdded` to resolve both "is this session Hidden" and "what
@@ -602,16 +703,23 @@ with no additional lookups — **and without ever writing onto the shared `*Revi
   below), so land this task before either.
 - Files: `pkg/events/types.go` (or a new `pkg/events/notification_metadata.go`), `server/events/forward.go`
 
-#### Story 2.2: Gate the publish on `hiddenSession`, stamp `session_scoped` metadata via a local map
-**As an** operator, **I want** the Notifications page to never receive a card for a `Hidden`
-session's completion, and every genuine session-scoped notification to carry a positive
-`session_scoped` signal for AC3's pruner, **so that** AC1 and the AC3 groundwork land together
-in the same guarded block — **without mutating the shared `*ReviewItem.Metadata` map** (Story
-2.1's data-race note).
+#### Story 2.2: Gate the publish on `hiddenSession` (reason-scoped), stamp `session_scoped` metadata via a local map
+**As an** operator, **I want** the Notifications page to never receive a `TaskComplete`/`Idle`/
+`Stale` card for a `Hidden` session, while still receiving an `ErrorState`/`TestsFailing` card for
+one (Design Decision 1's narrowing), and every genuine session-scoped notification to carry a
+positive `session_scoped` signal for AC3's pruner, **so that** AC1 and the AC3 groundwork land
+together in the same guarded block — **without mutating the shared `*ReviewItem.Metadata` map**
+(Story 2.1's data-race note).
 **Acceptance Criteria**:
+- A new unexported helper (or inline boolean), e.g.
+  `suppressForHidden := hiddenSession && (item.Reason == session.ReasonTaskComplete ||
+  item.Reason == session.ReasonIdle || item.Reason == session.ReasonStale)`, computed alongside
+  `hiddenSession` (Task 2.1.1a).
 - The existing guard `if rqm.eventBus != nil && item.Reason != session.ReasonApprovalPending {`
   (`server/review_queue_manager.go:337`) becomes
-  `if rqm.eventBus != nil && item.Reason != session.ReasonApprovalPending && !hiddenSession {`.
+  `if rqm.eventBus != nil && item.Reason != session.ReasonApprovalPending && !suppressForHidden {`
+  — **not** `&& !hiddenSession` unconditionally (Design Decision 1's narrowing: `ReasonErrorState`/
+  `ReasonTestsFailing` must still publish even when `hiddenSession` is true).
 - Inside that block, before constructing `notifEvent`, build a **fresh, independent** metadata map
   via `metadata := events.SessionScopedMetadata(item.Metadata, linkedItemID)` — this copies any
   existing `item.Metadata` entries into a new map (never reading concurrently-written state,
@@ -631,11 +739,15 @@ in the same guarded block — **without mutating the shared `*ReviewItem.Metadat
 - **Given** the `Hidden: true` review `Instance` from Story 1.1's example, **when**
   `OnItemAdded` is called with a `ReviewItem{Reason: session.ReasonTaskComplete}` resolved to
   that instance, **then** `rqm.eventBus.Publish` is never called.
+- **Given** the same `Hidden: true` review `Instance`, **when** `OnItemAdded` is called with a
+  `ReviewItem{Reason: session.ReasonErrorState}` resolved to that instance, **then**
+  `rqm.eventBus.Publish` **is** called (the narrowing's safety net — see Design Decision 1).
 **Files**: `server/review_queue_manager.go`
 
-##### Task 2.2.1a: Update the publish guard and build the local `session_scoped` metadata map (~5 min)
-- In `server/review_queue_manager.go`, change the guard at line 337 as described above. Then,
-  immediately before the existing `notifID := fmt.Sprintf(...)` line, add
+##### Task 2.2.1a: Update the publish guard (reason-scoped) and build the local `session_scoped` metadata map (~6 min)
+- In `server/review_queue_manager.go`, add the `suppressForHidden` computation and change the
+  guard at line 337 as described above — a reason-scoped condition, not an unconditional
+  `!hiddenSession`. Then, immediately before the existing `notifID := fmt.Sprintf(...)` line, add
   `metadata := events.SessionScopedMetadata(item.Metadata, linkedItemID)`, and change the trailing
   argument of the `events.NewNotificationEvent(...)` call from `item.Metadata` to `metadata`. Do
   **not** assign into `item.Metadata` anywhere in this task — see Story 2.1's data-race note.
@@ -672,6 +784,10 @@ specific bug class (Notifications page filling with dead-link entries) cannot si
 - A third sub-test (negative control) repeats the shape with `Hidden: false` and asserts a
   notification **does** arrive — proving the test harness itself would catch a regression that
   over-suppresses.
+- A fourth sub-test (narrowing safety-net) repeats the shape with `Hidden: true` but
+  `Reason: session.ReasonErrorState`, asserting a notification **does** arrive within 300ms —
+  proving Design Decision 1's narrowing (Phase 4 pre-mortem Failure #3) actually holds and this
+  reason is never swallowed by the `Hidden` gate.
 **Files**: `server/review_queue_manager_test.go`
 
 ##### Task 2.3.1a: Add `TestOnItemAdded_SuppressesNotification_When_SessionHidden` (~6 min)
@@ -688,6 +804,76 @@ specific bug class (Notifications page filling with dead-link entries) cannot si
   reusing the same harness with `Hidden: false`, asserting a notification **does** arrive and
   carries `metadata["item_id"]` — proves Epic 2 doesn't over-suppress real sessions.
 - Files: `server/review_queue_manager_test.go`
+
+##### Task 2.3.1d: Add the `ReasonErrorState`/`ReasonTestsFailing` narrowing safety-net case (~5 min)
+- Add `TestOnItemAdded_PublishesNotification_When_SessionHidden_AndReasonIsErrorStateOrTestsFailing`,
+  reusing the same harness with `Hidden: true` but `Reason: session.ReasonErrorState` (and a
+  `t.Run` subtest for `session.ReasonTestsFailing`), asserting a notification **does** arrive
+  within 300ms — proves Design Decision 1's narrowed suppression scope actually holds in
+  `OnItemAdded`, not just in `Determine()` (Story 1.1's equivalent case).
+- Files: `server/review_queue_manager_test.go`
+
+#### Story 2.4: Headless-triage negative-proof regression test (AC4 "review/triage" wording, Finding 3)
+**As a** future maintainer, **I want** the AC4 regression coverage to also address the
+headless-*triage* half of AC4's "review/triage" wording — even though Phase 2/3 research
+(features.md/architecture.md) confirmed headless-triage sessions never construct a
+`session.Instance` and are therefore structurally invisible to `Determine()`/`OnItemAdded` — **so
+that** a future reader isn't left wondering why every AC4 test so far only exercises the
+review-session path.
+
+**Context**: `TriggerTriage`'s headless-pool call (`server/services/backlog_service_triage.go:1677`,
+the async goroutine at lines ~1805-1937) has **no** `events.NewNotificationEvent`/`eventBus.Publish`
+call at all on its success (lines 1870-1936), `callErr != nil` (lines 1855-1868), or parse-failure
+(lines 1871-1876) paths — every one of them only logs and, on failure, marks the `ItemSession`
+ended. The **only** notification this goroutine can ever publish is
+`notifyTriagePersistFailure` (line 1915, defined at lines 229-246), which is already
+unconditionally `item_id`-tagged (`map[string]string{"item_id": itemID}`, line 244) and therefore
+already immune to the dead-link bug this plan exists to fix — there is no generic, untagged
+TASK_COMPLETE/Idle/Stale-shaped notification for this code path to ever suppress. A real,
+non-vacuous regression test is nonetheless constructible as a **provable negative**: drive
+`TriggerTriage` through its real success and failure paths with a fake headless pool and assert
+the exact, small set of notifications published (zero, in the common cases) never includes an
+untagged one.
+
+**Acceptance Criteria**:
+- A new test in `server/services/backlog_service_triage_test.go`, reusing the existing
+  `fakeHeadlessPool` fixture (`server/services/backlog_service_test.go:47`, supports `err` for
+  error injection) and the `require.Eventually`-based async-completion-polling pattern already used
+  by this file's other `TriggerTriage` tests (e.g. lines 1956, 2006, 2017) to wait for the
+  goroutine to finish (poll `ListItemSessions` for the triage `ItemSession`'s `EndedAt` becoming
+  non-nil).
+- **Given** a `fakeHeadlessPool{err: errors.New("simulated LLM failure")}` wired via
+  `svc.SetHeadlessPool(...)`, and an `events.NewEventBus(4)` subscribed before the call, **when**
+  `TriggerTriage` is invoked for a real backlog item and the goroutine is awaited via
+  `require.Eventually`, **then** zero events arrive on the subscribed channel within a bounded
+  window (e.g. 300ms after the `EndedAt` poll succeeds) — proving the `callErr != nil` path
+  publishes nothing.
+- **Given** a `fakeHeadlessPool` returning malformed (non-JSON) `response` text, **when**
+  `TriggerTriage` is invoked and awaited the same way, **then** zero events arrive — proving the
+  parse-failure path publishes nothing either.
+- **Given** a `fakeHeadlessPool` returning a valid triage result but with the storage fake
+  configured to fail `UpdateBacklogItem` (forcing `notifyTriagePersistFailure` to fire), **when**
+  `TriggerTriage` is invoked and awaited, **then** exactly one event arrives and its
+  `NotificationMetadata["item_id"]` equals the item's ID — proving the one notification this path
+  *can* emit is already correctly tagged, never a generic untagged one.
+- If, during implementation, any of the above three cases turns out non-constructible without an
+  artificial/contrived harness (e.g. a fake storage layer this test file does not already support),
+  the task falls back to an explicit **"Verification via code inspection"** subsection appended to
+  this story in `plan.md`, citing the exact line ranges above (goroutine body, `callErr`/
+  `parseErr`/`marshalErr` branches, `notifyTriagePersistFailure`'s unconditional `item_id` tag) as
+  the basis for the claim that no untagged notification is reachable from this path — not silence.
+**Files**: `server/services/backlog_service_triage_test.go`
+
+##### Task 2.4.1a: Add `TestTriggerTriage_NeverPublishesUntaggedNotification_OnHeadlessPoolFailureOrSuccess` (~10 min)
+- Implement the three sub-cases described above (LLM call error, parse failure, persist failure)
+  as `t.Run` subtests in `server/services/backlog_service_triage_test.go`, following this file's
+  existing `fakeHeadlessPool` + `require.Eventually` conventions. If a sub-case cannot be
+  constructed without contriving an artificial failure injection point not already supported by
+  the test fixtures, skip only that sub-case and instead add a **"Verification via code
+  inspection"** comment block directly above the test function, citing
+  `server/services/backlog_service_triage.go`'s exact line ranges for the uncovered branch and
+  explaining why no `events.NewNotificationEvent`/`eventBus.Publish` call exists on it.
+- Files: `server/services/backlog_service_triage_test.go`
 
 ---
 
@@ -1033,6 +1219,115 @@ mass-pruning notifications for sessions that still exist but haven't finished re
 
 ---
 
+### Epic 5: `wireRateLimitCallbacks` Hidden gate + metadata (AC1/AC2, Finding 1)
+
+**Goal**: Close the third unguarded `events.NewNotificationEvent` producer identified during the
+Phase 4 pre-mortem (P1 Failure #1): `SessionService.wireRateLimitCallbacks`
+(`server/services/session_service.go:3848-3898`) registers two closures —
+`onDetected`/`onRecovery` — on **every** `Instance`, via `wireCallbacks` (line 956) → called
+unconditionally from `CreateDirectorySession` (line 869), `CreateWorktreeSession` (line 918),
+`WireInstanceCallbacks` (line 779, the `Registry.Acquire` onConstruct hook), and one more call site
+(line 423) — including `SpawnReviewSession`'s `Hidden=true` review sessions
+(`SpawnReviewSession` → `CreateDirectorySession(..., hidden=true)` → `wireCallbacks(instance)` →
+`wireRateLimitCallbacks(instance)`, confirmed by reading the actual call chain; there is no
+`Hidden` branch anywhere in it). Both closures publish "Session X rate limited"/"...resumed after
+rate limit" notifications with a real `sessionID`/`inst.Title`, no `Hidden` check, and a trailing
+`nil` metadata argument (no `item_id`, no `session_scoped`) — so a `Hidden` review/re-review
+session that hits an API rate limit mid-review produces the exact dead-link Notifications-page
+entry this project exists to eliminate, unaffected by Epic 2/3's fixes because this is a
+structurally separate producer.
+
+Unlike Epic 1/2's review-queue path, a rate-limit event has no `AttentionReason`/`Determine()`-
+derived reason to preserve as a narrowing safety net (Design Decision 1's narrowing only applies to
+`Determine()`/`OnItemAdded`'s review-queue-derived reasons) — suppression here is **unconditional
+on `Hidden`**, matching Epic 3's generic done/stuck notifier (Design Decision 6), not Epic 1/2's
+reason-scoped gate.
+
+#### Story 5.1: Gate `onDetected`/`onRecovery` on `inst.Hidden`, stamp `item_id`/`session_scoped` metadata
+**As an** operator, **I want** a `Hidden` session's rate-limit detection/recovery events to never
+reach the Notifications page, and a real session's rate-limit notifications to route to "View in
+Backlog" when backlog-linked, **so that** this third producer stops reopening the exact dead-link
+problem Epic 2/3 close for the other two.
+**Acceptance Criteria**:
+- Both closures inside `wireRateLimitCallbacks` (`server/services/session_service.go:3855-3897`)
+  are wrapped in `if inst.Hidden { return }` as their first statement (`inst` is already captured
+  in the closures' lexical scope — no new parameter needed).
+- For the non-Hidden case, each closure resolves `linkedItemID` via
+  `s.concStorage.GetItemSessionBySessionUUID(ctx, inst.UUID)` — reusing the `concStorage
+  *session.Storage` field already on `SessionService` (line 82, "the concrete backing store...nil
+  when storage is a fake `InstanceStore`... callers must nil-check", already nil-checked elsewhere
+  e.g. line 1204) rather than adding a new query or widening the `session.InstanceStore` interface
+  (`s.storage`, line 74, does **not** expose `GetItemSessionBySessionUUID` — only the concrete
+  `*session.Storage` does). Guarded by `s.concStorage != nil`, with a bounded
+  `context.WithTimeout(context.Background(), rateLimitLookupTimeout)` (new 2s const, matching
+  `itemSessionLookupTimeout`'s precedent from Task 2.1.1b) since these closures receive no `ctx`
+  parameter from their caller.
+- Both closures' trailing `nil` metadata argument to `events.NewNotificationEvent(...)` becomes
+  `events.SessionScopedMetadata(nil, linkedItemID)` — the same shared helper Task 2.2.1a/3.2.1b
+  use, not a third hand-built map literal.
+- A lookup failure (including not-found) is handled silently (empty `linkedItemID`, metadata still
+  gets `session_scoped: "true"` via the helper) except a real (non-`ErrNotFound`) error, which is
+  logged at `Warn` — mirroring Task 2.1.1b's pattern.
+- **Given** `inst := &session.Instance{Title: "review:153f8eac", UUID:
+  "aaaa1111-2222-3333-4444-555566667777", Hidden: true}`, **when** `wireRateLimitCallbacks(inst)`'s
+  `onDetected` closure fires (simulating a rate-limit detection), **then**
+  `s.eventBus.Publish(events.NewNotificationEvent(...))` is never called — but the accompanying
+  `s.eventBus.Publish(events.NewSessionUpdatedEvent(...))` call (session state sync, not a
+  Notifications-page entry, and out of this AC's scope) still fires unmodified; only the
+  `NewNotificationEvent` call is gated.
+- **Given** a non-Hidden `Instance{UUID: "bbbb2222-3333-4444-5555-666677778888"}` linked via
+  `ItemSessionData{SessionUUID: "bbbb2222-...", SessionRole: "work", ItemID:
+  "153f8eac-c454-4fa3-a8f4-83b070b9a035"}`, **when** `onRecovery` fires with `success: true`,
+  **then** the published notification's metadata is `{"item_id":
+  "153f8eac-c454-4fa3-a8f4-83b070b9a035", "session_scoped": "true"}` (previously `nil`).
+**Files**: `server/services/session_service.go`
+
+##### Task 5.1.1a: Add the `Hidden` gate to both closures (~4 min)
+- In `server/services/session_service.go`, add `if inst.Hidden { return }` as the first statement
+  of both the `onDetected` and `onRecovery` closures inside `wireRateLimitCallbacks` (currently
+  lines 3857 and 3875).
+- Files: `server/services/session_service.go`
+
+##### Task 5.1.1b: Thread `linkedItemID` + `events.SessionScopedMetadata` into both closures (~6 min)
+- Add a new `const rateLimitLookupTimeout = 2 * time.Second` near `wireRateLimitCallbacks`. In
+  each closure, after the `Hidden` guard, add:
+  ```go
+  var linkedItemID string
+  if s.concStorage != nil {
+      lookupCtx, cancel := context.WithTimeout(context.Background(), rateLimitLookupTimeout)
+      itemSession, err := s.concStorage.GetItemSessionBySessionUUID(lookupCtx, inst.UUID)
+      cancel()
+      if err != nil {
+          if !errors.Is(err, session.ErrNotFound) {
+              log.Warn("wireRateLimitCallbacks: ItemSession lookup failed", "session", inst.UUID, "err", err)
+          }
+      } else if itemSession.BacklogItemID != "" {
+          linkedItemID = itemSession.BacklogItemID
+      }
+  }
+  ```
+  Then change both `events.NewNotificationEvent(...)` calls' trailing `nil` argument to
+  `events.SessionScopedMetadata(nil, linkedItemID)`. `"context"`/`"errors"`/`"time"` are already
+  imported in this file (Task 2.1.1b's note applies here too, for `errors`).
+- Files: `server/services/session_service.go`
+
+#### Story 5.2: Tests for Epic 5
+**Acceptance Criteria**:
+- A test proving `Hidden: true` suppresses both `onDetected` and `onRecovery`'s
+  `NewNotificationEvent` publish, and a positive-metadata test for the non-Hidden,
+  backlog-linked case, following this file's existing test harness conventions (search
+  `session_service_test.go` for existing `wireCallbacks`/rate-limit test fixtures to match style).
+**Files**: `server/services/session_service_test.go`
+
+##### Task 5.2.1a: Add `TestWireRateLimitCallbacks_SuppressesNotification_When_InstanceHidden` + metadata test (~8 min)
+- Add `TestWireRateLimitCallbacks_SuppressesNotification_When_InstanceHidden` (covering both
+  `onDetected` and `onRecovery` via `t.Run` subtests) and
+  `TestWireRateLimitCallbacks_StampsItemIDMetadata_When_BacklogLinkedAndNotHidden` to
+  `server/services/session_service_test.go`.
+- Files: `server/services/session_service_test.go`
+
+---
+
 ## Cross-Epic Verification Checklist (run once all epics land)
 
 - [ ] `make build && make test` passes (per `.claude/rules` build/test conventions).
@@ -1043,3 +1338,9 @@ mass-pruning notifications for sessions that still exist but haven't finished re
       plumbing on existing notification paths) and therefore requires no
       `docs/registry/features/*` update per `.claude/rules/feature-registry.md`.
 - [ ] No `session/ent/schema/*` file was touched (Migration Plan's "omitted" claim holds).
+- [ ] Epic 5 (`wireRateLimitCallbacks`) lands and its tests pass — this was a Phase 4 pre-mortem
+      P1 addition (Finding 1), not part of the original Epic 2/3 scope, and is easy to
+      accidentally treat as optional if skimming only the original plan sections.
+- [ ] The narrowed Design Decision 1 (`ReasonErrorState`/`ReasonTestsFailing` still notify even
+      when `Hidden`) is reflected consistently in Epic 1 (`Determine()`) *and* Epic 2
+      (`OnItemAdded`) — both Task 1.1.1b's and Task 2.3.1d's safety-net test cases pass.

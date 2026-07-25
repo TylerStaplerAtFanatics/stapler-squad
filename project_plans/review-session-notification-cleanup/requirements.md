@@ -15,9 +15,16 @@ target ("View Session") leads to a dead session view.
 
 ## Acceptance Criteria
 
-1. Headless/ephemeral review and triage sessions (`Instance.Hidden == true`,
-   or `ItemSession.SessionRole` of `review`/`triage`) no longer generate
-   generic TASK_COMPLETE / Session-idle / Stale notifications.
+1. Headless/ephemeral review and triage sessions are suppressed via
+   `Instance.Hidden == true` as the sole necessary-and-sufficient trigger
+   (verified to always co-occur with `ItemSession.SessionRole == review` for
+   every real call site today, and `SessionRole == triage` sessions never
+   construct an `Instance` at all — see Design Decision 1 in
+   `implementation/plan.md` for the full justification), so that they no
+   longer generate generic TASK_COMPLETE / Session-idle / Stale
+   notifications. `SessionRole` is additionally resolved and used for
+   `item_id` enrichment/corroboration but is never an independent
+   suppression trigger.
 2. Any notification tied to a backlog-linked session includes `item_id` in
    its metadata so the frontend links to "View in Backlog" (the review
    verdict) instead of the dead "View Session" link.
