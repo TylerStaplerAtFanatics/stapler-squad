@@ -1,189 +1,277 @@
 # Adversarial Review: backlog-session-thrashing
 
 **Date**: 2026-07-25
-**Verdict**: BLOCKED
+**Verdict**: CONCERNS
+**Pass**: 2 (re-review after patch)
 
-Reviewed against the actual code in the worktree (not just the plan's own citations):
-`session/autonomous_driver.go`, `server/services/autonomous_orchestration_service.go`,
+Re-verified against the actual code in the worktree (not the plan's or the prior
+patch's citations alone): `session/autonomous_driver.go`,
+`server/services/autonomous_orchestration_service.go`,
 `server/services/backlog_service_triage.go`, `server/services/backlog_service.go`,
-`server/services/autonomous_orchestration_service_test.go`,
-`server/services/backlog_service_test.go`, `session/backlog_lifecycle.go`,
-`server/services/session_service.go`, `server/mcp/tools_backlog.go`, `go.mod`.
+`server/mcp/tools_backlog.go`, `server/services/session_service.go`,
+`config/config.go`, `server/services/autonomous_orchestration_service_test.go`,
+`server/services/backlog_service_test.go`, `server/services/backlog_service_triage_test.go`,
+`go.mod`. All file/line citations in the patched plan were checked directly against
+current code, not trusted.
 
-## Blockers
+## Prior Blocker Verification
 
-- [ ] **Epic 3.1's blanket early-return on `DriverExitContextCancelled` regresses BUG-048's
-  fix for abandoned review sessions.** The task says the early return fires "for every role
-  (triage, work, review), not just work," before the role-specific switch runs. But the
-  *only* confirmed real production caller of `Stop()`/`StopDriverForSession` outside the
-  driver's own natural-completion path is `submit_review_verdict`
-  (`server/mcp/tools_backlog.go:535-539`), which calls it as a documented
-  "belt-and-suspenders" stop **while the review driver may still be actively running**, and
-  its own comment says explicitly: *"a subsequent Stuck fireCompletion is harmless because
-  the role-aware callback skips transitions for SessionRoleReview."* That comment is true
-  only under the *current* code: `onAutonomousDriverComplete`'s `SessionRoleReview` switch's
-  `default` branch (still-genuinely-stuck case, `autonomous_orchestration_service.go:449-477`)
-  calls `UpdateItemSessionEnded` on the review `ItemSession` row — this is the exact fix
-  BUG-048 shipped so an abandoned review session (driver stopped, but the underlying tmux
-  session never killed — confirmed true for both turn-cap and Stop()-triggered exits, since
-  neither kills the tmux pane) becomes visible to the `abandoned_review` detector, which
-  explicitly excludes any item with an `EndedAt`-nil review session
-  (`FindStuckReviewItems`/`session/storage_backlog.go`, per the comment at
-  `autonomous_orchestration_service.go:461-463`). Item status is still `review` at the moment
-  this fires — `submit_review_verdict` deliberately does no status transition itself
-  (comment at `tools_backlog.go:523-530`) — so under the current code this path lands in
-  exactly the "still genuinely stuck" branch and ends the row every time a verdict is
-  submitted while the driver is still mid-loop. Epic 3.1's early return skips this entirely,
-  so the row is never ended, the item silently drops out of both the stuck-marking system
-  (no `MarkStuck`) and the `abandoned_review` detector's reach (row stays open forever) — a
-  "vanished/forgotten item," which is precisely what requirements.md's success metric says
-  the redesign must avoid. **Recommendation**: don't blanket-skip the role-specific switch
-  for `DriverExitContextCancelled`. Skip the stuck-marking/notification (that part is
-  correctly motivated — an intentional stop isn't "stuck"), but still run each role's
-  existing row-resolution bookkeeping, or explicitly special-case `SessionRoleReview` to
-  preserve BUG-048's `UpdateItemSessionEnded` behavior regardless of `ExitKind`.
+- **[PASS] Blocker 1 — Epic 3.1's blanket early-return regressed BUG-048's review
+  row-resolution.** The patch does exactly what it claims: Task 3.1.1a only adds
+  `outcome.ExitKind != session.DriverExitContextCancelled` to the `MarkStuck`
+  guard (current code confirmed at `autonomous_orchestration_service.go:293`,
+  `if !outcome.Done {`) and adds a late guard immediately before the generic
+  notification block (current code confirmed at line 518, "Fire push notification
+  via event bus."). The role-specific `switch is.Role` block (confirmed at lines
+  305-487) is explicitly left untouched — Task 3.1.1a states this in so many
+  words ("Leave the role-specific switch is.Role block ... completely
+  unmodified"). I traced `SessionRoleReview`'s `default` branch (lines 449-477,
+  the actual BUG-048 fix, `UpdateItemSessionEnded` at line 474) and confirmed it
+  is not gated by anything the patch touches — it still fires unconditionally for
+  any non-Done, non-terminal-status review outcome regardless of `ExitKind`. Also
+  confirmed `SessionRoleReview` always returns at line 479 before reaching the
+  new notification guard at line 518, so the new guard is genuinely unreachable
+  for the review path — it can only affect `SessionRoleWork`'s non-return path
+  and the unrecognized-role fallthrough, exactly as the plan states. A dedicated
+  regression test is specified (Task 3.1.1b,
+  `..._StillEndsAbandonedReviewRow_When_ContextCancelled`) that would fail
+  against the earlier "blanket early return" revision. This is a real fix, not a
+  restated claim.
 
-- [ ] **Relocating `spawnInFlight` into `spawnSessionAfterGates` narrows the guarded critical
-  section — it is not the claimed "unchanged behavior, just one call-frame deeper."** In the
-  current code the guard (`SpawnSessionFromItem` step "1b") is acquired immediately after
-  loading the item and held for the *entire* rest of the function: force-reset (step 2,
-  `forceResetItem`), status validation (step 3), the planning gate (step 3b), and the WIP-cap
-  gate/queueing decision (step 4, `queueBacklogItem`) all run inside the guarded section
-  today. Moving the guard to the top of `spawnSessionAfterGates` (Task 1.1.1b) removes all of
-  those steps from any per-item serialization. Concretely: (1) `forceResetItem` calls
-  `TransitionBacklogItemStatus(... review -> in_progress ...)` with **no precondition at
-  all** (`nil`, `backlog_service_triage.go:837`) — two concurrent `Force=true` calls for the
-  same item can now run this concurrently, unguarded, where before the second call would
-  have failed fast with `CodeAlreadyExists` before ever reaching it; (2) two concurrent
-  fresh-spawn calls that both observe the WIP cap as not-yet-hit can now both reach
-  `queueBacklogItem` concurrently (previously impossible — the second would already have
-  been rejected at the guard). The existing regression test
-  (`TestSpawnSessionFromItem_ConcurrentSpawns_OnlyOneWorkSessionCreated`,
-  `backlog_service_test.go:1550`) still passes, but only because it doesn't exercise either
-  of these paths (one `ready` item, no `Force`, WIP cap nowhere near its limit) — all 8
-  racers still serialize correctly at the (now-deeper) guard before ever creating a session,
-  since none of them races through `forceResetItem`/`queueBacklogItem` in that specific
-  scenario. Its passing is not evidence the narrower guard is safe in general, and Story
-  1.1.1's acceptance criterion ("the guard's effective behavior for the
-  `SpawnSessionFromItem`-only race is unchanged, just relocated one call-frame deeper") is
-  factually incorrect as written. **Recommendation**: either keep a lightweight per-item
-  guard around the *entire* `SpawnSessionFromItem` body in addition to (or instead of) the
-  deeper one in `spawnSessionAfterGates`, or explicitly analyze/accept the narrower race
-  window with reasoning — don't ship the incorrect equivalence claim as-is.
+- **[PASS, with one implementation-discipline caveat — see New Concerns]
+  Blocker 2 — `spawnInFlight` relocation narrowed the guarded critical
+  section.** The patch reverts the relocation entirely: `SpawnSessionFromItem`'s
+  guard (confirmed unchanged at `backlog_service_triage.go:354-368`, acquired
+  right after loading the item, released via `defer`, still wrapping
+  `forceResetItem`/status validation/planning gate/WIP-cap+`queueBacklogItem`)
+  is untouched. `DequeueNextQueuedItems` (confirmed at lines 517-589) currently
+  acquires **no** guard at all around its claim+spawn loop — Task 1.1.1b's
+  addition of a per-item `spawnInFlight.LoadOrStore`/`Delete` acquisition
+  *before* the `transitionWithGuard` CAS claim and held through
+  `spawnSessionAfterGates`'s return is a pure addition, not a narrowing, of
+  serialization. I traced the dual-acquisition-site design precisely: both call
+  sites key the guard off the same `item.ID` on the same `sync.Map`, and
+  `LoadOrStore` is atomic — there is no window where both sides can observe
+  "not in flight" simultaneously for the same item, regardless of which side
+  reaches the map first (whichever wins, the other either gets
+  `CodeAlreadyExists` immediately, in `SpawnSessionFromItem`'s case, before any
+  status-dependent logic runs — the guard acquisition happens at step "1b",
+  before status validation at step 3 — or `continue`s to the next queued
+  candidate, in `DequeueNextQueuedItems`'s case). I confirmed the "no
+  reentrant/deadlock" claim directly: `DequeueNextQueuedItems` calls
+  `spawnSessionAfterGates` (line 575) directly, never `SpawnSessionFromItem`
+  itself, so there is no path where one call site tries to acquire the guard a
+  second time while already holding it. This design genuinely closes the
+  TOCTOU window architecture.md §3b describes (a concurrent `SpawnSessionFromItem`
+  reading `status=in_progress` in the gap between Dequeue's CAS claim and its
+  `spawnSessionAfterGates` call, and treating it as a legitimate "reopen") without
+  reintroducing the narrower-critical-section regression the first blocker
+  found. See New Concerns for one implementation-robustness risk this design
+  invites (manual multi-exit-point release instead of `defer`).
 
-## Concerns
+## Prior Concern Verification
 
-- [ ] **Epic 3.3's safety claim doesn't hold for the `RemediateStaleWorkSession` call site.**
-  The plan justifies `AutoRespawnAutonomousWork` unconditionally killing+ending an "active"
-  work session by asserting "the driving mechanism is guaranteed to have already stopped by
-  the time this code runs" for both call sites. True for `onAutonomousDriverComplete`
-  (`stopAndDeregisterDriver` runs at function entry, `autonomous_orchestration_service.go:231`).
-  Not demonstrated for `RemediateStaleWorkSession`
-  (`backlog_service_triage.go:1343-1397`): that function is triggered purely by
-  `ItemSession.LastProgressAt` staleness (`maxWorkSessionStaleness` = 2h, a git-commit/
-  file-touch signal, `session/backlog_lifecycle.go:1998-2002`) — a completely independent
-  signal from whether an `AutonomousDriver` is still alive and actively injecting turns
-  (`RemediateStaleWorkSession` never calls `stopAndDeregisterDriver` or checks driver
-  liveness). Phase 2's own soft/hard-cap change extends the effective turn budget up to 3x
-  based on *terminal* activity (`GetTimeSinceLastMeaningfulOutput`) — a different signal than
-  *git* progress — which makes it more, not less, likely that a still-actively-driven session
-  (lots of terminal chatter, zero commits) simultaneously trips the independent 2h
-  git-staleness threshold while a driver is mid-turn. This gap pre-dates this plan (the
-  existing `RemediateStaleWorkSession` already does an unconditional kill), so it's not a new
-  bug introduced here, but the plan's blanket safety assertion is inaccurate as written and
-  should be corrected/scoped to call site (a) only, with the pre-existing risk at call site
-  (b) flagged explicitly rather than silently assumed away — especially since Phase 2
-  arguably makes it more likely to matter in practice.
+- **[PASS] Concern 3 — Epic 3.3's safety claim scoping.** The patch narrows the
+  "driving mechanism already stopped" claim to the `onAutonomousDriverComplete`
+  call site only (Story 3.3.1's "Scoped safety justification" paragraph), and I
+  independently verified the claim holds for that site: `AutonomousDriver.run()`
+  calls `d.fireCompletion` (which invokes the registered `onAutonomousDriverComplete`
+  callback) synchronously, in the same goroutine, immediately before returning
+  (confirmed `session/autonomous_driver.go:277-278` and the `DONE:`-equivalent
+  early return at 232-233) — so by construction the driver loop has already
+  exited by the time `onAutonomousDriverComplete` runs for this call path; there
+  is no possible interleaving where it is "still mid-turn." `RemediateStaleWorkSession`
+  is explicitly flagged as a separate, pre-existing, undemonstrated-safety call
+  site (confirmed: `RemediateStaleWorkSession`, `backlog_service_triage.go:1343-1397`,
+  never calls `stopAndDeregisterDriver` or checks driver liveness before its own
+  kill+end at lines 1384-1394) — not silently folded into the safety argument.
 
-- [ ] **Task 3.3.1a's "best-effort" kill can leave two tmux panes alive for one item.** The
-  task explicitly specifies "log-and-continue on error" for the `KillTmuxPaneOnly` call, then
-  unconditionally proceeds to end the DB row and spawn a new session regardless of whether
-  the kill actually succeeded. `SessionService.KillTmuxPaneOnly` (`session_service.go:567-577`)
-  takes no timeout and doesn't even use the passed `ctx` — it's a synchronous
-  `inst.KillSession()` call. If it fails or hangs (a documented live hazard — see
-  `docs/bugs/open/BUG-042` / `.claude/rules/tmux-keep-server-on-restart.md`'s orphaned
-  control-mode client scenario, which requirements.md explicitly calls out as adjacent
-  fragility to check for entanglement), the old pane — and its `AutonomousDriver`, since
-  nothing in this path stops it either — can remain alive on the SAME git worktree/branch a
-  reopen spawn reuses (`spawnSessionAfterGates` step 10, "backlog/<item>" branch shared across
-  reopens). That's two live agents on one worktree/branch — the exact "duplicate work session
-  for one item" shape this whole project exists to eliminate, reintroduced via the kill's
-  best-effort escape hatch. Recommend failing the respawn (not proceeding to spawn) when the
-  kill errors, or polling `IsSessionLive` to confirm the pane is actually gone before
-  proceeding.
+- **[PASS] Concern 4 — best-effort tmux kill should fail closed.** Task 3.3.1a
+  specifies calling `s.sessionStopper.IsSessionLive(active.SessionUUID)` after
+  the kill attempt and failing closed (returning an error, not ending the row or
+  respawning) if the pane still reports live. I confirmed `IsSessionLive` already
+  exists on the `SessionStopper` interface consumed by `BacklogService`
+  (`backlog_service.go:56`) and is implemented by `SessionService.IsSessionLive`
+  (`session_service.go:544-546`, `s.FindLiveInstance(sessionUUID) != nil`) — so
+  the design requires no new interface method and is directly implementable as
+  described. This is a real behavior change from `RemediateStaleWorkSession`'s
+  existing best-effort pattern, and the plan explicitly says so (Task 3.3.1a's
+  final paragraph: "This deliberately diverges from `RemediateStaleWorkSession`'s
+  existing best-effort pattern ... only the NEW code in `AutoRespawnAutonomousWork`
+  ... adopts the stricter fail-closed check"). Two regression tests are specified
+  (3.3.1c confirms-dead path, 3.3.1d fails-closed path).
 
-- [ ] **No task or test verifies Phase 2's three loop-modifying epics compose correctly.**
-  Epics 2.1 (ExitKind + accurate `Turns`), 2.2 (malformed-response sub-cap), and 2.3
-  (progress-adaptive soft/hard cap) each modify the same ~80-line loop in
-  `AutonomousDriver.run()`, described as three separate sequential prose diffs — Task 2.3.1b
-  in particular describes converting the bounded `for turnCount := 0; turnCount < d.maxTurns;
-  turnCount++` into a manual-break loop with an extension check, but the plan never shows a
-  single consolidated listing of the loop's end state after all three epics land. No task
-  tests the interaction (e.g., a malformed-response streak of exactly 3 occurring right as
-  `effectiveMaxTurns` would otherwise extend). Given this plan is meant for subagent-per-task
-  execution (this repo's `subagent-driven-development` convention), where different tasks may
-  be implemented somewhat independently, this is a real integration-risk gap. Recommend the
-  plan include a consolidated final-state code listing for the loop, plus at least one test
-  exercising the malformed-cap/soft-cap interaction.
+- **[PASS] Concern 5 — Phase 2 loop composition.** Epic 2.5 (new) adds a
+  consolidated final-state pseudocode listing (Task 2.5.1a) showing the checked
+  order of all three epics' logic each iteration, and a dedicated interaction
+  test (Task 2.5.1b,
+  `TestAutonomousDriver_MalformedStreakAtSoftCap_AbortsWithMalformedReason_NotSoftCapExtension`
+  plus its inverse) exercising exactly the malformed-streak-at-soft-cap scenario
+  the prior review named. I checked the consolidated listing against Epic 2.1's
+  and 2.2's own task descriptions (the ordering — soft/hard-cap check first,
+  then the higher-priority breaks, then malformed-response handling — matches
+  both epics' independent descriptions of where their logic slots into the
+  loop, e.g. Task 2.3.1b: "Keep the loop's other break conditions ... exactly as
+  updated in Task 2.1.1c — they take priority and fire regardless of
+  effectiveMaxTurns"). This is a genuine closure of the integration-risk gap,
+  not just a restated assertion.
 
-- [ ] **Task 1.1.2a's regression test is not deterministic, and the plan accepts that.** The
-  task itself admits "the race may not trigger the double-spawn on every run pre-fix," and
-  the only verification step offered is a manual, one-time "temporarily revert the fix
-  locally, confirm the test fails, then re-apply" during code review — not an automated,
-  repeatable gate. That doesn't meet this repo's "no completion claim without proof" bar for
-  a durable regression test: a later refactor could silently reintroduce the exact TOCTOU gap
-  with no CI signal. Recommend an injectable pause hook (a test-only channel/callback that
-  pauses `DequeueNextQueuedItems` between its CAS claim and its `spawnSessionAfterGates` call)
-  to make the race deterministic — this codebase already has precedent for exactly this
-  pattern (`paneSettlePollInterval`/`paneSettleMaxWait` in `session/autonomous_driver.go` are
-  `var`s, not `const`s, specifically so tests can control timing).
+- **[PASS] Concern 6 — regression test determinism.** Task 1.1.2a adds
+  `dequeueSpawnPauseHook`, an unexported `var func(itemID string)`, nil by
+  default, invoked only in `DequeueNextQueuedItems` after the CAS claim
+  succeeds and before `spawnSessionAfterGates`. I confirmed the cited precedent
+  (`paneSettlePollInterval`/`paneSettleMaxWait`, `session/autonomous_driver.go:286-290`,
+  documented there as `var`s "not consts ... so tests can" control timing) is
+  real and matches the pattern being followed. The new test
+  (`TestSpawnSessionFromItem_RacesWithDequeue_OnlyOneWorkSessionCreated`) asserts
+  the concurrent `SpawnSessionFromItem` call fails fast with `CodeAlreadyExists`
+  while `DequeueNextQueuedItems` is deterministically paused inside the guarded
+  window — this is a real, repeatable proof the guard is held, not a
+  flake-hunting `-count=20` loop. See New Concerns for the hook's own
+  test-hygiene risk.
 
-- [ ] **The plan contains no explicit audit of "does every automated respawn call site funnel
-  through the guard," despite requirements.md asking for exactly that.**
-  `pitfalls.md` §7 names four call sites (`AutoReopenAfterFailedReview`,
-  `AutoRespawnAutonomousWork`, `AutoReopenForPRFix`, and a fourth) and explicitly says "this
-  project's design should explicitly verify every current and any newly-added respawn call
-  site funnels through `SpawnSessionFromItem`." I traced this directly: all four call
-  `s.SpawnSessionFromItem(ctx, ...)` (`backlog_service_triage.go:1218, 1309, 1494, 1924`), so
-  they remain covered transitively after the relocation — it does hold today. But the plan
-  itself contains no task that performs or records this audit, so there's no artifact for a
-  future reviewer to check against, and no guard against a future call site that skips
-  `SpawnSessionFromItem` entirely (writing to storage/session-creation directly) rather than
-  calling `spawnSessionAfterGates`. Recommend adding a short verification task (or a comment
-  audit trail) enumerating the call sites and confirming each funnels through the guard.
+- **[PASS] Concern 7 — call-site audit artifact.** Story 1.1.3 / Task 1.1.3a adds
+  an enumerated comment (not just a claim in the plan prose) naming
+  `AutoReopenAfterFailedReview`, `AutoRespawnAutonomousWork`, `AutoReopenForPRFix`,
+  `TriggerTriage`'s auto-spawn path, and `DequeueNextQueuedItems`. I independently
+  greped every one of these citations and confirmed exact accuracy: `s.SpawnSessionFromItem`
+  is called directly at `backlog_service_triage.go:1218` (`AutoReopenAfterFailedReview`),
+  `:1309` (`AutoRespawnAutonomousWork`), `:1494` (`AutoReopenForPRFix`), and `:1924`
+  (`TriggerTriage`); `DequeueNextQueuedItems` calls `s.spawnSessionAfterGates` directly
+  at `:575`. All five call sites are covered by one guard or the other, matching
+  the audit comment's claim exactly.
 
-- [ ] **`stuckReasonForExitKind` has no specified default/fallback branch.** Task 3.2.1a
-  lists per-kind text for the five named `ExitKind` values but doesn't specify what happens
-  for an unrecognized or zero-value `ExitKind` (e.g., any `Stuck: true` outcome constructed
-  without setting it — `DriverExitReason` is a plain typed string, not a closed/exhaustive
-  enum, so nothing enforces "every `Stuck:true` outcome has a non-zero `ExitKind`" beyond
-  code-review discipline). Recommend an explicit `default` case falling back to the original
-  generic message, rather than relying solely on "should never happen in practice."
+- **[PASS] Concern 8 — `stuckReasonForExitKind` default case.** Task 3.2.1a's
+  helper has an explicit `default` branch falling back to the original generic
+  text (`"autonomous driver stopped after %d turns without a DONE signal (%s)"`),
+  with a doc comment explaining `DriverExitReason` is not a closed enum. Task
+  3.2.1b adds a direct unit test of the fallback
+  (`TestStuckReasonForExitKind_FallsBackToGenericText_When_ExitKindUnset`). This
+  is a genuine, specific fix — the prior review's concern is fully addressed.
+
+**Score: 2/2 prior blockers PASS, 6/6 prior concerns PASS.**
+
+## New Blockers
+
+None found.
+
+## New Concerns
+
+- **`DequeueNextQueuedItems`'s per-item guard release is manual multi-exit-point
+  `Delete`, not `defer` — more failure-prone than the pattern it's replacing.**
+  Task 1.1.1b explicitly avoids a `defer s.spawnInFlight.Delete(item.ID)` at
+  guard-acquisition time (reasoning given: a function-scoped defer would hold
+  the guard for every already-processed item in the batch until the whole loop
+  returns, needlessly blocking a concurrent `SpawnSessionFromItem` call for an
+  *earlier* item). That reasoning is correct as far as it goes, but the fix
+  proposed — a `release := func(){...}` called at "every exit point" of the loop
+  iteration, or an equivalent manual restructuring — is exactly the pattern
+  Go's `defer` exists to make unnecessary: a future maintainer adding one more
+  early `continue` to this loop body (e.g. a new short-circuit case) can easily
+  forget to call `release()` first, silently leaking that item's guard entry
+  forever. Because `spawnInFlight` is a `sync.Map` with no TTL/expiry (confirmed:
+  the existing doc comment for the field says it's "self-cleaning ... via defer
+  on exit," an invariant this new call site would be the first to violate), a
+  leaked entry would permanently block *all* future spawns for that one item —
+  both the `SpawnSessionFromItem` guard (which is a completely different
+  acquisition, but keyed on the same `item.ID`, so it would also see
+  `alreadyInFlight` forever) and every later `DequeueNextQueuedItems` pass. This
+  is a quiet, hard-to-detect failure mode (no error is raised — the item just
+  silently never spawns again) and is exactly the kind of subtle bug a
+  code-review pass is likely to miss, since "did every exit path call release()"
+  requires manually auditing every `continue`/`break` in the loop body, not
+  running a test. **Recommendation**: wrap the guarded portion of each loop
+  iteration in an immediately-invoked closure (`func() { ...; defer
+  s.spawnInFlight.Delete(item.ID); ... }()`) so `defer` fires at the closure's
+  return, not the enclosing function's — this gets the exact per-item release
+  semantics the task wants while keeping `defer`'s "released on every exit,
+  including a future maintainer's new exit path or a panic" guarantee. This
+  also make the pattern consistent with `SpawnSessionFromItem`'s own guard,
+  which does use `defer` today.
+
+- **`dequeueSpawnPauseHook` is a bare package-level `var`, not reset defensively
+  if a test panics before its `t.Cleanup` runs.** The plan's precedent
+  (`paneSettlePollInterval`/`paneSettleMaxWait`) is a pure timing *value* whose
+  worst-case misuse is "a test runs slower or faster than intended" — never a
+  correctness hazard, since production code paths still complete. `dequeueSpawnPauseHook`
+  is qualitatively different: it is a *control-flow* hook that can block a
+  goroutine indefinitely (blocking on a channel per Task 1.1.2a's test
+  description). If a test using this hook fails an assertion *before* signaling
+  the unblock channel (e.g., the new `CodeAlreadyExists` assertion itself
+  fails), the paused `DequeueNextQueuedItems` goroutine leaks for the remainder
+  of the test binary's life — holding `dequeueMu` for that entire time, which
+  would then cause every subsequent test in the same package that calls
+  `DequeueNextQueuedItems` (directly or via a code path that triggers it) to
+  hang until the test binary's overall timeout fires, producing a confusing
+  failure at a distant, unrelated test rather than at the actual culprit. This
+  is a real risk specifically because `t.Cleanup` only fires after the test
+  function returns normally or via `t.Fatal`/`t.FailNow` — it does not rescue a
+  goroutine parked on a channel read that nothing will ever write to.
+  **Recommendation**: give the test itself a bounded-time unblock path (e.g. a
+  `select` in the hook itself with a timeout, or asserting inside a `t.Cleanup`-
+  registered unconditional-unblock-then-check pattern) so a failed assertion
+  can't leave the production method's own mutex held for the rest of the test
+  run. This is a test-hygiene concern only — it cannot happen in production,
+  where the hook is always nil — but it's the kind of thing that turns a
+  legitimate new regression test into a source of unrelated CI flakiness if not
+  handled at implementation time.
+
+- **`AutoRespawnAutonomousWork`'s new fail-closed error return changes an
+  existing at-least-once-attempt caller's retry semantics — not called out in
+  the plan.** Task 3.3.1a has `AutoRespawnAutonomousWork` return a non-nil error
+  when `IsSessionLive` still reports the pane alive after the kill attempt, so
+  the caller "surfaces the failure instead of silently proceeding." I checked
+  the two callers: `onAutonomousDriverComplete`'s `SessionRoleWork` branch calls
+  it inside a `go func(){ if respawnErr := respawner.AutoRespawnAutonomousWork(...);
+  respawnErr != nil { log.Warn(...) } }()` (confirmed, `autonomous_orchestration_service.go:376-380`)
+  — the error is only logged, never retried or fed back into the
+  `RemediationDue`/backoff-gate accounting that was already consumed
+  synchronously *before* this goroutine was dispatched (line 358's
+  `RemediationDue` call happens before the `go func()`, so a failed respawn
+  attempt still "spends" one backoff-gated attempt with no compensating
+  credit). This means a transient `IsSessionLive` false-positive (pane briefly
+  reports live right after a kill signal, before tmux/the OS has actually torn
+  it down) will silently consume one of the item's limited
+  `MaxRemediationAttempts` slots for zero effect — previously (best-effort,
+  proceed-regardless) the same transient condition would not have blocked
+  anything. This isn't a correctness bug (the plan's fail-closed behavior is
+  the right instinct, and worst case the operator sees the item stall one cycle
+  longer and the next remediation pass retries), but the plan doesn't discuss
+  this interaction with the backoff-gate accounting at all, and a genuinely
+  slow-to-die pane (the exact BUG-042 orphaned-control-mode-client scenario the
+  plan itself cites as the motivating hazard) could now burn through several
+  attempts via this path before `MaxRemediationAttempts` parks the item, purely
+  because `IsSessionLive` hasn't caught up yet. **Recommendation**: at minimum,
+  note this interaction explicitly in Task 3.3.1a or Story 3.3.1's acceptance
+  criteria, and consider one bounded retry/poll of `IsSessionLive` (e.g. 2-3
+  short-interval checks) before giving up and returning an error, rather than a
+  single immediate check right after the kill call — `KillTmuxPaneOnly` is
+  synchronous but tmux/process teardown is not guaranteed instantaneous relative
+  to when `inst.KillSession()` returns.
 
 ## Minors
 
-- ADR-001's "hard cap ... an absolute ceiling" framing doesn't account for server restarts.
-  Turn-count/soft-cap state lives only in the `AutonomousDriver` goroutine's local variables
-  and is lost entirely on restart (confirmed via `stack.md`'s "in-flight AutonomousDriver
-  goroutines are lost on restart," and no reattach/resume-on-restart mechanism was found in
-  this review of `session/autonomous_driver.go` or the orchestration service). A restart
-  mid-run resets the effective turn counter to 0 for whatever driver run comes next on the
-  same item, so the "hard cap" is a per-process-lifetime ceiling, not a true absolute one
-  across an item's full history. Worth a one-line caveat in the ADR (this doesn't block
-  implementation — it's a documentation-accuracy nit, and restarts are already an accepted
-  systemic characteristic per `.claude/rules/tmux-keep-server-on-restart.md`).
-- Go 1.26.3 is confirmed in `go.mod`; `min()` builtin usage (Task 2.3.1b) is valid (available
-  since Go 1.21). No issue.
-- `DriverExitReason` as a typed string + const block matches this codebase's existing idiom
-  (`session.BacklogStatus`, `session.SessionRole`, `domain.StuckReason*` are all the same
-  pattern) — not a gratuitous new convention.
-- Task 4.1.1a's framing ("fix any compile errors surfaced by the new `ExitKind` field") is
-  imprecise: every `AutonomousDriverOutcome{...}` literal in the codebase uses named fields,
-  so adding `ExitKind` causes zero compile breaks by itself. The actual risk at that task is a
-  *runtime test-assertion* failure from Task 3.2.1a's reason-text change, not a compile
-  error — checked this directly against `autonomous_orchestration_service_test.go` and
-  confirmed only the two tests the plan already names (`..._MarksAutonomousStuck_When_NotDone`,
-  `..._KeepsAutonomousStuck_When_WorkStillStuck`) assert on the old generic message text, so
-  no stray test is missed — but the task's wording should say "test failures (compile or
-  assertion)," not just "compile errors," so whoever executes it doesn't stop looking after a
-  clean `go build`.
+- Epic 3.1's revision note (line 363) says the residual imprecision ("`SessionRoleTriage`'s
+  own inline 'Triage stuck' notification ... will still fire on an intentional
+  cancellation of a triage-role driver") is acceptable because "the only
+  confirmed real cancellation caller (`submit_review_verdict`) only ever targets
+  review-role sessions." This is true today, but note it silently assumes no
+  future caller of `Stop()`/`StopDriverForSession` targets a triage-role
+  session — worth a one-line comment at the `SessionRoleTriage` notification
+  site itself (not just in this plan) so a future maintainer adding a new
+  cancellation caller knows to re-check this assumption, rather than relying on
+  a project-plan document nobody will re-read.
+- The consolidated loop listing in Task 2.5.1a is documentation-only (as it
+  says), so there is a residual (low) risk the three epics' *actual* landed
+  code drifts from this listing if a task subagent takes a slightly different
+  but equivalent structuring — this is inherent to prose/pseudocode plans and
+  not fixable without generating code at plan time, but Task 4.1.1a's full
+  regression pass (`go test ./session/... ./server/services/... -race`) would
+  catch any behavioral drift, so this is adequately mitigated, just worth
+  naming.
+- Story 1.1.1's acceptance criterion citing `backlog_service.go`'s `spawnInFlight`
+  doc comment as "lines 138-163" is off by one from the current file (the field
+  declaration itself is at line 164, comment block 138-163) — trivially close
+  enough that Task 1.1.1c's own caveat ("verify against current line numbers at
+  implementation time") already covers it. No action needed beyond what's
+  already planned.
