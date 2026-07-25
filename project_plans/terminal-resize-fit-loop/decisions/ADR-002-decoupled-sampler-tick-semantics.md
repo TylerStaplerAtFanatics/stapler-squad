@@ -64,9 +64,13 @@ distinct from both ambiguities above.
    a component or driving a real/mocked `ResizeObserver`:
 
    ```ts
-   // web-app/src/components/sessions/XtermTerminal.tsx
+   // web-app/src/lib/terminal/types.ts (shared — see architecture-review.md Concern 1 /
+   // plan.md Task 1.1.1: ResizeDimensions is hoisted here so useTerminalFlowControl.ts can
+   // import it without creating a hook -> leaf-component dependency)
    export interface ResizeDimensions { cols: number; rows: number; }
 
+   // web-app/src/components/sessions/XtermTerminal.tsx (imports ResizeDimensions from the
+   // shared module above)
    export interface ShouldScheduleFitResult {
      schedule: boolean;
      nextPending: ResizeDimensions | null;
@@ -92,8 +96,15 @@ distinct from both ambiguities above.
    The sampler caps itself at `MAX_SAMPLES = 20` ticks (~1s of wall-clock sampling at 50ms
    intervals) without a confirmation. On reaching the cap, it logs
    `console.warn('[XtermTerminal] Resize did not converge after 20 samples; giving up')` and
-   stops sampling — `fit()` is never called for that burst, and the terminal remains at its
-   last-applied size. **This is an intentional, accepted tradeoff**: loop-safety (bounded CPU,
+   stops sampling **via the same `stopSampler()` reset used by the other two exit paths**
+   (`samplerActive = false`, `pendingProposedDims = null`, `sampleCount = 0`, clearing any
+   pending `sampleTimeout`) — `fit()` is never called for that burst, and the terminal remains
+   at its last-applied size. This reset is load-bearing, not optional: give-up abandons
+   confirming *this* candidate only; it must not leave the sampler permanently inert, since
+   `startSamplerIfNeeded()` is a no-op whenever `samplerActive` is already `true` (an omitted
+   reset here would silently and permanently disable resizing for the rest of the mount's
+   lifetime — see architecture-review.md's Blocker finding, closed in this ADR revision).
+   **This give-up itself is an intentional, accepted tradeoff**: loop-safety (bounded CPU,
    bounded RPC traffic) is more important than guaranteed eventual convergence for a
    pathologically oscillating measurement, and the user's manual "Fit" button
    (`TerminalOutput.tsx`'s `handleManualResize`, ~line 496) — which calls
@@ -115,6 +126,11 @@ Then fitAddonRef.current.fit() is called 0 times
   and console.warn is called exactly once with a message matching /did not converge/
   and the sampler stops (no further setTimeout is pending)
   and terminal.cols / terminal.rows remain unchanged at 94/24
+And, when a subsequent ResizeObserver delivery arrives whose proposeDimensions() converges
+  cleanly on its next two sampler ticks (e.g. {cols: 100, rows: 24} confirmed twice), the
+  sampler restarts successfully (samplerActive was reset to false by the give-up path above)
+  and fitAddonRef.current.fit() is called exactly once for this new sequence — proving
+  stopSampler()'s reset in the give-up branch is a true reset, not a one-shot latch
 ```
 
 ## Consequences
@@ -135,3 +151,12 @@ Then fitAddonRef.current.fit() is called 0 times
   `web-app/src/components/sessions/XtermTerminal.tsx` and should be changed only alongside a
   re-read of this ADR, since they encode the bounded-give-up tradeoff, not just a debounce
   tuning knob.
+- **Background-tab timer throttling is an accepted tradeoff, not a gap.** Browsers clamp
+  `setTimeout` to ≥1000ms (and further under sustained backgrounding) for hidden tabs, so if
+  the sampler is actively mid-confirmation at the moment a tab backgrounds, its 20-tick budget
+  could take longer than ~1s of wall-clock time to exhaust while hidden. This is acceptable:
+  `ResizeObserver` rarely delivers while a tab is hidden in the first place, and a sampler that
+  is naturally paused/slowed by the browser's own throttling while backgrounded produces no
+  incorrect fits — there is no jitter to confirm while nothing is being observed. The ~1s /
+  20-sample budget above is a **foreground-tab** budget; a backgrounded tab pausing (rather
+  than violating) that budget is expected, not a defect (adversarial-review.md Concern).

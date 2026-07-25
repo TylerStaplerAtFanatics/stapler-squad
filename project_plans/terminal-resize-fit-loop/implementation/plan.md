@@ -81,7 +81,7 @@ consistent.
 
 | Term | Kind | Meaning | Defined in |
 |---|---|---|---|
-| `ResizeDimensions` | `interface { cols: number; rows: number }` | Value type replacing raw positional `(cols, rows)` pairs wherever a size is held as *state* (not as a function argument — see below). Prevents cols/rows argument-order bugs in the new code this plan adds. | `web-app/src/components/sessions/XtermTerminal.tsx` |
+| `ResizeDimensions` | `interface { cols: number; rows: number }` | Value type replacing raw positional `(cols, rows)` pairs wherever a size is held as *state* (not as a function argument — see below). Prevents cols/rows argument-order bugs in the new code this plan adds. | `web-app/src/lib/terminal/types.ts` (shared module — imported by both `XtermTerminal.tsx` and `useTerminalFlowControl.ts`; hoisted here per architecture-review.md Concern 1 so the hook doesn't depend on a leaf component — see Task 1.1.1) |
 | `AppliedDimensions` | usage of `ResizeDimensions` | The size currently applied to the xterm `Terminal` instance — read as `{ cols: terminal.cols, rows: terminal.rows }`. Authoritative "what the terminal is now." | `XtermTerminal.tsx` (ResizeObserver closure) |
 | `ProposedDimensions` | usage of `ResizeDimensions \| undefined` | The return value of `fitAddon.proposeDimensions()` — `undefined` when the terminal is unmounted, has no parent, or cell dimensions are not yet measured (per exact `@xterm/addon-fit@0.10.0` source in research/stack.md). Always integer when defined (via `Math.floor()` internally). | `XtermTerminal.tsx` |
 | `PendingConfirmation` | `ResizeDimensions \| null` | The `ProposedDimensions` value observed on the previous sampler tick, not yet confirmed by a matching second tick. `null` means nothing is pending. See Pattern Decisions for why this is a nullable field, not an enum. | `XtermTerminal.tsx` (closure `let pendingProposedDims`) |
@@ -91,18 +91,24 @@ consistent.
 | `MAX_SAMPLES` | `const = 20` | Bounded give-up threshold (~1s of sampling) for sustained oscillation. See ADR-002. | `XtermTerminal.tsx` |
 | `LastSentDimensions` | usage of `ResizeDimensions \| null`, held in `useRef` | `lastSentDimsRef.current` — the last `(cols, rows)` pair actually confirmed sent over the `TerminalResize` RPC (i.e., updated only after `pushMessage` returns without throwing). Distinct from `TerminalOutput`'s `lastResizeRef` (which tracks "last size xterm reported," a different question — see §4 Architecture Notes). | `useTerminalFlowControl.ts` |
 | `force` | `resize()`'s 3rd parameter, `boolean = false` | Bypasses **both** the value-dedup check and the 200ms time throttle when `true`. Named and shaped to mirror the existing `requestFullResync(urgent: boolean = false)` precedent (`useTerminalFlowControl.ts:94`). | `useTerminalFlowControl.ts` |
-| `checkWebglCellMismatch` | function | Computes `actualPixelsPerCol = containerEl.getBoundingClientRect().width / terminal.cols`, guarded with `Number.isFinite()` on both the numerator's inputs and `dims.css.cell.width`, and compares against `MISMATCH_TOLERANCE_PX = 1`. Returns whether *this* sample is a mismatch (the caller accumulates). | `XtermTerminal.tsx` |
+| `extractCellMismatchInputs` | function (impure) | Reads `dims = (terminal as any)._core?._renderService?.dimensions` and `containerEl.getBoundingClientRect()`, returning `{ actualPxPerCol: number; expectedPxPerCol: number } \| null` (raw values, may be non-finite; `null` if `dims.css.cell.width` isn't available yet). The only place private xterm.js internals / DOM measurement are touched for this feature — split out per architecture-review.md Concern 2 so the decision logic below can be tested with plain numbers. | `XtermTerminal.tsx` |
+| `isSustainedMismatch` | pure exported function | `(actualPxPerCol: number, expectedPxPerCol: number, tolerance: number) => boolean`. `Number.isFinite`-guards both inputs (returns `false` if either is non-finite — this is where the `Infinity`/`terminal.cols === 0` guard actually lives, since `proposeDimensions()` itself never returns `Infinity`), then returns `Math.abs(actualPxPerCol - expectedPxPerCol) > tolerance`. Exported so Task 4.1.5 can drive the `Infinity` boundary case directly with numeric fixtures, no mounting/mocking of `Terminal` internals required. | `XtermTerminal.tsx` |
+| `isFiniteResizeDimensions` | pure exported function | `(d: ResizeDimensions \| undefined): d is ResizeDimensions` — the single canonical `Number.isFinite` guard on `cols`/`rows`, used by both the post-Canvas-fallback `fit()` guard (Task 3.2.3) and anywhere else a `ProposedDimensions` value needs validating before being trusted. Named once (architecture-review.md Concern 3 / adversarial-review.md Concern on Task 3.2.3) so the guard isn't re-described inline at each call site and can't be implemented as a no-op. | `web-app/src/lib/terminal/types.ts` (same shared module as `ResizeDimensions`) |
 | `WebglMismatchTracker` | conceptual name for closures | `let webglMismatchCount`, `let webglFallbackTriggered` — one-directional latch (never re-arms) counting consecutive/cumulative mismatches and tripping the fallback at `MISMATCH_THRESHOLD = 3`. | `XtermTerminal.tsx` |
 | `MISMATCH_TOLERANCE_PX` / `MISMATCH_THRESHOLD` | `const`s (`1` / `3`) | Pixel tolerance for a single mismatch sample, and count of qualifying samples before the fallback trips. | `XtermTerminal.tsx` |
 
-**Glossary term count: 12** (`ResizeDimensions`, `AppliedDimensions`, `ProposedDimensions`,
+**Glossary term count: 14** (`ResizeDimensions`, `AppliedDimensions`, `ProposedDimensions`,
 `PendingConfirmation`, `shouldScheduleFit`, `ResizeSampler`, `SAMPLE_INTERVAL_MS`,
-`MAX_SAMPLES`, `LastSentDimensions`, `force`, `checkWebglCellMismatch`,
-`WebglMismatchTracker`).
+`MAX_SAMPLES`, `LastSentDimensions`, `force`, `extractCellMismatchInputs`,
+`isSustainedMismatch`, `isFiniteResizeDimensions`, `WebglMismatchTracker`).
 
-**Note on `ResizeDimensions` scope**: this value type is used for *internal state* (applied /
-proposed / pending / last-sent) inside `XtermTerminal.tsx` and `useTerminalFlowControl.ts`. It
-is **not** used to change the public signatures of `resize(cols, rows, force?)` or the
+**Note on `ResizeDimensions` scope**: this value type is defined in the shared
+`web-app/src/lib/terminal/types.ts` module (Task 1.1.1, per architecture-review.md Concern 1 —
+hoisted out of `XtermTerminal.tsx` specifically so `useTerminalFlowControl.ts` can import it
+without a hook-depending-on-leaf-component layering smell) and used for *internal state*
+(applied / proposed / pending / last-sent) inside both `XtermTerminal.tsx` and
+`useTerminalFlowControl.ts`. It is **not** used to change the public signatures of
+`resize(cols, rows, force?)` or the
 `onResize?: (cols: number, rows: number) => void` prop — those stay positional, because (1)
 AC4 explicitly requires asserting a *literal third positional argument* (`toHaveBeenCalledWith(cols, rows, true)`)
 at each call site, and (2) `onResize` has exactly one consumer in the codebase
@@ -117,11 +123,13 @@ speculative, out-of-scope refactor with no current beneficiary.
 This is closure-based stateful helper logic, not a Domain Model / Repository situation — no
 PoEAA/DDD pattern applies here beyond ordinary value-typing. Two deliberate choices:
 
-- **Type-driven design, scoped**: `ResizeDimensions` is introduced as a small value type for
-  *state* (see glossary note above), not as a full object-signature refactor of every
-  function that currently takes positional `cols, rows`. This keeps the type-safety win
-  (no more `{width, height}` vs `{cols, rows}` mix-ups in the new sampler/dedup code) without
-  touching unrelated call sites.
+- **Type-driven design, scoped**: `ResizeDimensions` (in the shared
+  `web-app/src/lib/terminal/types.ts` module, along with its `isFiniteResizeDimensions` guard)
+  is introduced as a small value type for *state* (see glossary note above), not as a full
+  object-signature refactor of every function that currently takes positional `cols, rows`.
+  This keeps the type-safety win (no more `{width, height}` vs `{cols, rows}` mix-ups in the
+  new sampler/dedup code, and one canonical `Number.isFinite` guard instead of scattered ad hoc
+  checks) without touching unrelated call sites.
 - **Nullable field over enum** for `PendingConfirmation` (see Pattern Decisions table above)
   — avoids over-modeling a two-state value as a three-or-more-state union when the extra
   states (sampler running vs. not) are already correctly represented by an independent
@@ -166,6 +174,11 @@ subagents run — re-verify with a targeted grep before each task if line number
   typecheck.
 - Only one consumer of `XtermTerminalProps.onResize` exists in the repo:
   `TerminalOutput.tsx:645` (`onResize={handleTerminalResize}`).
+- `web-app/src/lib/terminal/` is an existing shared module directory (`TerminalDimensionCache.ts`,
+  `MessageQueue.ts`, `CircularBuffer.ts`, etc.) — `types.ts` (Task 1.1.1) is a new file added
+  there, not a new top-level directory, and holds `ResizeDimensions` +
+  `isFiniteResizeDimensions` so `useTerminalFlowControl.ts` can import them without depending on
+  `XtermTerminal.tsx` (architecture-review.md Concern 1).
 - `@xterm/addon-webgl` resolves to exact version `0.18.0` in `web-app/package-lock.json`
   (`node_modules/@xterm/addon-webgl` entry). `@xterm/addon-canvas` is absent from
   `package-lock.json` entirely (not installed) — confirms ADR-001's premise.
@@ -180,10 +193,16 @@ subagents run — re-verify with a targeted grep before each task if line number
 
 #### Story 1.1: Pure decision function + value type
 
-- **Task 1.1.1** — In `web-app/src/components/sessions/XtermTerminal.tsx`, add (near the top,
-  after imports) the exported `ResizeDimensions` interface, `ShouldScheduleFitResult`
-  interface, and the pure `shouldScheduleFit()` function exactly as specified in ADR-002 §2.
-  No other code changes in this task. *Files*: `XtermTerminal.tsx`. *Size*: ~5 min.
+- **Task 1.1.1** — Create `web-app/src/lib/terminal/types.ts` (new shared module, alongside
+  this directory's existing `TerminalDimensionCache.ts`/`MessageQueue.ts` files) exporting the
+  `ResizeDimensions` interface and the pure `isFiniteResizeDimensions(d: ResizeDimensions | undefined): d is ResizeDimensions`
+  guard (per architecture-review.md Concern 1 and adversarial-review.md's Task 3.2.3 concern —
+  one canonical guard function, not a restated inline pattern at each call site). In
+  `web-app/src/components/sessions/XtermTerminal.tsx`, import `ResizeDimensions` from this new
+  module and add (near the top, after imports) the exported `ShouldScheduleFitResult`
+  interface (stays local — it's `shouldScheduleFit`-specific, not a shared value type) and the
+  pure `shouldScheduleFit()` function exactly as specified in ADR-002 §2. *Files*:
+  `web-app/src/lib/terminal/types.ts` (new), `XtermTerminal.tsx`. *Size*: ~7 min.
 
 - **Task 1.1.2** — Add module-level constants `SAMPLE_INTERVAL_MS = 50` and
   `MAX_SAMPLES = 20` next to `shouldScheduleFit`, with a one-line comment each pointing to
@@ -206,9 +225,17 @@ subagents run — re-verify with a targeted grep before each task if line number
   effect run gets fresh state automatically on scrollback changes). `sampleTick()` calls
   `shouldScheduleFit()`, and on `schedule: true` calls `fitAddonRef.current.fit()` then
   `stopSampler()`; on `nextPending === null && !schedule` (at rest or `proposed === undefined`)
-  calls `stopSampler()`; otherwise increments `sampleCount`, gives up with a `console.warn` at
-  `MAX_SAMPLES`, else reschedules itself via `setTimeout(sampleTick, SAMPLE_INTERVAL_MS)`.
-  *Files*: `XtermTerminal.tsx`. *Size*: ~5 min.
+  calls `stopSampler()`; otherwise increments `sampleCount` and, if `sampleCount >= MAX_SAMPLES`,
+  logs `console.warn('[XtermTerminal] Resize did not converge after 20 samples; giving up')`
+  and **also calls `stopSampler()`** (identical reset to the other two branches:
+  `samplerActive = false`, `pendingProposedDims = null`, `sampleCount = 0`, clear the pending
+  `sampleTimeout`) — give-up abandons confirming *this* candidate, it must not permanently
+  disable the sampler, since `startSamplerIfNeeded()` no-ops whenever `samplerActive` is
+  already `true` (architecture-review.md Blocker: without this reset, `samplerActive` never
+  clears and `fit()` becomes permanently unreachable for the remaining lifetime of the mount,
+  including for a later, wholly legitimate one-shot resize); otherwise (sampleCount still under
+  budget) reschedules itself via `setTimeout(sampleTick, SAMPLE_INTERVAL_MS)`. *Files*:
+  `XtermTerminal.tsx`. *Size*: ~6 min.
 
 - **Task 1.2.3** — Update the mount effect's cleanup function (currently lines 300-312) to
   also call `stopSampler()` (clearing `sampleTimeout` if pending), preventing a leaked
@@ -227,17 +254,33 @@ subagents run — re-verify with a targeted grep before each task if line number
 resizing the window once, does not trigger unbounded resize churn"):
 
 ```
-Given 3 concurrently-mounted XtermTerminal instances (separate browser tabs, per requirements'
-  verification-substitute constraint — no tiled-pane layout exists), each at steady-state
+Given 3 concurrently-mounted XtermTerminal instances **in one shared parent container on the
+  same page** (same-page concurrent mounts — corrected per adversarial-review.md Blocker: the
+  requirements.md verification-substitute language ("multiple concurrently-mounted
+  XtermTerminal/TerminalOutput instances") anticipated same-page shared-DOM mounts as the
+  correct proxy for the ticket's tiled-pane scenario, since separate browser tabs are isolated
+  DOM/JS contexts structurally incapable of one instance perturbing another's layout — see
+  Task 4.1.6 below and the corrected Epic 5 manual checklist), each at steady-state
   AppliedDimensions {cols: 80, rows: 24} with container size 800px × 480px
-When each tab is backgrounded and resumed, firing one ResizeObserver delivery per instance
+When the page is backgrounded and resumed, firing one ResizeObserver delivery per instance
   whose contentRect is unchanged (800px × 480px, same as before backgrounding)
-Then startSamplerIfNeeded() runs sampleTick() once; proposeDimensions() returns
+Then startSamplerIfNeeded() runs sampleTick() once per instance; proposeDimensions() returns
   {cols: 80, rows: 24} which equals AppliedDimensions, so shouldScheduleFit returns
   {schedule: false, nextPending: null}; stopSampler() is called immediately
 And fitAddonRef.current.fit() is called 0 times across all 3 instances
 And no TerminalResize RPC is sent for any instance (ties into AC3 — no size change reached
   useTerminalFlowControl.resize() to even evaluate)
+
+Given the same 3 same-page instances, but this time instance 1's fit() call changes the shared
+  flex/grid parent's total size (the actual AC1 failure mechanism per requirements.md's Problem
+  Statement: "each pane's resize can perturb its neighbors")
+When instance 1's confirmed fit() fires, resizing the shared parent, which in turn delivers a
+  new ResizeObserver entry to sibling instances 2 and 3
+Then each sibling's sampler runs its own bounded 2-tick (or MAX_SAMPLES-bounded) confirmation
+  cycle independently and settles to 0 further fit() calls once its own proposeDimensions()
+  stabilizes — the shared-parent perturbation does not cause an unbounded cross-instance
+  cascade (this is the scenario Task 4.1.6 automates; it cannot be exercised by separate-tab
+  verification since tabs cannot share a DOM parent)
 ```
 
 **GWT — AC2** (sub-cell jitter and boundary-flapping, Reading A specifically rejecting a
@@ -262,8 +305,11 @@ Then fitAddon.fit() is called 0 times (jitter absorbed without committing to the
 
 #### Story 2.1: Value-dedup in `resize()`, checked before the time throttle
 
-- **Task 2.1.1** — In `web-app/src/lib/hooks/useTerminalFlowControl.ts`, add
-  `const lastSentDimsRef = useRef<{ cols: number; rows: number } | null>(null);` next to
+- **Task 2.1.1** — In `web-app/src/lib/hooks/useTerminalFlowControl.ts`, import
+  `ResizeDimensions` from `web-app/src/lib/terminal/types.ts` (the shared module created in
+  Task 1.1.1 — this hook does not import from `XtermTerminal.tsx`, avoiding the
+  hook-depends-on-leaf-component layering smell flagged in architecture-review.md Concern 1)
+  and add `const lastSentDimsRef = useRef<ResizeDimensions | null>(null);` next to
   `lastResizeTimeRef` (line 70). *Files*: `useTerminalFlowControl.ts`. *Size*: ~2 min.
 
 - **Task 2.1.2** — In `resize()` (lines 364-416), add the third parameter
@@ -285,8 +331,14 @@ Then fitAddon.fit() is called 0 times (jitter absorbed without committing to the
   `pushMessage(...)` returns without throwing — i.e., inside the `try` block, after the
   `pushMessage(create(TerminalDataSchema, ...))` call succeeds, not before it. Add
   `lastSentDimsRef.current = { cols, rows };` at the same point (same fix, same root-cause
-  class per pitfalls §3/§5: "worth fixing in the same change"). *Files*:
-  `useTerminalFlowControl.ts`. *Size*: ~4 min.
+  class per pitfalls §3/§5: "worth fixing in the same change"). **While touching this
+  function's `try/catch` boundary, also extend it to cover the async `currentPaneRequest`
+  follow-up** (the `setTimeout(..., 100)` block that calls `pushMessage` a second time, on both
+  the plain and `force` paths) — adversarial-review.md Concern: this follow-up currently has no
+  error handling and an exception from it is uncaught, never routed through `onError`. Wrap the
+  `setTimeout` callback's `pushMessage` call in its own `try/catch` that routes to the same
+  `onError`/`handleError` path used by the synchronous send, rather than leaving it as a
+  separate uncaught gap. *Files*: `useTerminalFlowControl.ts`. *Size*: ~6 min.
 
 - **Task 2.1.5** — Update `UseTerminalFlowControlResult`'s `resize` type (line 25) to
   `resize: (cols: number, rows: number, force?: boolean) => void;`. *Files*:
@@ -388,11 +440,13 @@ And the analogous test for handleManualResize asserts
 
 - **Task 3.1.2** — In the WebGL-addon-creation `try` block (currently lines 149-155), change
   `const webglAddon = new WebglAddon();` to assign into `webglAddonRef.current` instead of a
-  local `const`, and register `webglAddonRef.current.onContextLoss(() => { ... })` — on
-  context loss: dispose the WebGL addon, set `webglFallbackTriggered = true` (see Story 3.2's
-  latch), load `CanvasAddon`, and log
-  `console.warn('[XtermTerminal] WebGL context lost, falling back to canvas renderer')`.
-  *Files*: `XtermTerminal.tsx`. *Size*: ~5 min.
+  local `const`, and register
+  `webglAddonRef.current.onContextLoss(() => { console.warn('[XtermTerminal] WebGL context lost, falling back to canvas renderer'); triggerCanvasFallback(); })`.
+  Route through the single `triggerCanvasFallback()` function defined in Story 3.2 (Task 3.2.3)
+  rather than duplicating the dispose/load-`CanvasAddon` sequence inline here — this is also
+  where the `try/catch` around `CanvasAddon` construction lives (adversarial-review.md
+  Blocker: one call site, one guard, not two un-caught `new CanvasAddon()` invocations to keep
+  in sync). *Files*: `XtermTerminal.tsx`. *Size*: ~4 min.
 
 - **Task 3.1.3** — Update the cleanup function (mount effect return, ~lines 300-312) to also
   set `webglAddonRef.current = null` (the addon itself is disposed via `terminal.dispose()`,
@@ -405,45 +459,70 @@ And the analogous test for handleManualResize asserts
   `MISMATCH_THRESHOLD = 3` next to the Epic 1 sampler constants. *Files*: `XtermTerminal.tsx`.
   *Size*: ~1 min.
 
-- **Task 3.2.2** — Add the pure-ish `checkWebglCellMismatch(terminal: Terminal, containerEl: HTMLElement): boolean`
-  function: reads `dims = (terminal as any)._core?._renderService?.dimensions`; if
-  `!dims?.css?.cell?.width` returns `false`; computes
-  `actualPixelsPerCol = containerEl.getBoundingClientRect().width / terminal.cols`; returns
-  `false` unless **both** `Number.isFinite(actualPixelsPerCol)` and
-  `Number.isFinite(dims.css.cell.width)` are true (guards the `terminal.cols === 0` /
-  hidden-tab `Infinity` case per pitfalls §4 — using `Number.isFinite`, not `Number.isNaN`,
-  per AC5's explicit wording); otherwise returns
-  `Math.abs(actualPixelsPerCol - dims.css.cell.width) > MISMATCH_TOLERANCE_PX`. *Files*:
-  `XtermTerminal.tsx`. *Size*: ~5 min.
+- **Task 3.2.2** — Split the mismatch check into two functions (architecture-review.md
+  Concern 2: separates DOM/xterm-internals extraction from the pure decision logic, so the
+  `Number.isFinite` boundary case is unit-testable without mounting anything):
+  (a) `extractCellMismatchInputs(terminal: Terminal, containerEl: HTMLElement): { actualPxPerCol: number; expectedPxPerCol: number } | null` —
+  reads `dims = (terminal as any)._core?._renderService?.dimensions`; if
+  `!dims?.css?.cell?.width` returns `null`; otherwise returns
+  `{ actualPxPerCol: containerEl.getBoundingClientRect().width / terminal.cols, expectedPxPerCol: dims.css.cell.width }`
+  (no `Number.isFinite` logic here — pure extraction; `terminal.cols === 0` simply produces
+  `Infinity` and is passed through); (b) the pure exported
+  `isSustainedMismatch(actualPxPerCol: number, expectedPxPerCol: number, tolerance: number): boolean` —
+  returns `false` unless **both** `Number.isFinite(actualPxPerCol)` and
+  `Number.isFinite(expectedPxPerCol)` are true (guards the `terminal.cols === 0` / hidden-tab
+  `Infinity` case per pitfalls §4 — using `Number.isFinite`, not `Number.isNaN`, per AC5's
+  explicit wording), otherwise returns `Math.abs(actualPxPerCol - expectedPxPerCol) > tolerance`.
+  The call site (Task 3.2.4/3.2.5) is `extractCellMismatchInputs(...)` then, if non-null,
+  `isSustainedMismatch(result.actualPxPerCol, result.expectedPxPerCol, MISMATCH_TOLERANCE_PX)`.
+  *Files*: `XtermTerminal.tsx`. *Size*: ~6 min.
 
 - **Task 3.2.3** — Add closure state `let webglMismatchCount = 0` and
   `let webglFallbackTriggered = false` inside the mount effect (same closure as the Epic 1
-  sampler state). Add a `triggerCanvasFallback()` function: if `webglFallbackTriggered` is
-  already `true`, return immediately (one-directional latch, never re-arms, per pitfalls §4's
-  GPU-leak-toggling concern); else set the flag, `webglAddonRef.current?.dispose()`,
-  `webglAddonRef.current = null`, `terminal.loadAddon(new CanvasAddon())`, then
-  `requestAnimationFrame(() => { fitAddonRef.current?.fit(); })` (per pitfalls §4: wait one
-  RAF frame after the addon swap before calling `fit()`, to avoid measuring against a
-  not-yet-initialized renderer — the historical `Infinity`/crash failure mode in xterm.js
-  #1416), guarding that `fit()` call with the sampler's existing `shouldScheduleFit`-style
-  `Number.isFinite` checks on the resulting `proposeDimensions()` before applying (reuse
-  `checkWebglCellMismatch`'s guard pattern, do not call `fit()` unconditionally). Log
-  `console.warn('[XtermTerminal] WebGL cell-measurement mismatch exceeded threshold, falling back to canvas renderer')`.
-  *Files*: `XtermTerminal.tsx`. *Size*: ~5 min.
+  sampler state). Add a `triggerCanvasFallback()` function, this being the **single** call
+  site used by both the mismatch-threshold path (this story) and the `onContextLoss` handler
+  (Task 3.1.2): if `webglFallbackTriggered` is already `true`, return immediately
+  (one-directional latch, never re-arms, per pitfalls §4's GPU-leak-toggling concern); else set
+  the flag, `webglAddonRef.current?.dispose()`, `webglAddonRef.current = null`, then attempt
+  `terminal.loadAddon(new CanvasAddon())` **wrapped in `try/catch`, mirroring the existing
+  `WebglAddon` construction pattern at `XtermTerminal.tsx:149-155`** (adversarial-review.md
+  Blocker: unlike `WebglAddon`, an earlier draft of this plan left `CanvasAddon` construction
+  unguarded — if it also throws, with the latch already tripped, the terminal would be
+  permanently blank with no retry path and no user-facing error). On success, run
+  `requestAnimationFrame(() => { ... })` (per pitfalls §4: wait one RAF frame after the addon
+  swap before calling `fit()`, to avoid measuring against a not-yet-initialized renderer — the
+  historical `Infinity`/crash failure mode in xterm.js #1416): inside the RAF callback, call
+  `fitAddonRef.current?.proposeDimensions()`, check the result with `isFiniteResizeDimensions()`
+  (the shared guard from `web-app/src/lib/terminal/types.ts`, Task 1.1.1 — the one canonical
+  `Number.isFinite` check, not a restated inline pattern), and only call
+  `fitAddonRef.current.fit()` when the guard passes; if it fails, skip this fit cycle and
+  `console.warn('[XtermTerminal] Skipped post-fallback fit: proposed dimensions not finite')`.
+  On `catch` (Canvas addon construction/load failed): log
+  `console.error('[XtermTerminal] Canvas renderer also failed to load; falling back to xterm's built-in DOM renderer', err)`
+  and take no further action — per build-vs-buy.md research, xterm.js core's default DOM
+  renderer is already active automatically once `WebglAddon` is disposed and no other render
+  addon is loaded, so no explicit DOM-fallback code is needed, only the guarantee that the
+  thrown error doesn't propagate uncaught out of a `setTimeout`/`onContextLoss` callback. In
+  both the success and catch paths, log the pre-existing
+  `console.warn('[XtermTerminal] WebGL cell-measurement mismatch exceeded threshold, falling back to canvas renderer')`
+  once, before attempting the addon swap. *Files*: `XtermTerminal.tsx`. *Size*: ~8 min.
 
 - **Task 3.2.4** — Wire the mismatch check into the sampler: in `sampleTick()` (Epic 1 Task
   1.2.2), immediately after a confirmed `fit()` call (the `schedule: true` branch), call
-  `checkWebglCellMismatch(terminalRef.current, containerRef.current)`; if `true` and
-  `!webglFallbackTriggered`, increment `webglMismatchCount`; if `webglMismatchCount >= MISMATCH_THRESHOLD`,
-  call `triggerCanvasFallback()`. This makes mismatch accumulate across multiple confirmed
-  resize events (not just a single startup check), per architecture research point 2. *Files*:
-  `XtermTerminal.tsx`. *Size*: ~4 min.
+  `const inputs = extractCellMismatchInputs(terminalRef.current, containerRef.current);` and,
+  if `inputs` is non-null, evaluate
+  `isSustainedMismatch(inputs.actualPxPerCol, inputs.expectedPxPerCol, MISMATCH_TOLERANCE_PX)`;
+  if that returns `true` and `!webglFallbackTriggered`, increment `webglMismatchCount`; if
+  `webglMismatchCount >= MISMATCH_THRESHOLD`, call `triggerCanvasFallback()`. This makes
+  mismatch accumulate across multiple confirmed resize events (not just a single startup
+  check), per architecture research point 2. *Files*: `XtermTerminal.tsx`. *Size*: ~4 min.
 
 - **Task 3.2.5** — Update the existing startup mismatch-logging block (lines 188-197) to use
-  `checkWebglCellMismatch()` instead of its inline `Math.abs(...) > 1` check (removing the
-  duplicated, unguarded logic), and route a `true` result through the same
-  `webglMismatchCount`/`triggerCanvasFallback()` path used by Task 3.2.4, so the initial-mount
-  measurement also counts toward the threshold. *Files*: `XtermTerminal.tsx`. *Size*: ~4 min.
+  `extractCellMismatchInputs()` + `isSustainedMismatch()` instead of its inline
+  `Math.abs(...) > 1` check (removing the duplicated, unguarded logic), and route a `true`
+  result through the same `webglMismatchCount`/`triggerCanvasFallback()` path used by Task
+  3.2.4, so the initial-mount measurement also counts toward the threshold. *Files*:
+  `XtermTerminal.tsx`. *Size*: ~4 min.
 
 **GWT — AC5** (verbatim: "a sustained mismatch beyond a defined tolerance triggers a
 one-directional fallback to the canvas renderer, using Number.isFinite ... guards against
@@ -452,22 +531,36 @@ proposeDimensions() returning Infinity"):
 ```
 Given webglMismatchCount = 0, webglFallbackTriggered = false, MISMATCH_TOLERANCE_PX = 1,
   MISMATCH_THRESHOLD = 3, and 3 successive confirmed-fit events each measure
-  actualPixelsPerCol = 9.2 (vs. dims.css.cell.width = 8.0, diff = 1.2 > 1)
+  actualPxPerCol = 9.2 (vs. expectedPxPerCol = 8.0, diff = 1.2 > 1)
 When the 3rd mismatch event fires (webglMismatchCount reaches 3)
 Then triggerCanvasFallback() runs exactly once: webglFallbackTriggered flips to true,
   webglAddonRef.current.dispose() is called once, terminal.loadAddon(new CanvasAddon()) is
-  called once, and after one requestAnimationFrame, fitAddon.fit() is called with its result
-  checked via Number.isFinite before being trusted
+  called once (inside the Task 3.2.3 try/catch — no throw in this scenario, so the catch path
+  is not exercised here, see the separate CanvasAddon-failure GWT below), and after one
+  requestAnimationFrame, fitAddon.proposeDimensions() is checked via isFiniteResizeDimensions()
+  before fitAddon.fit() is called
 And a 4th mismatch event occurring afterward does NOT call dispose()/loadAddon() again
   (checked via webglFallbackTriggered short-circuit — asserts call counts stay at 1 each)
 
 Given terminal.cols = 0 (container hidden/backgrounded, e.g. display:none on the tab)
-When checkWebglCellMismatch(terminal, containerEl) computes
-  actualPixelsPerCol = containerEl.getBoundingClientRect().width / 0 = Infinity
-Then Number.isFinite(Infinity) === false, so checkWebglCellMismatch returns false immediately
+When extractCellMismatchInputs(terminal, containerEl) computes
+  actualPxPerCol = containerEl.getBoundingClientRect().width / 0 = Infinity, then
+  isSustainedMismatch(Infinity, expectedPxPerCol, MISMATCH_TOLERANCE_PX) is evaluated
+Then Number.isFinite(Infinity) === false, so isSustainedMismatch returns false immediately
   and this sample is never added to webglMismatchCount (guards against the Infinity case
   exactly as AC5 requires, using Number.isFinite not Number.isNaN — Number.isNaN(Infinity) is
   false, which would have incorrectly let this sample through a NaN-only guard)
+
+Given CanvasAddon construction throws when triggerCanvasFallback() attempts
+  terminal.loadAddon(new CanvasAddon()) (adversarial-review.md Blocker — e.g. a
+  canvas-fingerprinting-blocked environment or addon API mismatch)
+When triggerCanvasFallback() runs
+Then the try/catch added in Task 3.2.3 contains the exception: no uncaught error propagates
+  out of the sampler's setTimeout chain or the onContextLoss handler, console.error logs a
+  message matching /Canvas renderer also failed/, webglFallbackTriggered remains true (WebGL
+  stays disposed, no retry/re-arm), fitAddon.fit() is not called again for this fallback
+  attempt, and xterm.js's built-in DOM renderer is left as the active renderer (no code path
+  needed to explicitly select it — confirmed by build-vs-buy.md research)
 ```
 
 ---
@@ -510,19 +603,59 @@ Then Number.isFinite(Infinity) === false, so checkWebglCellMismatch returns fals
 - **Task 4.1.4** — Add a component-level test driving the full sampler via the mocked
   `ResizeObserver` + `jest.advanceTimersByTime(SAMPLE_INTERVAL_MS)` in bounded increments
   (never `runAllTimers()`/`runOnlyPendingTimers()`, per pitfalls §5 — these can hang the Jest
-  worker if the implementation under test isn't yet fully fixed). Assert
-  `fit()` is called **exactly 0 times** across a simulated 50-tick jitter sequence (well past
-  `MAX_SAMPLES = 20`) using a call-count ceiling assertion, wrapped in
-  `await act(async () => { jest.advanceTimersByTime(...); })`. *Files*:
-  `XtermTerminal.test.tsx`. *Size*: ~5 min.
+  worker if the implementation under test isn't yet fully fixed). Simulate a 20-tick
+  never-repeating oscillation (past `MAX_SAMPLES = 20`) and assert, per ADR-002's own GWT (all
+  three, not just the first — adversarial-review.md Concern): (a) `fit()` is called **exactly
+  0 times**; (b) `console.warn` is called exactly once with a message matching
+  `/did not converge/`; (c) no sampler `setTimeout` remains pending after the budget is
+  exhausted (Jest's pending-timer-count APIs, e.g. `jest.getTimerCount()` — a regression where
+  `sampleTick()` keeps rescheduling itself past `MAX_SAMPLES` must fail this test even though
+  `fit()`'s call count alone would stay 0). **Then, in the same test**, fire one more
+  `ResizeObserver` delivery whose `proposeDimensions()` converges cleanly on the next two
+  sampler ticks (a genuine, unrelated resize arriving after the give-up), and assert `fit()`
+  **is** called exactly once for that second sequence — proving `stopSampler()`'s reset in the
+  give-up branch (Task 1.2.2) actually re-arms the sampler rather than leaving it permanently
+  inert (architecture-review.md Blocker regression test requirement). *Files*:
+  `XtermTerminal.test.tsx`. *Size*: ~8 min.
 
-- **Task 4.1.5** — Add tests for `checkWebglCellMismatch()` and `triggerCanvasFallback()`
+- **Task 4.1.5** — Add tests for `isSustainedMismatch()` (pure, numeric fixtures — per
+  architecture-review.md Concern 2's extraction split, Task 3.2.2) and `triggerCanvasFallback()`
   trigger/disposal sequencing (per pitfalls §5: testing the *decision logic and guard
   conditions in isolation*, explicitly not real WebGL behavior — test names should say so,
   e.g. `'triggers canvas fallback after 3 mismatch samples (mocked renderer, not real WebGL)'`).
   Cover: 3 consecutive mismatches trip the fallback exactly once; a 4th does not re-trigger;
-  `terminal.cols === 0` (Infinity case) never increments the mismatch count. *Files*:
+  `isSustainedMismatch(Infinity, 8.0, 1)` and `isSustainedMismatch(9.2, NaN, 1)` both return
+  `false` directly (the `terminal.cols === 0` Infinity case, now testable as a plain numeric
+  fixture without mounting a `Terminal` or mocking `getBoundingClientRect`). *Files*:
   `XtermTerminal.test.tsx`. *Size*: ~5 min.
+
+- **Task 4.1.5a** — Add a test asserting `triggerCanvasFallback()`'s `catch` path when
+  `CanvasAddon` construction/loading throws (adversarial-review.md Blocker): mock
+  `terminal.loadAddon` to throw once when passed a `CanvasAddon` instance, trigger the fallback
+  (via 3 accumulated mismatches or a simulated `onContextLoss`), and assert: (a) no exception
+  propagates out of the test (the `try/catch` added in Task 3.2.3 contains it); (b)
+  `console.error` is called with a message matching `/Canvas renderer also failed/`; (c)
+  `webglFallbackTriggered` is still latched `true` afterward (the WebGL addon stays disposed —
+  no attempt to un-trip the latch and retry WebGL); (d) `fitAddonRef.current.fit()` is **not**
+  called again after the failed `CanvasAddon` load (no RAF-guarded fit runs when the addon
+  never loaded). Name the test to make the scope explicit, e.g.
+  `'falls through to xterm's built-in DOM renderer without crashing when CanvasAddon also fails to load'`.
+  *Files*: `XtermTerminal.test.tsx`. *Size*: ~5 min.
+
+- **Task 4.1.6** — Add a component test mounting **2-3 `XtermTerminal` instances inside one
+  shared flex/grid parent container** in the same `render()` call (adversarial-review.md
+  Blocker: the only proxy in this codebase able to exercise cross-instance perturbation —
+  requirements.md's own verification-substitute language already anticipated same-page mounts,
+  not separate tabs). Give the mocked `fitAddon.fit()` for instance 1 a side effect that
+  shrinks the shared parent's mocked `getBoundingClientRect()` width (simulating instance 1's
+  fit changing the shared layout), fire the mocked `ResizeObserver` callback for all instances
+  (simulating the shared-parent resize reaching every sibling), and — using
+  `jest.advanceTimersByTime(SAMPLE_INTERVAL_MS)` in bounded increments, never
+  `runAllTimers()`/`runOnlyPendingTimers()` — assert total `fit()` calls **summed across all
+  mounted instances** settle to a bounded count (e.g. at most 1 per instance) rather than
+  growing unboundedly across repeated ticks. This is the automated counterpart to the corrected
+  Epic 5 manual checklist (Task 5.2) and closes the AC1 cross-instance-perturbation coverage
+  gap identified in adversarial-review.md. *Files*: `XtermTerminal.test.tsx`. *Size*: ~8 min.
 
 #### Story 4.2: `TerminalOutput.test.tsx` — force-bypass call-site regression tests
 
@@ -603,16 +736,25 @@ And no test uses jest.runAllTimers() or jest.runOnlyPendingTimers() (grep-verifi
   `project_plans/terminal-resize-fit-loop/decisions/ADR-002-decoupled-sampler-tick-semantics.md`.
 
 - **Task 5.2** — Manual verification checklist (not automated — run once after Epics 1-4 are
-  merged and `make restart-web` is running):
-  1. Open 3 separate browser tabs, each attached to a different stapler-squad session
-     (`localhost:8543`), each terminal reaching a steady-state size (e.g. `158x42`).
-  2. Background the browser (switch to another application) for ~10s, then resume. Watch the
-     browser console (with `localStorage.setItem('debug-terminal', 'true')` per the debug-menu
-     docs) for `[XtermTerminal]` resize/fit log lines — confirm they stop within ~1s of
-     resuming (bounded, not continuous).
-  3. Resize the OS browser window once (drag a corner, release). Confirm the terminal
-     reflows to the new size within ~1s and stops logging fit activity afterward.
-  4. During and after both scenarios, confirm typed input in each terminal remains
+  merged and `make restart-web` is running). **Corrected per adversarial-review.md Blocker**:
+  use same-page concurrent mounts (multiple session cards in one dashboard view at
+  `localhost:8543`), not separate browser tabs — separate tabs are isolated DOM/JS contexts and
+  structurally cannot exhibit AC1's actual failure mechanism (one pane's resize perturbing a
+  sibling sharing a layout parent); same-page multi-session mounts are the only proxy in this
+  codebase that can.
+  1. In one browser tab, open (or arrange, if the dashboard view supports it) 3 stapler-squad
+     session cards **on the same page**, each terminal reaching a steady-state size (e.g.
+     `158x42`).
+  2. Background the browser tab (switch to another application/tab) for ~10s, then resume.
+     Watch the browser console (with `localStorage.setItem('debug-terminal', 'true')` per the
+     debug-menu docs) for `[XtermTerminal]` resize/fit log lines across all 3 same-page
+     instances — confirm they stop within ~1s of resuming (bounded, not continuous).
+  3. Resize the OS browser window once (drag a corner, release), so all 3 same-page instances
+     receive a `ResizeObserver` delivery simultaneously. Confirm each terminal reflows to its
+     new size within ~1s and stops logging fit activity afterward, **and** that none of the 3
+     re-triggers a further resize/fit cycle in the others (the cross-instance-perturbation
+     check AC1 is actually about).
+  4. During and after both scenarios, confirm typed input in each of the 3 terminals remains
      responsive (no perceptible input lag).
   5. Reference `docs/PROFILING.md` (confirmed present in this repo) for CPU-profiling steps if
      step 2 or 3 shows anything resembling continued churn — capture
@@ -627,11 +769,14 @@ And no test uses jest.runAllTimers() or jest.runOnlyPendingTimers() (grep-verifi
 input"):
 
 ```
-Given 3 separate browser tabs each with a stapler-squad session open, each terminal at
-  steady-state 158x42
-When the OS browser window is resized once (corner-drag + release)
+Given 3 stapler-squad session terminals mounted on the same page (same-page concurrent mounts,
+  corrected per adversarial-review.md Blocker — not separate browser tabs, which cannot exhibit
+  cross-instance perturbation), each terminal at steady-state 158x42
+When the OS browser window is resized once (corner-drag + release), delivering a
+  ResizeObserver entry to all 3 instances simultaneously
 Then browser console shows at most a handful of "[XtermTerminal]" resize/sample log lines per
-  tab, settling to none within ~1s of mouse-release (not a continuous stream)
+  instance, settling to none within ~1s of mouse-release (not a continuous stream), and no
+  instance's settling re-triggers churn in another
 And typing in any of the 3 terminals immediately after the resize registers with no
   perceptible lag
 And (if profiling is needed) docs/PROFILING.md's goroutine/CPU capture steps show no runaway
@@ -644,9 +789,10 @@ And (if profiling is needed) docs/PROFILING.md's goroutine/CPU capture steps sho
 
 | Layer | File | New/Extended | Key techniques |
 |---|---|---|---|
-| Pure function unit tests | `XtermTerminal.test.tsx` | New | Direct calls to `shouldScheduleFit()`, no mounting |
-| Component/sampler integration | `XtermTerminal.test.tsx` | New | Mocked `ResizeObserver`, `jest.advanceTimersByTime()` in bounded increments, `act()` |
-| WebGL fallback decision logic | `XtermTerminal.test.tsx` | New | Mocked addon surface (`onContextLoss`, `dispose()`), no real WebGL |
+| Pure function unit tests | `XtermTerminal.test.tsx` | New | Direct calls to `shouldScheduleFit()`, `isSustainedMismatch()`, `isFiniteResizeDimensions()` — no mounting |
+| Component/sampler integration | `XtermTerminal.test.tsx` | New | Mocked `ResizeObserver`, `jest.advanceTimersByTime()` in bounded increments, `act()`; includes give-up-then-recovery (Task 4.1.4) |
+| Cross-instance perturbation (AC1) | `XtermTerminal.test.tsx` | New | 2-3 instances mounted in one shared parent, mocked shared `getBoundingClientRect()`, summed call-count ceiling (Task 4.1.6) |
+| WebGL fallback decision logic | `XtermTerminal.test.tsx` | New | Mocked addon surface (`onContextLoss`, `dispose()`, `loadAddon()` throwing), no real WebGL; includes `CanvasAddon`-construction-failure path (Task 4.1.5a) |
 | Call-site force-bypass | `TerminalOutput.test.tsx` | New | Mocked `useTerminalStream`, literal-arg + RPC-observed assertions |
 | RPC dedup/throttle/force | `useTerminalFlowControl.test.ts` | Extended | Existing `createTestOptions()` pattern, new `describe` cases in existing `resize`/mirrored `urgent` blocks |
 
@@ -697,3 +843,15 @@ Consequences section, restated here for visibility:
    (bundled with the `@xterm/xterm@5.5.0` generation) that both historical fixes are very
    likely included, but the plan explicitly calls for a lightweight confirmation step before
    Story 3.1 proceeds rather than assuming it silently.
+3. **Background-tab `setTimeout` throttling is an accepted, documented tradeoff, not a gap** —
+   see ADR-002's Consequences section (added in this repair pass). Browsers clamp `setTimeout`
+   in hidden tabs; the sampler's ~1s/`MAX_SAMPLES=20` give-up budget is a foreground-tab
+   budget, and a tab naturally pausing the sampler while backgrounded (via browser throttling)
+   is acceptable — no jitter to confirm while nothing is being observed.
+4. **Cross-instance perturbation (AC1's core mechanism) is now covered by Task 4.1.6's
+   same-page multi-mount component test**, correcting an earlier draft's use of a
+   structurally-incapable separate-browser-tabs proxy (adversarial-review.md Blocker). The test
+   mocks `fit()`'s downstream layout effect on a shared parent rather than proving it against a
+   real rendered flex/grid layout end-to-end — this is the practical ceiling of what a jsdom
+   component test can exercise for this scenario; the corrected Task 5.2 manual checklist
+   (same-page session cards, not tabs) is the remaining real-browser confirmation.
