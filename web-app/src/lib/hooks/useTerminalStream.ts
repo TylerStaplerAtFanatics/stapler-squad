@@ -99,6 +99,11 @@ export function useTerminalStream({
   const abortControllerRef = useRef<AbortController | null>(null);
   const isDisconnectingRef = useRef(false);
   const isConnectedRef = useRef(false);
+  // Guards against two independent visibility/focus-triggered reconnect paths
+  // (this hook's own Story 3.1.3 listener and useVisibilityResync, composed
+  // together in TerminalOutput.tsx) both calling connect() for the same
+  // disconnected session before either handshake completes.
+  const isConnectingRef = useRef(false);
   const shouldReconnectRef = useRef(false);
   const terminalBackoffRef = useRef(new BackoffState(1000, 30_000));
   const isHardFailedRef = useRef(false);
@@ -155,7 +160,8 @@ export function useTerminalStream({
 
   // ---- Connect ----
   const connect = useCallback(async (overrideCols?: number, overrideRows?: number) => {
-    if (isConnectedRef.current || !sessionId) return;
+    if (isConnectedRef.current || isConnectingRef.current || !sessionId) return;
+    isConnectingRef.current = true;
     shouldReconnectRef.current = true;
     terminalBackoffRef.current.reset();
 
@@ -213,6 +219,7 @@ export function useTerminalStream({
           let firstMessage = true;
           for await (const msg of stream) {
             if (firstMessage) {
+              isConnectingRef.current = false;
               setIsConnected(true);
               setScrollbackLoaded(true);
               setTerminalState('LOADING');
@@ -314,6 +321,7 @@ export function useTerminalStream({
           handleError(err);
         } finally {
           isConnectedRef.current = false; // sync ref before state setter to prevent reconnect guard race
+          isConnectingRef.current = false;
           setIsConnected(false);
           setTerminalState('DISCONNECTED');
           // Reset decoders so stale {stream:true} buffered state from a server-closed
@@ -345,6 +353,7 @@ export function useTerminalStream({
         }
       })();
     } catch (err) {
+      isConnectingRef.current = false;
       handleError(err);
       setIsConnected(false);
     }

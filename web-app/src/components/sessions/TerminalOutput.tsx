@@ -420,6 +420,13 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
   const handleOutput = useCallback((output: string) => {
     if (!xtermRef.current) return;
 
+    // Signal resync receipt regardless of whether this output is written
+    // immediately or queued for post-resize flush — a concurrent resize
+    // (plausible on backgrounded-tab wakeup) must not make a pending
+    // visibility/focus resync look stalled just because its response
+    // arrived while RESIZING.
+    notifyResyncOutputReceivedRef.current();
+
     if (terminalStateRef.current === 'RESIZING') {
       pendingOutputDuringResizeRef.current.push(output);
       return;
@@ -429,7 +436,6 @@ export function TerminalOutput({ sessionId, baseUrl, isExternal = false, tmuxSes
     if (manager) {
       manager.write(output);
     }
-    notifyResyncOutputReceivedRef.current();
   }, [getOrCreateStreamManager]);
 
   // Unified WebSocket streaming

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/session/detection"
 )
 
@@ -312,10 +313,17 @@ func (i *Instance) RecoverFromStopped() {
 // (LiveInstance), and falls back to running synchronously in-place when it isn't
 // (e.g. tests constructing a bare *Instance).
 func (i *Instance) ForceStatus(s Status) {
-	_ = i.sendCtx(context.Background(), func(_ *instanceState) {
+	// Bounded: this is an error-recovery path, so a wedged actor mailbox must
+	// not hang the caller (e.g. the async CreateSession cleanup goroutine)
+	// indefinitely. Fail loudly instead.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := i.sendCtx(ctx, func(_ *instanceState) {
 		i.mu.Lock()
 		i.loadStatus(s)
 		i.mu.Unlock()
 		i.snapshot.Store(buildSnapshot(i))
-	})
+	}); err != nil {
+		log.Error("[ForceStatus] actor unresponsive, status not applied", "instance", i.ID, "status", s, "err", err)
+	}
 }
