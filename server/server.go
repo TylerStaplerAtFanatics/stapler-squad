@@ -57,6 +57,7 @@ type Server struct {
 	shutdownHooks     []func()                        // called before HTTP server stops
 	connCtxCancel     context.CancelFunc              // cancels BaseContext → closes active streams on shutdown
 	availablePrograms []string                        // cached once at startup; programs change only on system changes
+	startedAt         time.Time                       // set once in newServerBase; used to gate orphan notification pruning until instance data has had time to load
 }
 
 // newServerBase creates the base Server struct and returns it alongside the
@@ -81,6 +82,7 @@ func newServerBase(addr string) (*Server, context.Context) {
 		},
 	}
 	srv.addr.Store(&addr)
+	srv.startedAt = time.Now()
 	return srv, connCtx
 }
 
@@ -211,6 +213,31 @@ func wireDepsIntoServer(srv *Server, deps *ServerDependencies, serverCtx context
 			deps.SessionService.SetNotificationStore(notifStore)
 			notifications.StartSubscriber(serverCtx, deps.EventBus, notifStore)
 			log.Info("NotificationHistoryStore initialized", "path", notifStorePath)
+
+			// Wire the batch-fetch session-existence lookup used by the store's
+			// orphan-pruning sweep (enforceRetention → pruneOrphanedRecords).
+			// Gated by pruneOrphanedMinUptime so a fresh server (before instance
+			// data has had a chance to load) never mistakes "haven't loaded yet"
+			// for "no sessions exist" and wipes legitimate session-scoped records.
+			const pruneOrphanedMinUptime = 5 * time.Minute
+			notifStore.SetSessionExistenceLookup(func() map[string]struct{} {
+				if time.Since(srv.startedAt) < pruneOrphanedMinUptime {
+					return nil
+				}
+				all, err := storage.ListInstanceData()
+				if err != nil {
+					log.Warn("SetSessionExistenceLookup: ListInstanceData failed; skipping this prune pass", "err", err)
+					return nil
+				}
+				ids := make(map[string]struct{}, len(all)*2)
+				for i := range all {
+					ids[all[i].GetStableID()] = struct{}{}
+					if all[i].Title != "" {
+						ids[all[i].Title] = struct{}{}
+					}
+				}
+				return ids
+			})
 		}
 	}
 
