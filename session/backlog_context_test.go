@@ -136,3 +136,126 @@ func TestSanitizeForContextFile_PromptInjectionPayloadIsInert(t *testing.T) {
 		t.Errorf("expected prompt injection payload %q to pass through verbatim\nOutput:\n%s", payload, out)
 	}
 }
+
+// TestClosingKeywordFor proves AC3: closingKeywordFor returns the correct,
+// fully-punctuated keyword for each URL shape.
+func TestClosingKeywordFor(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"issue URL", "https://github.com/acme/widget/issues/42", "Fixes "},
+		{"PR URL", "https://github.com/acme/widget/pull/17", "Related: "},
+		{"empty", "", "Related: "},
+		{"unrecognized shape", "https://example.com/foo", "Related: "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := closingKeywordFor(tc.url)
+			if got != tc.want {
+				t.Errorf("closingKeywordFor(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGithubShortRefFor proves the corrected AC3 design (added during
+// sdd:4-validate): githubShortRefFor derives the "owner/repo#N" reference
+// GitHub's closing-keyword parser actually recognizes, since a bare full URL
+// is not a documented/recognized closing-keyword reference form.
+func TestGithubShortRefFor(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"issue URL", "https://github.com/acme/widget/issues/42", "acme/widget#42"},
+		{"PR URL", "https://github.com/acme/widget/pull/17", "acme/widget#17"},
+		{"malformed URL returned unchanged", "https://example.com/foo", "https://example.com/foo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := githubShortRefFor(tc.url)
+			if got != tc.want {
+				t.Errorf("githubShortRefFor(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildSessionInitialPrompt_RendersFixesInstructionForIssueURL proves AC3:
+// the fact line renders inside the inert-data block (full URL, human-readable)
+// and the instruction line renders after it using the short owner/repo#N
+// reference, not the raw URL.
+func TestBuildSessionInitialPrompt_RendersFixesInstructionForIssueURL(t *testing.T) {
+	item := makeTestBacklogItem("Feature", "desc", `[{"index":0,"text":"do it","status":"pending"}]`, "ready", 1, "")
+	item.ExternalURL = "https://github.com/acme/widget/issues/42"
+
+	out := BuildSessionInitialPrompt(item, nil)
+
+	factIdx := strings.Index(out, "Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42")
+	boundaryIdx := strings.Index(out, "--- END BACKLOG ITEM DATA ---")
+	instructionIdx := strings.Index(out, "Fixes acme/widget#42")
+
+	if factIdx == -1 {
+		t.Fatalf("expected fact line in output:\n%s", out)
+	}
+	if instructionIdx == -1 {
+		t.Fatalf("expected exact literal \"Fixes acme/widget#42\" in output:\n%s", out)
+	}
+	if factIdx > boundaryIdx {
+		t.Errorf("fact line must appear before the inert-data boundary")
+	}
+	if instructionIdx < boundaryIdx {
+		t.Errorf("instruction line must appear after the inert-data boundary")
+	}
+}
+
+// TestBuildSessionInitialPrompt_RendersRelatedInstructionForPRURL proves the
+// PR-shape branch renders the "Related:" keyword with the short reference.
+func TestBuildSessionInitialPrompt_RendersRelatedInstructionForPRURL(t *testing.T) {
+	item := makeTestBacklogItem("Feature", "desc", `[{"index":0,"text":"do it","status":"pending"}]`, "ready", 1, "")
+	item.ExternalURL = "https://github.com/acme/widget/pull/17"
+
+	out := BuildSessionInitialPrompt(item, nil)
+
+	if !strings.Contains(out, "Related: acme/widget#17") {
+		t.Errorf("expected exact literal \"Related: acme/widget#17\" in output:\n%s", out)
+	}
+}
+
+// TestBuildSessionInitialPrompt_OmitsLinkedIssueSectionWhenExternalURLEmpty
+// proves AC4: with no ExternalURL, neither the fact nor instruction line
+// appears, and formatting is unchanged.
+func TestBuildSessionInitialPrompt_OmitsLinkedIssueSectionWhenExternalURLEmpty(t *testing.T) {
+	item := makeTestBacklogItem("Feature", "desc", `[{"index":0,"text":"do it","status":"pending"}]`, "ready", 1, "")
+	item.ExternalURL = ""
+
+	out := BuildSessionInitialPrompt(item, nil)
+
+	unwanted := []string{"Linked GitHub Issue/PR", "Fixes ", "Related: "}
+	for _, s := range unwanted {
+		if strings.Contains(out, s) {
+			t.Errorf("expected output to NOT contain %q when ExternalURL is empty\nOutput:\n%s", s, out)
+		}
+	}
+}
+
+// TestBuildTokenBudgetedPrompt_IncludesLinkedIssueSectionAfterTruncation
+// proves AC5: both truncation passes still include the fact/instruction
+// lines, since they only wrap BuildSessionInitialPrompt.
+func TestBuildTokenBudgetedPrompt_IncludesLinkedIssueSectionAfterTruncation(t *testing.T) {
+	longDesc := strings.Repeat("x", 17000)
+	item := makeTestBacklogItem("Feature", longDesc, `[{"index":0,"text":"do it","status":"pending"}]`, "ready", 1, "")
+	item.ExternalURL = "https://github.com/acme/widget/issues/42"
+
+	out := BuildTokenBudgetedPrompt(item, nil)
+
+	if !strings.Contains(out, "Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42") {
+		t.Errorf("expected fact line to survive truncation:\n%s", out)
+	}
+	if !strings.Contains(out, "Fixes acme/widget#42") {
+		t.Errorf("expected instruction line to survive truncation:\n%s", out)
+	}
+}

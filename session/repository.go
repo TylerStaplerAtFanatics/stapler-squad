@@ -269,6 +269,7 @@ type BacklogItemData struct {
 	PlanArtifactsPath  string
 	Notes              string
 	ExternalID         string
+	ExternalURL        string
 	ArchivedAt         *time.Time
 	SourceID           string
 	CreatedAt          time.Time
@@ -310,6 +311,7 @@ type BacklogItemUpdate struct {
 	PlanApproved       *bool
 	PlanApprovedAt     *time.Time
 	PlanArtifactsPath  *string
+	ExternalURL        *string
 }
 
 // BacklogItemPrecondition is used for optimistic locking on update/transition.

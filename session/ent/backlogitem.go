@@ -47,6 +47,8 @@ type BacklogItem struct {
 	Notes string `json:"notes,omitempty"`
 	// ExternalID holds the value of the "external_id" field.
 	ExternalID string `json:"external_id,omitempty"`
+	// ExternalURL holds the value of the "external_url" field.
+	ExternalURL string `json:"external_url,omitempty"`
 	// UserModifiedStatusAt holds the value of the "user_modified_status_at" field.
 	UserModifiedStatusAt *time.Time `json:"user_modified_status_at,omitempty"`
 	// ArchivedAt holds the value of the "archived_at" field.
@@ -124,7 +126,7 @@ func (*BacklogItem) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case backlogitem.FieldPriority:
 			values[i] = new(sql.NullInt64)
-		case backlogitem.FieldTitle, backlogitem.FieldDescription, backlogitem.FieldAcceptanceCriteria, backlogitem.FieldStatus, backlogitem.FieldRepoPath, backlogitem.FieldPlanArtifactsPath, backlogitem.FieldUserModifiedFields, backlogitem.FieldNotes, backlogitem.FieldExternalID:
+		case backlogitem.FieldTitle, backlogitem.FieldDescription, backlogitem.FieldAcceptanceCriteria, backlogitem.FieldStatus, backlogitem.FieldRepoPath, backlogitem.FieldPlanArtifactsPath, backlogitem.FieldUserModifiedFields, backlogitem.FieldNotes, backlogitem.FieldExternalID, backlogitem.FieldExternalURL:
 			values[i] = new(sql.NullString)
 		case backlogitem.FieldPlanApprovedAt, backlogitem.FieldUserModifiedStatusAt, backlogitem.FieldArchivedAt, backlogitem.FieldCreatedAt, backlogitem.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -237,6 +239,12 @@ func (_m *BacklogItem) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field external_id", values[i])
 			} else if value.Valid {
 				_m.ExternalID = value.String
+			}
+		case backlogitem.FieldExternalURL:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field external_url", values[i])
+			} else if value.Valid {
+				_m.ExternalURL = value.String
 			}
 		case backlogitem.FieldUserModifiedStatusAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -370,6 +378,9 @@ func (_m *BacklogItem) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("external_id=")
 	builder.WriteString(_m.ExternalID)
+	builder.WriteString(", ")
+	builder.WriteString("external_url=")
+	builder.WriteString(_m.ExternalURL)
 	builder.WriteString(", ")
 	if v := _m.UserModifiedStatusAt; v != nil {
 		builder.WriteString("user_modified_status_at=")

@@ -216,6 +216,20 @@ func (_c *BacklogItemCreate) SetNillableExternalID(v *string) *BacklogItemCreate
 	return _c
 }
 
+// SetExternalURL sets the "external_url" field.
+func (_c *BacklogItemCreate) SetExternalURL(v string) *BacklogItemCreate {
+	_c.mutation.SetExternalURL(v)
+	return _c
+}
+
+// SetNillableExternalURL sets the "external_url" field if the given value is not nil.
+func (_c *BacklogItemCreate) SetNillableExternalURL(v *string) *BacklogItemCreate {
+	if v != nil {
+		_c.SetExternalURL(*v)
+	}
+	return _c
+}
+
 // SetUserModifiedStatusAt sets the "user_modified_status_at" field.
 func (_c *BacklogItemCreate) SetUserModifiedStatusAt(v time.Time) *BacklogItemCreate {
 	_c.mutation.SetUserModifiedStatusAt(v)
@@ -546,6 +560,10 @@ func (_c *BacklogItemCreate) createSpec() (*BacklogItem, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ExternalID(); ok {
 		_spec.SetField(backlogitem.FieldExternalID, field.TypeString, value)
 		_node.ExternalID = value
+	}
+	if value, ok := _c.mutation.ExternalURL(); ok {
+		_spec.SetField(backlogitem.FieldExternalURL, field.TypeString, value)
+		_node.ExternalURL = value
 	}
 	if value, ok := _c.mutation.UserModifiedStatusAt(); ok {
 		_spec.SetField(backlogitem.FieldUserModifiedStatusAt, field.TypeTime, value)
@@ -899,6 +917,24 @@ func (u *BacklogItemUpsert) UpdateExternalID() *BacklogItemUpsert {
 // ClearExternalID clears the value of the "external_id" field.
 func (u *BacklogItemUpsert) ClearExternalID() *BacklogItemUpsert {
 	u.SetNull(backlogitem.FieldExternalID)
+	return u
+}
+
+// SetExternalURL sets the "external_url" field.
+func (u *BacklogItemUpsert) SetExternalURL(v string) *BacklogItemUpsert {
+	u.Set(backlogitem.FieldExternalURL, v)
+	return u
+}
+
+// UpdateExternalURL sets the "external_url" field to the value that was provided on create.
+func (u *BacklogItemUpsert) UpdateExternalURL() *BacklogItemUpsert {
+	u.SetExcluded(backlogitem.FieldExternalURL)
+	return u
+}
+
+// ClearExternalURL clears the value of the "external_url" field.
+func (u *BacklogItemUpsert) ClearExternalURL() *BacklogItemUpsert {
+	u.SetNull(backlogitem.FieldExternalURL)
 	return u
 }
 
@@ -1257,6 +1293,27 @@ func (u *BacklogItemUpsertOne) UpdateExternalID() *BacklogItemUpsertOne {
 func (u *BacklogItemUpsertOne) ClearExternalID() *BacklogItemUpsertOne {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.ClearExternalID()
+	})
+}
+
+// SetExternalURL sets the "external_url" field.
+func (u *BacklogItemUpsertOne) SetExternalURL(v string) *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetExternalURL(v)
+	})
+}
+
+// UpdateExternalURL sets the "external_url" field to the value that was provided on create.
+func (u *BacklogItemUpsertOne) UpdateExternalURL() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdateExternalURL()
+	})
+}
+
+// ClearExternalURL clears the value of the "external_url" field.
+func (u *BacklogItemUpsertOne) ClearExternalURL() *BacklogItemUpsertOne {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.ClearExternalURL()
 	})
 }
 
@@ -1790,6 +1847,27 @@ func (u *BacklogItemUpsertBulk) UpdateExternalID() *BacklogItemUpsertBulk {
 func (u *BacklogItemUpsertBulk) ClearExternalID() *BacklogItemUpsertBulk {
 	return u.Update(func(s *BacklogItemUpsert) {
 		s.ClearExternalID()
+	})
+}
+
+// SetExternalURL sets the "external_url" field.
+func (u *BacklogItemUpsertBulk) SetExternalURL(v string) *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.SetExternalURL(v)
+	})
+}
+
+// UpdateExternalURL sets the "external_url" field to the value that was provided on create.
+func (u *BacklogItemUpsertBulk) UpdateExternalURL() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.UpdateExternalURL()
+	})
+}
+
+// ClearExternalURL clears the value of the "external_url" field.
+func (u *BacklogItemUpsertBulk) ClearExternalURL() *BacklogItemUpsertBulk {
+	return u.Update(func(s *BacklogItemUpsert) {
+		s.ClearExternalURL()
 	})
 }
 

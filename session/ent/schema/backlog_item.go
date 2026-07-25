@@ -54,6 +54,8 @@ func (BacklogItem) Fields() []ent.Field {
 			Optional(),
 		field.String("external_id").
 			Optional(),
+		field.String("external_url").
+			Optional(),
 		field.Time("user_modified_status_at").
 			Optional().
 			Nillable(),

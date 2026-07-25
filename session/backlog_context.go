@@ -68,6 +68,43 @@ const taskProtocolBlock = `## Your Task Protocol
 6. If the ` + "`/backlog/*`" + ` commands fail or the MCP server is unavailable, continue your work using the criteria listed in ` + "`.backlog-context.md`" + ` and record completed criteria in your commit messages.
 7. NEVER end your session without calling ` + "`/backlog/review`" + ` — this is how the task is closed properly.`
 
+// closingKeywordFor returns the fully-punctuated GitHub auto-close/reference
+// instruction prefix implied by a linked issue/PR URL's shape — exactly as
+// worded in requirements AC3 ("Fixes " for issues, "Related: " for PRs),
+// trailing space/colon-space included. Deterministic — never left to agent
+// inference, per requirements AC3. GitHub only auto-closes issues (not
+// PRs) via these keywords, so "Related: " is used for /pull/ URLs and as
+// the safe fallback for any unrecognized shape. Returning the punctuation
+// here (rather than a bare keyword) removes the punctuation-assembly
+// responsibility from the caller entirely — the caller concatenates this
+// return value directly with githubShortRefFor's output, no separator added.
+func closingKeywordFor(url string) string {
+	switch {
+	case strings.Contains(url, "/issues/"):
+		return "Fixes "
+	case strings.Contains(url, "/pull/"):
+		return "Related: "
+	default:
+		return "Related: "
+	}
+}
+
+// githubShortRefFor extracts the "owner/repo#N" reference GitHub's
+// closing-keyword parser actually recognizes from a GitHub issue/PR HTML
+// URL (https://github.com/{owner}/{repo}/issues|pull/{n}). GitHub's
+// closing keywords (Fixes/Closes/Resolves) only recognize "#N" (same-repo)
+// or "owner/repo#N" (cross-repo) — never a bare full URL — confirmed
+// against GitHub's docs. Falls back to returning url unchanged if it
+// doesn't match the expected shape (never panics).
+func githubShortRefFor(url string) string {
+	trimmed := strings.TrimPrefix(strings.TrimPrefix(url, "https://github.com/"), "http://github.com/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) >= 4 && (parts[2] == "issues" || parts[2] == "pull") {
+		return fmt.Sprintf("%s/%s#%s", parts[0], parts[1], parts[3])
+	}
+	return url
+}
+
 // BuildSessionInitialPrompt renders the full context prompt for an agent session.
 func BuildSessionInitialPrompt(item *ent.BacklogItem, priorSessions []*ent.ItemSession) string {
 	var sb strings.Builder
@@ -87,6 +124,10 @@ func BuildSessionInitialPrompt(item *ent.BacklogItem, priorSessions []*ent.ItemS
 	criteria, _ := ParseAcCriteria(item.AcceptanceCriteria)
 	sb.WriteString(buildAcChecklist(criteria))
 	sb.WriteString("\n")
+
+	if item.ExternalURL != "" {
+		fmt.Fprintf(&sb, "\nLinked GitHub Issue/PR: %s\n", item.ExternalURL)
+	}
 
 	if item.Notes != "" {
 		sb.WriteString("\n## Notes\n")
@@ -116,6 +157,11 @@ func BuildSessionInitialPrompt(item *ent.BacklogItem, priorSessions []*ent.ItemS
 	}
 
 	sb.WriteString("--- END BACKLOG ITEM DATA ---\n\n")
+
+	if item.ExternalURL != "" {
+		fmt.Fprintf(&sb, "This item is linked to %s. When you open your PR, include the line `%s%s` in the PR body so GitHub cross-references (and, for issues, auto-closes) it.\n\n",
+			item.ExternalURL, closingKeywordFor(item.ExternalURL), githubShortRefFor(item.ExternalURL))
+	}
 
 	if item.PlanArtifactsPath != "" {
 		fmt.Fprintf(&sb, "Your plan is at `%s/plan.md`. Read plan.md and validation.md before writing code.\n\n",
