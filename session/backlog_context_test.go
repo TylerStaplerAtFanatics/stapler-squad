@@ -173,6 +173,9 @@ func TestGithubShortRefFor(t *testing.T) {
 		{"issue URL", "https://github.com/acme/widget/issues/42", "acme/widget#42"},
 		{"PR URL", "https://github.com/acme/widget/pull/17", "acme/widget#17"},
 		{"malformed URL returned unchanged", "https://example.com/foo", "https://example.com/foo"},
+		{"strips query string", "https://github.com/acme/widget/issues/42?tab=comments", "acme/widget#42"},
+		{"strips fragment", "https://github.com/acme/widget/issues/42#issuecomment-1", "acme/widget#42"},
+		{"strips trailing slash", "https://github.com/acme/widget/issues/42/", "acme/widget#42"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

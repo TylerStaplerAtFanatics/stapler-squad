@@ -78,6 +78,13 @@ const taskProtocolBlock = `## Your Task Protocol
 // here (rather than a bare keyword) removes the punctuation-assembly
 // responsibility from the caller entirely — the caller concatenates this
 // return value directly with githubShortRefFor's output, no separator added.
+//
+// Uses a looser substring check than githubShortRefFor's stricter
+// github.com-only match by design: both real producers (GitHubIssuesPlugin,
+// GitHubPRsPlugin) only ever populate ExternalURL from github.com HTMLURLs,
+// so the two never actually disagree today. If a non-github.com source is
+// ever added, revisit both functions together — see githubShortRefFor's
+// comment.
 func closingKeywordFor(url string) string {
 	switch {
 	case strings.Contains(url, "/issues/"):
@@ -96,11 +103,22 @@ func closingKeywordFor(url string) string {
 // or "owner/repo#N" (cross-repo) — never a bare full URL — confirmed
 // against GitHub's docs. Falls back to returning url unchanged if it
 // doesn't match the expected shape (never panics).
+//
+// Stricter than closingKeywordFor's substring check — requires an actual
+// github.com prefix — since a malformed short ref is worse than none (see
+// closingKeywordFor's comment on why the two don't drift in practice today).
 func githubShortRefFor(url string) string {
 	trimmed := strings.TrimPrefix(strings.TrimPrefix(url, "https://github.com/"), "http://github.com/")
 	parts := strings.Split(trimmed, "/")
 	if len(parts) >= 4 && (parts[2] == "issues" || parts[2] == "pull") {
-		return fmt.Sprintf("%s/%s#%s", parts[0], parts[1], parts[3])
+		// Strip any query string/fragment/trailing-slash noise off the number
+		// segment (e.g. "42?tab=comments", "42#issuecomment-1", "42/") so the
+		// rendered short ref is a bare number GitHub actually recognizes.
+		num := parts[3]
+		if i := strings.IndexAny(num, "?#/"); i != -1 {
+			num = num[:i]
+		}
+		return fmt.Sprintf("%s/%s#%s", parts[0], parts[1], num)
 	}
 	return url
 }
@@ -126,7 +144,7 @@ func BuildSessionInitialPrompt(item *ent.BacklogItem, priorSessions []*ent.ItemS
 	sb.WriteString("\n")
 
 	if item.ExternalURL != "" {
-		fmt.Fprintf(&sb, "\nLinked GitHub Issue/PR: %s\n", item.ExternalURL)
+		fmt.Fprintf(&sb, "\nLinked GitHub Issue/PR: %s\n", sanitizeField(item.ExternalURL, 500))
 	}
 
 	if item.Notes != "" {
@@ -159,8 +177,9 @@ func BuildSessionInitialPrompt(item *ent.BacklogItem, priorSessions []*ent.ItemS
 	sb.WriteString("--- END BACKLOG ITEM DATA ---\n\n")
 
 	if item.ExternalURL != "" {
+		externalURL := sanitizeField(item.ExternalURL, 500)
 		fmt.Fprintf(&sb, "This item is linked to %s. When you open your PR, include the line `%s%s` in the PR body so GitHub cross-references (and, for issues, auto-closes) it.\n\n",
-			item.ExternalURL, closingKeywordFor(item.ExternalURL), githubShortRefFor(item.ExternalURL))
+			externalURL, closingKeywordFor(externalURL), githubShortRefFor(externalURL))
 	}
 
 	if item.PlanArtifactsPath != "" {
