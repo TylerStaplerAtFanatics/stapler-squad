@@ -1,151 +1,92 @@
-# Architecture Review: terminal-resize-fit-loop
+# Architecture Review: terminal-resize-fit-loop (re-review after repair pass)
 **Date**: 2026-07-24
 **Verdict**: CONCERNS
 
-## Constitution Violations
-- N/A — no `docs/adr/ADR-000-architecture-constitution.md` exists in this repo.
-
-## Summary
-
-The plan is unusually well-grounded: every cited line number in `XtermTerminal.tsx`,
-`useTerminalFlowControl.ts`, `useTerminalStream.ts`, and `TerminalOutput.tsx` was checked
-against the actual current source and matches exactly (verified directly, not taken on
-faith). The three-call-site claim for `resize()` (327/351/510 in `TerminalOutput.tsx`) is
-confirmed exhaustive by repo-wide grep — `TerminalOutput.tsx` is the sole consumer of
-`useTerminalStream`, and the only other `resize(` hits in the repo are unrelated calls to
-xterm.js's own `Terminal.resize()` inside `DeltaApplicator.ts`/`StateApplicator.ts`. The
-`force?: boolean` addition is a genuinely additive, non-breaking signature change. The
-approach (decoupled sampler, Reading A, hand-built dead-band + `@xterm/addon-canvas`) matches
-`research/build-vs-buy.md`'s recommendations point-for-point, including the "wire
-`onContextLoss` AND the bespoke mismatch heuristic side by side" guidance (Stories 3.1 and
-3.2 both feed the same `triggerCanvasFallback()` latch, not either/or).
-
-One structural gap (sampler give-up not explicitly resetting its own "running" state) is
-severe enough to flag as a blocker despite the plan's overall quality, because it is exactly
-the class of illegal-state bug that's cheap to close off now (one sentence of task spec + one
-test assertion) and expensive to discover later (a silent, permanent loss of resize
-functionality with no error, only 1-2 log lines many minutes/hours earlier).
-
 ## Blockers
 
-- [ ] **Task 1.2.2 (Story 1.2, Epic 1)** — The `MAX_SAMPLES` give-up branch is specified only
-  as "increments `sampleCount`, gives up with a `console.warn` at `MAX_SAMPLES`", in contrast
-  to the other two branches which explicitly say "calls `stopSampler()`". Read literally, this
-  omission means give-up may never reset `samplerActive = false` / `pendingProposedDims = null`
-  / `sampleCount = 0`. Since `startSamplerIfNeeded()` is expected to no-op when
-  `samplerActive` is already `true` (that's the whole point of "decoupled, not reset by every
-  RO delivery" — ADR-002 Decision 1), a give-up event that doesn't clear `samplerActive` makes
-  the sampler permanently inert for the remaining lifetime of that `XtermTerminal` mount:
-  every subsequent `ResizeObserver` delivery — including a completely legitimate, one-shot
-  window resize weeks later — would silently fail to ever call `fit()` again, with no error,
-  only a single `console.warn` logged once at the original give-up. This is a **worse**
-  end-state than the bug being fixed (that one froze the CPU/UI; this one silently and
-  permanently breaks resizing for the session, indistinguishable from a hang except via
-  console archaeology). ADR-002's own GWT for sustained oscillation only asserts "the sampler
-  stops (no further `setTimeout` is pending)" — it does not assert that a *later* qualifying
-  resize successfully restarts the sampler and converges, so this gap would not be caught by
-  the pinned regression test as currently scoped.
-  **Remediation**: Amend Task 1.2.2 (and ADR-002's Decision §3 / GWT) to state explicitly that
-  give-up calls `stopSampler()` (same reset as the other two branches: `samplerActive = false`,
-  `pendingProposedDims = null`, `sampleCount = 0`, clear any pending `sampleTimeout`) after
-  logging the warning. Add a regression test to Story 4.1 (extending Task 4.1.4): after a
-  simulated give-up (50 ticks of non-repeating candidates), fire one more `ResizeObserver`
-  delivery whose `proposeDimensions()` converges cleanly on the next two ticks, and assert
-  `fit()` **is** called — proving the sampler is truly reusable, not a one-shot latch.
+None. The previously-flagged Blocker is resolved (see below).
 
 ## Concerns
 
-- [ ] **Task 2.1.1 (Story 2.1, Epic 2) vs. §2 Domain Glossary** — The glossary states
-  `ResizeDimensions` (defined in `XtermTerminal.tsx`) covers "internal state" including
-  `LastSentDimensions` in `useTerminalFlowControl.ts`, but Task 2.1.1's literal instruction is
-  `const lastSentDimsRef = useRef<{ cols: number; rows: number } | null>(null);` — an inline
-  anonymous type, not an import of `ResizeDimensions`. This is precisely the "declared once,
-  bypassed by raw pairs elsewhere" anti-pattern the plan otherwise avoids (per its own
-  reasoning in §3 Pattern Selection). It's not a compile-time defect (TS structural typing
-  makes the two shapes interchangeable), but it means the plan doesn't actually deliver the
-  "one value type, one source of truth" benefit it claims for the type it introduces, and
-  perpetuates the pattern already visible elsewhere in this file family (`TerminalOutput.tsx`'s
-  `lastResizeRef`, `dimensionSyncRef` in `useTerminalFlowControl.ts` — both separately-typed
-  `{cols, rows}` shapes). There's also a layering smell in the fix-as-literally-glossed: since
-  `ResizeDimensions` is defined in a *component* file (`XtermTerminal.tsx`), having
-  `useTerminalFlowControl.ts` (a hook `XtermTerminal.tsx` doesn't even import) import a type
-  from it would be a backward dependency (hook → leaf component).
-  **Remediation**: Move `ResizeDimensions` (and `ShouldScheduleFitResult` can stay local since
-  it's `shouldScheduleFit`-specific) to a small shared module, e.g.
-  `web-app/src/lib/terminal/types.ts`, imported by both `XtermTerminal.tsx` and
-  `useTerminalFlowControl.ts`. Update Task 2.1.1 to `useRef<ResizeDimensions | null>(null)`.
+- [ ] **Sampler tick/give-up state machine is still closure-only, not independently
+  unit-testable** (was Concern 4 / "Story 1.2 / Story 3.2 testability"). `shouldScheduleFit()`
+  remains correctly isolated as a pure, exported function and is now directly unit-tested
+  (Task 4.1.3). But the surrounding orchestration — `startSamplerIfNeeded()`, `sampleTick()`,
+  `stopSampler()`, and the `samplerActive`/`sampleCount`/`pendingProposedDims` state itself — is
+  still specified as unexported `let`-closures inside the mount effect (plan.md §2 Domain
+  Glossary: "`ResizeSampler` ... Not a class — plain closures inside the mount effect, matching
+  the file's existing style"). The recommended remediation (factor the sampler into a small
+  exported factory, e.g. `createResizeSampler(...)`, so the tick/give-up state machine can be
+  unit-tested directly) was not adopted. The only test exercising this exact state machine —
+  including the give-up→reset→recovery path where the Blocker lived — is the full
+  component-mount + mocked-`ResizeObserver` + fake-timer integration test (Task 4.1.4).
+  **Current risk level is much lower than before this repair pass**, because Task 4.1.4 now
+  explicitly asserts the give-up-then-recovery sequence end-to-end (see "Resolved in this pass"
+  below) — the exact bug class the original Blocker was about is now pinned by a test, just not
+  by the fastest/most isolated form of test. Leaving open as a design-preference concern, not a
+  correctness gap: if the sampler's state machine grows more branches, its closure-only shape
+  will make future regressions of this kind harder to catch quickly.
 
-- [ ] **Task 3.2.2 (Story 3.2, Epic 3)** — `checkWebglCellMismatch(terminal: Terminal,
-  containerEl: HTMLElement): boolean` takes live `Terminal`/`HTMLElement` references and
-  performs its own private-API extraction (`(terminal as any)._core?._renderService?.dimensions`)
-  and DOM measurement (`containerEl.getBoundingClientRect()`) *inside* the function, rather
-  than being parameterized on the already-extracted primitives
-  (`actualPixelsPerCol: number, cellWidthPx: number`). Unlike `shouldScheduleFit` — which the
-  plan deliberately built as a pure function "so tests can drive it without mounting a
-  component" — `checkWebglCellMismatch` mixes extraction (reaching into private xterm.js
-  internals and the live DOM) with the actual decision logic (the `Number.isFinite` guard +
-  tolerance comparison AC5 requires). Task 4.1.5 needs to test this function's mismatch/latch
-  behavior, but as specified it can only be exercised by mocking `Terminal`'s private
-  `_core._renderService.dimensions` shape and a `getBoundingClientRect`-returning DOM element,
-  not by passing in plain numbers for the boundary cases (e.g., the `Infinity` case from
-  `terminal.cols === 0`) that AC5 is actually about.
-  **Remediation**: Split into two functions — an impure one-liner that extracts
-  `{ actualPixelsPerCol, cellWidthPx }` from `terminal`/`containerEl`, and a pure
-  `isCellMismatch(actualPixelsPerCol: number, cellWidthPx: number): boolean` (or fold the
-  `Number.isFinite` guard into a small shared `isFiniteDimensions`/`isFiniteNumber` helper)
-  that Task 4.1.5's tests call directly with numeric fixtures, mirroring the isolation already
-  achieved for `shouldScheduleFit`.
+## Resolved in this pass
 
-- [ ] **Task 3.2.3 (Story 3.2, Epic 3)** — The post-fallback `fit()` call is specified as
-  "guarding that `fit()` call with the sampler's existing `shouldScheduleFit`-style
-  `Number.isFinite` checks on the resulting `proposeDimensions()` before applying (reuse
-  `checkWebglCellMismatch`'s guard pattern...)" — this asks the implementer to improvise a
-  third, unnamed guard rather than pointing at one canonical function. This is the "scattered
-  ad hoc guard, not a single boundary" pattern the AC5 wording is trying to avoid. Given the
-  Concern above already proposes extracting a pure `isFiniteDimensions`-style helper out of
-  `checkWebglCellMismatch`, the same helper should be the one thing Task 3.2.3 calls, not a
-  restated inline description.
-  **Remediation**: Name the concrete guard function once (e.g.
-  `isFiniteResizeDimensions(d): d is ResizeDimensions`, colocated with `ResizeDimensions` per
-  the first Concern's remediation) and have both Task 3.2.2/3.2.3's mismatch check and the
-  post-fallback `fit()` guard call it explicitly, instead of "reuse the pattern."
+- **Blocker (Task 1.2.2 `MAX_SAMPLES` give-up branch silently disabling the sampler)** —
+  Fully resolved, on both halves of the required remediation. Task 1.2.2 now explicitly
+  specifies: "and **also calls `stopSampler()`** (identical reset to the other two branches:
+  `samplerActive = false`, `pendingProposedDims = null`, `sampleCount = 0`, clear the pending
+  `sampleTimeout`) — give-up abandons confirming *this* candidate, it must not permanently
+  disable the sampler, since `startSamplerIfNeeded()` no-ops whenever `samplerActive` is already
+  `true`." ADR-002 §Decision item 3 repeats the identical reset and calls it "load-bearing, not
+  optional," explicitly citing "architecture-review.md's Blocker finding, closed in this ADR
+  revision." A dedicated regression test now proves recovery, not just the reset code: Task
+  4.1.4 drives a 20-tick never-converging oscillation (past `MAX_SAMPLES = 20`), asserts `fit()`
+  is called 0 times, `console.warn` fires exactly once matching `/did not converge/`, and no
+  sampler `setTimeout` remains pending — **then, in the same test**, fires one more
+  `ResizeObserver` delivery that converges cleanly on its next two ticks and asserts `fit()`
+  **is** called exactly once for that second sequence, "proving `stopSampler()`'s reset in the
+  give-up branch (Task 1.2.2) actually re-arms the sampler rather than leaving it permanently
+  inert." ADR-002's own GWT block (lines 116-134) pins the identical scenario at the ADR level
+  as well. This satisfies both halves of the original Blocker's remediation: an explicit
+  `stopSampler()` call in the give-up branch, plus a regression test proving the sampler
+  restarts after give-up — not just prose mentioning it.
 
-- [ ] **Story 1.2 / Story 3.2 testability (Epic 1 & 3, Lens 1 Q4)** — `shouldScheduleFit()` is
-  correctly isolated (pure, exported, no closure/ref dependency — confirmed against ADR-002's
-  code sample: all three inputs are plain parameters). However, the *sampler orchestration*
-  itself (`startSamplerIfNeeded()`, `sampleTick()`, `stopSampler()`) is specified as unexported
-  `let`-closures living inside the mount effect (Task 1.2.2), so the actual tick-counting,
-  `MAX_SAMPLES` boundary, and give-up/reset logic — exactly where the Blocker above lives — can
-  only be exercised via full component-mount + mocked-`ResizeObserver` + fake-timer tests
-  (Task 4.1.4), which are slower and more brittle than a direct unit test would be. The Test
-  Strategy Summary table itself concedes this ("Component/sampler integration... Mocked
-  `ResizeObserver`, `jest.advanceTimersByTime()`"), so the plan isn't hiding the tradeoff — but
-  given how easy the give-up-state bug above is to introduce and how only an
-  integration-level test would catch it, this is worth reconsidering.
-  **Remediation**: Consider factoring the sampler into a small exported factory (e.g.
-  `createResizeSampler({ proposeDimensions, getApplied, onFit, onGiveUp })` returning
-  `{ start, tick, stop }`) that the mount effect wires up with real refs/callbacks. This would
-  let Task 4.1.4's assertions run as fast, direct unit tests against the factory instead of
-  requiring a full component mount for the sampler's own state-machine correctness — mounting
-  would then only be needed to prove the wiring, not the tick logic itself. Not required to
-  ship the fix, but meaningfully reduces the risk class the Blocker above is an instance of.
+- **Concern (`ResizeDimensions` declared in `XtermTerminal.tsx` but used untyped inline
+  elsewhere)** — Resolved. `ResizeDimensions` is now defined once in a new shared module,
+  `web-app/src/lib/terminal/types.ts` (Task 1.1.1), imported by both `XtermTerminal.tsx` and
+  `useTerminalFlowControl.ts`. Task 2.1.1 explicitly closes the exact gap the original concern
+  named — the `lastSentDimsRef` declaration is now `useRef<ResizeDimensions | null>(null)`
+  importing the shared type, with the task text noting "this hook does not import from
+  `XtermTerminal.tsx`, avoiding the hook-depends-on-leaf-component layering smell flagged in
+  architecture-review.md Concern 1." The Domain Glossary's "Note on `ResizeDimensions` scope"
+  and §3 Pattern Selection both cite this hoisting decision directly back to the concern.
+
+- **Concern (`checkWebglCellMismatch` coupling DOM/xterm-internals extraction with pure
+  decision logic)** — Resolved. Task 3.2.2 explicitly splits the check into two functions "per
+  architecture-review.md Concern 2": `extractCellMismatchInputs(terminal, containerEl)` (impure
+  — reads `(terminal as any)._core?._renderService?.dimensions` and
+  `containerEl.getBoundingClientRect()`, returns raw numbers or `null`) and
+  `isSustainedMismatch(actualPxPerCol, expectedPxPerCol, tolerance)` (pure, exported,
+  `Number.isFinite`-guarded decision logic, no DOM/xterm access). Task 4.1.5 confirms the pure
+  function is tested with plain numeric fixtures — including the `Infinity`/`NaN` boundary
+  cases (`isSustainedMismatch(Infinity, 8.0, 1)`, `isSustainedMismatch(9.2, NaN, 1)`) — with no
+  mounting or `getBoundingClientRect` mocking required, exactly matching the recommended
+  remediation.
+
+- **Concern (Task 3.2.3's fallback `fit()` guard vaguely "reuse the guard pattern")** —
+  Resolved. The plan now names one concrete, shared function: `isFiniteResizeDimensions(d):
+  d is ResizeDimensions`, defined once in `web-app/src/lib/terminal/types.ts` (Task 1.1.1) and
+  reused verbatim at the Task 3.2.3 call site ("check the result with
+  `isFiniteResizeDimensions()` (the shared guard from `web-app/src/lib/terminal/types.ts`, Task
+  1.1.1 — the one canonical `Number.isFinite` check, not a restated inline pattern)"). The
+  glossary entry for `isFiniteResizeDimensions` explicitly ties the naming decision back to
+  "architecture-review.md Concern 3."
 
 ## Nitpicks
 
-- `webglFallbackTriggered`'s one-directional-latch property (AC5, ADR-001) is enforced only by
-  convention — a plain closure `let` that happens to be written from exactly one place
-  (`triggerCanvasFallback()`) in the current task list, not by any type-system or
-  control-flow guarantee. This matches the file's existing convention for similar state
-  (`resizeCount`, `lastContainerSize` are equally convention-scoped), so it's not a new risk
-  class being introduced, just worth a one-line comment at the declaration
-  (`// monotonic: set only inside triggerCanvasFallback(); never assign directly elsewhere`)
-  so a future edit doesn't casually add a second write site.
-- AC5's literal wording ("guards against `proposeDimensions()` returning `Infinity`") doesn't
-  quite match where the `Number.isFinite` guard actually needs to live: per the plan's own
-  `ProposedDimensions` glossary entry, `FitAddon.proposeDimensions()` never itself returns
-  `Infinity` (only `undefined` or integer-valued dims); the real `Infinity` risk is in
-  `checkWebglCellMismatch`'s `containerEl.getBoundingClientRect().width / terminal.cols`
-  division when `cols === 0`. The plan resolves this correctly (Task 3.2.2's GWT nails the
-  actual failure mode), but a one-line note cross-referencing "AC5 says proposeDimensions(),
-  the actual guard lives in the mismatch-tracker's division" would close the traceability gap
-  for a future reader comparing the ticket text to the code.
+- The repair pass also folded in fixes attributed to a separate "adversarial-review.md" pass
+  (same-page vs. separate-tab AC1 verification, `CanvasAddon` construction try/catch,
+  background-tab timer-throttling documentation in ADR-002's Consequences). These are outside
+  the scope of this targeted re-check (they weren't part of the architecture-review Blocker/
+  Concerns being verified here) but nothing in them conflicts with or undermines the four items
+  re-checked above.
+- No new severe issue was found on a full read of the current plan.md and ADR-002; the repair
+  pass reads as strictly additive/corrective relative to the prior version's specified content.

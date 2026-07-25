@@ -1,28 +1,99 @@
-# Adversarial Review: terminal-resize-fit-loop
-
+# Adversarial Review: terminal-resize-fit-loop (re-review after repair pass)
 **Date**: 2026-07-24
-**Verdict**: BLOCKED
+**Verdict**: CLEAN
 
 ## Blockers
 
-- [ ] **WebGL→Canvas fallback has no failure handling and no DOM-fallback-of-the-fallback path.** Tasks 3.1.2 (`onContextLoss` handler) and 3.2.3 (`triggerCanvasFallback()`) both call `new CanvasAddon()` / `terminal.loadAddon(new CanvasAddon())` with no `try/catch`, unlike the existing `WebglAddon` construction at `XtermTerminal.tsx:149-155`, which is explicitly wrapped because WebGL construction is known to be able to fail. Per Task 3.2.3's stated ordering, `webglFallbackTriggered` is latched `true` *before* `dispose()`/`loadAddon()` run, so if `CanvasAddon` construction/loading throws (locked-down/canvas-fingerprinting-blocked environments, addon API mismatch, terminal not in a loadable state), the exception propagates uncaught out of a `setTimeout` callback (via `sampleTick()`, Task 3.2.4) or the `onContextLoss` handler, WebGL is already disposed, no renderer gets loaded, the one-directional latch prevents any retry, and the terminal is left permanently blank/non-functional for the rest of the session with zero user-facing error. This is exactly the "Canvas also isn't available, falls through to DOM" scenario the review brief flagged, and the plan gives no indication it was considered: no fallback-to-DOM path, no error handling, and no test in Story 3.2/4.1.5 exercises a `CanvasAddon` construction failure. — Wrap the `CanvasAddon` construction/load in `try/catch` mirroring the existing `WebglAddon` pattern; on failure, log and explicitly do nothing further (xterm.js core's default DOM renderer is already active once `WebglAddon` is disposed and no other addon is loaded), and add a test asserting the terminal remains usable (DOM fallback) when `CanvasAddon` throws.
-
-- [ ] **AC1's actual failure mechanism (cross-instance perturbation between concurrently-mounted terminals sharing layout) has no automated coverage, and the chosen manual-verification substitute cannot exhibit it.** Requirements.md's Problem Statement and pitfalls.md §1 both describe the mechanism as one pane's `fit()`-triggered layout change perturbing a *sibling* pane sharing a flex/grid parent. Requirements.md's Constraints section describes the AC1/AC7 substitute as "multiple concurrently-mounted `XtermTerminal`/`TerminalOutput` instances (e.g., a test harness or an existing multi-session view)" — i.e., same-page, shared-DOM mounts. Both plan.md's Epic 1 AC1-GWT and Epic 5 Task 5.2 instead specify **separate browser tabs** ("3 concurrently-mounted XtermTerminal instances (separate browser tabs...)"). Separate tabs are isolated DOM/JS execution contexts — one tab's layout change structurally cannot perturb another tab's container, so this substitute verifies zero-churn-per-instance but never exercises the actual cross-pane-perturbation shape of the bug that AC1 names. Nothing in Epic 4 (Tasks 4.1.1-4.1.5) mounts more than one `XtermTerminal` in a shared parent either, even though that's a straightforward same-page Jest/RTL test requiring no app-level tiled-pane layout and no use of the out-of-scope `terminal-stress/page.tsx` harness. — Add a component test mounting ≥2 `XtermTerminal` instances inside one shared parent container, drive ResizeObserver deliveries that cause one instance's `fit()` to change the shared parent's size, and assert the sibling's sampler settles to zero rather than re-triggering; correct Epic 5's manual checklist to use same-page concurrent mounts (or explicitly document, with sign-off, why this specific coverage gap is accepted as unverifiable in this codebase today).
+None remaining.
 
 ## Concerns
 
-- [ ] **`resize()`'s async follow-up `currentPaneRequest` push (the `setTimeout(..., 100)` block, both plain and `force` paths) is not wrapped in `try/catch`.** An exception from `pushMessageRef.current` inside that timer callback is uncaught and never routed through `onError`/`handleError`, unlike the synchronous resize send it's adjacent to. Task 2.1.4 touches this exact function (reordering `lastResizeTimeRef`/`lastSentDimsRef` updates around the *synchronous* `pushMessage` call) but doesn't address this pre-existing async gap. Not required by any AC, but worth a one-line fix or an explicit "not fixing, pre-existing, out of scope" note since the plan is already editing this function for a closely related root-cause class (pitfalls §3/§5).
+None remaining.
 
-- [ ] **ADR-002's sustained-oscillation GWT requires 3 assertions; plan Task 4.1.4 only commits to 1.** ADR-002's own Given-When-Then for the give-up path requires: `fit()` called 0 times, `console.warn` called exactly once matching `/did not converge/`, and "the sampler stops (no further `setTimeout` is pending)." Plan Task 4.1.4 only specifies asserting `fit()`'s call-count ceiling ("Assert `fit()` is called exactly 0 times ... using a call-count ceiling assertion"). Without asserting the sampler actually stops after `MAX_SAMPLES`, a regression where `sampleTick()` keeps rescheduling itself indefinitely past the give-up threshold — the same unbounded-timer-chain shape as the original bug — could pass this test unchanged, since `fit()` would still correctly read 0. — Require Task 4.1.4 to also assert the `console.warn` message fires exactly once and that no sampler `setTimeout` remains pending after the budget is exhausted (e.g. via Jest's pending-timer-count APIs).
+## Resolved in this pass
 
-- [ ] **Background-tab timer throttling is unaddressed for the decoupled sampler**, despite tab background/resume being the bug report's own named trigger scenario. Browsers clamp `setTimeout` to ≥1000ms (and further under sustained backgrounding) for hidden tabs. ADR-002 frames `MAX_SAMPLES=20` at `SAMPLE_INTERVAL_MS=50` as "~1s of wall-clock sampling," but if the sampler is actively mid-confirmation at the moment a tab backgrounds, the same 20 ticks could take up to ~20s of throttled wall-clock time before giving up — in tension with the manual checklist's "confirm they stop within ~1s of resuming" expectation (Task 5.2 step 2). In practice `ResizeObserver` rarely delivers while a tab is hidden, narrowing the real-world exposure, but neither the plan nor ADR-002 mentions this tradeoff explicitly the way ADR-002 does for its other accepted tradeoffs. — Add a one-line note (or explicit test) documenting this as an accepted, narrow risk, consistent with how ADR-002 already documents its other tradeoffs.
+- **Blocker 1 (CanvasAddon unguarded construction)** — Resolved structurally, not just in
+  prose. Task 3.1.2 now explicitly routes `onContextLoss` through a single
+  `triggerCanvasFallback()` function instead of constructing `CanvasAddon` inline, and states
+  "this is also where the try/catch around `CanvasAddon` construction lives." Task 3.2.3 wraps
+  `terminal.loadAddon(new CanvasAddon())` in `try/catch`, explicitly "mirroring the existing
+  `WebglAddon` construction pattern at `XtermTerminal.tsx:149-155`," with a defined catch branch
+  (`console.error(/Canvas renderer also failed/)`, latch stays tripped, no fit retried, DOM
+  renderer left active — no explicit code path needed). A new Task 4.1.5a adds a dedicated test
+  asserting the catch path: no uncaught exception, `console.error` message match, latch stays
+  `true`, `fit()` not called again. The AC5 GWT block (plan.md ~line 554) also pins this
+  scenario. There is now exactly one `CanvasAddon` construction call site in the plan (Task
+  3.2.3), eliminating the original two-uncaught-call-sites risk.
 
-- [ ] **ADR-001's cited evidence for `@xterm/addon-canvas`'s peer-dependency compatibility doesn't actually support the claim.** The ADR says the peer-dep check was "confirmed directly against `web-app/package.json` and `web-app/package-lock.json`," but the same ADR states `@xterm/addon-canvas` is not installed anywhere in the repo — so `package-lock.json` cannot show its peer dependencies; that file simply has no entry to read. I independently verified via the npm registry (`registry.npmjs.org/@xterm/addon-canvas/latest`) that the claim is in fact correct — `peerDependencies: {"@xterm/xterm": "^5.0.0"}`, `license: "MIT"` — so there's no live technical risk, but the ADR's stated verification source is not the source that could have produced this fact. Minor rigor gap: cite the actual source (npm registry / GitHub) rather than files that don't contain the answer.
+- **Blocker 2 (AC1 cross-instance perturbation has no coverage; tabs are the wrong proxy)** —
+  Resolved structurally. `requirements.md`'s Constraints section now explicitly requires
+  "multiple concurrently-mounted `XtermTerminal`/`TerminalOutput` instances **on the same page,
+  sharing DOM layout**... explicitly **not** separate browser tabs." Plan's GWT-AC1 (~line 253)
+  is rewritten around same-page shared-parent mounts with an explicit two-instance perturbation
+  scenario (instance 1's `fit()` resizing the shared parent, triggering siblings' independent
+  2-tick cycles). A new automated test, **Task 4.1.6**, mounts 2-3 `XtermTerminal` instances in
+  one shared parent in a single `render()` call, gives instance 1's mocked `fit()` a side effect
+  that shrinks the shared parent's mocked `getBoundingClientRect()`, fires the mocked
+  `ResizeObserver` for all instances, and asserts **total `fit()` calls summed across all
+  mounted instances** settle to a bounded count rather than growing unboundedly — directly
+  matching the ask for "an automated test asserting bounded fit() calls across multiple
+  concurrently-mounted instances sharing a parent." Epic 5's manual checklist (Task 5.2) is also
+  corrected to use same-page session cards instead of separate tabs, with the checklist steps
+  now explicitly checking that "none of the 3 re-triggers a further resize/fit cycle in the
+  others."
 
-- [ ] **Task 3.2.3's guard-then-fit sequencing is underspecified and could be implemented as a no-op guard.** The task says to call `fitAddonRef.current?.fit()` "guarding that `fit()` call with the sampler's existing `shouldScheduleFit`-style `Number.isFinite` checks on the resulting `proposeDimensions()` before applying" — but `fit()` computes and applies `proposeDimensions()` internally in one step; there's no hook to "check then apply" without instead calling `proposeDimensions()` explicitly, checking `Number.isFinite` on `cols`/`rows`, and only then calling `fit()` (or `terminal.resize()` directly). As literally written, an implementer could read this task as "just call `fitAddonRef.current?.fit()`" (which is the last clause in the sentence) without ever writing the guard, silently reintroducing the `Infinity`/#1416 crash class this task exists to prevent. — Rewrite the task as an explicit two-step: call `proposeDimensions()`, check `Number.isFinite` on both fields, only call `fit()`/apply when the check passes.
+- **Concern 1 (async `currentPaneRequest` follow-up has no error handling)** — Task 2.1.4 now
+  explicitly extends the `try/catch` boundary to the `setTimeout(..., 100)` follow-up
+  `pushMessage` call, routing it through the same `onError`/`handleError` path as the
+  synchronous send, "rather than leaving it as a separate uncaught gap."
+
+- **Concern 2 (Task 4.1.4 under-asserts the give-up GWT)** — Task 4.1.4 now asserts all three
+  ADR-002 GWT conditions, not just `fit()` count: (a) `fit()` called exactly 0 times, (b)
+  `console.warn` called once matching `/did not converge/`, and (c) **no sampler `setTimeout`
+  remains pending** via `jest.getTimerCount()` — explicitly called out as needed because "a
+  regression where `sampleTick()` keeps rescheduling itself past `MAX_SAMPLES` must fail this
+  test even though `fit()`'s call count alone would stay 0." The task also adds a
+  give-up-then-recovery assertion (a later genuine resize still converges and calls `fit()`
+  once), proving the reset isn't a one-shot latch.
+
+- **Concern 3 (background-tab timer throttling unaddressed)** — Addressed via a reasoned,
+  documented tradeoff rather than a code change (appropriate for a Concern, not a correctness
+  bug). ADR-002 gained a new "Background-tab timer throttling is an accepted tradeoff, not a
+  gap" paragraph in its Consequences section, explaining that `ResizeObserver` rarely delivers
+  while hidden and that the sampler's budget is explicitly a foreground-tab budget; browser
+  throttling pausing (not violating) that budget is called out as expected behavior. Plan.md's
+  §9 Unresolved Questions restates this as a residual, explicitly-accepted note (item 3), so it
+  isn't silently glossed over.
+
+- **Concern 4 (ADR-001 peer-dependency evidence weakly cited)** — Tightened. ADR-001's Context
+  section now cites specific installed versions cross-checked directly against
+  `package-lock.json`: `@xterm/addon-canvas@0.7.0`'s peer range `^5.0.0` against the installed
+  `@xterm/xterm@^5.5.0`, plus a full cross-check against every other installed `@xterm/addon-*`
+  package's version (fit `^0.10.0`, search `^0.15.0`, web-links `^0.11.0`, webgl `^0.18.0`) in
+  the Rationale section (item 3), explicitly stating "no version pin conflicts."
+
+- **Concern 5 (Task 3.2.3's `Number.isFinite` guard underspecified / no-op-implementable)** —
+  Resolved via a single canonically-named, type-guarded function. `isFiniteResizeDimensions`
+  (`(d: ResizeDimensions | undefined): d is ResizeDimensions`) is now defined once in the shared
+  `web-app/src/lib/terminal/types.ts` module (Task 1.1.1), explicitly described as "the single
+  canonical `Number.isFinite` guard on cols/rows... so the guard isn't re-described inline at
+  each call site and can't be implemented as a no-op." Task 3.2.3 wires it into the
+  post-Canvas-fallback RAF callback with a defined failure branch (skip the fit cycle, emit a
+  specific `console.warn`), and it's also reused as the sole guard in front of the Epic 1
+  sampler's confirmed-fit path per the glossary.
 
 ## Minors
 
-- Task 2.1.4 bundles the `lastResizeTimeRef` timing-hazard fix with the unrelated new `lastSentDimsRef` initialization in one task. This is root-cause-proportionate per pitfalls §3/§5 (same class of bug, same fix location) and not scope creep, but it's marginally broader than a pure "2-line adjacent fix" — worth a note, not a blocker.
-- All spot-checked line numbers in plan.md's Architecture Notes (`XtermTerminal.tsx` 259-295/149-155/188-197, `useTerminalFlowControl.ts` 364-416/94-150/70, `TerminalOutput.tsx` 327/351/510/645) were verified accurate against current source at review time. The plan's own "may drift, re-verify before each task" caveat is appropriate; no further action needed.
-- `checkWebglCellMismatch` (Task 3.2.2) reads the private/internal `(terminal as any)._core?._renderService?.dimensions` API, which existing code at `XtermTerminal.tsx:177/192-197` already relies on. This is pre-existing technical debt the plan inherits rather than introduces — flagged for awareness only.
+- Task 4.1.6 (cross-instance test) bounds summed `fit()` calls across instances but does not
+  itself assert a bound on `TerminalResize` RPC calls across multiple instances — RPC dedup is
+  only tested per-instance in `useTerminalFlowControl.test.ts` (Epic 4, Story 4.3). This is a
+  reasonable scoping choice (`XtermTerminal` doesn't call `resize()` directly — it goes through
+  `onResize` → `TerminalOutput` → the hook), but the reviewer's original ask was "bounded
+  fit()/RPC calls" and only the fit() half is asserted at the multi-instance level.
+- No test directly exercises `isFiniteResizeDimensions()`'s guard-fails branch inside the
+  post-fallback RAF callback (i.e., `proposeDimensions()` returning `undefined` right after a
+  successful `CanvasAddon` load) — Task 4.1.5 tests `isSustainedMismatch()` and
+  `triggerCanvasFallback()`'s trigger/disposal sequencing, and Task 4.1.5a tests the
+  `CanvasAddon`-throws catch path, but the "guard passes vs. guard fails" branch of the
+  post-swap `fit()` gate itself isn't independently pinned by a dedicated test — only implied by
+  the AC5 GWT's happy-path assertion that the guard is checked before `fit()`.
