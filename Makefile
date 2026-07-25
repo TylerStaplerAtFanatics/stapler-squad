@@ -2,9 +2,25 @@
 # Comprehensive development and analysis toolchain
 
 # Variables
+UNAME_S := $(shell uname -s)
 PROFILE_FLAGS ?=
 PROFILE_PORT ?= 6060
-SERVER_FLAGS ?= --remote-access
+SERVER_FLAGS ?= --remote-access --tmux-keep-server
+ifeq ($(shell uname -s),Darwin)
+  export CGO_CFLAGS := -Wno-ignored-qualifiers
+else
+  export CGO_CFLAGS := -Wno-discarded-qualifiers -Wno-ignored-qualifiers
+endif
+export CGO_ENABLED := 1
+
+# Version reported by `stapler-squad version`, injected via ldflags to match
+# GoReleaser's `-X main.version={{.Version}}`. Falls back to a dev marker
+# when building outside a git checkout (e.g. from a source tarball). Stripped
+# to a safe charset: git tag names may legally contain shell metacharacters
+# (e.g. `` ` `` or `$()`), and this value is later embedded in a
+# double-quoted shell argument, where those characters are NOT neutralized.
+VERSION := $(shell (git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev) | tr -cd 'A-Za-z0-9.+_-')
+LDFLAGS := -X main.version=$(VERSION)
 
 # File dependencies
 GO_FILES := $(shell find . -maxdepth 3 -name "*.go" -not -path "./vendor/*" -not -path "./node_modules/*")
@@ -22,23 +38,25 @@ $(ASDF_STAMP): .tool-versions
 ifneq ($(wildcard .tool-versions),)
 	@if which asdf >/dev/null 2>&1; then \
 		echo "🔍 asdf detected, ensuring versions from .tool-versions are installed..."; \
+		asdf plugin add nodejs || true; \
 		asdf install; \
 	fi
 endif
-	@if which go >/dev/null 2>&1 && which buf >/dev/null 2>&1 && which npm >/dev/null 2>&1; then \
+	@if which go >/dev/null 2>&1 && which buf >/dev/null 2>&1 && which pnpm >/dev/null 2>&1; then \
 		touch $(ASDF_STAMP); \
 	else \
 		if which brew >/dev/null 2>&1; then \
 			echo "🔍 Missing tools, installing via Homebrew..."; \
 			brew install go buf nodejs; \
+			brew install pnpm; \
 		else \
-			echo "❌ Error: go/buf/npm not found. Install asdf or Homebrew."; \
+			echo "❌ Error: go/buf/pnpm not found. Install asdf or Homebrew."; \
 			exit 1; \
 		fi; \
 		touch $(ASDF_STAMP); \
 	fi
 
-.PHONY: help build test benchmark install-tools lint analyze nil-safety security format check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace
+.PHONY: help build test benchmark install-tools lint lint-custom actor-lint analyze nil-safety security format fmt-check check-deps clean all proto-gen proto-lint proto-build web-build web-dev restart-web restart-web-profile qr demo-video demo-post-process demo-gif benchmark-baseline benchmark-compare benchmark-tier1 profile-goroutines profile-block profile-mutex profile-trace build-mux install-mux install-service rollback backup-binary uninstall-service setup-codesign _codesign-binary verify-codesign tcc-reset preview dev-stack coverage-func coverage-gaps coverage-pkg coverage-refactor registry-generate-backend registry-generate-frontend registry-generate registry-diff e2e-report e2e-lighthouse build-tmux build-tmux-embed build-embedded clean-tmux init-submodules ensure-tmux-configure test-with-pinned-tmux test-trace test-profile vet-architecture vet-rpc-markers coverage-integration actor-field-guard checklocks
 
 # Default target
 help: ## Show this help message
@@ -46,31 +64,105 @@ help: ## Show this help message
 	@echo "================================="
 	@grep -E '^[a-zA-Z0-9._-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
+# Registry targets
+# Per-feature files live under docs/registry/features/ — one file per RPC/component.
+# They are the committed source of truth; the monolithic aggregate files are generated.
+BACKEND_FEATURES_DIR := docs/registry/features/backend
+FRONTEND_FEATURES_DIR := docs/registry/features/frontend
+REGISTRY_OUTPUT_DIR ?= docs/registry
+BACKEND_SCANNER_BIN := tools/scanner/backend/cmd/scanner
+FRONTEND_SCANNER := tools/scanner/frontend/src/main.ts
+
+registry-generate-backend: ## Scan proto+markers → write per-feature files under docs/registry/features/backend/
+	@echo "Building backend scanner..."
+	@cd tools/scanner && go build -o backend/cmd/scanner ./backend/cmd/
+	@echo "Scanning backend features..."
+	@./$(BACKEND_SCANNER_BIN) proto/session/v1/session.proto server/services/ $(BACKEND_FEATURES_DIR)
+	@./$(BACKEND_SCANNER_BIN) proto/session/v1/unfinished.proto server/services/ $(BACKEND_FEATURES_DIR)
+	@./$(BACKEND_SCANNER_BIN) proto/session/v1/backlog.proto server/services/ $(BACKEND_FEATURES_DIR)
+	@./$(BACKEND_SCANNER_BIN) proto/session/v1/insights.proto server/services/ $(BACKEND_FEATURES_DIR)
+	@./$(BACKEND_SCANNER_BIN) proto/session/v1/github_user.proto server/services/ $(BACKEND_FEATURES_DIR)
+	@# Generation is additive; prune files whose RPC no longer exists so the
+	@# committed set stays in sync with the proto (avoids registry-validation drift).
+	@bash tools/scanner/prune-stale-backend.sh $(BACKEND_FEATURES_DIR)
+	@echo "✅ Backend per-feature files written to $(BACKEND_FEATURES_DIR)/"
+
+registry-generate-frontend: ## Generate frontend feature registry from React component markers
+	@echo "Installing frontend scanner dependencies..."
+	@cd tools/scanner/frontend && pnpm install --silent
+	@echo "Scanning frontend features..."
+	@tools/scanner/frontend/node_modules/.bin/ts-node \
+		tools/scanner/frontend/src/main.ts \
+		web-app/src \
+		$(REGISTRY_OUTPUT_DIR)/frontend-features.json \
+		$(REGISTRY_OUTPUT_DIR)/backend-features.json \
+		$(REGISTRY_OUTPUT_DIR)/coverage-gaps.json
+	@echo "✅ Frontend registry written to $(REGISTRY_OUTPUT_DIR)/frontend-features.json"
+
+registry-aggregate: ## Assemble per-feature files → monolithic JSON (for tooling that needs the flat format)
+	@python3 tools/scanner/aggregate.py $(BACKEND_FEATURES_DIR) $(REGISTRY_OUTPUT_DIR)/backend-features.json
+	@python3 tools/scanner/aggregate.py $(FRONTEND_FEATURES_DIR) $(REGISTRY_OUTPUT_DIR)/frontend-features.json
+	@echo "✅ Monolithic registries aggregated from per-feature files"
+
+registry-generate: registry-generate-backend registry-generate-frontend registry-aggregate ## Generate per-feature files and aggregate monolithic registries
+
+registry-diff: ## Show what would change in registry without writing files (dry run)
+	@echo "Comparing current code against committed registries..."
+	@./tools/scanner/validate-registry.sh
+
+docs-features: ## Generate per-feature Markdown docs from the typed catalog
+	@echo "Generating feature docs..."
+	@mkdir -p docs/api/features
+	@cd tools/docs-gen && npm install --silent && npx ts-node --project tsconfig.json generate.ts
+
+changelog-since: ## Print features introduced since a version: make changelog-since VERSION=1.4.0
+	@cd tools/docs-gen && npx ts-node --project tsconfig.json changelog.ts $(VERSION)
+
+e2e-report: ## Generate Allure HTML report from last test run
+	@cd tests/e2e && npx allure generate allure-results --clean -o allure-report
+	@echo "✅ Report generated at tests/e2e/allure-report/index.html"
+
+e2e-lighthouse: ## Run Lighthouse CI performance audit
+	@cd tests/e2e && npx lhci autorun --config=lighthouse.config.js
+
 # Build targets
 build: stapler-squad ## Build the Go application
 
 stapler-squad: ensure-tools proto-gen server/web/dist $(GO_FILES) ## Build the Go binary
 	@echo "Building Go application..."
-	go build -o stapler-squad .
+ifeq ($(UNAME_S),Darwin)
+	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/macos/Info.plist" \
+		go build -ldflags "$(LDFLAGS)" -o stapler-squad .
+	@# Verify Info.plist was actually embedded (catches silent CGO_ENABLED=0 failures)
+	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
+		(echo "ERROR: Info.plist was not embedded. Ensure CGO_ENABLED=1 and try again." && exit 1)
+else
+	go build -ldflags "$(LDFLAGS)" -o stapler-squad .
+endif
 	@echo "✅ stapler-squad built successfully"
 
-# Install web-app npm dependencies when package-lock.json changes
-web-app/node_modules/.package-lock.json: web-app/package.json web-app/package-lock.json
-	@echo "Installing web-app npm dependencies..."
-	@cd web-app && npm install
-	@touch web-app/node_modules/.package-lock.json
+# Install web-app pnpm dependencies when pnpm-lock.yaml changes
+web-app/node_modules/.modules.yaml: web-app/package.json web-app/pnpm-lock.yaml
+	@echo "Installing web-app pnpm dependencies..."
+	@cd web-app && pnpm install --frozen-lockfile
 
 # Build Next.js app to web-app/out
-web-app/out: ensure-tools web-app/node_modules/.package-lock.json $(WEB_FILES) web-app/next.config.ts
+web-app/out: ensure-tools proto-gen web-app/node_modules/.modules.yaml $(WEB_FILES) web-app/next.config.ts
+	@# Guard: re-install if node_modules was wiped by external tools without touching pnpm-lock.yaml
+	@test -d web-app/node_modules/next || { \
+		echo "⚠️  node_modules incomplete, re-installing..."; \
+		cd web-app && pnpm install --frozen-lockfile; \
+	}
 	@echo "Building Next.js web UI (development mode for better error messages)..."
-	@cd web-app && NEXT_BUILD_MODE=development npm run build
+	@cd web-app && NEXT_BUILD_MODE=development pnpm run build
 	@touch web-app/out # Update timestamp to mark completion
 
 # Copy web-app/out to server/web/dist (used by Go embed)
 server/web/dist: web-app/out
 	@echo "Copying built files to server/web/dist..."
 	@rm -rf server/web/dist
-	@cp -r web-app/out server/web/dist
+	@mkdir -p server/web/dist
+	@cp -r web-app/out/* server/web/dist/
 	@touch server/web/dist # Update timestamp
 	@echo "✅ Web UI built and copied successfully"
 
@@ -120,13 +212,212 @@ web-dev: build-all ## Build web UI and server, then restart (detects file change
 
 install: ensure-tools ## Install stapler-squad locally
 	go install .
+	mkdir -p ~/.local/bin
+	go build -o ~/.local/bin/ssq-hooks ./cmd/ssq-hooks/
+	@# Stable path for the notification hook handler so the server can register
+	@# it during onboarding (InstallHooks RPC). See internal/claudehooks.
+	install -m 0755 scripts/ssq-hook-handler ~/.local/bin/ssq-hook-handler
+
+build-mux: ensure-tools ## Build the claude-mux PTY multiplexer binary
+	@echo "Building claude-mux..."
+	go build -o claude-mux ./cmd/claude-mux
+	@echo "✅ claude-mux built to ./claude-mux"
+
+install-mux: ensure-tools ## Build and install claude-mux to ~/.local/bin
+	@./scripts/install-mux.sh
+
+# ── Pinned tmux binary (for test isolation) ────────────────────────────────
+# Builds tmux 3.4 from the third_party/tmux git submodule.
+# Tests use TMUX_BIN=bin/tmux to run against the pinned binary instead of the
+# system tmux, ensuring reproducible results across developer machines and CI.
+#
+# Bazel caches the C build artifacts — subsequent runs are instant.
+# Without Bazel, falls back to make (full recompile each clean build).
+
+BIN_TMUX        := bin/tmux
+TMUX_BUILD_STAMP := .tmux-build.stamp
+
+# Stamp-file approach: only rebuild when submodule source changes
+$(BIN_TMUX): $(TMUX_BUILD_STAMP)
+	@true
+
+$(TMUX_BUILD_STAMP): third_party/tmux/configure.ac
+	@$(MAKE) build-tmux
+	@touch $(TMUX_BUILD_STAMP)
+
+init-submodules: ## Initialize git submodules (required once after clone)
+	git submodule update --init --recursive
+
+build-tmux: ## Build pinned tmux 3.4 binary from third_party/tmux submodule
+	@echo "Building pinned tmux binary..."
+	@if command -v bazel >/dev/null 2>&1 && [ -f third_party/tmux/configure.ac ]; then \
+		echo "Using Bazel (artifacts cached)..."; \
+		$(MAKE) ensure-tmux-configure; \
+		bazel build //third_party/tmux:tmux && \
+		mkdir -p bin && \
+		cp "$$(bazel info bazel-bin)/third_party/tmux/tmux" $(BIN_TMUX) && \
+		chmod +x $(BIN_TMUX) && \
+		echo "✅ tmux built via Bazel at $(BIN_TMUX)"; \
+	else \
+		./scripts/build-tmux.sh; \
+	fi
+
+ensure-tmux-configure: ## Ensure third_party/tmux/configure exists (downloads from release tarball if missing)
+	@if [ ! -f third_party/tmux/configure ]; then \
+		echo "Downloading tmux configure from release tarball..."; \
+		TMPTAR=$$(mktemp /tmp/tmux-XXXXXX.tar.gz); \
+		curl -fsSL -o "$$TMPTAR" "https://github.com/tmux/tmux/releases/download/3.4/tmux-3.4.tar.gz" && \
+		tar xzf "$$TMPTAR" -C /tmp tmux-3.4/configure && \
+		cp /tmp/tmux-3.4/configure third_party/tmux/configure && \
+		chmod +x third_party/tmux/configure && \
+		rm -f "$$TMPTAR" && \
+		echo "✅ configure downloaded"; \
+	fi
+
+build-tmux-embed: build-tmux ## Copy built tmux into the embed dir for go build -tags embed_tmux
+	@mkdir -p session/tmux/embed
+	@cp $(BIN_TMUX) session/tmux/embed/tmux
+	@echo "✅ session/tmux/embed/tmux ready ($(shell $(BIN_TMUX) -V 2>/dev/null || echo unknown))"
+
+build-embedded: build-tmux-embed ## Build stapler-squad with tmux bundled inside the binary
+ifeq ($(UNAME_S),Darwin)
+	CGO_LDFLAGS="-sectcreate __TEXT __info_plist $(CURDIR)/macos/Info.plist" \
+		go build -tags embed_tmux -ldflags "$(LDFLAGS)" -o stapler-squad .
+	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | grep -q "Contents of" || \
+		(echo "ERROR: Info.plist was not embedded in embedded build." && exit 1)
+else
+	go build -tags embed_tmux -ldflags "$(LDFLAGS)" -o stapler-squad .
+endif
+	@echo "✅ stapler-squad built with embedded tmux"
+
+clean-tmux: ## Remove the built tmux binary and submodule build artifacts
+	@./scripts/build-tmux.sh --clean
+	@rm -f $(TMUX_BUILD_STAMP)
+	@rm -f session/tmux/embed/tmux
+	@echo "✅ tmux artifacts cleaned"
+
+backup-binary: ## Snapshot the current binary to stapler-squad.prev before a new build (called by install-service)
+	@if [ -f ./stapler-squad ]; then \
+		cp -f ./stapler-squad ./stapler-squad.prev; \
+		echo "==> Saved current binary to ./stapler-squad.prev"; \
+	fi
+
+install-service: backup-binary build ## Install stapler-squad as a system service (systemd on Linux, LaunchAgent on macOS)
+ifeq ($(UNAME_S),Darwin)
+	@$(MAKE) _codesign-binary
+endif
+	@STAPLER_SQUAD_BIN="$(CURDIR)/stapler-squad" ./scripts/install-service.sh $(if $(NO_PROFILE),--no-profile) $(if $(PROFILE_PORT),--profile-port $(PROFILE_PORT))
+
+rollback: ## Restore the previous build (stapler-squad.prev) and restart the service
+	@if [ ! -f ./stapler-squad.prev ]; then \
+		echo "✗ No previous build found (./stapler-squad.prev does not exist)"; \
+		exit 1; \
+	fi
+	@echo "==> Restoring previous build..."
+	@cp -f ./stapler-squad.prev ./stapler-squad
+	@echo "✓ Binary restored from stapler-squad.prev"
+ifeq ($(UNAME_S),Darwin)
+	@$(MAKE) _codesign-binary
+endif
+	@STAPLER_SQUAD_BIN="$(CURDIR)/stapler-squad" ./scripts/install-service.sh $(if $(NO_PROFILE),--no-profile) $(if $(PROFILE_PORT),--profile-port $(PROFILE_PORT))
+
+_codesign-binary: ## Sign the binary with StaplerSquadDev cert (called by install-service on macOS)
+	@if ! ./scripts/check-codesign.sh; then \
+		echo "  StaplerSquadDev signing cert not found."; \
+		echo "   Run 'make setup-codesign' once to create it, then retry."; \
+		exit 1; \
+	fi
+	@echo "Signing binary..."
+	codesign --force \
+		--sign "StaplerSquadDev" \
+		--entitlements "$(CURDIR)/entitlements.plist" \
+		"$(CURDIR)/stapler-squad"
+	@echo "Binary signed"
+
+uninstall-service: ## Remove the system service and disable auto-start on login
+	@./scripts/install-service.sh --uninstall
+
+setup-codesign: ## (macOS only) Create self-signed codesign certificate for stable TCC identity
+	@# Requires OpenSSL (not LibreSSL). Set OPENSSL_BIN to override, e.g.:
+	@#   OPENSSL_BIN=$(brew --prefix openssl)/bin/openssl make setup-codesign
+	@./scripts/setup-codesign.sh
+
+verify-codesign: ## Verify binary code signing status and TCC identity
+	@echo "=== Code Signature ==="
+	@codesign -dv --verbose=4 "$(CURDIR)/stapler-squad" 2>&1
+	@echo ""
+	@echo "=== Designated Requirement (must be cert-anchored, not cdhash-anchored) ==="
+	@codesign -d --requirements - "$(CURDIR)/stapler-squad" 2>&1
+	@# PASS: DR contains "anchor trusted" or "anchor H\"<cert-sha1>\""
+	@# FAIL: DR contains only "cdhash H\"<binary-hash>\"" — means ad-hoc or no cert
+	@echo ""
+	@echo "=== Entitlements ==="
+	@codesign -d --entitlements - "$(CURDIR)/stapler-squad" 2>&1
+	@echo ""
+	@echo "=== Embedded Info.plist ==="
+	@# NOTE: otool -s output is offset+hex+ASCII interleaved; strip offsets and ASCII
+	@# before feeding to xxd. The awk extracts the 2nd-5th columns (hex groups only).
+	@otool -s __TEXT __info_plist "$(CURDIR)/stapler-squad" | \
+		tail -n +2 | \
+		awk '{for(i=2;i<=NF&&length($$i)==8;i++){s=$$i; printf "%s%s%s%s",substr(s,7,2),substr(s,5,2),substr(s,3,2),substr(s,1,2)}; print ""}' | \
+		tr -d '\n' | xxd -r -p | plutil -p - 2>&1 || \
+		echo "(no embedded plist — Info.plist not embedded; check CGO_ENABLED=1)"
+
+tcc-reset: ## Reset TCC grants for stapler-squad (causes one-time re-prompt; use during development only)
+	@echo "Resetting TCC grants for com.stapler-squad..."
+	@# Must use sudo; without it the system TCC DB (FDA) reset is silently skipped.
+	@# Do NOT add || true: sudo failure should surface as an error, not silently succeed.
+	sudo tccutil reset All com.stapler-squad
+	@echo "Done. Grants will be re-prompted on next launch."
+
+# Isolated preview instance — does NOT touch the running global service.
+# Auto-picks a free port and uses a branch-scoped STAPLER_SQUAD_INSTANCE so
+# state never bleeds into your real sessions.
+#
+# Usage:
+#   make preview          # build + start; press Ctrl-C to stop
+#   make preview PORT=8599
+#
+# The instance name is derived from the current git branch, so switching
+# branches and running `make preview` again starts a completely separate
+# workspace.  All data lives under ~/.stapler-squad/<instance>/.
+preview: build ## Build and run an isolated preview instance (auto-picks port, branch-scoped instance)
+	$(eval PREVIEW_PORT := $(or $(PORT),$(shell python3 -c "import socket,random; s=socket.socket(); s.bind(('',0)); p=s.getsockname()[1]; s.close(); print(p)")))
+	$(eval PREVIEW_INSTANCE := preview-$(shell git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-'))
+	@echo "▶  Starting isolated preview: STAPLER_SQUAD_INSTANCE=$(PREVIEW_INSTANCE)"
+	@echo "▶  URL: http://localhost:$(PREVIEW_PORT)"
+	@echo "▶  Press Ctrl-C to stop."
+	STAPLER_SQUAD_INSTANCE=$(PREVIEW_INSTANCE) \
+	STAPLER_SQUAD_USE_CONTROL_MODE=false \
+	  ./stapler-squad --listen localhost:$(PREVIEW_PORT) --tmux-keep-server
+
+# Isolated backend + next-dev DevStack for manual testing (Epic 3.2,
+# scripts/dev-stack/launch.ts). Distinct from `make preview` (which runs the
+# built Go binary alone against the static-exported web UI) — this spins up
+# BOTH a backend and a real `next dev` on separately allocated ports, wired
+# together via STAPLER_SQUAD_EXTRA_ORIGINS/NEXT_PUBLIC_API_URL, and tears
+# both down (plus any orphaned grandchildren) on Ctrl-C.
+#
+# Usage:
+#   make dev-stack NAME=my-feature-test
+DEV_STACK_TS_NODE := web-app/node_modules/.bin/ts-node
+DEV_STACK_TSC_OPTS := {"module":"commonjs","moduleResolution":"node","esModuleInterop":true}
+
+dev-stack: build ## Start an isolated backend+next-dev DevStack: make dev-stack NAME=my-feature-test
+	@if [ -z "$(NAME)" ]; then \
+		echo "Usage: make dev-stack NAME=<instance-name>"; \
+		exit 1; \
+	fi
+	$(DEV_STACK_TS_NODE) --compiler-options '$(DEV_STACK_TSC_OPTS)' scripts/dev-stack/launch.ts $(NAME)
 
 # Protocol Buffer code generation
-proto-gen: ensure-tools web-app/node_modules/.package-lock.json ## Generate Go and TypeScript code from proto files
+proto-gen: ensure-tools web-app/node_modules/.modules.yaml ## Generate Go and TypeScript code from proto files
 	@echo "Checking if proto files need regeneration..."
 	@if [ ! -f $(PROTO_STAMP) ] \
 	   || [ "$$(find proto -name '*.proto' -newer $(PROTO_STAMP) -print -quit)" ] \
-	   || [ web-app/node_modules/.bin/protoc-gen-es -nt $(PROTO_STAMP) ]; then \
+	   || [ web-app/node_modules/.bin/protoc-gen-es -nt $(PROTO_STAMP) ] \
+	   || [ ! -f gen/proto/go/session/v1/session.pb.go ] \
+	   || [ ! -f web-app/src/gen/session/v1/session_pb.ts ]; then \
 		echo "Generating protocol buffer code..."; \
 		buf generate proto; \
 		echo "✅ Code generation complete"; \
@@ -148,16 +439,126 @@ proto-clean: ## Clean generated protocol buffer code
 	rm -rf web/src/gen
 
 # Testing targets
-test: ensure-tools proto-gen ## Run all tests
-	go test ./...
+test: ensure-tools proto-gen $(BIN_TMUX) ## Run all tests (skips slow integration tests; use test-integration for full suite)
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -short ./...
 
 test-verbose: ensure-tools proto-gen ## Run tests with verbose output
-	go test -v ./...
+	go test -short -v ./...
 
-test-coverage: ensure-tools proto-gen ## Run tests with coverage report
-	go test -cover ./... -coverprofile=coverage.out
+test-coverage: ensure-tools proto-gen $(BIN_TMUX) ## Run tests with coverage report (HTML)
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -short -cover ./... -coverprofile=coverage.out
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
+	@which open >/dev/null 2>&1 && open coverage.html || true
+
+coverage-func: ensure-tools proto-gen ## Show function-level coverage sorted by % (all non-100% functions)
+	@go test -short -coverprofile=coverage.out -covermode=atomic ./... 2>/dev/null
+	@echo ""
+	@echo "=== Function Coverage (sorted, lowest first) ==="
+	@go tool cover -func=coverage.out | grep -v "^total" | sort -t'%' -k1 -n | head -60
+	@echo ""
+	@go tool cover -func=coverage.out | grep "^total"
+
+coverage-gaps: ensure-tools proto-gen ## Show only functions with 0% coverage (completely untested)
+	@go test -short -coverprofile=coverage.out -covermode=atomic ./... 2>/dev/null
+	@echo ""
+	@echo "=== Untested Functions (0.0% coverage) ==="
+	@go tool cover -func=coverage.out | grep " 0.0%" | grep -v "_test.go"
+	@echo ""
+	@echo "=== Total ==="
+	@go tool cover -func=coverage.out | grep "^total"
+
+coverage-pkg: ensure-tools proto-gen ## Show per-package coverage summary sorted by % (lowest first)
+	@go test -short -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | \
+		grep -E "^(ok|FAIL|\?)" | \
+		awk '{for(i=1;i<=NF;i++) if($$i ~ /coverage:/) {pct=$$i+0; print pct"% "$$1" "$$2}}' | \
+		sort -n
+	@echo ""
+	@go test -short -coverprofile=coverage.out -covermode=atomic ./... 2>/dev/null; \
+		go tool cover -func=coverage.out | grep "^total"
+
+coverage-refactor: ensure-tools proto-gen ## Show coverage for the 4 files targeted by the backend refactor
+	@go test -short -coverprofile=coverage.out -covermode=atomic ./... 2>/dev/null
+	@echo ""
+	@echo "=== session/instance.go ==="
+	@go tool cover -func=coverage.out | grep "session/instance.go" | sort -t'%' -k1 -n
+	@echo ""
+	@echo "=== server/services/session_service.go ==="
+	@go tool cover -func=coverage.out | grep "session_service.go" | sort -t'%' -k1 -n
+	@echo ""
+	@echo "=== session/storage.go ==="
+	@go tool cover -func=coverage.out | grep "session/storage.go" | sort -t'%' -k1 -n
+	@echo ""
+	@echo "=== session/review_queue_poller.go ==="
+	@go tool cover -func=coverage.out | grep "review_queue_poller.go" | sort -t'%' -k1 -n
+	@echo ""
+	@echo "=== server/adapters/review_queue_adapter.go ==="
+	@go tool cover -func=coverage.out | grep "review_queue_adapter.go" | sort -t'%' -k1 -n
+	@echo ""
+	@go tool cover -func=coverage.out | grep "^total"
+
+test-race: ensure-tools proto-gen $(BIN_TMUX) ## Run tests with race detector enabled (skips slow integration tests)
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -race -short ./...
+
+test-integration: ensure-tools proto-gen ## Run integration tests (requires real tmux)
+	go test -race -tags integration ./...
+
+test-triage-harness: proto-gen ## Run all backlog triage harness phases (no UI/browser needed)
+	go test -v -tags=harness -run TestTriageHarness ./server/services/
+
+test-triage-gate: proto-gen ## Phase 1: verify TriggerTriage is blocked when repoPath is empty
+	go test -v -tags=harness -run TestTriageHarness/Gate ./server/services/
+
+test-triage-trigger: proto-gen ## Phase 2: trigger triage and poll until item reaches ready status
+	go test -v -tags=harness -run TestTriageHarness/TriggerAndPoll ./server/services/
+
+test-triage-parser: proto-gen ## Phase 3: verify parser tolerates LLM preamble before JSON block
+	go test -v -tags=harness -run TestTriageHarness/ParserRobust ./server/services/
+
+test-triage-flow: proto-gen ## Phase 4: full flow — create, gate, set repoPath, trigger, verify
+	go test -v -tags=harness -run TestTriageHarness/FullFlow ./server/services/
+
+test-triage-real: proto-gen ## Run triage with a REAL Claude session (requires claude in PATH, ~30s)
+	go test -v -tags=harness -run TestTriageHarness_RealClaude ./server/services/ -timeout 5m
+
+coverage-integration: ensure-tools proto-gen ## Build instrumented binary, run integration tests, emit integration.out
+	@mkdir -p /tmp/covdata
+	go build -cover -o stapler-squad-cov .
+	@echo "Starting instrumented binary..."
+	GOCOVERDIR=/tmp/covdata STAPLER_SQUAD_INSTANCE=cov-$$PPID ./stapler-squad-cov &
+	@sleep 2
+	@echo "Running integration tests against instrumented binary..."
+	go test -race -tags integration ./... || true
+	@echo "Stopping instrumented binary..."
+	@pkill -f stapler-squad-cov || true
+	@sleep 1
+	go tool covdata textfmt -i=/tmp/covdata -o integration.out
+	@echo "✅ Integration coverage written to integration.out"
+	@rm -f stapler-squad-cov
+	@rm -rf /tmp/covdata
+
+test-ux-polish: ## Run tests registered in docs/registry/features/ (no server/tmux required)
+	@RUN=$$(python3 -c "import json,glob; ids=[t for p in glob.glob('docs/registry/features/backend/**/*.json',recursive=True) for t in json.load(open(p)).get('testIds',[])]; print('|'.join(sorted(set(ids))))"); \
+	echo "Running: $$RUN"; \
+	go test ./server/services/ -run "$$RUN" -v -timeout 120s
+	go test ./session/prompts/... -v -timeout 30s
+
+test-with-pinned-tmux: ensure-tools proto-gen $(BIN_TMUX) ## Run tests using the pinned tmux binary (reproducible)
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -race ./...
+
+test-trace: ensure-tools proto-gen $(BIN_TMUX) ## Run session tests with execution trace (open trace with: go tool trace /tmp/ss-test-trace.out)
+	@echo "Running session tests with execution trace..."
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -v -trace /tmp/ss-test-trace.out -timeout 120s \
+		github.com/tstapler/stapler-squad/session/... 2>&1 | tee /tmp/ss-test-trace.log
+	@echo "Trace saved to /tmp/ss-test-trace.out — view with: go tool trace /tmp/ss-test-trace.out"
+
+test-profile: ensure-tools proto-gen $(BIN_TMUX) ## Run session tests with CPU+block profiling
+	@echo "Running session tests with profiling..."
+	TMUX_BIN=$(CURDIR)/$(BIN_TMUX) go test -v -cpuprofile /tmp/ss-test-cpu.prof \
+		-blockprofile /tmp/ss-test-block.prof -timeout 120s \
+		github.com/tstapler/stapler-squad/session/... 2>&1 | tee /tmp/ss-test-profile.log
+	@echo "CPU profile: go tool pprof /tmp/ss-test-cpu.prof"
+	@echo "Block profile: go tool pprof /tmp/ss-test-block.prof"
 
 # Performance benchmarks
 benchmark: ensure-tools proto-gen ## Run all benchmarks
@@ -175,18 +576,105 @@ install-tools: ensure-tools ## Install all development and analysis tools
 	go install github.com/jtbonhomme/go-nilcheck/cmd/nilcheck@latest
 	go install golang.org/x/tools/cmd/deadcode@latest
 	go install golang.org/x/perf/cmd/benchstat@latest
+	go install gvisor.dev/gvisor/tools/checklocks/cmd/checklocks@latest
 	@echo "All tools installed successfully!"
 
 # Code quality and analysis
-lint: ensure-tools proto-gen ## Run golangci-lint with comprehensive checks
-	golangci-lint run --enable=nilnil,staticcheck,ineffassign,govet
+.PHONY: vet-architecture
+vet-architecture: ## Run all architectural lint checks (depguard + import cycle check)
+	golangci-lint run --enable depguard ./...
+	go build ./...
+
+.PHONY: vet-rpc-markers
+vet-rpc-markers: registry-generate-backend ## Check that all RPC handlers have a // +api: marker (advisory)
+	@missing=0; \
+	for f in $$(find $(BACKEND_FEATURES_DIR) -name "*.json"); do \
+		if jq -e '.markerFound == false' "$$f" > /dev/null 2>&1; then \
+			id=$$(jq -r '.id' "$$f"); method=$$(jq -r '.method' "$$f"); \
+			echo "MISSING MARKER  $$id  ($$method)"; \
+			echo "  Add:  // +api: $$id  to the handler in server/services/"; \
+			missing=$$((missing + 1)); \
+		fi; \
+	done; \
+	if [ "$$missing" -gt 0 ]; then \
+		echo ""; \
+		echo "$$missing RPC handler(s) missing // +api: marker."; \
+		exit 1; \
+	else \
+		echo "✅ All RPC handlers have +api: markers."; \
+	fi
+
+lint: ensure-tools proto-gen lint-custom ## Run golangci-lint with comprehensive checks
+	@GOBIN=$$(go env GOBIN); \
+	if [ -z "$$GOBIN" ]; then GOBIN=$$(go env GOPATH)/bin; fi; \
+	if ! which golangci-lint >/dev/null 2>&1; then \
+		echo "Installing golangci-lint v2..."; \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest; \
+	fi; \
+	CGO_ENABLED=0 golangci-lint run --enable=nilnil,staticcheck,ineffassign,govet
+
+LINTER_BIN := $(CURDIR)/bin/linter
+
+lint-custom: $(LINTER_BIN) ## Run project-specific custom linters (hotpolllog, nocommandpattern, norawexec, tmuxsocketscope) in a single pass
+	@echo "Running custom lint..."
+	@$(LINTER_BIN) $(shell go list ./... | grep -v "^github.com/tstapler/stapler-squad$$")
+	@echo "custom lint: ok"
+
+$(LINTER_BIN):
+	@mkdir -p $(CURDIR)/bin
+	@go -C tools/lint build -o $(LINTER_BIN) ./cmd/linter
+
+actor-lint: ## Detect actor self-deadlock patterns using ast-grep (sg)
+	@which sg >/dev/null 2>&1 || (echo "sg (ast-grep) not installed; run: cargo install ast-grep" && exit 1)
+	sg scan --rule session/.sg-rules/actor-lint.yml session/
+
+lint-no-sleep-tests: ## ADR-003 audit: count time.Sleep calls in test files outside testutil/ (target: 0)
+	@violations=$$(grep -rn 'time\.Sleep(' --include='*_test.go' . \
+	  | grep -v 'vendor\|web-app\|third_party\|bin/\|testutil/' \
+	  | grep -v ':[[:space:]]*//' \
+	  | wc -l | tr -d ' '); \
+	echo "⏱  time.Sleep in test files (excluding testutil/): $$violations (target: 0, per ADR-003)"; \
+	if [ "$$violations" -gt 0 ]; then \
+	  grep -rn 'time\.Sleep(' --include='*_test.go' . | grep -v 'vendor\|web-app\|third_party\|bin/\|testutil/' | grep -v ':[[:space:]]*//' ; \
+	  exit 1; \
+	fi
+
+lint-css-tokens: ## Fail if any component .css.ts file uses hardcoded hex colors instead of vars.color.*
+	@echo "Checking for hardcoded colors in component .css.ts files..."
+	@violations=$$(find web-app/src -name '*.css.ts' \
+	  ! -name 'theme.css.ts' \
+	  ! -name 'theme-contract.css.ts' \
+	  ! -name 'Header.css.ts' \
+	  ! -name 'ThemePicker.css.ts' \
+	  ! -name 'ApprovalAnalyticsPanel.css.ts' \
+	  ! -path '*/debug/escape-codes/page.css.ts' \
+	  | while read f; do \
+	    if grep '#[0-9a-fA-F]\{3,8\}' "$$f" 2>/dev/null | grep -qv '//.*#[0-9a-fA-F]\{3,8\}'; then echo "$$f"; fi; \
+	  done); \
+	if [ -n "$$violations" ]; then \
+	  echo "❌ Hardcoded hex colors found in component .css.ts files (use vars.color.* instead):"; \
+	  for f in $$violations; do \
+	    grep -n '#[0-9a-fA-F]\{3,8\}' "$$f" | grep -v '//.*#[0-9a-fA-F]\{3,8\}' | head -3 | sed "s|^|  $$f line |"; \
+	  done; \
+	  exit 1; \
+	fi
+	@echo "✅ No hardcoded colors in component .css.ts files"
 
 format: ensure-tools ## Format code with gofmt
 	go fmt ./...
 
+fmt-check: ## Verify all Go files are gofmt-formatted (non-destructive; exits 1 if any are not)
+	@UNFORMATTED=$$(gofmt -l . | grep -v vendor | grep -v "^\.claude/"); \
+	if [ -n "$$UNFORMATTED" ]; then \
+		echo "The following files are not gofmt formatted:"; \
+		echo "$$UNFORMATTED"; \
+		echo "Fix with: gofmt -w ."; \
+		exit 1; \
+	fi
+	@echo "✅ All Go files are properly formatted"
+
 vet: ensure-tools proto-gen ## Run go vet with all analyzers
 	go vet ./...
-	go vet -nilness ./...
 
 # Nil safety analysis
 nil-safety: ensure-tools ## Run comprehensive nil safety analysis
@@ -221,8 +709,22 @@ deadcode: ensure-tools ## Find unreachable/dead code
 	@echo "💀 Finding dead code..."
 	deadcode -test ./...
 
+# Mutex discipline enforcement via gVisor checklocks
+# Uses go vet -vettool to enforce explicit +checklocks: field annotations.
+# -inferred=false: only report violations of explicit annotations, not suggestions.
+# -atomic=false: skip atomic-inside-lock checks (handled by race detector in tests).
+# Skips packages where deadlock.Mutex wrapping causes false-positive "return with
+# unexpected locks held" reports (./session top-level, ./server/...).
+# Install: go install gvisor.dev/gvisor/tools/checklocks/cmd/checklocks@latest
+checklocks: ## Enforce +checklocks: mutex-discipline annotations (explicit violations only)
+	@if ! which checklocks >/dev/null 2>&1; then \
+		echo "Installing checklocks..."; \
+		go install gvisor.dev/gvisor/tools/checklocks/cmd/checklocks@latest; \
+	fi
+	checklocks -inferred=false -atomic=false ./session/git/... ./session/detection/... ./session/artifacts/... ./session/cdp/... ./session/scrollback/... ./session/mux/... ./executor/... ./log/... ./config/... ./pkg/...
+
 # Comprehensive analysis
-analyze: install-tools vet lint staticcheck nil-safety security deadcode ## Run all static analysis tools
+analyze: install-tools vet lint staticcheck nil-safety security deadcode checklocks ## Run all static analysis tools
 
 # Dependency management
 check-deps: ensure-tools ## Check for outdated dependencies
@@ -235,7 +737,7 @@ tidy: ensure-tools ## Tidy and verify go modules
 # Cleanup
 clean: ## Clean build artifacts and temporary files
 	go clean
-	rm -f stapler-squad coverage.out coverage.html benchmark_results.txt
+	rm -f stapler-squad claude-mux coverage.out coverage.html benchmark_results.txt
 	rm -rf analysis_results/
 
 clean-tools: ## Remove all installed development tools (use with caution)
@@ -251,14 +753,28 @@ dev-setup: install-tools ## Set up development environment
 	@echo "Development environment setup complete!"
 	@echo "Run 'make help' to see available commands"
 
-ci: build test vet lint ## Continuous integration workflow
+ci: build $(BIN_TMUX) test test-race vet lint lint-css-tokens test-integration fmt-check registry-generate actor-field-guard ## Full CI pipeline: proto→web→build→tests→lint→fmt→registry
 
 # Quick development workflows
-quick-check: build test-coverage lint ## Quick development validation
+quick-check: build $(BIN_TMUX) test-coverage test-race lint lint-css-tokens registry-diff ## Quick development validation
 	@echo "✅ Quick validation complete"
 
-pre-commit: format vet test lint ## Pre-commit validation
+pre-commit: format vet test test-race lint vet-architecture ## Pre-commit validation
 	@echo "✅ Pre-commit checks passed"
+
+actor-field-guard: ## IAC Epic 5 guard: fail if direct Instance field writes exist outside session/instance*.go and actor.go
+	@echo "actor-field-guard: scanning for direct Instance field writes..."
+	@if grep -rEn '\b(inst|instance|liveInst)\.[A-Z][a-zA-Z0-9]+ = [^=]' \
+	    server/services/session_service.go \
+	    session/pr_status_poller.go \
+	    session/review_queue_poller.go \
+	    session/autonomous_driver.go \
+	    daemon/daemon.go \
+	    2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*//' ; then \
+	    echo "❌ actor-field-guard: direct Instance field writes found — route through actor setters (see IAC Epic 5)"; \
+	    exit 1; \
+	fi
+	@echo "✅ actor-field-guard: no direct Instance field writes"
 
 # Debugging and profiling
 profile-cpu: ensure-tools ## Run benchmarks with CPU profiling
@@ -288,7 +804,7 @@ demo-gif: assets/demo.gif ## Alias for demo-post-process
 # Declaring it as a file target lets make skip the recording when the webm is
 # already newer than the stapler-squad binary and no source files changed.
 assets/demo.webm: stapler-squad tests/e2e/demo.spec.ts tests/demo/helpers.go
-	@cd tests/e2e && npm install --silent
+	@cd tests/e2e && pnpm install --silent
 	RECORD_DEMO=1 go test ./tests/demo/... -run TestRecordDemo -v -timeout 180s
 
 demo-video: assets/demo.gif ## Record demo video, add browser chrome, and export GIF (assets/demo.webm + assets/demo.gif)
@@ -297,7 +813,7 @@ demo-video: assets/demo.gif ## Record demo video, add browser chrome, and export
 validate-env: ensure-tools ## Validate development environment setup
 	@echo "Validating development environment..."
 	@go version
-	@npm --version
+	@pnpm --version
 	@buf --version
 	@which nilaway >/dev/null 2>&1 && echo "✅ nilaway installed" || echo "❌ nilaway missing (run 'make install-tools')"
 	@which staticcheck >/dev/null 2>&1 && echo "✅ staticcheck installed" || echo "❌ staticcheck missing (run 'make install-tools')"
@@ -327,7 +843,7 @@ benchmark-compare: ensure-tools proto-gen ## Run benchmarks and compare against 
 benchmark-tier1: ensure-tools proto-gen ## Run Tier 1 critical-path benchmarks (fast, ~5 min)
 	@echo "Running Tier 1 benchmarks..."
 	go test \
-		-bench='BenchmarkEventBus|BenchmarkDeltaGenerat|BenchmarkCircularBuffer|BenchmarkSessionService_List|BenchmarkSessionService_Get' \
+		-bench='BenchmarkEventBus|BenchmarkDeltaGeneration|BenchmarkCircularBuffer|BenchmarkSessionService_List|BenchmarkSessionService_Get|BenchmarkSessionService_Stream' \
 		-benchmem \
 		-count=8 \
 		-timeout=10m \

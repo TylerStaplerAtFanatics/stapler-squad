@@ -6,18 +6,22 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
-	"github.com/tstapler/stapler-squad/session/ent/claudesession"
-	"github.com/tstapler/stapler-squad/session/ent/diffstats"
-	"github.com/tstapler/stapler-squad/session/ent/predicate"
-	"github.com/tstapler/stapler-squad/session/ent/session"
-	"github.com/tstapler/stapler-squad/session/ent/tag"
-	"github.com/tstapler/stapler-squad/session/ent/worktree"
 	"math"
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
+	"github.com/google/uuid"
+	"github.com/tstapler/stapler-squad/session/ent/backlogitem"
+	"github.com/tstapler/stapler-squad/session/ent/claudesession"
+	"github.com/tstapler/stapler-squad/session/ent/diffstats"
+	"github.com/tstapler/stapler-squad/session/ent/predicate"
+	"github.com/tstapler/stapler-squad/session/ent/project"
+	"github.com/tstapler/stapler-squad/session/ent/session"
+	"github.com/tstapler/stapler-squad/session/ent/shell"
+	"github.com/tstapler/stapler-squad/session/ent/tag"
+	"github.com/tstapler/stapler-squad/session/ent/worktree"
 )
 
 // SessionQuery is the builder for querying Session entities.
@@ -31,6 +35,10 @@ type SessionQuery struct {
 	withDiffStats     *DiffStatsQuery
 	withTags          *TagQuery
 	withClaudeSession *ClaudeSessionQuery
+	withProject       *ProjectQuery
+	withBacklogItems  *BacklogItemQuery
+	withShells        *ShellQuery
+	withFKs           bool
 	// intermediate query (i.e. traversal path).
 	sql  *sql.Selector
 	path func(context.Context) (*sql.Selector, error)
@@ -148,6 +156,72 @@ func (_q *SessionQuery) QueryClaudeSession() *ClaudeSessionQuery {
 			sqlgraph.From(session.Table, session.FieldID, selector),
 			sqlgraph.To(claudesession.Table, claudesession.FieldID),
 			sqlgraph.Edge(sqlgraph.O2O, false, session.ClaudeSessionTable, session.ClaudeSessionColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryProject chains the current query on the "project" edge.
+func (_q *SessionQuery) QueryProject() *ProjectQuery {
+	query := (&ProjectClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(session.Table, session.FieldID, selector),
+			sqlgraph.To(project.Table, project.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, session.ProjectTable, session.ProjectColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryBacklogItems chains the current query on the "backlog_items" edge.
+func (_q *SessionQuery) QueryBacklogItems() *BacklogItemQuery {
+	query := (&BacklogItemClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(session.Table, session.FieldID, selector),
+			sqlgraph.To(backlogitem.Table, backlogitem.FieldID),
+			sqlgraph.Edge(sqlgraph.M2M, true, session.BacklogItemsTable, session.BacklogItemsPrimaryKey...),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryShells chains the current query on the "shells" edge.
+func (_q *SessionQuery) QueryShells() *ShellQuery {
+	query := (&ShellClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(session.Table, session.FieldID, selector),
+			sqlgraph.To(shell.Table, shell.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, session.ShellsTable, session.ShellsColumn),
 		)
 		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
 		return fromU, nil
@@ -351,6 +425,9 @@ func (_q *SessionQuery) Clone() *SessionQuery {
 		withDiffStats:     _q.withDiffStats.Clone(),
 		withTags:          _q.withTags.Clone(),
 		withClaudeSession: _q.withClaudeSession.Clone(),
+		withProject:       _q.withProject.Clone(),
+		withBacklogItems:  _q.withBacklogItems.Clone(),
+		withShells:        _q.withShells.Clone(),
 		// clone intermediate query.
 		sql:  _q.sql.Clone(),
 		path: _q.path,
@@ -398,6 +475,39 @@ func (_q *SessionQuery) WithClaudeSession(opts ...func(*ClaudeSessionQuery)) *Se
 		opt(query)
 	}
 	_q.withClaudeSession = query
+	return _q
+}
+
+// WithProject tells the query-builder to eager-load the nodes that are connected to
+// the "project" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *SessionQuery) WithProject(opts ...func(*ProjectQuery)) *SessionQuery {
+	query := (&ProjectClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withProject = query
+	return _q
+}
+
+// WithBacklogItems tells the query-builder to eager-load the nodes that are connected to
+// the "backlog_items" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *SessionQuery) WithBacklogItems(opts ...func(*BacklogItemQuery)) *SessionQuery {
+	query := (&BacklogItemClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withBacklogItems = query
+	return _q
+}
+
+// WithShells tells the query-builder to eager-load the nodes that are connected to
+// the "shells" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *SessionQuery) WithShells(opts ...func(*ShellQuery)) *SessionQuery {
+	query := (&ShellClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withShells = query
 	return _q
 }
 
@@ -478,14 +588,24 @@ func (_q *SessionQuery) prepareQuery(ctx context.Context) error {
 func (_q *SessionQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*Session, error) {
 	var (
 		nodes       = []*Session{}
+		withFKs     = _q.withFKs
 		_spec       = _q.querySpec()
-		loadedTypes = [4]bool{
+		loadedTypes = [7]bool{
 			_q.withWorktree != nil,
 			_q.withDiffStats != nil,
 			_q.withTags != nil,
 			_q.withClaudeSession != nil,
+			_q.withProject != nil,
+			_q.withBacklogItems != nil,
+			_q.withShells != nil,
 		}
 	)
+	if _q.withProject != nil {
+		withFKs = true
+	}
+	if withFKs {
+		_spec.Node.Columns = append(_spec.Node.Columns, session.ForeignKeys...)
+	}
 	_spec.ScanValues = func(columns []string) ([]any, error) {
 		return (*Session).scanValues(nil, columns)
 	}
@@ -526,6 +646,26 @@ func (_q *SessionQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*Sess
 	if query := _q.withClaudeSession; query != nil {
 		if err := _q.loadClaudeSession(ctx, query, nodes, nil,
 			func(n *Session, e *ClaudeSession) { n.Edges.ClaudeSession = e }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withProject; query != nil {
+		if err := _q.loadProject(ctx, query, nodes, nil,
+			func(n *Session, e *Project) { n.Edges.Project = e }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withBacklogItems; query != nil {
+		if err := _q.loadBacklogItems(ctx, query, nodes,
+			func(n *Session) { n.Edges.BacklogItems = []*BacklogItem{} },
+			func(n *Session, e *BacklogItem) { n.Edges.BacklogItems = append(n.Edges.BacklogItems, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withShells; query != nil {
+		if err := _q.loadShells(ctx, query, nodes,
+			func(n *Session) { n.Edges.Shells = []*Shell{} },
+			func(n *Session, e *Shell) { n.Edges.Shells = append(n.Edges.Shells, e) }); err != nil {
 			return nil, err
 		}
 	}
@@ -672,6 +812,130 @@ func (_q *SessionQuery) loadClaudeSession(ctx context.Context, query *ClaudeSess
 		node, ok := nodeids[*fk]
 		if !ok {
 			return fmt.Errorf(`unexpected referenced foreign-key "session_claude_session" returned %v for node %v`, *fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *SessionQuery) loadProject(ctx context.Context, query *ProjectQuery, nodes []*Session, init func(*Session), assign func(*Session, *Project)) error {
+	ids := make([]int, 0, len(nodes))
+	nodeids := make(map[int][]*Session)
+	for i := range nodes {
+		if nodes[i].project_sessions == nil {
+			continue
+		}
+		fk := *nodes[i].project_sessions
+		if _, ok := nodeids[fk]; !ok {
+			ids = append(ids, fk)
+		}
+		nodeids[fk] = append(nodeids[fk], nodes[i])
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	query.Where(project.IDIn(ids...))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		nodes, ok := nodeids[n.ID]
+		if !ok {
+			return fmt.Errorf(`unexpected foreign-key "project_sessions" returned %v`, n.ID)
+		}
+		for i := range nodes {
+			assign(nodes[i], n)
+		}
+	}
+	return nil
+}
+func (_q *SessionQuery) loadBacklogItems(ctx context.Context, query *BacklogItemQuery, nodes []*Session, init func(*Session), assign func(*Session, *BacklogItem)) error {
+	edgeIDs := make([]driver.Value, len(nodes))
+	byID := make(map[int]*Session)
+	nids := make(map[uuid.UUID]map[*Session]struct{})
+	for i, node := range nodes {
+		edgeIDs[i] = node.ID
+		byID[node.ID] = node
+		if init != nil {
+			init(node)
+		}
+	}
+	query.Where(func(s *sql.Selector) {
+		joinT := sql.Table(session.BacklogItemsTable)
+		s.Join(joinT).On(s.C(backlogitem.FieldID), joinT.C(session.BacklogItemsPrimaryKey[0]))
+		s.Where(sql.InValues(joinT.C(session.BacklogItemsPrimaryKey[1]), edgeIDs...))
+		columns := s.SelectedColumns()
+		s.Select(joinT.C(session.BacklogItemsPrimaryKey[1]))
+		s.AppendSelect(columns...)
+		s.SetDistinct(false)
+	})
+	if err := query.prepareQuery(ctx); err != nil {
+		return err
+	}
+	qr := QuerierFunc(func(ctx context.Context, q Query) (Value, error) {
+		return query.sqlAll(ctx, func(_ context.Context, spec *sqlgraph.QuerySpec) {
+			assign := spec.Assign
+			values := spec.ScanValues
+			spec.ScanValues = func(columns []string) ([]any, error) {
+				values, err := values(columns[1:])
+				if err != nil {
+					return nil, err
+				}
+				return append([]any{new(sql.NullInt64)}, values...), nil
+			}
+			spec.Assign = func(columns []string, values []any) error {
+				outValue := int(values[0].(*sql.NullInt64).Int64)
+				inValue := *values[1].(*uuid.UUID)
+				if nids[inValue] == nil {
+					nids[inValue] = map[*Session]struct{}{byID[outValue]: {}}
+					return assign(columns[1:], values[1:])
+				}
+				nids[inValue][byID[outValue]] = struct{}{}
+				return nil
+			}
+		})
+	})
+	neighbors, err := withInterceptors[[]*BacklogItem](ctx, query, qr, query.inters)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		nodes, ok := nids[n.ID]
+		if !ok {
+			return fmt.Errorf(`unexpected "backlog_items" node returned %v`, n.ID)
+		}
+		for kn := range nodes {
+			assign(kn, n)
+		}
+	}
+	return nil
+}
+func (_q *SessionQuery) loadShells(ctx context.Context, query *ShellQuery, nodes []*Session, init func(*Session), assign func(*Session, *Shell)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int]*Session)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	query.withFKs = true
+	query.Where(predicate.Shell(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(session.ShellsColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.session_shells
+		if fk == nil {
+			return fmt.Errorf(`foreign-key "session_shells" is nil for node %v`, n.ID)
+		}
+		node, ok := nodeids[*fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "session_shells" returned %v for node %v`, *fk, n.ID)
 		}
 		assign(node, n)
 	}

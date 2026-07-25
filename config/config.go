@@ -1,13 +1,14 @@
 package config
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/tstapler/stapler-squad/executor"
 	"github.com/tstapler/stapler-squad/log"
+	"io"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
@@ -15,69 +16,22 @@ import (
 	"time"
 )
 
-// CommandExecutor defines the interface for executing external commands
-type CommandExecutor interface {
-	Command(name string, args ...string) *exec.Cmd
-	Output(cmd *exec.Cmd) ([]byte, error)
-	LookPath(file string) (string, error)
-}
-
-// realCommandExecutor implements CommandExecutor using actual system commands
-type realCommandExecutor struct{}
-
-func (r *realCommandExecutor) Command(name string, args ...string) *exec.Cmd {
-	return exec.Command(name, args...)
-}
-
-func (r *realCommandExecutor) Output(cmd *exec.Cmd) ([]byte, error) {
-	return cmd.Output()
-}
-
-func (r *realCommandExecutor) LookPath(file string) (string, error) {
-	return exec.LookPath(file)
-}
-
-// timeoutCommandExecutor wraps command execution with timeout protection
-// This prevents commands from hanging indefinitely, which is critical for
-// preventing hangs on external commands like 'which claude'
-type timeoutCommandExecutor struct {
-	executor executor.Executor
-	timeout  time.Duration
-}
-
-func newTimeoutCommandExecutor(timeout time.Duration) *timeoutCommandExecutor {
-	return &timeoutCommandExecutor{
-		executor: executor.NewTimeoutExecutor(timeout),
-		timeout:  timeout,
+// NewConfigWithExecutor creates a Config with an explicit command executor.
+// Pass nil to use the default timeout executor.
+func NewConfigWithExecutor(exec CommandExecutor) *Config {
+	if exec == nil {
+		if IsTestMode() {
+			exec = &lookPathOnlyExecutor{}
+		} else {
+			exec = newTimeoutCommandExecutor(5 * time.Second)
+		}
 	}
+	return &Config{executor: exec}
 }
 
-func (t *timeoutCommandExecutor) Command(name string, args ...string) *exec.Cmd {
-	return exec.Command(name, args...)
-}
-
-func (t *timeoutCommandExecutor) Output(cmd *exec.Cmd) ([]byte, error) {
-	// Use the timeout executor's OutputWithPipes for reliable capture
-	return t.executor.(*executor.TimeoutExecutor).OutputWithPipes(cmd)
-}
-
-func (t *timeoutCommandExecutor) LookPath(file string) (string, error) {
-	return exec.LookPath(file)
-}
-
-// Global command executor instance - uses timeout protection by default
-// 5-second timeout prevents indefinite hangs on external commands
-var globalCommandExecutor CommandExecutor = newTimeoutCommandExecutor(5 * time.Second)
-
-// SetCommandExecutor sets the global command executor (primarily for testing)
-func SetCommandExecutor(executor CommandExecutor) {
-	globalCommandExecutor = executor
-}
-
-// ResetCommandExecutor resets the global command executor to the default implementation
-// Uses timeout protection by default (5 seconds)
-func ResetCommandExecutor() {
-	globalCommandExecutor = newTimeoutCommandExecutor(5 * time.Second)
+// NewConfig creates a Config with the default timeout executor.
+func NewConfig() *Config {
+	return NewConfigWithExecutor(nil)
 }
 
 const (
@@ -85,11 +39,11 @@ const (
 	defaultProgram = "proxy-claude"
 )
 
-// isTestMode detects if the application is running in test/benchmark mode
-func isTestMode() bool {
+// IsTestMode detects if the application is running in test/benchmark mode
+func IsTestMode() bool {
+
 	// Check command line arguments for test/benchmark indicators
 	for _, arg := range os.Args {
-		// Match test binary names and flags
 		if strings.Contains(arg, ".test") ||
 			strings.Contains(arg, "-test.") ||
 			strings.HasSuffix(arg, ".test.exe") ||
@@ -110,6 +64,12 @@ func isTestMode() bool {
 //  4. Workspace-based isolation (default for production, per-directory state)
 //  5. Global shared state (fallback, backward compatibility)
 func GetConfigDir() (string, error) {
+	return GetConfigDirForDir("")
+}
+
+// GetConfigDirForDir returns the path to the application's configuration directory
+// using the provided directory for workspace-based isolation.
+func GetConfigDirForDir(dir string) (string, error) {
 	// Priority 1: Test directory override (from --test-mode flag)
 	if testDir := os.Getenv("STAPLER_SQUAD_TEST_DIR"); testDir != "" {
 		// Create the test directory if it doesn't exist
@@ -131,7 +91,7 @@ func GetConfigDir() (string, error) {
 		legacyDir := filepath.Join(homeDir, ".claude-squad")
 		if _, legacyErr := os.Stat(legacyDir); legacyErr == nil {
 			if migrateErr := os.Rename(legacyDir, baseDir); migrateErr == nil {
-				fmt.Printf("Migrated data directory: %s → %s\n", legacyDir, baseDir)
+				log.Info("migrated data directory", "from", legacyDir, "to", baseDir)
 			}
 		}
 	}
@@ -145,8 +105,18 @@ func GetConfigDir() (string, error) {
 		return filepath.Join(baseDir, "instances", instanceID), nil
 	}
 
-	// Priority 2.5: Preferred workspace from preference file
+	// Priority 3: Test mode auto-detection (automatic isolation)
+	// Must be checked before the preferred workspace file so that a workspace
+	// preference set by a production instance cannot leak into test runs.
+	if IsTestMode() {
+		// Each test/benchmark process gets its own isolated state
+		pid := os.Getpid()
+		return filepath.Join(baseDir, "test", fmt.Sprintf("test-%d", pid)), nil
+	}
+
+	// Priority 3.5: Preferred workspace from preference file
 	// Written by SwitchDatabase RPC; cleared automatically on removal.
+	// Skipped in test mode (above) so tests always get isolated state.
 	if data, err := os.ReadFile(GetPreferredWorkspaceFile(baseDir)); err == nil {
 		prefDir := strings.TrimSpace(string(data))
 		if filepath.IsAbs(prefDir) &&
@@ -157,25 +127,24 @@ func GetConfigDir() (string, error) {
 		}
 	}
 
-	// Priority 3: Test mode auto-detection (automatic isolation)
-	if isTestMode() {
-		// Each test/benchmark process gets its own isolated state
-		pid := os.Getpid()
-		return filepath.Join(baseDir, "test", fmt.Sprintf("test-%d", pid)), nil
-	}
-
 	// Priority 4: Workspace-based isolation (production default)
 	// Can be disabled with STAPLER_SQUAD_WORKSPACE_MODE=false
 	if os.Getenv("STAPLER_SQUAD_WORKSPACE_MODE") != "false" {
-		workDir, err := os.Getwd()
-		if err == nil {
+		workDir := dir
+		var err error
+		if workDir == "" {
+			workDir, err = os.Getwd()
+		}
+		if err == nil && workDir != "" {
 			// Hash the workspace path for a stable, filesystem-safe identifier
 			hash := sha256.Sum256([]byte(workDir))
 			workspaceID := fmt.Sprintf("%x", hash[:8])
 			return filepath.Join(baseDir, "workspaces", workspaceID), nil
 		}
-		// If we can't get working directory, fall through to shared state
-		log.WarningLog.Printf("Failed to get working directory for workspace isolation: %v", err)
+		if err != nil {
+			// If we can't get working directory, fall through to shared state
+			log.Warn("failed to get working directory for workspace isolation", "err", err)
+		}
 	}
 
 	// Priority 5: Global shared state (fallback, backward compatibility)
@@ -184,6 +153,9 @@ func GetConfigDir() (string, error) {
 
 // Config represents the application configuration
 type Config struct {
+	// executor is the command executor used for shell command discovery.
+	// Set via NewConfigWithExecutor; defaults to a 5-second timeout executor.
+	executor CommandExecutor
 	// ListenAddress is the address the HTTP server listens on.
 	// Default: "localhost:8543". Set to "0.0.0.0:8543" for remote access.
 	ListenAddress string `json:"listen_address"`
@@ -228,56 +200,253 @@ type Config struct {
 	PerformBackgroundHealthChecks bool `json:"perform_background_health_checks"`
 	// KeyCategories defines custom category mappings for key bindings in help system
 	KeyCategories map[string]string `json:"key_categories"`
-	// TerminalStreamingMode controls how terminal output is streamed to the client
-	// Options: "raw" (direct PTY streaming), "state" (MOSH-style state sync), "hybrid" (both)
-	TerminalStreamingMode string `json:"terminal_streaming_mode"`
 	// VCSPreference controls which version control system to prefer when both are available
 	// Options: "auto" (prefer JJ if available), "jj" (always use JJ), "git" (always use Git)
 	VCSPreference string `json:"vcs_preference"`
 	// AvailablePrograms is a list of detected CLI programs
 	AvailablePrograms []string `json:"available_programs"`
+	// ConfigVersion tracks the schema version for future migrations (1 = session_defaults added)
+	ConfigVersion int `json:"config_version,omitempty"`
+	// SessionDefaults holds named profiles, directory rules, and global defaults for new sessions.
+	SessionDefaults SessionDefaults `json:"session_defaults,omitempty"`
+	// Notifications holds the user's notification delivery preferences.
+	Notifications NotificationPrefs `json:"notifications,omitempty"`
+	// OneOffBaseDir is the base directory where one-off session directories are created.
+	// Default: "~/oneoff". Tilde is expanded at runtime. Created automatically on first use.
+	OneOffBaseDir string `json:"one_off_base_dir,omitempty"`
+	// PyroscopeServerAddress is the Pyroscope server URL for continuous profiling.
+	// Empty string (the default) disables continuous profiling.
+	// Example: "http://localhost:4040"
+	PyroscopeServerAddress string `json:"pyroscope_server_address,omitempty"`
+	// NewProjectBaseDir is the base directory where new project directories are created.
+	// Default: "~/Projects". Tilde is expanded at runtime. Created on first use.
+	// Zero-value (empty string) is backwards-compatible — existing configs load without change.
+	NewProjectBaseDir string `json:"new_project_base_dir,omitempty"`
+	// MachineEncryptionKey is a base64-encoded 32-byte AES-256-GCM key for local data encryption.
+	// Generated on first run and persisted here. Used to encrypt sensitive token data in ItemSource configs.
+	MachineEncryptionKey string `json:"machine_encryption_key,omitempty"`
+	// AnalyticsMaxRows is the maximum number of analytics events to retain in the database.
+	// When exceeded, the oldest rows are deleted. 0 means no row-count limit.
+	// Default: 100_000.
+	AnalyticsMaxRows int `json:"analytics_max_rows,omitempty"`
+	// AnalyticsMaxAgeDays is the maximum age in days of analytics events to retain.
+	// Events older than this are deleted. 0 means no age limit.
+	// Default: 90.
+	AnalyticsMaxAgeDays int `json:"analytics_max_age_days,omitempty"`
+	// BrowserPassthrough configures the per-session Xvfb + x11vnc virtual display feature.
+	BrowserPassthrough BrowserPassthroughConfig `json:"browser_passthrough,omitempty"`
+	// FeatureFlags stores the enabled/disabled state of named runtime feature flags.
+	// Keys are machine names (e.g. "backlog"); values are booleans.
+	// Absent key == disabled (false is the safe default for all flags).
+	FeatureFlags map[string]bool `json:"feature_flags,omitempty"`
+	// Hibernation holds configuration for the session hibernation feature.
+	Hibernation HibernationConfig `json:"hibernation,omitempty"`
+	// Capacity holds configuration for the provider capacity monitoring and transition feature.
+	Capacity CapacityConfig `json:"capacity,omitempty"`
+
+	// Escape analytics configuration
+
+	// EscapeAnalyticsCaptureLevel controls the verbosity of escape sequence capture.
+	// Valid values: "full" (store raw bytes + hash), "summary" (type/length only), "off" (disabled).
+	// Default: "summary".
+	EscapeAnalyticsCaptureLevel string `json:"escapeAnalyticsCaptureLevel,omitempty"`
+	// EscapeAnalyticsSamplingRate is the fraction of sessions to capture, in [0.0, 1.0].
+	// 1.0 captures all sessions; 0.0 captures none.
+	// A nil pointer means "unset" and defaults to 1.0 at load time.
+	// Using a pointer allows 0.0 (capture nothing) to be distinguished from the zero value.
+	// Default: 1.0.
+	EscapeAnalyticsSamplingRate *float64 `json:"escapeAnalyticsSamplingRate,omitempty"`
+	// EscapeAnalyticsMaxRowsPerSession is the maximum number of escape event rows stored per session.
+	// Default: 10000.
+	EscapeAnalyticsMaxRowsPerSession int `json:"escapeAnalyticsMaxRowsPerSession,omitempty"`
+	// EscapeAnalyticsDisableOSCRedaction disables OSC payload redaction when true.
+	// By default (false), OSC payloads (clipboard, window title, CWD) are redacted for security.
+	// Set to true only if you explicitly need to capture raw OSC payload content.
+	EscapeAnalyticsDisableOSCRedaction bool `json:"escapeAnalyticsDisableOSCRedaction,omitempty"`
+	// EscapeAnalyticsRetentionDays is the number of days to retain escape event rows.
+	// Default: 7.
+	EscapeAnalyticsRetentionDays int `json:"escapeAnalyticsRetentionDays,omitempty"`
+	// AnthropicAPIKey is the API key for the Anthropic AI API.
+	// Used by the AI rule generation feature (GenerateSuggestedRule RPC).
+	// Set via config.json or the ANTHROPIC_API_KEY environment variable.
+	// Do not log this value.
+	AnthropicAPIKey string `json:"anthropicApiKey,omitempty"`
+	// ProcessManagerBackend selects the process manager implementation.
+	// Valid values: "tmux" (default), "native" (Phase 2).
+	// Empty string is backwards-compatible and defaults to "tmux".
+	ProcessManagerBackend string `json:"process_manager_backend,omitempty"`
 }
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
-	program, err := GetClaudeCommand()
+	return defaultConfigWithExecutor(nil)
+}
+
+// defaultConfigWithExecutor creates the default Config using the provided executor.
+// Pass nil to use the default timeout executor.
+func defaultConfigWithExecutor(exec CommandExecutor) *Config {
+	cfg := NewConfigWithExecutor(exec)
+
+	program, err := cfg.GetClaudeCommand()
 	if err != nil {
-		log.ErrorLog.Printf("failed to get claude command: %v", err)
+		log.Error("failed to get claude command", "err", err)
 		program = defaultProgram
 	}
 
-	availablePrograms := GetAvailablePrograms()
+	availablePrograms := cfg.GetAvailablePrograms()
 
-	return &Config{
-		ListenAddress:      "localhost:8543",
-		DefaultProgram:     program,
-		AutoYes:            false,
-		DaemonPollInterval: 1000,
-		BranchPrefix: func() string {
-			user, err := user.Current()
-			if err != nil || user == nil || user.Username == "" {
-				log.ErrorLog.Printf("failed to get current user: %v", err)
-				return "session/"
-			}
-			return fmt.Sprintf("%s/", strings.ToLower(user.Username))
-		}(),
-		DetectNewSessions:             true,
-		SessionDetectionInterval:      5000,
-		StateRefreshInterval:          3000,
-		LogsEnabled:                   true,
-		LogsDir:                       "", // Empty string means use default location
-		LogMaxSize:                    10, // 10MB
-		LogMaxFiles:                   5,  // Keep 5 rotated files
-		LogMaxAge:                     30, // 30 days
-		LogCompress:                   true,
-		UseSessionLogs:                true,
-		TmuxSessionPrefix:             "staplersquad_", // Default prefix for backward compatibility
-		PerformBackgroundHealthChecks: true,            // Enabled by default for automated session maintenance
-		KeyCategories:                 getDefaultKeyCategories(),
-		TerminalStreamingMode:         "raw",  // Default to raw streaming (simpler, more reliable)
-		VCSPreference:                 "auto", // Default to auto-detection (prefer JJ if available)
-		AvailablePrograms:             availablePrograms,
+	cfg.ListenAddress = "localhost:8543"
+	cfg.DefaultProgram = program
+	cfg.AutoYes = false
+	cfg.DaemonPollInterval = 1000
+	cfg.BranchPrefix = func() string {
+		user, err := user.Current()
+		if err != nil || user == nil || user.Username == "" {
+			log.Error("failed to get current user", "err", err)
+			return "session/"
+		}
+		return fmt.Sprintf("%s/", strings.ToLower(user.Username))
+	}()
+	cfg.DetectNewSessions = true
+	cfg.SessionDetectionInterval = 5000
+	cfg.StateRefreshInterval = 3000
+	cfg.LogsEnabled = true
+	cfg.LogsDir = ""    // Empty string means use default location
+	cfg.LogMaxSize = 10 // 10MB
+	cfg.LogMaxFiles = 5 // Keep 5 rotated files
+	cfg.LogMaxAge = 30  // 30 days
+	cfg.LogCompress = true
+	cfg.UseSessionLogs = true
+	cfg.TmuxSessionPrefix = "staplersquad_"  // Default prefix for backward compatibility
+	cfg.PerformBackgroundHealthChecks = true // Enabled by default for automated session maintenance
+	cfg.KeyCategories = getDefaultKeyCategories()
+	cfg.VCSPreference = "auto" // Default to auto-detection (prefer JJ if available)
+	cfg.AvailablePrograms = availablePrograms
+	cfg.Hibernation = HibernationConfig{
+		Enabled:                   true,
+		IdleTimeoutMinutes:        20,
+		ResourcePressureThreshold: 85,
+		RetentionDays:             30,
 	}
+	cfg.Capacity = CapacityConfig{}.CapacityConfigOrDefault()
+	// Initialize SessionDefaults maps so callers never encounter nil maps.
+	// LoadConfigFromPath applies the same guards after JSON decode; DefaultConfig
+	// must mirror them so the two code paths are equivalent.
+	cfg.SessionDefaults.Profiles = make(map[string]ProfileDefaults)
+	cfg.SessionDefaults.EnvVars = make(map[string]string)
+	cfg.SessionDefaults.Tags = []string{}
+	cfg.SessionDefaults.DirectoryRules = []DirectoryRule{}
+	cfg.SessionDefaults.Aliases = []AliasConfig{}
+	// Escape analytics defaults. LoadConfigFromPath applies the same defaults
+	// after JSON decode (for fields absent from an existing config.json);
+	// DefaultConfig must mirror them so the two code paths are equivalent.
+	cfg.EscapeAnalyticsCaptureLevel = "summary"
+	defaultEscapeSamplingRate := 1.0
+	cfg.EscapeAnalyticsSamplingRate = &defaultEscapeSamplingRate
+	cfg.EscapeAnalyticsMaxRowsPerSession = 10000
+	cfg.EscapeAnalyticsRetentionDays = 7
+	// Apply environment variable overrides (never log the value).
+	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+		cfg.AnthropicAPIKey = v
+	}
+	return cfg
+}
+
+// OneOffBaseDirOrDefault returns the resolved one-off base directory.
+// If OneOffBaseDir is empty, it returns "~/oneoff" with ~ expanded to the
+// current user's home directory. The directory is NOT created here — call
+// namegen.GenerateAndCreate to create it on first use.
+func (c *Config) OneOffBaseDirOrDefault() (string, error) {
+	dir := c.OneOffBaseDir
+	if dir == "" {
+		dir = "~/oneoff"
+	}
+	if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand home dir: %w", err)
+		}
+		dir = filepath.Join(home, dir[2:])
+	} else if dir == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand home dir: %w", err)
+		}
+		dir = home
+	}
+	return dir, nil
+}
+
+// HibernationCheckpointDirOrDefault returns the resolved hibernation checkpoint directory.
+// If CheckpointDir is empty, it returns "~/.stapler-squad/checkpoints" with ~ expanded.
+// The directory is NOT created here — the checkpoint writer creates it on first use.
+func (c *Config) HibernationCheckpointDirOrDefault() (string, error) {
+	dir := c.Hibernation.CheckpointDir
+	if dir == "" {
+		dir = "~/.stapler-squad/checkpoints"
+	}
+	if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand home dir: %w", err)
+		}
+		dir = filepath.Join(home, dir[2:])
+	} else if dir == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand home dir: %w", err)
+		}
+		dir = home
+	}
+	return dir, nil
+}
+
+// NewProjectBaseDirOrDefault returns the resolved new-project base directory.
+// If NewProjectBaseDir is empty, it defaults to "~/Projects" with ~ expanded.
+func (c *Config) NewProjectBaseDirOrDefault() (string, error) {
+	dir := c.NewProjectBaseDir
+	if dir == "" {
+		dir = "~/Projects"
+	}
+	if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand home dir: %w", err)
+		}
+		dir = filepath.Join(home, dir[2:])
+	} else if dir == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot expand home dir: %w", err)
+		}
+		dir = home
+	}
+	return dir, nil
+}
+
+// AnalyticsMaxRowsOrDefault returns the configured max analytics rows, or 100_000
+// if not set (zero value).
+func (c *Config) AnalyticsMaxRowsOrDefault() int {
+	if c.AnalyticsMaxRows <= 0 {
+		return 100_000
+	}
+	return c.AnalyticsMaxRows
+}
+
+// AnalyticsMaxAgeDaysOrDefault returns the configured max analytics age in days,
+// or 90 if not set (zero value).
+func (c *Config) AnalyticsMaxAgeDaysOrDefault() int {
+	if c.AnalyticsMaxAgeDays <= 0 {
+		return 90
+	}
+	return c.AnalyticsMaxAgeDays
+}
+
+// OSCPayloadsAreRedacted returns true when OSC payload redaction is enabled (the default).
+// Redaction prevents PII (clipboard contents, window titles, CWD paths) from being stored
+// in escape event records. Set EscapeAnalyticsDisableOSCRedaction=true in config to opt out.
+func (c *Config) OSCPayloadsAreRedacted() bool {
+	return !c.EscapeAnalyticsDisableOSCRedaction
 }
 
 // GetClaudeCommand attempts to find the "claude" command in the user's shell
@@ -286,14 +455,14 @@ func DefaultConfig() *Config {
 // 2. PATH lookup
 //
 // If both fail, it returns an error.
-func GetClaudeCommand() (string, error) {
+func (c *Config) GetClaudeCommand() (string, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/bash" // Default to bash if SHELL is not set
 	}
 
 	// Try to resolve aliases for both proxy-claude and claude
-	candidates := []string{"proxy-claude", "claude", "claude-code", "gemini"}
+	candidates := []string{"proxy-claude", "claude", "claude-code", "gemini", "agy"}
 
 	for _, candidate := range candidates {
 		// Attempt to get the alias definition from the shell
@@ -308,8 +477,8 @@ func GetClaudeCommand() (string, error) {
 			shellCmd = fmt.Sprintf("which %s", candidate)
 		}
 
-		cmd := globalCommandExecutor.Command(shell, "-c", shellCmd)
-		output, err := globalCommandExecutor.Output(cmd)
+		cmd := c.executor.Command(shell, "-c", shellCmd)
+		output, err := c.executor.Output(cmd)
 		if err == nil && len(output) > 0 {
 			result := strings.TrimSpace(string(output))
 			if result != "" {
@@ -352,7 +521,7 @@ func GetClaudeCommand() (string, error) {
 
 	// Fallback: try to find in PATH directly
 	for _, candidate := range candidates {
-		path, err := globalCommandExecutor.LookPath(candidate)
+		path, err := c.executor.LookPath(candidate)
 		if err == nil {
 			return path, nil
 		}
@@ -362,7 +531,7 @@ func GetClaudeCommand() (string, error) {
 }
 
 // GetAvailablePrograms returns a list of all detected CLI programs.
-func GetAvailablePrograms() []string {
+func (c *Config) GetAvailablePrograms() []string {
 	programs := []string{}
 	seen := make(map[string]bool)
 
@@ -371,7 +540,7 @@ func GetAvailablePrograms() []string {
 		shell = "/bin/bash"
 	}
 
-	candidates := []string{"proxy-claude", "claude", "claude-code", "gemini"}
+	candidates := []string{"proxy-claude", "claude", "claude-code", "gemini", "agy"}
 
 	for _, candidate := range candidates {
 		var shellCmd string
@@ -383,8 +552,8 @@ func GetAvailablePrograms() []string {
 			shellCmd = fmt.Sprintf("which %s", candidate)
 		}
 
-		cmd := globalCommandExecutor.Command(shell, "-c", shellCmd)
-		if output, err := globalCommandExecutor.Output(cmd); err == nil {
+		cmd := c.executor.Command(shell, "-c", shellCmd)
+		if output, err := c.executor.Output(cmd); err == nil {
 			path := strings.TrimSpace(string(output))
 			if path != "" && !seen[path] {
 				programs = append(programs, path)
@@ -395,66 +564,160 @@ func GetAvailablePrograms() []string {
 	return programs
 }
 
+// GetClaudeCommand is a package-level convenience wrapper using the default executor.
+// Callers that need a custom executor should use NewConfigWithExecutor(exec).GetClaudeCommand().
+func GetClaudeCommand() (string, error) {
+	return NewConfig().GetClaudeCommand()
+}
+
+// GetAvailablePrograms is a package-level convenience wrapper using the default executor.
+// Callers that need a custom executor should use NewConfigWithExecutor(exec).GetAvailablePrograms().
+func GetAvailablePrograms() []string {
+	return NewConfig().GetAvailablePrograms()
+}
+
 func LoadConfig() *Config {
 	configDir, err := GetConfigDir()
 	if err != nil {
-		log.ErrorLog.Printf("failed to get config directory: %v", err)
+		log.Error("failed to get config directory", "err", err)
 		return DefaultConfig()
 	}
 
 	configPath := filepath.Join(configDir, ConfigFileName)
-	data, err := os.ReadFile(configPath)
+	cfg, err := LoadConfigFromPath(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Create and save default config if file doesn't exist
 			defaultCfg := DefaultConfig()
 			if saveErr := saveConfig(defaultCfg); saveErr != nil {
-				log.WarningLog.Printf("failed to save default config: %v", saveErr)
+				log.Warn("failed to save default config", "err", saveErr)
 			}
 			return defaultCfg
 		}
-
-		log.WarningLog.Printf("failed to get config file: %v", err)
+		log.Warn("failed to load config file", "err", err)
 		return DefaultConfig()
 	}
 
-	var config Config
-	if err := json.Unmarshal(data, &config); err != nil {
-		log.ErrorLog.Printf("failed to parse config file: %v", err)
-		return DefaultConfig()
-	}
-
-	// Apply defaults for fields that might not be in saved config (e.g., newly added fields)
-	if config.KeyCategories == nil {
-		config.KeyCategories = getDefaultKeyCategories()
-	}
-
-	return &config
+	return cfg
 }
 
-// saveConfig saves the configuration to disk
-func saveConfig(config *Config) error {
-	configDir, err := GetConfigDir()
-	if err != nil {
-		return fmt.Errorf("failed to get config directory: %w", err)
+// saveConfig saves the configuration to disk atomically via a temp-file rename.
+// Accepts an optional explicit path; when omitted the path is derived from GetConfigDir().
+func saveConfig(config *Config, paths ...string) error {
+	var configPath string
+	if len(paths) > 0 && paths[0] != "" {
+		configPath = paths[0]
+	} else {
+		configDir, err := GetConfigDir()
+		if err != nil {
+			return fmt.Errorf("failed to get config directory: %w", err)
+		}
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			return fmt.Errorf("failed to create config directory: %w", err)
+		}
+		configPath = filepath.Join(configDir, ConfigFileName)
 	}
 
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	configPath := filepath.Join(configDir, ConfigFileName)
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	// Write to a temp file in the same directory, then rename for atomicity.
+	tmpPath := configPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write temp config: %w", err)
+	}
+	if err := os.Rename(tmpPath, configPath); err != nil {
+		_ = os.Remove(tmpPath) // best-effort cleanup
+		return fmt.Errorf("failed to rename config: %w", err)
+	}
+	return nil
 }
 
-// SaveConfig exports the saveConfig function for use by other packages
+// SaveConfig exports the saveConfig function for use by other packages.
 func SaveConfig(config *Config) error {
 	return saveConfig(config)
+}
+
+// LoadConfigFromPath loads and parses a config file from an explicit path.
+// Returns the config and any error encountered.
+func LoadConfigFromPath(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Apply zero-value defaults for newly-added fields.
+	if cfg.KeyCategories == nil {
+		cfg.KeyCategories = getDefaultKeyCategories()
+	}
+	if cfg.SessionDefaults.Profiles == nil {
+		cfg.SessionDefaults.Profiles = make(map[string]ProfileDefaults)
+	}
+	if cfg.SessionDefaults.EnvVars == nil {
+		cfg.SessionDefaults.EnvVars = make(map[string]string)
+	}
+	if cfg.SessionDefaults.Tags == nil {
+		cfg.SessionDefaults.Tags = []string{}
+	}
+	if cfg.SessionDefaults.DirectoryRules == nil {
+		cfg.SessionDefaults.DirectoryRules = []DirectoryRule{}
+	}
+	if cfg.SessionDefaults.Aliases == nil {
+		cfg.SessionDefaults.Aliases = []AliasConfig{}
+	}
+	if cfg.ConfigVersion == 0 {
+		cfg.ConfigVersion = 1
+	}
+
+	// Apply defaults for escape analytics fields.
+	if cfg.EscapeAnalyticsCaptureLevel == "" {
+		cfg.EscapeAnalyticsCaptureLevel = "summary"
+	}
+	if cfg.EscapeAnalyticsSamplingRate == nil {
+		defaultRate := 1.0
+		cfg.EscapeAnalyticsSamplingRate = &defaultRate
+	}
+	if cfg.EscapeAnalyticsMaxRowsPerSession == 0 {
+		cfg.EscapeAnalyticsMaxRowsPerSession = 10000
+	}
+	if cfg.EscapeAnalyticsRetentionDays == 0 {
+		cfg.EscapeAnalyticsRetentionDays = 7
+	}
+
+	// Validate escape analytics fields.
+	switch cfg.EscapeAnalyticsCaptureLevel {
+	case "full", "summary", "off":
+		// valid
+	default:
+		cfg.EscapeAnalyticsCaptureLevel = "summary"
+	}
+	if *cfg.EscapeAnalyticsSamplingRate < 0 {
+		zero := 0.0
+		cfg.EscapeAnalyticsSamplingRate = &zero
+	}
+	if *cfg.EscapeAnalyticsSamplingRate > 1.0 {
+		one := 1.0
+		cfg.EscapeAnalyticsSamplingRate = &one
+	}
+
+	// Unmarshaling produces a zero Config with no executor; initialize it now
+	// so GetClaudeCommand / GetAvailablePrograms don't panic on nil executor.
+	cfg.executor = newTimeoutCommandExecutor(5 * time.Second)
+
+	cfg.Capacity = cfg.Capacity.CapacityConfigOrDefault()
+
+	// Apply environment variable overrides (never log the value).
+	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+		cfg.AnthropicAPIKey = v
+	}
+
+	return &cfg, nil
 }
 
 // getDefaultKeyCategories returns the default key category mappings
@@ -517,4 +780,53 @@ func (c *Config) RemoveKeyCategory(key string) {
 	if c.KeyCategories != nil {
 		delete(c.KeyCategories, key)
 	}
+}
+
+// GetOrCreateEncryptionKey returns the 32-byte AES-256-GCM key for local data encryption.
+// Generates and persists a new key on first call. Non-fatal errors during save are logged.
+func (c *Config) GetOrCreateEncryptionKey() ([]byte, error) {
+	if c.MachineEncryptionKey != "" {
+		data, err := base64.StdEncoding.DecodeString(c.MachineEncryptionKey)
+		if err == nil && len(data) == 32 {
+			return data, nil
+		}
+		// If existing key is invalid, regenerate
+		log.WarningLog.Printf("[Config] existing encryption key is invalid, regenerating")
+	}
+
+	// Generate new 32-byte key
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, fmt.Errorf("generate encryption key: %w", err)
+	}
+
+	c.MachineEncryptionKey = base64.StdEncoding.EncodeToString(key)
+
+	// Persist to disk; non-fatal if it fails
+	if err := SaveConfig(c); err != nil {
+		log.WarningLog.Printf("[Config] failed to persist encryption key: %v", err)
+	}
+
+	return key, nil
+}
+
+// GetFeatureFlag returns the persisted enabled state of the named feature flag.
+// Absent key returns false — all feature flags default to disabled.
+// Currently recognized flags:
+//
+//	"backlog" — enables the Backlog tab and backlog lifecycle controller.
+func (c *Config) GetFeatureFlag(name string) bool {
+	if c == nil || c.FeatureFlags == nil {
+		return false
+	}
+	return c.FeatureFlags[name]
+}
+
+// SetFeatureFlag sets the named feature flag and persists the config to disk.
+func (c *Config) SetFeatureFlag(name string, value bool) error {
+	if c.FeatureFlags == nil {
+		c.FeatureFlags = make(map[string]bool)
+	}
+	c.FeatureFlags[name] = value
+	return SaveConfig(c)
 }

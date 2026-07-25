@@ -1,11 +1,14 @@
 package vcs
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
 )
 
@@ -56,26 +59,26 @@ func DetectWithOptions(repoPath string, opts DetectOptions) (VCS, error) {
 	switch opts.Preference {
 	case PreferenceJJ:
 		if jjAvailable(absPath) {
-			log.InfoLog.Printf("[VCS] Using JJ (user preference) for %s", absPath)
+			log.Info("using VCS", "vcs", "jj", "reason", "user preference", "path", absPath)
 			return NewJJClient(absPath), nil
 		}
 		return nil, fmt.Errorf("JJ preferred but not available at %s", absPath)
 
 	case PreferenceGit:
 		if gitAvailable(absPath) {
-			log.InfoLog.Printf("[VCS] Using Git (user preference) for %s", absPath)
+			log.Info("using VCS", "vcs", "git", "reason", "user preference", "path", absPath)
 			return NewGitClient(absPath), nil
 		}
-		return nil, fmt.Errorf("Git preferred but not available at %s", absPath)
+		return nil, fmt.Errorf("git preferred but not available at %s", absPath)
 
 	default: // PreferenceAuto
 		// Auto-detect: prefer JJ if available (colocated repos work with both)
 		if jjAvailable(absPath) {
-			log.InfoLog.Printf("[VCS] Auto-detected JJ for %s", absPath)
+			log.Info("using VCS", "vcs", "jj", "reason", "auto-detected", "path", absPath)
 			return NewJJClient(absPath), nil
 		}
 		if gitAvailable(absPath) {
-			log.InfoLog.Printf("[VCS] Auto-detected Git for %s", absPath)
+			log.Info("using VCS", "vcs", "git", "reason", "auto-detected", "path", absPath)
 			return NewGitClient(absPath), nil
 		}
 		return nil, fmt.Errorf("no VCS detected at %s", absPath)
@@ -122,7 +125,9 @@ func gitAvailable(repoPath string) bool {
 	}
 
 	// Check if the path is inside a git repository
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--git-dir")
+	detectCtx, detectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer detectCancel()
+	cmd := safeexec.CommandContext(detectCtx, "git", "-C", repoPath, "rev-parse", "--git-dir")
 	if err := cmd.Run(); err == nil {
 		return true
 	}

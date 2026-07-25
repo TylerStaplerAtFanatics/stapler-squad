@@ -170,6 +170,19 @@ type ReviewItem struct {
 	DiffStats    *git.DiffStats `json:"diff_stats"`    // Git diff statistics (nullable)
 	LastActivity time.Time      `json:"last_activity"` // Last meaningful output time (used for sorting and display)
 
+	// IdleState is the active-work state at the time this item was last evaluated.
+	// Used as a fallback for WorkingState when ClaudeStatus is Unknown.
+	IdleState detection.IdleState `json:"idle_state,omitempty"`
+
+	// ClaudeStatus is the raw DetectedStatus from the detection pipeline at the time
+	// this item was last evaluated. It distinguishes Active from Processing, enabling
+	// the WORKING_STATE_PROCESSING proto value that IdleState alone cannot produce.
+	//
+	// WARNING: DetectedStatus is serialized as an integer (iota). New values MUST be
+	// appended to the end of the iota block in detection/status.go — inserting values
+	// mid-iota will silently corrupt persisted queue entries read by older server versions.
+	ClaudeStatus detection.DetectedStatus `json:"claude_status,omitempty"`
+
 	// Score is set by the Fixer after a successful Sweep quality gate.
 	// Nil if the Sweep has not yet completed or was not triggered.
 	Score *Score `json:"score,omitempty"`
@@ -491,7 +504,7 @@ func (rq *ReviewQueue) GetStatistics() ReviewQueueStatistics {
 		// migration ran, which would otherwise show "20412d ago" in statistics.
 		if item.DetectedAt.IsZero() || item.DetectedAt.Before(minValidTime) ||
 			item.LastActivity.IsZero() || item.LastActivity.Before(minValidTime) {
-			log.InfoLog.Printf("[ReviewQueue] GetStatistics: SKIPPING item '%s' due to invalid timestamps", item.SessionID)
+			log.Info("GetStatistics: skipping item due to invalid timestamps", "session", item.SessionID)
 			continue
 		}
 
@@ -513,7 +526,7 @@ func (rq *ReviewQueue) GetStatistics() ReviewQueueStatistics {
 		}
 	} else if len(rq.items) > 0 {
 		// Only log if there are items but none are valid (indicates a problem)
-		log.InfoLog.Printf("[ReviewQueue] GetStatistics: NO VALID ITEMS (validItemCount=0, totalItems=%d)", len(rq.items))
+		log.Info("GetStatistics: no valid items", "total_items", len(rq.items))
 	}
 
 	return stats

@@ -5,33 +5,40 @@ import (
 	"encoding/json"
 	"fmt"
 	cmdbridge "github.com/tstapler/stapler-squad/cmd"
+	"github.com/tstapler/stapler-squad/cmd/commands"
 	"github.com/tstapler/stapler-squad/config"
 	"github.com/tstapler/stapler-squad/daemon"
 	"github.com/tstapler/stapler-squad/executor"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/pkg/warren"
 	"github.com/tstapler/stapler-squad/profiling"
 	"github.com/tstapler/stapler-squad/server"
 	serverauth "github.com/tstapler/stapler-squad/server/auth"
+	mcpserver "github.com/tstapler/stapler-squad/server/mcp"
 	"github.com/tstapler/stapler-squad/server/middleware"
+	"github.com/tstapler/stapler-squad/server/services"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/git"
+	"github.com/tstapler/stapler-squad/session/scrollback"
 	"github.com/tstapler/stapler-squad/session/tmux"
 	"github.com/tstapler/stapler-squad/telemetry"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
 var (
-	version            = "dev"
+	version            = "1.1.2"
 	daemonFlag         bool
+	mcpFlag            bool
 	testModeFlag       bool
 	testDirFlag        string
 	discoveryModeFlag  string
@@ -48,7 +55,24 @@ var (
 		Use:   "stapler-squad",
 		Short: "Stapler Squad - Manage multiple AI agents like Claude Code, Aider, Codex, and Amp (Web Mode)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			// signal.NotifyContext cancels ctx on SIGTERM/SIGINT, triggering graceful
+			// shutdown via app.Run → app.Stop → srv.Shutdown (shutdown hooks persist
+			// session state including Claude session IDs for --resume on next start).
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			// MCP mode: initialize logging to stderr, load storage, run MCP server.
+			// Mutually exclusive with HTTP server mode — returns when stdin closes.
+			if mcpFlag {
+				mcpserver.InitMCPLogging()
+				cfg := config.LoadConfig()
+				_ = cfg // config loaded for side effects (e.g. workspace detection)
+				store, svc, sbMgr, storage, mcpErr := buildMCPDeps()
+				if mcpErr != nil {
+					return fmt.Errorf("mcp: init deps: %w", mcpErr)
+				}
+				return mcpserver.RunServer(ctx, store, svc, sbMgr, storage, nil, nil)
+			}
 
 			// Enable test mode if flag is set
 			if testModeFlag {
@@ -59,11 +83,21 @@ var (
 				}
 				// Set environment variable for config package to use
 				os.Setenv("STAPLER_SQUAD_TEST_DIR", testDir)
-				log.InfoLog.Printf("Test mode enabled: using isolated data directory %s", testDir)
+				log.Info("Test mode enabled: using isolated data directory", "dir", testDir)
 			}
 
 			// Load config first so we can configure logging properly
 			cfg := config.LoadConfig()
+
+			// Register the process manager backend before any session is created.
+			// Empty string defaults to "tmux" for backwards-compatibility.
+			{
+				backend := session.ProcessManagerBackend(cfg.ProcessManagerBackend)
+				if backend == "" {
+					backend = session.BackendTmux
+				}
+				session.RegisterBackendProvider(backend)
+			}
 
 			// Load discovery config
 			discoveryCfg := config.LoadDiscoveryConfig()
@@ -78,30 +112,17 @@ var (
 					return fmt.Errorf("invalid discovery mode '%s', must be one of: managed-only, external-only, all", discoveryModeFlag)
 				}
 				discoveryCfg.Mode = mode
-				log.InfoLog.Printf("Discovery mode set to: %s (from --discovery-mode flag)", mode)
+				log.Info("Discovery mode set from flag", "mode", mode)
 			}
 
 			// Apply --discover-external shorthand flag
 			if discoverExtFlag {
 				discoveryCfg.Mode = config.DiscoveryAll
 				discoveryCfg.AllowExternalAttach = true
-				log.InfoLog.Printf("External discovery enabled (from --discover-external flag)")
+				log.Info("External discovery enabled (from --discover-external flag)")
 			}
 
-			// Convert config to log config
-			logCfg := &log.LogConfig{
-				LogsEnabled:    true,
-				LogsDir:        "", // Use default location
-				LogMaxSize:     cfg.LogMaxSize,
-				LogMaxFiles:    cfg.LogMaxFiles,
-				LogMaxAge:      cfg.LogMaxAge,
-				LogCompress:    cfg.LogCompress,
-				UseSessionLogs: cfg.UseSessionLogs,
-				ConsoleEnabled: false,
-				FileEnabled:    true,
-				FileLevel:      log.DEBUG,
-			}
-			log.InitializeWithConfig(daemonFlag, logCfg)
+			log.InitializeWithConfig(daemonFlag, buildLogConfig(daemonFlag, cfg, false))
 			defer func() {
 				log.LogSessionPathsToStderr()
 				log.Close()
@@ -132,7 +153,7 @@ var (
 
 			if daemonFlag {
 				err := daemon.RunDaemon(cfg)
-				log.ErrorLog.Printf("failed to start daemon %v", err)
+				log.Error("failed to start daemon", "err", err)
 				return err
 			}
 
@@ -141,18 +162,28 @@ var (
 			telemetryCfg := telemetry.DefaultConfig()
 			telemetryProvider, err := telemetry.Initialize(ctx, telemetryCfg)
 			if err != nil {
-				log.WarningLog.Printf("Failed to initialize telemetry: %v", err)
+				log.Warn("Failed to initialize telemetry", "err", err)
 			} else {
 				defer func() {
 					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 					if err := telemetryProvider.Shutdown(shutdownCtx); err != nil {
-						log.WarningLog.Printf("Failed to shutdown telemetry: %v", err)
+						log.Warn("Failed to shutdown telemetry", "err", err)
 					}
 				}()
 			}
 
-			// Determine listen address: flag > config > PORT env > default
+			// Start continuous profiling if configured.
+			stopProfiling, err := profiling.StartContinuousProfiling(
+				"stapler-squad",
+				cfg.PyroscopeServerAddress,
+			)
+			if err != nil {
+				log.Warn("Continuous profiling unavailable", "err", err)
+			}
+			defer stopProfiling()
+
+			// Determine listen address: flag > PORT env > config > default
 			address := cfg.ListenAddress
 			if address == "" {
 				address = "localhost:8543"
@@ -169,7 +200,7 @@ var (
 			// Warn when binding to non-localhost
 			host, _, _ := net.SplitHostPort(address)
 			if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-				log.WarningLog.Printf("WARNING: Binding to non-localhost address %s. Ensure firewall rules are configured.", address)
+				log.Warn("WARNING: Binding to non-localhost address. Ensure firewall rules are configured.", "address", address)
 				fmt.Fprintf(os.Stderr, "\nWARNING: stapler-squad is listening on %s (all interfaces).\nEnsure this is intentional and your network is secured.\n\n", address)
 			}
 
@@ -186,47 +217,106 @@ var (
 			}
 			hostnames := resolveLANHostnames(lanIPStr)
 
-			srv := server.NewServer(address)
-			srv.SetHostnames(hostnames)
+			app := warren.New()
+			var (
+				coreDeps *server.CoreDeps
+				svcDeps  *server.ServiceDeps
+				srv      *server.Server
+			)
 
-			localOrigin := fmt.Sprintf("http://%s", address)
-			srv.SetOrigins([]string{localOrigin})
+			app.Phase("core-deps", func(ctx context.Context, a *warren.App) error {
+				log.Info("Building core dependencies (phase 1/3)...")
+				var err error
+				coreDeps, err = server.BuildCoreDepsWithOptions(server.BuildOptions{})
+				return err
+			})
 
-			// Start a second HTTPS server with passkey auth for remote access.
-			if remoteAccessFlag || cfg.PasskeyEnabled {
-				if err := startRemoteAccess(ctx, srv, address, cfg, remotePortFlag); err != nil {
-					return fmt.Errorf("start remote access: %w", err)
-				}
-			}
+			app.Phase("service-deps", func(ctx context.Context, a *warren.App) error {
+				log.Info("Building service dependencies (phase 2/3)...")
+				var err error
+				svcDeps, err = server.BuildServiceDeps(coreDeps)
+				return err
+			})
 
-			strictStartup := os.Getenv("STAPLER_SQUAD_STRICT_STARTUP") == "true"
+			app.Phase("runtime", func(ctx context.Context, a *warren.App) error {
+				log.Info("Building runtime dependencies (phase 3/3)...")
 
-			// Ensure tmux server is running before sessions are restored.
-			if err := tmux.EnsureServerRunning(""); err != nil {
-				if strictStartup {
-					return fmt.Errorf("tmux server startup failed (unset STAPLER_SQUAD_STRICT_STARTUP to suppress): %w", err)
-				}
-				log.WarningLog.Printf("Failed to ensure tmux server running: %v", err)
-			}
-			// Create a keepalive session so the tmux server does not exit when all user sessions close.
-			if err := tmux.CreateKeepaliveSession(""); err != nil {
-				if strictStartup {
-					return fmt.Errorf("failed to create tmux keepalive session (unset STAPLER_SQUAD_STRICT_STARTUP to suppress): %w", err)
-				}
-				log.WarningLog.Printf("Failed to create keepalive session: %v", err)
-			}
-			// --tmux-keep-server: also set exit-empty off so the server survives even if the keepalive dies.
-			if tmuxKeepServerFlag {
-				if err := tmux.SetExitEmpty("", false); err != nil {
+				strictStartup := os.Getenv("STAPLER_SQUAD_STRICT_STARTUP") == "true"
+
+				// Ensure tmux server is running BEFORE restoring sessions.
+				// BuildRuntimeDeps calls Start(false) via FromInstanceData; if the server
+				// is not yet up, DoesSessionExist() triggers recoverFromServerFailure which
+				// starts a fresh server — then all sessions look non-existent and get cold-
+				// restored into brand-new tmux sessions, losing the running processes.
+				// The TmuxServerReady token enforces this ordering at compile time.
+				tmuxReady, tmuxReadyErr := tmux.EnsureServerRunning("")
+				if tmuxReadyErr != nil {
 					if strictStartup {
-						return fmt.Errorf("failed to set tmux exit-empty off (unset STAPLER_SQUAD_STRICT_STARTUP to suppress): %w", err)
+						return fmt.Errorf("tmux server startup failed (unset STAPLER_SQUAD_STRICT_STARTUP to suppress): %w", tmuxReadyErr)
 					}
-					log.WarningLog.Printf("Failed to set tmux exit-empty off: %v", err)
+					log.Warn("Failed to ensure tmux server running", "err", tmuxReadyErr)
 				}
-			}
+				// Create a keepalive session so the tmux server does not exit when all user sessions close.
+				if err := tmux.CreateKeepaliveSession(""); err != nil {
+					if strictStartup {
+						return fmt.Errorf("failed to create tmux keepalive session (unset STAPLER_SQUAD_STRICT_STARTUP to suppress): %w", err)
+					}
+					log.Warn("Failed to create keepalive session", "err", err)
+				}
+				// Set exit-empty off so the server survives even if the keepalive dies.
+				if tmuxKeepServerFlag {
+					if err := tmux.SetExitEmpty("", false); err != nil {
+						if strictStartup {
+							return fmt.Errorf("failed to set tmux exit-empty off (unset STAPLER_SQUAD_STRICT_STARTUP to suppress): %w", err)
+						}
+						log.Warn("Failed to set tmux exit-empty off", "err", err)
+					}
+				}
 
-			log.InfoLog.Printf("Starting web server on %s", address)
-			return srv.Start(ctx)
+				rt, err := server.BuildRuntimeDeps(tmuxReady, svcDeps, cfg)
+				if err != nil {
+					return err
+				}
+
+				srv = server.NewServerWithDeps(address, rt.ToServerDeps())
+				srv.SetHostnames(hostnames)
+
+				localOrigin := fmt.Sprintf("http://%s", address)
+				srv.SetOrigins([]string{localOrigin})
+
+				// STAPLER_SQUAD_EXTRA_ORIGINS lets an isolated DevStack's next-dev frontend past
+				// CORS. Only honored when STAPLER_SQUAD_INSTANCE is also explicitly set — the
+				// default/systemd instance never sets a custom instance name, so this env var is
+				// a structural no-op there regardless of its value (ADR-001 §2, pre-mortem.md
+				// Failure #3). Each entry must be an exact http(s)://localhost:<port> or
+				// http(s)://127.0.0.1:<port> origin — anything else is rejected and logged, never
+				// silently trusted.
+				if os.Getenv("STAPLER_SQUAD_INSTANCE") != "" {
+					if extraOriginsRaw := os.Getenv("STAPLER_SQUAD_EXTRA_ORIGINS"); extraOriginsRaw != "" {
+						validExtraOrigins, _ := parseExtraOrigins(extraOriginsRaw)
+						srv.SetOrigins(append(srv.GetOrigins(), validExtraOrigins...))
+					}
+					log.Info("CORS trusted origins", "origins", srv.GetOrigins())
+				}
+
+				// Start a second HTTPS server with passkey auth for remote access.
+				if remoteAccessFlag || cfg.PasskeyEnabled {
+					if err := startRemoteAccess(ctx, srv, address, cfg, remotePortFlag); err != nil {
+						return fmt.Errorf("start remote access: %w", err)
+					}
+				}
+
+				a.Go("http-server", func(ctx context.Context) {
+					log.Info("Starting web server", "address", address)
+					if err := srv.Start(ctx); err != nil {
+						log.Error("HTTP server stopped", "err", err)
+					}
+				})
+
+				return nil
+			})
+
+			return app.Run(ctx)
 		},
 	}
 
@@ -236,21 +326,7 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config first so we can configure logging properly
 			cfg := config.LoadConfig()
-			// Convert config to log config
-			logCfg := &log.LogConfig{
-				LogsEnabled:    true,
-				LogsDir:        "", // Use default location
-				LogMaxSize:     cfg.LogMaxSize,
-				LogMaxFiles:    cfg.LogMaxFiles,
-				LogMaxAge:      cfg.LogMaxAge,
-				LogCompress:    cfg.LogCompress,
-				UseSessionLogs: cfg.UseSessionLogs,
-				// Disable console output for CLI commands to keep output clean
-				ConsoleEnabled: false,
-				FileEnabled:    true,
-				FileLevel:      log.DEBUG,
-			}
-			log.InitializeWithConfig(false, logCfg)
+			log.InitializeWithConfig(false, buildLogConfig(false, cfg, false))
 			defer func() {
 				log.LogSessionPathsToStderr()
 				log.Close()
@@ -296,21 +372,7 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config first so we can configure logging properly
 			cfg := config.LoadConfig()
-			// Convert config to log config
-			logCfg := &log.LogConfig{
-				LogsEnabled:    true,
-				LogsDir:        "", // Use default location
-				LogMaxSize:     cfg.LogMaxSize,
-				LogMaxFiles:    cfg.LogMaxFiles,
-				LogMaxAge:      cfg.LogMaxAge,
-				LogCompress:    cfg.LogCompress,
-				UseSessionLogs: cfg.UseSessionLogs,
-				// Disable console output for CLI commands to keep output clean
-				ConsoleEnabled: false,
-				FileEnabled:    true,
-				FileLevel:      log.DEBUG,
-			}
-			log.InitializeWithConfig(false, logCfg)
+			log.InitializeWithConfig(false, buildLogConfig(false, cfg, false))
 			defer func() {
 				log.LogSessionPathsToStderr()
 				log.Close()
@@ -347,7 +409,7 @@ var (
 		Short: "Print the version number of stapler-squad",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("stapler-squad version %s\n", version)
-			fmt.Printf("https://github.com/tstapler/stapler-squad/releases/tag/v%s\n", version)
+			fmt.Printf("https://github.com/TylerStaplerAtFanatics/stapler-squad/releases/tag/v%s\n", version)
 		},
 	}
 
@@ -357,19 +419,7 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Initialize logging
 			cfg := config.LoadConfig()
-			logCfg := &log.LogConfig{
-				LogsEnabled:    true,
-				LogsDir:        "",
-				LogMaxSize:     cfg.LogMaxSize,
-				LogMaxFiles:    cfg.LogMaxFiles,
-				LogMaxAge:      cfg.LogMaxAge,
-				LogCompress:    cfg.LogCompress,
-				UseSessionLogs: cfg.UseSessionLogs,
-				ConsoleEnabled: true,
-				FileEnabled:    true,
-				FileLevel:      log.DEBUG,
-			}
-			log.InitializeWithConfig(false, logCfg)
+			log.InitializeWithConfig(false, buildLogConfig(false, cfg, true))
 			defer log.Close()
 
 			fmt.Println("=== PTY Initialization Test ===")
@@ -460,19 +510,7 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Initialize logging
 			cfg := config.LoadConfig()
-			logCfg := &log.LogConfig{
-				LogsEnabled:    true,
-				LogsDir:        "",
-				LogMaxSize:     cfg.LogMaxSize,
-				LogMaxFiles:    cfg.LogMaxFiles,
-				LogMaxAge:      cfg.LogMaxAge,
-				LogCompress:    cfg.LogCompress,
-				UseSessionLogs: cfg.UseSessionLogs,
-				ConsoleEnabled: false,
-				FileEnabled:    true,
-				FileLevel:      log.DEBUG,
-			}
-			log.InitializeWithConfig(false, logCfg)
+			log.InitializeWithConfig(false, buildLogConfig(false, cfg, false))
 			defer log.Close()
 
 			repo, err := session.NewEntRepository()
@@ -527,7 +565,7 @@ var (
 			if err != nil {
 				return fmt.Errorf("get config dir: %w", err)
 			}
-			setupTokenPath := filepath.Join(configDir, serverauth.SetupTokenFile)
+			setupTokenPath := filepath.Join(configDir, serverauth.SetupTokenDir, serverauth.SetupTokenFile)
 			mgr := serverauth.NewSetupManager()
 			token, err := mgr.GenerateToFile(setupTokenPath)
 			if err != nil {
@@ -587,6 +625,9 @@ var (
 )
 
 func init() {
+	rootCmd.Flags().BoolVar(&mcpFlag, "mcp", false,
+		"Run as an MCP server (stdio transport). Reads MCP JSON-RPC from stdin, writes to stdout. "+
+			"Log output goes to stderr. Mutually exclusive with web server mode.")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+
 		" and runs autoyes mode on them.")
 	rootCmd.Flags().BoolVar(&testModeFlag, "test-mode", false, "Run in test mode with isolated data directory")
@@ -614,7 +655,7 @@ func init() {
 	rootCmd.Flags().StringVar(&rpIDFlag, "rp-id", "",
 		"WebAuthn Relying Party ID override (your LAN IP or hostname, e.g. '192.168.1.42'). "+
 			"Defaults to the detected LAN IP.")
-	rootCmd.Flags().BoolVar(&tmuxKeepServerFlag, "tmux-keep-server", false,
+	rootCmd.Flags().BoolVar(&tmuxKeepServerFlag, "tmux-keep-server", true,
 		"Keep tmux server running even when all user sessions close (sets exit-empty off). "+
 			"Use this if the tmux server frequently stops between sessions.")
 
@@ -633,6 +674,31 @@ func init() {
 	rootCmd.AddCommand(testPtyCmd)
 	rootCmd.AddCommand(listSessionsCmd)
 	rootCmd.AddCommand(printQRCodesCmd)
+	rootCmd.AddCommand(commands.GetSessionCmd)
+}
+
+// extraOriginPattern matches an exact http(s)://localhost:<port> or
+// http(s)://127.0.0.1:<port> origin — no path, query, wildcard, or other host.
+var extraOriginPattern = regexp.MustCompile(`^https?://(localhost|127\.0\.0\.1):\d+$`)
+
+// parseExtraOrigins splits raw on commas and strings.TrimSpace's each entry,
+// validating it against extraOriginPattern. Entries that pass are returned in
+// valid; entries that fail are logged via log.Warn (naming the offending entry)
+// and returned in rejected — they are never silently included in valid.
+func parseExtraOrigins(raw string) (valid []string, rejected []string) {
+	for _, entry := range strings.Split(raw, ",") {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			continue
+		}
+		if extraOriginPattern.MatchString(trimmed) {
+			valid = append(valid, trimmed)
+		} else {
+			log.Warn("Rejected invalid STAPLER_SQUAD_EXTRA_ORIGINS entry", "entry", trimmed)
+			rejected = append(rejected, trimmed)
+		}
+	}
+	return valid, rejected
 }
 
 // resolveLANHostnames returns a list of domain names suitable for use as a WebAuthn rpID
@@ -661,7 +727,10 @@ func resolveLANHostnames(lanIPStr string) []string {
 	}
 
 	// 2. Linux-specific: mDNS reverse lookup via avahi-resolve
-	if out, err := exec.Command("avahi-resolve", "-a", lanIPStr).Output(); err == nil {
+	avahiCtx, avahiCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer avahiCancel()
+	avahiCmd := safeexec.CommandContext(avahiCtx, "avahi-resolve", "-a", lanIPStr)
+	if out, err := avahiCmd.Output(); err == nil {
 		fields := strings.Fields(string(out))
 		if len(fields) >= 2 {
 			add(fields[1])
@@ -669,7 +738,10 @@ func resolveLANHostnames(lanIPStr string) []string {
 	}
 
 	// 3. Try hostname -f for FQDN
-	if out, err := exec.Command("hostname", "-f").Output(); err == nil {
+	hostnameCtx, hostnameCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer hostnameCancel()
+	hostnameCmd := safeexec.CommandContext(hostnameCtx, "hostname", "-f")
+	if out, err := hostnameCmd.Output(); err == nil {
 		add(string(out))
 	}
 
@@ -717,7 +789,10 @@ func getDNSSearchDomains() []string {
 	}
 
 	// scutil --dns — macOS authoritative source for search domains.
-	if out, err := exec.Command("scutil", "--dns").Output(); err == nil {
+	scutilCtx, scutilCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer scutilCancel()
+	scutilCmd := safeexec.CommandContext(scutilCtx, "scutil", "--dns")
+	if out, err := scutilCmd.Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			line = strings.TrimSpace(line)
 			// Format: "search domain[N] : example.com"
@@ -749,7 +824,7 @@ func startRemoteAccess(ctx context.Context, srv *server.Server, localAddr string
 	// Detect LAN IP for QR code URLs and TLS cert SANs.
 	lanIP, err := getOutboundIP()
 	if err != nil {
-		log.WarningLog.Printf("Could not detect LAN IP: %v; using localhost", err)
+		log.Warn("Could not detect LAN IP; using localhost", "err", err)
 		lanIP = net.ParseIP("127.0.0.1")
 	}
 	lanIPStr := lanIP.String()
@@ -759,11 +834,11 @@ func startRemoteAccess(ctx context.Context, srv *server.Server, localAddr string
 
 	remoteAddr := fmt.Sprintf("0.0.0.0:%d", remotePort)
 
-	// Build SAN list for the TLS cert — hostnames only.
-	// IPs are intentionally excluded: WebAuthn rpID must be a hostname, so
-	// including the LAN IP in the SANs would cause the CA to regenerate on
-	// every DHCP lease change, invalidating previously installed CA certs.
-	sans := []string{"localhost"}
+	// Build SAN list for the TLS cert (include localhost, IP, and all hostnames).
+	// WebAuthn rpID must be a hostname, so including the LAN IP in the SANs
+	// is fine for HTTPS but rpID itself must be a hostname for most browsers.
+	sans := make([]string, 0, 3+len(hostnames))
+	sans = append(sans, "localhost", "127.0.0.1", lanIPStr)
 	sans = append(sans, hostnames...)
 
 	tlsPaths, err := server.EnsureTLSCerts(sans)
@@ -776,6 +851,8 @@ func startRemoteAccess(ctx context.Context, srv *server.Server, localAddr string
 		return fmt.Errorf("load TLS config: %w", err)
 	}
 
+	// Determine rpID: config/flag override > first detected hostname > detected LAN IP.
+	// WebAuthn spec requires a domain name; IP addresses are not accepted by browsers.
 	rpID := cfg.PasskeyRPID
 	if rpID == "" {
 		if len(hostnames) > 0 {
@@ -823,13 +900,19 @@ func startRemoteAccess(ctx context.Context, srv *server.Server, localAddr string
 	}
 
 	setupMgr := serverauth.NewSetupManager()
+	inviteMgr := serverauth.NewInviteManager()
 
-	// Watch the setup token file for tokens generated by print-qr-codes.
-	setupTokenPath := filepath.Join(configDir, serverauth.SetupTokenFile)
+	// Ensure the auth subdirectory exists so WatchFile can watch a quiet directory
+	// instead of the busy root state dir (eliminates spurious fsnotify wakeups).
+	authDir := filepath.Join(configDir, serverauth.SetupTokenDir)
+	if err := os.MkdirAll(authDir, 0700); err != nil {
+		log.Warn("failed to create auth dir", "path", authDir, "err", err)
+	}
+	setupTokenPath := filepath.Join(authDir, serverauth.SetupTokenFile)
 	go setupMgr.WatchFile(ctx, setupTokenPath)
 
 	// Register auth routes on the shared mux (accessible via both servers).
-	serverauth.RegisterRoutes(srv.Mux(), waHandler, sessions, store, setupMgr, tlsPaths.CAFile, displayHost)
+	serverauth.RegisterRoutes(srv.Mux(), waHandler, sessions, store, setupMgr, inviteMgr, tlsPaths.CAFile, displayHost, remotePort)
 
 	// Start the remote HTTPS server with auth middleware applied.
 	if err := srv.StartRemote(ctx, remoteAddr, tlsCfg, middleware.Auth(sessions)); err != nil {
@@ -843,7 +926,7 @@ func startRemoteAccess(ctx context.Context, srv *server.Server, localAddr string
 	if !store.HasCredentials() {
 		token, tokenErr := setupMgr.Init()
 		if tokenErr != nil {
-			log.WarningLog.Printf("Failed to generate setup token: %v", tokenErr)
+			log.Warn("Failed to generate setup token", "err", tokenErr)
 		} else {
 			setupURL := fmt.Sprintf("https://%s:%d/login?setup_token=%s", displayHost, remotePort, token)
 			caURL := fmt.Sprintf("https://%s:%d/auth/ca.pem", displayHost, remotePort)
@@ -859,35 +942,62 @@ func startRemoteAccess(ctx context.Context, srv *server.Server, localAddr string
 
 			fmt.Fprintf(os.Stderr, "\n── QR Code 1: Install CA certificate (trust HTTPS on your phone) ──\n")
 			if qrErr := serverauth.PrintQRToTerminal(caURL); qrErr != nil {
-				log.WarningLog.Printf("CA QR print failed: %v", qrErr)
+				log.Warn("CA QR print failed", "err", qrErr)
 			}
 
 			fmt.Fprintf(os.Stderr, "\n── QR Code 2: Register passkey (after installing CA cert) ──\n")
 			if qrErr := serverauth.PrintQRToTerminal(setupURL); qrErr != nil {
-				log.WarningLog.Printf("Setup QR print failed: %v", qrErr)
+				log.Warn("Setup QR print failed", "err", qrErr)
 			}
 		}
 	}
 
-	log.InfoLog.Printf("auth: remote access enabled on port %d – rpID=%s host=%s LAN IP=%s", remotePort, rpID, displayHost, lanIPStr)
-	log.InfoLog.Printf("auth: TLS CA cert: %s", tlsPaths.CAFile)
+	log.Info("auth: remote access enabled", "port", remotePort, "rpID", rpID, "host", displayHost, "lan_ip", lanIPStr)
+	log.Info("auth: TLS CA cert", "path", tlsPaths.CAFile)
 	return nil
 }
 
 func main() {
-	// Set up signal handling for SIGTERM only (not SIGINT/Ctrl+C)
-	// We only intercept SIGTERM for forced termination (e.g., systemd, docker)
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGTERM) // Only SIGTERM, not os.Interrupt
-
-	go func() {
-		<-c
-		log.InfoLog.Printf("Received SIGTERM, forcing exit")
-		log.LogSessionPathsToStderr()
-		os.Exit(1)
-	}()
-
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 	}
+}
+
+// buildLogConfig converts application config to a log.LogConfig. consoleEnabled
+// controls whether output is also written to stdout (false for server/CLI modes,
+// true for interactive diagnostic commands).
+func buildLogConfig(daemon bool, cfg *config.Config, consoleEnabled bool) *log.LogConfig {
+	return &log.LogConfig{
+		LogsEnabled:    true,
+		LogsDir:        "",
+		LogMaxSize:     cfg.LogMaxSize,
+		LogMaxFiles:    cfg.LogMaxFiles,
+		LogMaxAge:      cfg.LogMaxAge,
+		LogCompress:    cfg.LogCompress,
+		UseSessionLogs: cfg.UseSessionLogs,
+		ConsoleEnabled: consoleEnabled,
+		FileEnabled:    true,
+		FileLevel:      log.DEBUG,
+	}
+}
+
+// buildMCPDeps creates the minimal server dependencies needed by the MCP server.
+// Uses Phase 1+2 only (no tmux startup, no HTTP listener, no background pollers).
+// The ScrollbackManager is read-only in MCP mode — it reads from the same storage
+// path written by the HTTP server process.
+func buildMCPDeps() (session.InstanceStore, *services.SessionService, *scrollback.ScrollbackManager, *session.Storage, error) {
+	core, err := server.BuildCoreDeps()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("cannot determine home directory for scrollback storage: %w", err)
+	}
+	sbConfig := scrollback.DefaultScrollbackConfig()
+	sbConfig.StoragePath = filepath.Join(homeDir, ".stapler-squad", "sessions")
+	sbMgr := scrollback.NewScrollbackManager(sbConfig)
+
+	return core.Storage, core.SessionService, sbMgr, core.Storage, nil
 }

@@ -1,15 +1,17 @@
 "use client";
 
-import { ClaudeHistoryEntry } from "@/gen/session/v1/session_pb";
+import { ClaudeHistoryEntry, ClaudeMessage } from "@/gen/session/v1/session_pb";
+import { useState, useCallback } from "react";
 import { HistoryGroupingStrategy } from "@/lib/hooks/useHistoryFilters";
 import type { HistoryGroup } from "@/lib/hooks/useHistoryGrouping";
 import { HistoryEntryCard } from "./HistoryEntryCard";
-import styles from "./HistoryGroupView.module.css";
+import * as styles from "./HistoryGroupView.css";
 
 interface HistoryGroupViewProps {
   groupedEntries: HistoryGroup[];
   flatEntries: ClaudeHistoryEntry[];
   selectedEntry: ClaudeHistoryEntry | null;
+  enrichedEntry?: ClaudeHistoryEntry | null;
   loading: boolean;
   entriesCount: number;
   filteredCount: number;
@@ -17,12 +19,14 @@ interface HistoryGroupViewProps {
   groupingStrategy: HistoryGroupingStrategy;
   onSelectEntry: (entry: ClaudeHistoryEntry, index: number) => void;
   onClearFilters: () => void;
+  fetchMessages: (id: string) => Promise<ClaudeMessage[]>;
 }
 
 export function HistoryGroupView({
   groupedEntries,
   flatEntries,
   selectedEntry,
+  enrichedEntry,
   loading,
   entriesCount,
   filteredCount,
@@ -30,7 +34,18 @@ export function HistoryGroupView({
   groupingStrategy,
   onSelectEntry,
   onClearFilters,
+  fetchMessages,
 }: HistoryGroupViewProps) {
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const handleToggleExpand = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }, []);
+
   if (loading) {
     return (
       <div className={styles.loadingContainer}>
@@ -71,9 +86,7 @@ export function HistoryGroupView({
           <>
             <div className={styles.emptyStateIcon}>📭</div>
             <h3 className={styles.emptyStateTitle}>No entries match your criteria</h3>
-            <p className="text-muted">
-              Adjust your filters to see more results.
-            </p>
+            <p className="text-muted">Adjust your filters to see more results.</p>
           </>
         )}
       </div>
@@ -98,7 +111,11 @@ export function HistoryGroupView({
                   key={entry.id}
                   entry={entry}
                   isSelected={isSelected}
+                  enrichedEntry={isSelected ? enrichedEntry : undefined}
+                  isExpanded={expandedIds.has(entry.id)}
+                  onToggleExpand={handleToggleExpand}
                   onSelect={() => onSelectEntry(entry, entryIndex)}
+                  fetchMessages={fetchMessages}
                 />
               );
             })}

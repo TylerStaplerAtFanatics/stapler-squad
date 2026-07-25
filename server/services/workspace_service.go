@@ -1,9 +1,17 @@
 package services
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
 	"github.com/tstapler/stapler-squad/server/adapters"
@@ -16,13 +24,60 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// WorkspaceProvider resolves workspace path information for a session.
+// Inject this interface into services that need path resolution instead of
+// accessing session.Instance.Path directly.
+type WorkspaceProvider interface {
+	GetWorkspace(sessionID string) (session.Workspace, error)
+}
+
+// LiveInstanceFinder is satisfied by SessionService. It returns the live in-memory
+// instance by scanning the poller's tracked sessions (O(N)) or nil if the session is
+// not yet in the poller. WorkspaceService uses this as a fast path to avoid calling
+// LoadInstances() — which re-hydrates all sessions from disk and spawns PTY/tmux
+// subprocesses — on every read-only RPC call.
+type LiveInstanceFinder interface {
+	FindLiveInstance(id string) *session.Instance
+}
+
+// branchCacheEntry holds a cached branch list for a repository path.
+// Moved from session_service.go together with ListBranches (ADR-001, Story 1.4).
+type branchCacheEntry struct {
+	branches []string
+	cachedAt time.Time
+}
+
+// vcsStatusCacheEntry caches the full VCSStatus result for a working directory.
+type vcsStatusCacheEntry struct {
+	status   *vc.VCSStatus
+	cachedAt time.Time
+}
+
+const branchCacheTTL = 5 * time.Minute
+
+// vcsStatusCacheTTL caps repeated git subprocess overhead for frequent GetVCSStatus
+// polls. 15 s matches the GitProvider.branchCacheTTL and keeps the UI feeling fresh.
+const vcsStatusCacheTTL = 15 * time.Second
+
 // WorkspaceService handles all VCS/workspace RPC methods.
 //
 // These methods operate on session workspace state (git/jj status, branch
 // switching, worktrees) and may emit events after state-modifying operations.
 type WorkspaceService struct {
-	storage  *session.Storage
-	eventBus *events.EventBus
+	storage    *session.Storage
+	eventBus   *events.EventBus
+	liveFinder LiveInstanceFinder
+	// inFlightSwitches tracks session IDs currently undergoing a workspace switch.
+	// Prevents concurrent SwitchWorkspace RPCs on the same session from corrupting state.
+	inFlightSwitches sync.Map
+	// branchCache caches git branch lists per repo path. ADR-002.
+	// Moved here from SessionService (Story 1.4 — ListBranches was the odd one out
+	// next to GetVCSStatus/GetWorkspaceInfo/ListWorkspaceTargets/SwitchWorkspace,
+	// which all already lived in WorkspaceService).
+	branchCache sync.Map // map[string]branchCacheEntry
+	// vcsStatusCache caches full VCSStatus results per workdir to avoid spawning 6+
+	// git subprocesses on every poll. Keyed by workdir path.
+	vcsStatusCache sync.Map // map[string]vcsStatusCacheEntry
 }
 
 // NewWorkspaceService creates a WorkspaceService with the given dependencies.
@@ -30,19 +85,47 @@ func NewWorkspaceService(storage *session.Storage, eventBus *events.EventBus) *W
 	return &WorkspaceService{storage: storage, eventBus: eventBus}
 }
 
-// findInstance loads instances from storage and returns the one with the given title.
-// Returns CodeNotFound if the session does not exist.
-func (ws *WorkspaceService) findInstance(id string) ([]*session.Instance, *session.Instance, error) {
-	instances, err := ws.storage.LoadInstances()
-	if err != nil {
-		return nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
-	}
-	for _, inst := range instances {
-		if inst.Title == id {
-			return instances, inst, nil
+// SetLiveFinder wires the fast-path instance lookup. Call this after constructing
+// SessionService so that read-only RPCs bypass LoadInstances().
+func (ws *WorkspaceService) SetLiveFinder(f LiveInstanceFinder) {
+	ws.liveFinder = f
+}
+
+// findInstanceFast returns the live instance for the given id. It tries the
+// live poller first (O(1) map lookup, no subprocess), falling back to
+// LoadInstances only when the session is not yet tracked by the poller.
+//
+// All WorkspaceService RPCs use this path. SaveInstances accepts a slice
+// with a single element, so the mutating SwitchWorkspace RPC also uses this
+// rather than loading the full session list.
+func (ws *WorkspaceService) findInstanceFast(id string) (*session.Instance, error) {
+	if ws.liveFinder != nil {
+		if inst := ws.liveFinder.FindLiveInstance(id); inst != nil {
+			return inst, nil
 		}
 	}
-	return instances, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", id))
+	if ws.storage == nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", id))
+	}
+	instances, err := ws.storage.LoadInstances()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load instances: %w", err))
+	}
+	for _, inst := range instances {
+		if inst.MatchesID(id) {
+			return inst, nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %s", id))
+}
+
+// GetWorkspace implements WorkspaceProvider.
+func (ws *WorkspaceService) GetWorkspace(sessionID string) (session.Workspace, error) {
+	inst, err := ws.findInstanceFast(sessionID)
+	if err != nil {
+		return session.Workspace{}, err
+	}
+	return inst.Workspace(), nil
 }
 
 // GetVCSStatus retrieves the current version control status for a session.
@@ -54,16 +137,26 @@ func (ws *WorkspaceService) GetVCSStatus(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	_, instance, err := ws.findInstance(req.Msg.Id)
+	instance, err := ws.findInstanceFast(req.Msg.Id)
 	if err != nil {
 		return nil, err
 	}
 
-	workDir := instance.Path
+	workDir := instance.Workspace().EffectivePath
 	if workDir == "" {
 		return connect.NewResponse(&sessionv1.GetVCSStatusResponse{
 			Error: "session has no working directory",
 		}), nil
+	}
+
+	// Fast path: return cached status if still fresh.
+	if cached, ok := ws.vcsStatusCache.Load(workDir); ok {
+		entry := cached.(vcsStatusCacheEntry)
+		if time.Since(entry.cachedAt) < vcsStatusCacheTTL {
+			return connect.NewResponse(&sessionv1.GetVCSStatusResponse{
+				VcsStatus: vcsStatusToProto(entry.status),
+			}), nil
+		}
 	}
 
 	var provider vc.VCSProvider
@@ -87,6 +180,8 @@ func (ws *WorkspaceService) GetVCSStatus(
 		}), nil
 	}
 
+	ws.vcsStatusCache.Store(workDir, vcsStatusCacheEntry{status: status, cachedAt: time.Now()})
+
 	return connect.NewResponse(&sessionv1.GetVCSStatusResponse{
 		VcsStatus: vcsStatusToProto(status),
 	}), nil
@@ -101,7 +196,7 @@ func (ws *WorkspaceService) GetWorkspaceInfo(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	_, instance, err := ws.findInstance(req.Msg.Id)
+	instance, err := ws.findInstanceFast(req.Msg.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +242,7 @@ func (ws *WorkspaceService) ListWorkspaceTargets(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session id is required"))
 	}
 
-	_, instance, err := ws.findInstance(req.Msg.Id)
+	instance, err := ws.findInstanceFast(req.Msg.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -216,10 +311,19 @@ func (ws *WorkspaceService) SwitchWorkspace(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("target is required"))
 	}
 
-	instances, instance, err := ws.findInstance(req.Msg.Id)
+	// Guard against concurrent switches on the same session.
+	if _, loaded := ws.inFlightSwitches.LoadOrStore(req.Msg.Id, true); loaded {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("workspace switch already in progress for session '%s'", req.Msg.Id))
+	}
+	defer ws.inFlightSwitches.Delete(req.Msg.Id)
+
+	instance, err := ws.findInstanceFast(req.Msg.Id)
 	if err != nil {
 		return nil, err
 	}
+
+	preWorkDir := instance.Workspace().EffectivePath
 
 	var switchType session.WorkspaceSwitchType
 	switch req.Msg.SwitchType {
@@ -257,7 +361,7 @@ func (ws *WorkspaceService) SwitchWorkspace(
 	if instance.Started() && !instance.Paused() {
 		label := "pre-switch: " + req.Msg.Target
 		if _, cpErr := instance.CreateCheckpoint(label, 0); cpErr != nil {
-			log.WarningLog.Printf("SwitchWorkspace: pre-switch checkpoint for '%s' failed (non-fatal): %v", instance.Title, cpErr)
+			log.Warn("SwitchWorkspace: pre-switch checkpoint failed (non-fatal)", "session", instance.Title, "err", cpErr)
 		}
 	}
 
@@ -279,9 +383,14 @@ func (ws *WorkspaceService) SwitchWorkspace(
 		protoVCSType = sessionv1.VCSType_VCS_TYPE_UNSPECIFIED
 	}
 
-	if err := ws.storage.SaveInstances(instances); err != nil {
-		log.WarningLog.Printf("Failed to save instances after workspace switch: %v", err)
+	if ws.storage != nil {
+		if err := ws.storage.SaveInstances([]*session.Instance{instance}); err != nil {
+			log.Warn("failed to save instances after workspace switch", "err", err)
+		}
 	}
+
+	// Evict the status cache for the old path; the new path will be repopulated on next poll.
+	ws.vcsStatusCache.Delete(preWorkDir)
 
 	if ws.eventBus != nil {
 		ws.eventBus.Publish(events.NewSessionUpdatedEvent(instance, []string{"workspace", "branch"}))
@@ -294,7 +403,7 @@ func (ws *WorkspaceService) SwitchWorkspace(
 		CurrentRevision:  result.CurrentRevision,
 		VcsType:          protoVCSType,
 		ChangesHandled:   result.ChangesHandled,
-		Session:          adapters.InstanceToProto(instance),
+		Session:          adapters.InstanceToProto(instance, nil),
 	}), nil
 }
 
@@ -379,4 +488,122 @@ func fileChangeToProto(f vc.FileChange) *sessionv1.FileChange {
 		IsStaged: f.IsStaged,
 		OldPath:  f.OldPath,
 	}
+}
+
+// ListBranches returns the git branches for a given repository path.
+// Results are cached per repo path with a 5-minute TTL. ADR-002.
+// Moved from SessionService (Story 1.4 — was the odd one out next to the four
+// workspace methods that already delegated here).
+func (ws *WorkspaceService) ListBranches(
+	ctx context.Context,
+	req *connect.Request[sessionv1.ListBranchesRequest],
+) (*connect.Response[sessionv1.ListBranchesResponse], error) {
+	repoPath := req.Msg.GetRepoPath()
+	if repoPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_path is required"))
+	}
+
+	// Normalize and validate the path: must resolve within the user's home directory.
+	absPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid repo_path: %w", err))
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("cannot determine home directory: %w", err))
+	}
+	if !strings.HasPrefix(absPath, homeDir+string(filepath.Separator)) && absPath != homeDir {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_path must be within the user home directory"))
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_path does not exist: %w", err))
+	}
+
+	maxResults := int(req.Msg.GetMaxResults())
+	if maxResults <= 0 {
+		maxResults = 200
+	}
+	filter := req.Msg.GetFilter()
+
+	// Serve from cache if still fresh.
+	if entry, ok := ws.branchCache.Load(absPath); ok {
+		cached := entry.(branchCacheEntry)
+		if time.Since(cached.cachedAt) < branchCacheTTL {
+			branches := filterBranches(cached.branches, filter, maxResults)
+			return connect.NewResponse(&sessionv1.ListBranchesResponse{
+				Branches:   branches,
+				TotalCount: int32(len(branches)),
+				Truncated:  false,
+			}), nil
+		}
+	}
+
+	// Run git for-each-ref with a 2-second timeout.
+	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	refSpec := "refs/heads"
+	if req.Msg.GetIncludeRemote() {
+		refSpec = "refs/"
+	}
+	cmd := safeexec.CommandContext(cmdCtx, "git", "-C", absPath, "for-each-ref", refSpec, "--format=%(refname:short)")
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+
+	start := time.Now()
+	runErr := cmd.Run()
+	latencyMs := time.Since(start).Milliseconds()
+	log.Info("[ListBranches] branch list", "latency_ms", latencyMs, "repo", absPath)
+
+	truncated := false
+	if runErr != nil {
+		if cmdCtx.Err() == context.DeadlineExceeded {
+			// Timeout: return whatever partial output was collected.
+			truncated = true
+		} else {
+			// git failed (not a git repo, etc.): return empty list, not an error.
+			log.Warn("[ListBranches] git for-each-ref failed", "repo", absPath, "err", runErr)
+			return connect.NewResponse(&sessionv1.ListBranchesResponse{
+				Branches:   []string{},
+				TotalCount: 0,
+				Truncated:  false,
+			}), nil
+		}
+	}
+
+	var all []string
+	scanner := bufio.NewScanner(&out)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			all = append(all, line)
+		}
+	}
+
+	// Cache the full unfiltered list.
+	ws.branchCache.Store(absPath, branchCacheEntry{branches: all, cachedAt: time.Now()})
+
+	branches := filterBranches(all, filter, maxResults)
+	return connect.NewResponse(&sessionv1.ListBranchesResponse{
+		Branches:   branches,
+		TotalCount: int32(len(branches)),
+		Truncated:  truncated,
+	}), nil
+}
+
+// filterBranches applies a case-insensitive substring filter and caps results at maxResults.
+// Moved from session_service.go together with ListBranches (Story 1.4).
+func filterBranches(all []string, filter string, maxResults int) []string {
+	lowerFilter := strings.ToLower(filter)
+	var result []string
+	for _, b := range all {
+		if filter == "" || strings.Contains(strings.ToLower(b), lowerFilter) {
+			result = append(result, b)
+			if len(result) >= maxResults {
+				break
+			}
+		}
+	}
+	return result
 }

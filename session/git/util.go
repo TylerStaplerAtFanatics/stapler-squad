@@ -1,7 +1,9 @@
 package git
 
 import (
+	"context"
 	"fmt"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -47,7 +50,9 @@ func checkGHCLI() error {
 	}
 
 	// Check if gh is authenticated
-	cmd := exec.Command("gh", "auth", "status")
+	authCtx, authCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer authCancel()
+	cmd := safeexec.CommandContext(authCtx, "gh", "auth", "status")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("GitHub CLI is not configured. Please run 'gh auth login' first")
 	}
@@ -75,7 +80,7 @@ func findGitRepoRoot(path string) (string, error) {
 	// First check if the directory exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		// Directory doesn't exist - create it and initialize git
-		log.InfoLog.Printf("Directory '%s' doesn't exist, creating it and initializing git repository", path)
+		log.Info("directory does not exist, creating and initializing git repository", "path", path)
 
 		if err := os.MkdirAll(path, 0755); err != nil {
 			return "", fmt.Errorf("failed to create directory '%s': %w", path, err)
@@ -93,7 +98,7 @@ func findGitRepoRoot(path string) (string, error) {
 			return "", fmt.Errorf("failed to create initial commit at '%s': %w", path, err)
 		}
 
-		log.InfoLog.Printf("Successfully created and initialized git repository at '%s' with initial commit", path)
+		log.Info("successfully created and initialized git repository with initial commit", "path", path)
 		return path, nil
 	}
 
@@ -107,11 +112,11 @@ func findGitRepoRoot(path string) (string, error) {
 			_, err := repo.Head()
 			if err != nil {
 				// Repository has no commits - create initial commit
-				log.InfoLog.Printf("Repository at '%s' has no commits, creating initial commit", currentPath)
+				log.Info("repository has no commits, creating initial commit", "path", currentPath)
 				if err := createInitialCommit(repo, currentPath); err != nil {
 					return "", fmt.Errorf("failed to create initial commit at '%s': %w", currentPath, err)
 				}
-				log.InfoLog.Printf("Successfully created initial commit at '%s'", currentPath)
+				log.Info("successfully created initial commit", "path", currentPath)
 			}
 			return currentPath, nil
 		}
@@ -125,36 +130,96 @@ func findGitRepoRoot(path string) (string, error) {
 	}
 }
 
-// getCurrentBranchName returns the current branch name for a git repository or worktree
-func getCurrentBranchName(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "branch", "--show-current")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get current branch name: %w", err)
-	}
-
-	branchName := strings.TrimSpace(string(output))
-	if branchName == "" {
-		return "", fmt.Errorf("repository at '%s' is in detached HEAD state or has no branches", path)
-	}
-
-	return branchName, nil
+// GetCurrentBranchName returns the current branch name for a git repository or worktree.
+// Returns an error if the repo is in detached HEAD state.
+func GetCurrentBranchName(path string) (string, error) {
+	return getCurrentBranchName(path)
 }
 
-// getHeadCommitSHA returns the SHA of the HEAD commit for a git repository or worktree
-func getHeadCommitSHA(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "HEAD")
-	output, err := cmd.Output()
+// getCurrentBranchName returns the current branch name for a git repository or worktree.
+// Uses go-git to read HEAD directly (file read, no subprocess).
+func getCurrentBranchName(path string) (string, error) {
+	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{DetectDotGit: true})
 	if err != nil {
-		return "", fmt.Errorf("failed to get HEAD commit SHA: %w", err)
+		return "", fmt.Errorf("failed to open git repo at %s: %w", path, err)
+	}
+	// Don't resolve the symbolic ref — we want the branch name, not the commit hash.
+	ref, err := repo.Reference(plumbing.HEAD, false)
+	if err != nil {
+		return "", fmt.Errorf("failed to read HEAD at %s: %w", path, err)
+	}
+	if ref.Type() != plumbing.SymbolicReference {
+		return "", fmt.Errorf("repository at '%s' is in detached HEAD state", path)
+	}
+	// ref.Target() is e.g. "refs/heads/main"; Short() trims to "main".
+	return ref.Target().Short(), nil
+}
+
+// getHeadCommitSHA returns the SHA of the HEAD commit for a git repository or worktree.
+// Uses go-git to read .git/HEAD directly (no subprocess).
+func getHeadCommitSHA(path string) (string, error) {
+	repo, err := git.PlainOpenWithOptions(path, &git.PlainOpenOptions{DetectDotGit: true})
+	if err != nil {
+		return "", fmt.Errorf("failed to open git repo at %s: %w", path, err)
+	}
+	ref, err := repo.Head()
+	if err != nil {
+		return "", fmt.Errorf("failed to read HEAD at %s: %w", path, err)
+	}
+	return ref.Hash().String(), nil
+}
+
+// InitializeProjectDirectory creates a directory and initializes it as a git repository.
+// Behavior by pre-existing state:
+//   - Path does not exist: creates with os.MkdirAll(path, 0755), runs git init, commits.
+//   - Path exists, no .git: runs git init in place, commits.
+//   - Path exists, already a git repo: no-op, returns nil.
+//   - Path exists but is a regular file: returns an error.
+//
+// On partial failure (dir created, git init failed): attempts os.RemoveAll to roll back
+// the newly created directory. Logs a warning if rollback also fails.
+func InitializeProjectDirectory(path string) error {
+	// 1. Check if already a git repo (open succeeds) → no-op
+	if _, err := git.PlainOpen(path); err == nil {
+		return nil
 	}
 
-	commitSHA := strings.TrimSpace(string(output))
-	if commitSHA == "" {
-		return "", fmt.Errorf("failed to get HEAD commit SHA: empty output")
+	// 2. Check for file collision
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return fmt.Errorf("path exists and is not a directory: %s", path)
 	}
 
-	return commitSHA, nil
+	// 3. Track whether we created the directory so we can roll back on failure
+	dirCreated := false
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
+		}
+		dirCreated = true
+	}
+
+	// 4. git init
+	repo, err := git.PlainInit(path, false)
+	if err != nil {
+		if dirCreated {
+			if rmErr := os.RemoveAll(path); rmErr != nil {
+				log.Error("InitializeProjectDirectory: rollback failed", "path", path, "err", rmErr)
+			}
+		}
+		return fmt.Errorf("failed to init git repo: %w", err)
+	}
+
+	// 5. Initial commit (reuses the existing createInitialCommit helper)
+	if err := createInitialCommit(repo, path); err != nil {
+		if dirCreated {
+			if rmErr := os.RemoveAll(path); rmErr != nil {
+				log.Error("InitializeProjectDirectory: rollback failed", "path", path, "err", rmErr)
+			}
+		}
+		return fmt.Errorf("failed to create initial commit: %w", err)
+	}
+
+	return nil
 }
 
 // createInitialCommit creates an initial commit in a new git repository
@@ -181,7 +246,7 @@ func createInitialCommit(repo *git.Repository, repoPath string) error {
 	// Create the initial commit
 	_, err = worktree.Commit("Initial commit", &git.CommitOptions{
 		Author: &object.Signature{
-			Name:  "Claude Squad",
+			Name:  "Stapler Squad",
 			Email: "stapler-squad@localhost",
 			When:  time.Now(),
 		},

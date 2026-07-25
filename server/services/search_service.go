@@ -2,15 +2,23 @@ package services
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
 	"github.com/tstapler/stapler-squad/log"
+	"github.com/tstapler/stapler-squad/server/adapters"
 	"github.com/tstapler/stapler-squad/session"
 	"github.com/tstapler/stapler-squad/session/search"
+	"github.com/tstapler/stapler-squad/session/vc"
 	"github.com/tstapler/stapler-squad/telemetry"
+	"golang.org/x/sync/singleflight"
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/attribute"
@@ -18,22 +26,70 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// historyCursor is the opaque token encoded into page_token / next_page_token.
+// It records the UpdatedAt timestamp (nanoseconds) and ID of the last entry on
+// the current page so the next request can resume from that position.
+type historyCursor struct {
+	UpdatedAtNs int64  `json:"u"`
+	ID          string `json:"i"`
+}
+
+// encodeHistoryCursor encodes a cursor to an opaque base64url string.
+func encodeHistoryCursor(c historyCursor) string {
+	b, _ := json.Marshal(c)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// decodeHistoryCursor decodes an opaque page_token string back to a cursor.
+// Returns the zero value and false if the token is empty or malformed.
+func decodeHistoryCursor(token string) (historyCursor, bool) {
+	if token == "" {
+		return historyCursor{}, false
+	}
+	b, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return historyCursor{}, false
+	}
+	var c historyCursor
+	if err := json.Unmarshal(b, &c); err != nil {
+		return historyCursor{}, false
+	}
+	return c, true
+}
+
+// historyBranchEntry is a TTL-cached git branch name for a project path.
+type historyBranchEntry struct {
+	branch    string
+	expiresAt time.Time
+}
+
+// historySnapshot is an immutable COW record stored in atomic.Value.
+type historySnapshot struct {
+	cache *session.ClaudeSessionHistory
+	at    time.Time
+}
+
 // SearchService handles all Claude history and full-text search RPC methods.
 //
 // It owns the history cache and search engine state that were previously
 // scattered across SessionService.
 //
-// Bug note: historyCacheMu protects the history cache fields from concurrent
-// access. Without this, concurrent ListClaudeHistory calls would race on cache
-// refresh (previously unprotected on SessionService).
+// Concurrency model: atomic.Value (COW) + singleflight for the history cache;
+// sync.Map for the per-path branch cache. No mutexes held across I/O.
 type SearchService struct {
 	searchEngine     *search.SearchEngine
 	snippetGenerator *search.SnippetGenerator
 
-	historyCacheMu   sync.RWMutex
-	historyCache     *session.ClaudeSessionHistory
-	historyCacheTime time.Time
-	historyCacheTTL  time.Duration
+	historyCacheTTL time.Duration
+	historySnap     atomic.Value       // stores *historySnapshot; nil before first load
+	historyGroup    singleflight.Group //nolint:exhaustruct
+
+	// getInstances is wired after construction so ListClaudeHistory can
+	// cross-reference live sessions for session_status enrichment.
+	getInstances func() []*session.Instance
+
+	branchCache    sync.Map // map[string]*historyBranchEntry  keyed by projectPath
+	branchCacheTTL time.Duration
 }
 
 // NewSearchService creates a SearchService with the given search components.
@@ -43,72 +99,140 @@ func NewSearchService(
 	historyCacheTTL time.Duration,
 ) *SearchService {
 	return &SearchService{
-		searchEngine:     searchEngine,
+		searchEngine:    searchEngine,
 		snippetGenerator: snippetGenerator,
-		historyCacheTTL:  historyCacheTTL,
+		historyCacheTTL: historyCacheTTL,
+		branchCacheTTL:  60 * time.Second,
 	}
 }
 
+// SetInstanceProvider wires the live-instance provider after SessionService
+// is fully constructed. Must be called before the first ListClaudeHistory.
+func (ss *SearchService) SetInstanceProvider(fn func() []*session.Instance) {
+	ss.getInstances = fn
+}
+
+// cachedBranch returns the current git branch for projectPath, caching the
+// result for branchCacheTTL (60 s). Returns "" on error or detached HEAD.
+// Uses sync.Map for lock-free concurrent reads; git is invoked outside any lock.
+func (ss *SearchService) cachedBranch(projectPath string) string {
+	if projectPath == "" {
+		return ""
+	}
+	now := time.Now()
+
+	if v, ok := ss.branchCache.Load(projectPath); ok {
+		if e := v.(*historyBranchEntry); now.Before(e.expiresAt) {
+			return e.branch
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := safeexec.CommandContext(ctx, "git", "-C", projectPath, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	branch := ""
+	if err == nil {
+		branch = strings.TrimSpace(string(out))
+		if branch == "HEAD" {
+			branch = "" // detached HEAD — not useful to display
+		}
+	}
+
+	ss.branchCache.Store(projectPath, &historyBranchEntry{branch: branch, expiresAt: now.Add(ss.branchCacheTTL)})
+	return branch
+}
+
+// liveSessionStatus returns the proto SessionStatus for the history entry
+// with the given conversationID by scanning live instances. Returns UNSPECIFIED
+// when no live session matches.
+func (ss *SearchService) liveSessionStatus(conversationID string) sessionv1.SessionStatus {
+	if conversationID == "" || ss.getInstances == nil {
+		return sessionv1.SessionStatus_SESSION_STATUS_UNSPECIFIED
+	}
+	for _, inst := range ss.getInstances() {
+		if inst.GetConversationUUID() == conversationID {
+			return adapters.StatusToProto(inst.Status)
+		}
+	}
+	return sessionv1.SessionStatus_SESSION_STATUS_UNSPECIFIED
+}
+
 // getOrRefreshHistoryCache returns the cached history or refreshes it if stale.
+// Fast-path reads are lock-free (atomic.Value Load). Concurrent refreshes are
+// coalesced via singleflight so at most one disk scan runs at a time.
 func (ss *SearchService) getOrRefreshHistoryCache(ctx context.Context) (*session.ClaudeSessionHistory, error) {
 	ctx, span := telemetry.StartSpan(ctx, "SearchService.getOrRefreshHistoryCache")
 	defer span.End()
 
 	now := time.Now()
 
-	// Fast path: check with read lock first.
-	ss.historyCacheMu.RLock()
-	if ss.historyCache != nil && now.Sub(ss.historyCacheTime) < ss.historyCacheTTL {
-		cached := ss.historyCache
-		span.SetAttributes(
-			attribute.Bool("cache.hit", true),
-			attribute.Int("history.entry_count", cached.Count()),
-		)
-		ss.historyCacheMu.RUnlock()
-		return cached, nil
-	}
-	ss.historyCacheMu.RUnlock()
-
-	// Cache is stale or doesn't exist — refresh with write lock.
-	ss.historyCacheMu.Lock()
-	defer ss.historyCacheMu.Unlock()
-
-	// Double-check after acquiring write lock (another goroutine may have refreshed).
-	if ss.historyCache != nil && now.Sub(ss.historyCacheTime) < ss.historyCacheTTL {
-		span.SetAttributes(attribute.Bool("cache.hit", true))
-		return ss.historyCache, nil
+	// Fast path: atomic load — no lock.
+	if v := ss.historySnap.Load(); v != nil {
+		snap := v.(*historySnapshot)
+		if now.Sub(snap.at) < ss.historyCacheTTL {
+			span.SetAttributes(
+				attribute.Bool("cache.hit", true),
+				attribute.Int("history.entry_count", snap.cache.Count()),
+			)
+			return snap.cache, nil
+		}
 	}
 
+	// Slow path: coalesce concurrent refreshes with singleflight.
 	span.SetAttributes(attribute.Bool("cache.hit", false))
-
-	_, loadSpan := telemetry.StartSpan(ctx, "SearchService.loadHistoryFromDisk")
-	loadStart := time.Now()
-
-	hist, err := session.NewClaudeSessionHistoryFromClaudeDir()
-
-	loadDuration := time.Since(loadStart)
-	loadSpan.SetAttributes(attribute.Int64("load.duration_ms", loadDuration.Milliseconds()))
-	if err != nil {
-		loadSpan.RecordError(err)
-		loadSpan.End()
-		return nil, fmt.Errorf("failed to create history manager: %w", err)
+	type result struct {
+		hist *session.ClaudeSessionHistory
 	}
-	loadSpan.SetAttributes(attribute.Int("history.entry_count", hist.Count()))
-	loadSpan.End()
+	v, err, _ := ss.historyGroup.Do("refresh", func() (interface{}, error) {
+		// Re-check after winning the coalesce race — another goroutine may have
+		// stored a fresh snapshot while we were waiting.
+		if sv := ss.historySnap.Load(); sv != nil {
+			snap := sv.(*historySnapshot)
+			if now.Sub(snap.at) < ss.historyCacheTTL {
+				return result{hist: snap.cache}, nil
+			}
+		}
 
-	ss.historyCache = hist
-	ss.historyCacheTime = now
+		_, loadSpan := telemetry.StartSpan(ctx, "SearchService.loadHistoryFromDisk")
+		loadStart := time.Now()
+		hist, loadErr := session.NewClaudeSessionHistoryFromClaudeDir()
+		loadDuration := time.Since(loadStart)
+		loadSpan.SetAttributes(attribute.Int64("load.duration_ms", loadDuration.Milliseconds()))
+		if loadErr != nil {
+			loadSpan.RecordError(loadErr)
+			loadSpan.End()
+			return nil, fmt.Errorf("failed to create history manager: %w", loadErr)
+		}
+		loadSpan.SetAttributes(attribute.Int("history.entry_count", hist.Count()))
+		loadSpan.End()
 
+		ss.historySnap.Store(&historySnapshot{cache: hist, at: now})
+		log.Info("history cache refreshed", "entries", hist.Count(), "duration", time.Since(now))
+		return result{hist: hist}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	hist := v.(result).hist
 	span.SetAttributes(
 		attribute.Int("history.entry_count", hist.Count()),
 		attribute.Int64("cache.refresh_duration_ms", time.Since(now).Milliseconds()),
 	)
-
-	log.InfoLog.Printf("History cache refreshed: %d entries in %v", hist.Count(), time.Since(now))
 	return hist, nil
 }
 
-// ListClaudeHistory returns Claude session history entries with optional filtering.
+// ListClaudeHistory returns Claude session history entries with optional filtering
+// and cursor-based pagination.
+//
+// Pagination rules:
+//   - page_size controls how many entries are returned per page (default 100, max 500).
+//   - page_token, when set, resumes from the position after the last entry on the
+//     previous page.  Leave it empty for the first page.
+//   - next_page_token in the response is non-empty when more pages exist; pass it
+//     as page_token in the next request.
+//   - The legacy limit field is honoured when page_size is zero.
+//   - Filters (project, search_query) must be identical across all pages of a
+//     paginated sequence.
 func (ss *SearchService) ListClaudeHistory(
 	ctx context.Context,
 	req *connect.Request[sessionv1.ListClaudeHistoryRequest],
@@ -129,30 +253,81 @@ func (ss *SearchService) ListClaudeHistory(
 	}
 
 	totalCount := len(entries)
-	if req.Msg.Limit > 0 && int(req.Msg.Limit) < len(entries) {
-		entries = entries[:req.Msg.Limit]
+
+	// --- Cursor pagination ---------------------------------------------------
+	// Resolve effective page size: page_size takes precedence over limit.
+	const defaultPageSize = 100
+	const maxPageSize = 500
+
+	pageSize := int(req.Msg.PageSize)
+	if pageSize <= 0 {
+		pageSize = int(req.Msg.Limit) //nolint:staticcheck // legacy fallback: callers may still send limit
 	}
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
+	}
+	if pageSize > maxPageSize {
+		pageSize = maxPageSize
+	}
+
+	// Apply cursor: skip entries up to and including the cursor position.
+	if cursor, ok := decodeHistoryCursor(req.Msg.PageToken); ok {
+		startIdx := -1
+		for i, e := range entries {
+			if e.UpdatedAt.UnixNano() == cursor.UpdatedAtNs && e.ID == cursor.ID {
+				startIdx = i + 1 // first entry of the next page
+				break
+			}
+		}
+		if startIdx > 0 && startIdx < len(entries) {
+			entries = entries[startIdx:]
+		} else if startIdx >= len(entries) {
+			// Cursor points past the last entry — return empty last page.
+			entries = nil
+		}
+		// If startIdx == -1 the cursor wasn't found (cache refreshed) — return
+		// from the beginning so the caller can recover gracefully.
+	}
+
+	// Slice to page size and build next_page_token if there are more pages.
+	var nextPageToken string
+	if pageSize > 0 && len(entries) > pageSize {
+		lastOnPage := entries[pageSize-1]
+		nextPageToken = encodeHistoryCursor(historyCursor{
+			UpdatedAtNs: lastOnPage.UpdatedAt.UnixNano(),
+			ID:          lastOnPage.ID,
+		})
+		entries = entries[:pageSize]
+	}
+	// -------------------------------------------------------------------------
 
 	protoEntries := make([]*sessionv1.ClaudeHistoryEntry, 0, len(entries))
 	for _, entry := range entries {
 		protoEntries = append(protoEntries, &sessionv1.ClaudeHistoryEntry{
-			Id:           entry.ID,
-			Name:         entry.Name,
-			Project:      entry.Project,
-			CreatedAt:    timestamppb.New(entry.CreatedAt),
-			UpdatedAt:    timestamppb.New(entry.UpdatedAt),
-			Model:        entry.Model,
-			MessageCount: int32(entry.MessageCount),
+			Id:            entry.ID,
+			Name:          entry.Name,
+			Project:       entry.Project,
+			CreatedAt:     timestamppb.New(entry.CreatedAt),
+			UpdatedAt:     timestamppb.New(entry.UpdatedAt),
+			Model:         entry.Model,
+			MessageCount:  int32(entry.MessageCount),
+			Branch:        ss.cachedBranch(entry.Project),
+			SessionStatus: ss.liveSessionStatus(entry.ID),
 		})
 	}
 
 	return connect.NewResponse(&sessionv1.ListClaudeHistoryResponse{
-		Entries:    protoEntries,
-		TotalCount: int32(totalCount),
+		Entries:       protoEntries,
+		TotalCount:    int32(totalCount),
+		NextPageToken: nextPageToken,
 	}), nil
 }
 
-// GetClaudeHistoryDetail retrieves detailed information for a specific history entry.
+// GetClaudeHistoryDetail retrieves detailed information for a specific history entry,
+// including lazily-fetched VCS status for the project directory.
+//
+// VCS status reuses the same vc.VCSProvider + vcsStatusToProto path that
+// GetVCSStatus uses for running sessions, so the logic is not duplicated.
 func (ss *SearchService) GetClaudeHistoryDetail(
 	ctx context.Context,
 	req *connect.Request[sessionv1.GetClaudeHistoryDetailRequest],
@@ -167,17 +342,54 @@ func (ss *SearchService) GetClaudeHistoryDetail(
 		return nil, connect.NewError(connect.CodeNotFound, err)
 	}
 
+	protoEntry := &sessionv1.ClaudeHistoryEntry{
+		Id:           entry.ID,
+		Name:         entry.Name,
+		Project:      entry.Project,
+		CreatedAt:    timestamppb.New(entry.CreatedAt),
+		UpdatedAt:    timestamppb.New(entry.UpdatedAt),
+		Model:        entry.Model,
+		MessageCount: int32(entry.MessageCount),
+	}
+
+	// Lazily enrich with VCS status. Reuse the existing vc.VCSProvider so the
+	// git/jj logic is not duplicated. Errors are non-fatal — the UI should
+	// handle a nil VcsStatus gracefully.
+	if entry.Project != "" {
+		if vcsStatus := fetchHistoryVCSStatus(entry.Project); vcsStatus != nil {
+			protoEntry.VcsStatus = vcsStatus
+		}
+	}
+
 	return connect.NewResponse(&sessionv1.GetClaudeHistoryDetailResponse{
-		Entry: &sessionv1.ClaudeHistoryEntry{
-			Id:           entry.ID,
-			Name:         entry.Name,
-			Project:      entry.Project,
-			CreatedAt:    timestamppb.New(entry.CreatedAt),
-			UpdatedAt:    timestamppb.New(entry.UpdatedAt),
-			Model:        entry.Model,
-			MessageCount: int32(entry.MessageCount),
-		},
+		Entry: protoEntry,
 	}), nil
+}
+
+// newHistoryVCSProvider returns a VCS provider for the given project path,
+// preferring Git and falling back to Jujutsu.
+func newHistoryVCSProvider(projectPath string) (vc.VCSProvider, error) {
+	provider, err := vc.NewGitProvider(projectPath)
+	if err == nil {
+		return provider, nil
+	}
+	return vc.NewJujutsuProvider(projectPath)
+}
+
+// fetchHistoryVCSStatus fetches VCS status for an arbitrary project path.
+// Returns nil when the directory is not a VCS repo or when the fetch fails.
+func fetchHistoryVCSStatus(projectPath string) *sessionv1.VCSStatus {
+	provider, err := newHistoryVCSProvider(projectPath)
+	if err != nil {
+		log.Debug("fetchHistoryVCSStatus: no VCS provider", "path", projectPath, "err", err)
+		return nil
+	}
+	status, err := provider.GetStatus()
+	if err != nil {
+		log.Debug("fetchHistoryVCSStatus: GetStatus failed", "path", projectPath, "err", err)
+		return nil
+	}
+	return vcsStatusToProto(status)
 }
 
 // GetClaudeHistoryMessages retrieves messages from a specific conversation.
@@ -195,7 +407,14 @@ func (ss *SearchService) GetClaudeHistoryMessages(
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
 	}
 
-	messages, err := hist.GetMessagesFromConversationFile(req.Msg.Id)
+	// Use the reverse tail reader only when explicitly requested via tail=true.
+	// Standard limit/offset reads always scan from the start so offset semantics
+	// remain correct and total_count reflects the full conversation length.
+	fileLimit := 0
+	if req.Msg.Tail && req.Msg.Limit > 0 && req.Msg.Offset == 0 {
+		fileLimit = int(req.Msg.Limit)
+	}
+	messages, err := hist.GetMessagesFromConversationFile(req.Msg.Id, fileLimit)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to load messages: %w", err))
 	}
@@ -267,7 +486,7 @@ func (ss *SearchService) SearchClaudeHistory(
 	syncSpan.End()
 
 	if syncResult.HasChanges() || syncResult.WasFullRebuild {
-		log.InfoLog.Printf("Search index sync: %s", syncResult.String())
+		log.Info("search index sync", "result", syncResult.String())
 	}
 
 	limit := int(req.Msg.Limit)

@@ -2,6 +2,7 @@ package mux
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/session/tmux"
 	"golang.org/x/term"
 )
 
@@ -23,11 +26,14 @@ type SessionInfo struct {
 	Attached     bool
 }
 
-// ListStaplerSquadSessionsWithInfo returns sessions with full metadata
+// ListStaplerSquadSessionsWithInfo returns sessions with full metadata.
 func ListStaplerSquadSessionsWithInfo() ([]SessionInfo, error) {
 	// Format: name|created|activity|path|windows|attached
-	cmd := exec.Command("tmux", "list-sessions", "-F",
-		"#{session_name}|#{session_created}|#{session_activity}|#{session_path}|#{session_windows}|#{session_attached}")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := prependIsolatedSocket([]string{"list-sessions", "-F",
+		"#{session_name}|#{session_created}|#{session_activity}|#{session_path}|#{session_windows}|#{session_attached}"})
+	cmd := safeexec.CommandContext(ctx, tmux.Binary(), args...)
 	output, err := cmd.Output()
 	if err != nil {
 		// tmux returns error if no sessions exist
@@ -93,7 +99,7 @@ func InteractiveSessionPicker() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to set raw mode: %w", err)
 	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
 	selected := 0
 	reader := bufio.NewReader(os.Stdin)
@@ -155,7 +161,7 @@ func InteractiveSessionPicker() (string, error) {
 			// Check if it's an escape sequence (arrow keys)
 			if b == 27 {
 				// Try to read more bytes for escape sequence
-				reader.ReadByte() // [
+				_, _ = reader.ReadByte() // [
 				arrow, _ := reader.ReadByte()
 				switch arrow {
 				case 'A': // Up arrow

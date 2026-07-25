@@ -1,22 +1,22 @@
 "use client";
+// +feature: review-queue session-approval session-triage
 
 import { useState, useEffect, useRef, useCallback, Suspense } from "react";
+import { usePageView } from "@/lib/analytics/usePageView";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Session, SessionSchema, ReviewItem } from "@/gen/session/v1/types_pb";
 import { create } from "@bufbuild/protobuf";
 import { ReviewQueuePanel } from "@/components/sessions/ReviewQueuePanel";
 import { SessionDetail, SessionDetailTab } from "@/components/sessions/SessionDetail";
-import { useSessionService } from "@/lib/hooks/useSessionService";
+import { useSessionServiceContext } from "@/lib/contexts/SessionServiceContext";
 import { useReviewQueueContext } from "@/lib/contexts/ReviewQueueContext";
-import { useAuth } from "@/lib/contexts/AuthContext";
-import { getApiBaseUrl } from "@/lib/config";
 import { useFocusTrap } from "@/lib/hooks/useFocusTrap";
 import { useKeyboard } from "@/lib/hooks/useKeyboard";
 import { KeyboardHints } from "@/components/ui/KeyboardHint";
-import styles from "./page.module.css";
+import * as styles from "./page.css";
 
 // Construct a minimal Session from ReviewItem data for immediate modal opening
-// before useSessionService has finished loading.
+// before the session list has finished loading.
 function sessionFromReviewItem(item: ReviewItem): Session {
   return create(SessionSchema, {
     id: item.sessionId,
@@ -33,7 +33,6 @@ function sessionFromReviewItem(item: ReviewItem): Session {
 function ReviewQueueContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { authEnabled, authenticated, loading: authLoading } = useAuth();
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [selectedTab, setSelectedTab] = useState<SessionDetailTab>("terminal");
   const [isSessionFullscreen, setIsSessionFullscreen] = useState(false);
@@ -51,15 +50,24 @@ function ReviewQueueContent() {
   // Ref for focus trap inside the session-detail modal
   const modalContentRef = useRef<HTMLDivElement>(null);
 
-  // Use WebSocket streaming for real-time session updates
-  const { sessions } = useSessionService({
-    baseUrl: getApiBaseUrl(),
-    autoWatch: true, // Enable WebSocket streaming for session list
-    enabled: !authLoading && (!authEnabled || authenticated),
-  });
+  // Use the global session service context — avoids a competing WebSocket stream
+  const { sessions, runOneShot } = useSessionServiceContext();
 
-  // Acknowledge function for dismissing sessions from the modal
-  const { acknowledgeSession } = useReviewQueueContext();
+  // S3-3: Adapter from RunOneShotResponse to the shape ReviewQueuePanel expects
+  const handleRunOneShot = useCallback(
+    async (sessionId: string, prompt: string) => {
+      const response = await runOneShot(sessionId, prompt, 0);
+      if (!response) return null;
+      return { prUrl: response.prUrl || undefined, error: response.error || undefined };
+    },
+    [runOneShot]
+  );
+
+  // Acknowledge function for dismissing sessions from the modal.
+  // allQueueItems is the unfiltered Redux store list — used as the existence oracle in the
+  // "deleted externally" effect below so that a status transition to ACTIVE/PROCESSING
+  // (which filters the session from the visible queue) does not spuriously trigger auto-advance.
+  const { acknowledgeSession, items: allQueueItems } = useReviewQueueContext();
 
   // Review queue items for navigation (next/previous)
   const [reviewQueueItems, setReviewQueueItems] = useState<Session[]>([]);
@@ -89,7 +97,7 @@ function ReviewQueueContent() {
   });
 
   // Handle deep linking from notifications - auto-open session from URL.
-  // Uses queueItems as fallback so the modal opens even before useSessionService loads.
+  // Uses queueItems as fallback so the modal opens even before the session list loads.
   useEffect(() => {
     const sessionId = searchParams.get("session");
     if (!sessionId) return;
@@ -104,7 +112,7 @@ function ReviewQueueContent() {
 
   const handleSessionClick = (sessionId: string) => {
     // Try full session data first; fall back to queue item data so the modal
-    // always opens immediately regardless of whether useSessionService has loaded.
+    // always opens immediately regardless of whether the session list has loaded.
     const fromSessions = sessions.find((s) => s.id === sessionId);
     const fromQueue = queueItems.find((i) => i.sessionId === sessionId);
     const session = fromSessions ?? (fromQueue ? sessionFromReviewItem(fromQueue) : undefined);
@@ -166,9 +174,9 @@ function ReviewQueueContent() {
   // Auto-advance to the next queue item after resolving the current one.
   // resolvedSessionId: the session that was just resolved (exclude from next-item search
   //   to handle the race where WebSocket hasn't removed it yet).
-  const handleAutoAdvance = useCallback((resolvedSessionId?: string) => {
+  const handleAutoAdvance = useCallback((resolvedSessionId?: string, force = false) => {
     setTimeout(() => {
-      if (!autoAdvanceRef.current) return; // Auto-advance disabled by user preference
+      if (!force && !autoAdvanceRef.current) return; // Auto-advance disabled by user preference
 
       const currentItems = reviewQueueItemsRef.current;
       const currentSelected = selectedSessionRef.current;
@@ -222,8 +230,25 @@ function ReviewQueueContent() {
     const current = selectedSessionRef.current;
     if (!current) return;
     await acknowledgeSession(current.id);
-    handleAutoAdvance(current.id);
+    handleAutoAdvance(current.id, true); // explicit dismiss always advances regardless of auto-advance setting
   }, [acknowledgeSession, handleAutoAdvance]);
+
+  // Auto-advance when the currently selected session is deleted externally (not via dismiss/acknowledge).
+  // Uses allQueueItems (the unfiltered Redux store) rather than reviewQueueItems (visible filtered list)
+  // so that a session transitioning to ACTIVE/PROCESSING — which is filtered from the visible queue but
+  // remains in the store — does not incorrectly trigger auto-advance.
+  // reviewQueueItems is kept as the dep so the effect fires when the visible queue changes (the moment
+  // we need to re-evaluate), but the guard checks allQueueItems to distinguish "filtered out" from "removed".
+  // force=false so the user's auto-advance preference is respected even on genuine removals (e.g. after
+  // approving/denying a permission request — the user may still want to watch the session continue).
+  useEffect(() => {
+    if (!selectedSession) return;
+    const stillInQueue = allQueueItems.some((item) => item.sessionId === selectedSession.id);
+    if (!stillInQueue) {
+      handleAutoAdvance(selectedSession.id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewQueueItems]);
 
   // Queue position for the header badge ("2 of 5")
   const queuePosition = selectedSession
@@ -233,27 +258,19 @@ function ReviewQueueContent() {
 
   return (
     <div className={styles.page}>
-      <main id="main-content" className={styles.main}>
-        {/* Auto-advance preference toolbar */}
-        <div className={styles.toolbar}>
-          <label className={styles.autoAdvanceLabel}>
-            <input
-              type="checkbox"
-              checked={autoAdvance}
-              onChange={(e) => {
-                setAutoAdvance(e.target.checked);
-                localStorage.setItem("review-queue-auto-advance", String(e.target.checked));
-              }}
-            />
-            Auto-advance after action
-          </label>
-        </div>
+      <div id="main-content" className={styles.main}>
         <ReviewQueuePanel
           onSessionClick={handleSessionClick}
           onItemsChange={handleItemsChange}
           onAcknowledged={handleAcknowledged}
+          onRunOneShot={handleRunOneShot}
+          autoAdvance={autoAdvance}
+          onAutoAdvanceChange={(val) => {
+            setAutoAdvance(val);
+            localStorage.setItem("review-queue-auto-advance", String(val));
+          }}
         />
-      </main>
+      </div>
 
       {/* Session detail modal with terminal view */}
       {selectedSession && (
@@ -336,19 +353,20 @@ function ReviewQueueContent() {
 function ReviewQueueSkeleton() {
   return (
     <div className={styles.page}>
-      <main id="main-content" className={styles.main} aria-busy="true" aria-label="Loading review queue">
+      <div id="main-content" className={styles.main} aria-busy="true" aria-label="Loading review queue">
         <div className={styles.skeletonHeader} />
         <div className={styles.skeletonList}>
           {[1, 2, 3].map((i) => (
             <div key={i} className={styles.skeletonCard} aria-hidden="true" />
           ))}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
 
 export default function ReviewQueuePage() {
+  usePageView();
   return (
     <Suspense fallback={<ReviewQueueSkeleton />}>
       <ReviewQueueContent />

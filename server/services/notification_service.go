@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
 	sessionv1 "github.com/tstapler/stapler-squad/gen/proto/go/session/v1"
@@ -85,11 +84,14 @@ func (ns *NotificationService) SendNotification(
 	// Use the session ID as the display name. LoadInstances() cannot be used here because
 	// it calls FromInstanceData() which calls Start() on every non-paused session --
 	// a catastrophic side-effect that restarts all sessions on each notification.
-	// The poller holds live instances; if the session exists there, use its title.
+	// The poller holds live instances; if the session exists there, use its title and
+	// resolve to the stable ID (UUID) so the client can match it precisely.
 	sessionName := req.Msg.SessionId // Default to session ID
+	resolvedSessionID := req.Msg.SessionId
 	if ns.reviewQueuePoller != nil {
 		if inst := ns.reviewQueuePoller.FindInstance(req.Msg.SessionId); inst != nil {
 			sessionName = inst.Title
+			resolvedSessionID = inst.GetStableID()
 		}
 	}
 
@@ -103,7 +105,7 @@ func (ns *NotificationService) SendNotification(
 
 	// Broadcast notification via event bus
 	event := events.NewNotificationEvent(
-		req.Msg.SessionId,
+		resolvedSessionID,
 		sessionName,
 		notificationID,
 		int32(req.Msg.NotificationType),
@@ -115,7 +117,8 @@ func (ns *NotificationService) SendNotification(
 	ns.eventBus.Publish(event)
 
 	log.InfoS("Notification sent", map[string]interface{}{
-		"session_id":        req.Msg.SessionId,
+		"session_id":        resolvedSessionID,
+		"requested_id":      req.Msg.SessionId,
 		"session_name":      sessionName,
 		"notification_type": req.Msg.NotificationType.String(),
 		"priority":          req.Msg.Priority.String(),
@@ -163,7 +166,7 @@ func (ns *NotificationService) GetNotificationHistory(
 
 	records, totalCount, err := ns.notificationStore.List(opts)
 	if err != nil {
-		log.ErrorLog.Printf("[NotificationHistory] Failed to list notifications: %v", err)
+		log.Error("[NotificationHistory] failed to list notifications", "err", err)
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
@@ -210,7 +213,7 @@ func (ns *NotificationService) MarkNotificationRead(
 	ids := req.Msg.NotificationIds
 	count, err := ns.notificationStore.MarkRead(ids)
 	if err != nil {
-		log.ErrorLog.Printf("[NotificationHistory] Failed to mark notifications read: %v", err)
+		log.Error("[NotificationHistory] failed to mark notifications read", "err", err)
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
@@ -243,7 +246,7 @@ func (ns *NotificationService) ClearNotificationHistory(
 
 	count, err := ns.notificationStore.Clear(before)
 	if err != nil {
-		log.ErrorLog.Printf("[NotificationHistory] Failed to clear notifications: %v", err)
+		log.Error("[NotificationHistory] failed to clear notifications", "err", err)
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
@@ -259,6 +262,16 @@ func (ns *NotificationService) ClearNotificationHistory(
 
 // recordToProto converts a NotificationRecord to a protobuf NotificationHistoryRecord.
 func recordToProto(r *notifications.NotificationRecord) *sessionv1.NotificationHistoryRecord {
+	// Copy metadata to avoid sharing the map reference with the store's internal record.
+	// SetMetadata() can write to r.Metadata concurrently while protojson iterates it.
+	var metadata map[string]string
+	if len(r.Metadata) > 0 {
+		metadata = make(map[string]string, len(r.Metadata))
+		for k, v := range r.Metadata {
+			metadata[k] = v
+		}
+	}
+
 	record := &sessionv1.NotificationHistoryRecord{
 		Id:               r.ID,
 		SessionId:        r.SessionID,
@@ -267,7 +280,7 @@ func recordToProto(r *notifications.NotificationRecord) *sessionv1.NotificationH
 		Priority:         sessionv1.NotificationPriority(r.Priority),
 		Title:            r.Title,
 		Message:          r.Message,
-		Metadata:         r.Metadata,
+		Metadata:         metadata,
 		CreatedAt:        timestamppb.New(r.CreatedAt),
 		IsRead:           r.IsRead,
 		OccurrenceCount:  int32(r.OccurrenceCount),
@@ -284,38 +297,28 @@ func recordToProto(r *notifications.NotificationRecord) *sessionv1.NotificationH
 	return record
 }
 
-// validateLocalhostOrigin ensures the request comes from localhost.
-// This is a security measure to prevent external actors from sending notifications.
-func validateLocalhostOrigin(ctx context.Context, req *connect.Request[sessionv1.SendNotificationRequest]) error {
-	// Get peer address from request headers or context
-	// ConnectRPC provides X-Forwarded-For or we can check the connection directly
+// validateLocalhostOrigin ensures the request comes from localhost by checking
+// the actual network connection's remote address.
+func validateLocalhostOrigin(_ context.Context, req *connect.Request[sessionv1.SendNotificationRequest]) error {
+	return validateLocalhostAddr(req.Peer().Addr)
+}
 
-	// Check X-Real-IP header first (if behind a proxy)
-	realIP := req.Header().Get("X-Real-IP")
-	if realIP != "" {
-		if !isLocalhostIP(realIP) {
-			return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("notifications can only be sent from localhost"))
-		}
-		return nil
+// validateLocalhostAddr checks that the given address (host:port or bare IP)
+// belongs to localhost. Extracted for testability.
+func validateLocalhostAddr(addr string) error {
+	if addr == "" {
+		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("unable to determine client IP"))
 	}
 
-	// Check X-Forwarded-For header
-	forwardedFor := req.Header().Get("X-Forwarded-For")
-	if forwardedFor != "" {
-		// Take the first IP in the chain (original client)
-		ips := strings.Split(forwardedFor, ",")
-		if len(ips) > 0 {
-			clientIP := strings.TrimSpace(ips[0])
-			if !isLocalhostIP(clientIP) {
-				return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("notifications can only be sent from localhost"))
-			}
-			return nil
-		}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
 	}
 
-	// If no proxy headers, we're in direct connection mode
-	// The server already binds to localhost, so requests reaching here are local
-	// This is a defense-in-depth check
+	if !isLocalhostIP(host) {
+		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("notifications can only be sent from localhost"))
+	}
+
 	return nil
 }
 

@@ -20,6 +20,9 @@
 export class EscapeSequenceParser {
   private partialSequence: string = "";
 
+  // Allocated once at class definition; avoids a per-call object allocation in the hot path.
+  private static readonly STRING_MODE_CHARS = new Set(['P', '^', '_', 'X']);
+
   /**
    * Process data chunk and ensure escape sequences are not split.
    * Returns the complete data that can be safely written, buffering any
@@ -33,19 +36,21 @@ export class EscapeSequenceParser {
     const fullData = this.partialSequence + data;
     this.partialSequence = "";
 
+    const filtered = fullData; // No sequence stripping - xterm.js v6 handles ED2+ED3 correctly
+
     // Check if data ends with a partial escape sequence
-    const partial = this.findPartialEscapeAtEnd(fullData);
+    const partial = this.findPartialEscapeAtEnd(filtered);
 
     if (partial.length > 0) {
       // Buffer the partial sequence for next call
       this.partialSequence = partial;
 
       // Return data up to (but not including) the partial sequence
-      return fullData.substring(0, fullData.length - partial.length);
+      return filtered.substring(0, filtered.length - partial.length);
     }
 
     // No partial sequence - safe to write all data
-    return fullData;
+    return filtered;
   }
 
   /**
@@ -74,8 +79,8 @@ export class EscapeSequenceParser {
   private findPartialEscapeAtEnd(data: string): string {
     if (data.length === 0) return "";
 
-    // Maximum length to scan backward (escape sequences rarely exceed 20 bytes)
-    const scanLength = Math.min(20, data.length);
+    // Maximum length to scan backward - OSC title strings and DCS payloads can exceed 20 bytes
+    const scanLength = Math.min(256, data.length);
     const startIndex = data.length - scanLength;
 
     // Scan backward for last ESC character
@@ -134,6 +139,11 @@ export class EscapeSequenceParser {
     if (secondChar === ']') {
       // OSC ends with BEL (\x07) or ESC\ (\x1b\x5c)
       return this.hasOSCTerminator(seq);
+    }
+
+    // DCS (P), PM (^), APC (_), SOS (X) — all terminated by ST only (ESC \)
+    if (EscapeSequenceParser.STRING_MODE_CHARS.has(secondChar)) {
+      return seq.includes('\x1b\\');
     }
 
     // Simple escape: ESC + single char

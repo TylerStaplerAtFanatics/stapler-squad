@@ -1,15 +1,31 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
 )
+
+const detectWorktreeCacheTTL = 5 * time.Minute
+
+type detectWorktreeCacheEntry struct {
+	info   *WorktreeInfo
+	err    error
+	expiry time.Time
+}
+
+var detectWorktreeCache = struct {
+	sync.RWMutex
+	m map[string]detectWorktreeCacheEntry
+}{m: make(map[string]detectWorktreeCacheEntry)}
 
 // RepoPathManager handles GOPATH-style repository path management.
 // Repositories are stored in a consistent location based on their URL:
@@ -55,6 +71,17 @@ const (
 	GitHubRefTypePR
 )
 
+// isTraversalSegment reports whether s is "." or ".." — never valid as a
+// GitHub owner or repo name, but syntactically accepted by the "no slash"
+// regex character classes below. GetRepoPath joins Owner/Repo directly into a
+// local filesystem path (filepath.Join(baseDir, "github.com", owner, repo)),
+// so letting either through would allow a crafted repo_path (e.g.
+// "https://github.com/../..") to resolve outside the intended clone
+// directory.
+func isTraversalSegment(s string) bool {
+	return s == "." || s == ".."
+}
+
 // ParseGitHubURL parses a GitHub URL and returns the components.
 // Supported formats:
 //   - https://github.com/owner/repo
@@ -69,11 +96,15 @@ func ParseGitHubURL(input string) (*GitHubRef, error) {
 	// GitHub PR URL pattern
 	prPattern := regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
 	if match := prPattern.FindStringSubmatch(input); match != nil {
+		owner, repo := match[1], strings.TrimSuffix(match[2], ".git")
+		if isTraversalSegment(owner) || isTraversalSegment(repo) {
+			return nil, fmt.Errorf("invalid GitHub owner/repo: %s", input)
+		}
 		prNum := 0
 		fmt.Sscanf(match[3], "%d", &prNum)
 		return &GitHubRef{
-			Owner:    match[1],
-			Repo:     strings.TrimSuffix(match[2], ".git"),
+			Owner:    owner,
+			Repo:     repo,
 			PRNumber: prNum,
 			Type:     GitHubRefTypePR,
 		}, nil
@@ -82,9 +113,13 @@ func ParseGitHubURL(input string) (*GitHubRef, error) {
 	// GitHub branch URL pattern
 	branchPattern := regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/tree/(.+)$`)
 	if match := branchPattern.FindStringSubmatch(input); match != nil {
+		owner, repo := match[1], strings.TrimSuffix(match[2], ".git")
+		if isTraversalSegment(owner) || isTraversalSegment(repo) {
+			return nil, fmt.Errorf("invalid GitHub owner/repo: %s", input)
+		}
 		return &GitHubRef{
-			Owner:  match[1],
-			Repo:   strings.TrimSuffix(match[2], ".git"),
+			Owner:  owner,
+			Repo:   repo,
 			Branch: match[3],
 			Type:   GitHubRefTypeBranch,
 		}, nil
@@ -93,9 +128,13 @@ func ParseGitHubURL(input string) (*GitHubRef, error) {
 	// GitHub repo URL pattern (must come after branch pattern)
 	repoPattern := regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$`)
 	if match := repoPattern.FindStringSubmatch(input); match != nil {
+		owner, repo := match[1], strings.TrimSuffix(match[2], ".git")
+		if isTraversalSegment(owner) || isTraversalSegment(repo) {
+			return nil, fmt.Errorf("invalid GitHub owner/repo: %s", input)
+		}
 		return &GitHubRef{
-			Owner: match[1],
-			Repo:  strings.TrimSuffix(match[2], ".git"),
+			Owner: owner,
+			Repo:  repo,
 			Type:  GitHubRefTypeRepo,
 		}, nil
 	}
@@ -105,9 +144,13 @@ func ParseGitHubURL(input string) (*GitHubRef, error) {
 	if match := shorthandPattern.FindStringSubmatch(input); match != nil {
 		// Make sure it doesn't look like a local path
 		if !strings.HasPrefix(input, "/") && !strings.HasPrefix(input, "~") && !strings.HasPrefix(input, ".") {
+			owner, repo := match[1], match[2]
+			if isTraversalSegment(owner) || isTraversalSegment(repo) {
+				return nil, fmt.Errorf("invalid GitHub owner/repo: %s", input)
+			}
 			ref := &GitHubRef{
-				Owner: match[1],
-				Repo:  match[2],
+				Owner: owner,
+				Repo:  repo,
 				Type:  GitHubRefTypeRepo,
 			}
 			if match[3] != "" {
@@ -148,10 +191,12 @@ func (m *RepoPathManager) EnsureRepoCloned(ref *GitHubRef) (string, error) {
 	// Check if repo already exists
 	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err == nil {
 		// Repo exists, fetch latest
-		log.InfoLog.Printf("[RepoPath] Repository exists at %s, fetching latest...", repoPath)
-		cmd := exec.Command("git", "-C", repoPath, "fetch", "--all", "--prune")
+		log.Info("repository exists, fetching latest", "path", repoPath)
+		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer fetchCancel()
+		cmd := safeexec.CommandContext(fetchCtx, "git", "-C", repoPath, "fetch", "--all", "--prune")
 		if output, err := cmd.CombinedOutput(); err != nil {
-			log.WarningLog.Printf("[RepoPath] Failed to fetch: %v\nOutput: %s", err, string(output))
+			log.Warn("failed to fetch repository", "err", err, "output", string(output))
 			// Don't fail - the existing repo is still usable
 		}
 		return repoPath, nil
@@ -164,13 +209,15 @@ func (m *RepoPathManager) EnsureRepoCloned(ref *GitHubRef) (string, error) {
 	}
 
 	// Clone the repository
-	log.InfoLog.Printf("[RepoPath] Cloning %s to %s...", cloneURL, repoPath)
-	cmd := exec.Command("git", "clone", cloneURL, repoPath)
+	log.Info("cloning repository", "url", cloneURL, "path", repoPath)
+	cloneCtx, cloneCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cloneCancel()
+	cmd := safeexec.CommandContext(cloneCtx, "git", "clone", cloneURL, repoPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, string(output))
 	}
 
-	log.InfoLog.Printf("[RepoPath] Successfully cloned %s/%s", ref.Owner, ref.Repo)
+	log.Info("successfully cloned repository", "owner", ref.Owner, "repo", ref.Repo)
 	return repoPath, nil
 }
 
@@ -217,8 +264,28 @@ type WorktreeInfo struct {
 }
 
 // DetectWorktree checks if the given path is a git worktree and extracts relevant info.
+// Results are cached per-path for 5 minutes to avoid repeated git subprocess calls on
+// every LoadInstances invocation for sessions whose GitHubOwner was never resolved.
 // Returns WorktreeInfo with IsWorktree=false if it's not a worktree or not a git repo.
 func DetectWorktree(path string) (*WorktreeInfo, error) {
+	now := time.Now()
+	detectWorktreeCache.RLock()
+	if entry, ok := detectWorktreeCache.m[path]; ok && now.Before(entry.expiry) {
+		detectWorktreeCache.RUnlock()
+		return entry.info, entry.err
+	}
+	detectWorktreeCache.RUnlock()
+
+	info, err := detectWorktreeUncached(path)
+
+	detectWorktreeCache.Lock()
+	detectWorktreeCache.m[path] = detectWorktreeCacheEntry{info: info, err: err, expiry: now.Add(detectWorktreeCacheTTL)}
+	detectWorktreeCache.Unlock()
+
+	return info, err
+}
+
+func detectWorktreeUncached(path string) (*WorktreeInfo, error) {
 	info := &WorktreeInfo{}
 
 	// Check if .git exists
@@ -253,7 +320,9 @@ func DetectWorktree(path string) (*WorktreeInfo, error) {
 	}
 
 	// Get the remote URL using git command (works for both worktrees and main repos)
-	cmd := exec.Command("git", "-C", path, "config", "--get", "remote.origin.url")
+	remoteCtx, remoteCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer remoteCancel()
+	cmd := safeexec.CommandContext(remoteCtx, "git", "-C", path, "config", "--get", "remote.origin.url")
 	output, err := cmd.Output()
 	if err == nil {
 		info.RemoteURL = strings.TrimSpace(string(output))
@@ -291,7 +360,9 @@ func parseGitHubRemoteURL(url string) (owner, repo string) {
 // GetMainRepoPath uses git rev-parse --git-common-dir to get the main repo path.
 // This is more reliable than parsing the .git file.
 func GetMainRepoPath(path string) (string, error) {
-	cmd := exec.Command("git", "-C", path, "rev-parse", "--git-common-dir")
+	mainCtx, mainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer mainCancel()
+	cmd := safeexec.CommandContext(mainCtx, "git", "-C", path, "rev-parse", "--git-common-dir")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get git common dir: %w", err)

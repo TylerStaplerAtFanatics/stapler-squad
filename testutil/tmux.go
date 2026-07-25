@@ -1,13 +1,21 @@
 package testutil
 
+import "github.com/linkdata/deadlock"
+
 import (
+	"context"
 	"fmt"
-	"github.com/tstapler/stapler-squad/executor"
-	"github.com/tstapler/stapler-squad/session/tmux"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/tstapler/stapler-squad/executor"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/session/tmux"
 )
 
 // TmuxWaiter provides utilities for waiting on tmux operations
@@ -160,6 +168,7 @@ type TmuxTestServer struct {
 	socketName string
 	executor   executor.Executor
 	t          *testing.T
+	mu         deadlock.Mutex // serializes tmux new-session calls; the socket doesn't tolerate concurrent creates
 }
 
 // CreateIsolatedTmuxServer creates a new isolated tmux server for testing.
@@ -168,8 +177,8 @@ type TmuxTestServer struct {
 func CreateIsolatedTmuxServer(t *testing.T) *TmuxTestServer {
 	t.Helper()
 
-	// Check if tmux is available
-	if _, err := exec.LookPath("tmux"); err != nil {
+	// Check if the configured tmux binary is available
+	if _, err := exec.LookPath(tmux.Binary()); err != nil {
 		t.Skip("tmux not available, skipping test")
 	}
 
@@ -177,6 +186,14 @@ func CreateIsolatedTmuxServer(t *testing.T) *TmuxTestServer {
 	// This ensures multiple servers in the same test get unique names
 	counter := atomic.AddUint64(&serverCounter, 1)
 	socketName := fmt.Sprintf("test_%s_%d", sanitizeTestName(t.Name()), counter)
+
+	// Remove any stale socket from a previous crashed run before starting.
+	// A stale socket file causes tmux to report "server exited unexpectedly"
+	// instead of creating a new server, which would silently fail the test.
+	staleSocket := tmuxSocketPath(socketName)
+	if err := os.Remove(staleSocket); err != nil && !os.IsNotExist(err) {
+		t.Logf("Warning: could not remove stale socket %s: %v", staleSocket, err)
+	}
 
 	server := &TmuxTestServer{
 		socketName: socketName,
@@ -197,14 +214,22 @@ func (s *TmuxTestServer) GetSocketName() string {
 	return s.socketName
 }
 
-// CreateSession creates and starts a new tmux session on this isolated server
+// CreateSession creates and starts a new tmux session on this isolated server.
+// Session creation is serialized: the tmux socket does not handle concurrent
+// new-session invocations reliably, so concurrent callers queue here.
 func (s *TmuxTestServer) CreateSession(sessionName string, command string) (*tmux.TmuxSession, error) {
 	s.t.Helper()
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Use tmux dependency injection to create session on isolated server
-	// Use a test-specific prefix to avoid conflicts with production sessions
+	// Use a test-specific prefix to avoid conflicts with production sessions.
+	// WithRegistry(nil) prevents a background reconnect loop from running against
+	// the isolated socket — the loop tries attach-session on a keepalive that
+	// doesn't exist here, causing flaky new-session failures under CI load.
 	prefix := "test_"
-	session := tmux.NewTmuxSessionWithServerSocket(sessionName, command, prefix, s.socketName)
+	session := tmux.NewTmuxSessionWithServerSocket(sessionName, command, prefix, s.socketName, tmux.WithRegistry(nil))
 
 	// Start the session with current directory
 	workDir := "."
@@ -219,30 +244,40 @@ func (s *TmuxTestServer) CreateSession(sessionName string, command string) (*tmu
 // This is useful for testing timeout and hang scenarios.
 func (s *TmuxTestServer) CreateSessionWithoutStarting(sessionName string, command string, prefix string) *tmux.TmuxSession {
 	s.t.Helper()
-	return tmux.NewTmuxSessionWithServerSocket(sessionName, command, prefix, s.socketName)
+	return tmux.NewTmuxSessionWithServerSocket(sessionName, command, prefix, s.socketName, tmux.WithRegistry(nil))
 }
 
 // ListSessions returns all session names on this isolated server
 func (s *TmuxTestServer) ListSessions() ([]string, error) {
 	s.t.Helper()
 
-	cmd := exec.Command("tmux", "-L", s.socketName, "list-sessions", "-F", "#{session_name}")
-	output, err := s.executor.Output(cmd)
+	cmd := safeexec.CommandContext(context.Background(), tmux.Binary(), "-L", s.socketName, "list-sessions", "-F", "#{session_name}")
+	// Use CombinedOutput so the tmux stderr message is available for error classification.
+	// executor.Output only captures stdout; "no server running" appears on stderr.
+	output, err := s.executor.CombinedOutput(cmd)
 	if err != nil {
-		// No sessions or no server running is not an error - return empty list
-		// tmux returns exit status 1 when no sessions exist
-		errStr := err.Error()
-		if strings.Contains(errStr, "no server running") ||
-			strings.Contains(errStr, "no sessions") ||
-			(strings.Contains(errStr, "exit status 1") && len(output) == 0) {
+		combined := err.Error() + " " + string(output)
+		// These all mean "no sessions available" — not an error for our purposes.
+		if strings.Contains(combined, "no server running") ||
+			strings.Contains(combined, "no sessions") ||
+			strings.Contains(combined, "error connecting") ||
+			strings.Contains(combined, "server exited unexpectedly") {
 			return []string{}, nil
 		}
-		return nil, fmt.Errorf("failed to list sessions: %w", err)
+		return nil, fmt.Errorf("failed to list sessions: %w (output: %s)", err, string(output))
 	}
 
-	// Parse session names (one per line)
-	names := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(names) == 1 && names[0] == "" {
+	// Parse session names (one per line), filtering the registry keepalive session
+	// created by TmuxServerRegistry.startControlMode() which should not be visible
+	// to test assertions about isolated server state.
+	keepaliveName := tmux.TmuxPrefix + "keepalive"
+	var names []string
+	for _, name := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if name != "" && name != keepaliveName {
+			names = append(names, name)
+		}
+	}
+	if names == nil {
 		return []string{}, nil
 	}
 	return names, nil
@@ -252,7 +287,7 @@ func (s *TmuxTestServer) ListSessions() ([]string, error) {
 func (s *TmuxTestServer) SessionExists(sessionName string) bool {
 	s.t.Helper()
 
-	cmd := exec.Command("tmux", "-L", s.socketName, "has-session", "-t", sessionName)
+	cmd := safeexec.CommandContext(context.Background(), tmux.Binary(), "-L", s.socketName, "has-session", "-t", sessionName)
 	err := s.executor.Run(cmd)
 	return err == nil
 }
@@ -261,7 +296,7 @@ func (s *TmuxTestServer) SessionExists(sessionName string) bool {
 func (s *TmuxTestServer) KillSession(sessionName string) error {
 	s.t.Helper()
 
-	cmd := exec.Command("tmux", "-L", s.socketName, "kill-session", "-t", sessionName)
+	cmd := safeexec.CommandContext(context.Background(), tmux.Binary(), "-L", s.socketName, "kill-session", "-t", sessionName)
 	// Use CombinedOutput to get both stdout and stderr
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -305,22 +340,50 @@ func (s *TmuxTestServer) KillAllSessions() error {
 func (s *TmuxTestServer) KillServer() error {
 	s.t.Helper()
 
-	cmd := exec.Command("tmux", "-L", s.socketName, "kill-server")
-	err := s.executor.Run(cmd)
+	cmd := safeexec.CommandContext(context.Background(), tmux.Binary(), "-L", s.socketName, "kill-server")
+	// Use CombinedOutput so we can inspect the actual tmux error message on stderr.
+	// executor.Run only returns the exit code; "no server running" lives on stderr.
+	output, err := s.executor.CombinedOutput(cmd)
 	if err != nil {
-		// Server already gone is not an error
-		if strings.Contains(err.Error(), "no server running") {
+		combined := err.Error() + " " + string(output)
+		// Any of these messages mean the server was never running (or already gone) —
+		// not a real error; the socket file may still need removal.
+		if strings.Contains(combined, "no server running") ||
+			strings.Contains(combined, "error connecting") ||
+			strings.Contains(combined, "server exited unexpectedly") {
+			_ = os.Remove(tmuxSocketPath(s.socketName))
 			return nil
 		}
-		return fmt.Errorf("failed to kill server: %w", err)
+		return fmt.Errorf("failed to kill server: %w (output: %s)", err, string(output))
+	}
+
+	// Remove the socket file to prevent stale accumulation across test runs
+	socketPath := tmuxSocketPath(s.socketName)
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		s.t.Logf("Warning: could not remove socket file %s: %v", socketPath, err)
 	}
 	return nil
+}
+
+// tmuxSocketPath returns the filesystem path for a named tmux socket.
+// Tmux always uses /tmp/tmux-<uid>/<name> for -L named sockets, regardless of XDG_RUNTIME_DIR.
+func tmuxSocketPath(socketName string) string {
+	return filepath.Join(fmt.Sprintf("/tmp/tmux-%d", os.Getuid()), socketName)
 }
 
 // Cleanup performs cleanup of the isolated tmux server.
 // This is automatically called via t.Cleanup() but can also be called manually.
 func (s *TmuxTestServer) Cleanup() {
 	s.t.Helper()
+
+	// Stop the server registry for this socket BEFORE killing the server.
+	// The registry runs a reconnectLoop goroutine that will restart the tmux
+	// server immediately after kill-server unless we cancel its context first.
+	tmux.StopServerRegistry(s.socketName)
+
+	// Give the reconnectLoop goroutine time to observe the cancellation
+	// before we issue kill commands.
+	time.Sleep(50 * time.Millisecond)
 
 	// Try to kill all sessions first (cleaner)
 	if err := s.KillAllSessions(); err != nil {
@@ -333,9 +396,9 @@ func (s *TmuxTestServer) Cleanup() {
 	}
 }
 
-// sanitizeTestName converts test name to filesystem-safe socket name
+// sanitizeTestName converts test name to filesystem-safe socket name.
+// Truncates to 60 chars to stay well under OS Unix socket path limits.
 func sanitizeTestName(testName string) string {
-	// Replace problematic characters with underscores
 	replacer := strings.NewReplacer(
 		"/", "_",
 		" ", "_",
@@ -344,7 +407,11 @@ func sanitizeTestName(testName string) string {
 		"(", "_",
 		")", "_",
 	)
-	return replacer.Replace(testName)
+	name := replacer.Replace(testName)
+	if len(name) > 60 {
+		name = name[:60]
+	}
+	return name
 }
 
 // TempSessionName generates a temporary session name with an ID
@@ -364,8 +431,15 @@ func CleanupTmuxSessionsWithPrefix(t *testing.T, prefix string) {
 
 	execImpl := executor.MakeExecutor()
 
+	// Resolve once, here -- not per-command below. This is a test-only helper,
+	// but without this it enumerates and kills sessions on the real, shared
+	// default tmux socket unconditionally, even inside a `go test` binary --
+	// the exact incident class tmux.ResolveSocket exists to close. See its
+	// doc comment for the incident history.
+	socket := tmux.ResolveSocket("")
+
 	// List all sessions
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	cmd := safeexec.CommandContext(context.Background(), tmux.Binary(), socket.Args("list-sessions", "-F", "#{session_name}")...)
 	output, err := execImpl.Output(cmd)
 	if err != nil {
 		// No sessions running is fine
@@ -380,7 +454,7 @@ func CleanupTmuxSessionsWithPrefix(t *testing.T, prefix string) {
 	sessions := strings.Split(strings.TrimSpace(string(output)), "\n")
 	for _, sessionName := range sessions {
 		if strings.HasPrefix(sessionName, prefix) {
-			killCmd := exec.Command("tmux", "kill-session", "-t", sessionName)
+			killCmd := safeexec.CommandContext(context.Background(), tmux.Binary(), socket.Args("kill-session", "-t", sessionName)...)
 			if err := execImpl.Run(killCmd); err != nil {
 				t.Logf("Warning: failed to kill session %s: %v", sessionName, err)
 			}

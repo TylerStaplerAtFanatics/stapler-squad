@@ -1,3 +1,8 @@
+import { FEATURE_CATALOG } from '../../web-app/src/lib/features';
+// Features: terminal-flickering — mapped from @feature annotation
+const _features = [
+  FEATURE_CATALOG['terminal-render'],
+] as const;
 import { test, expect } from '@playwright/test';
 
 /**
@@ -17,7 +22,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Terminal Flickering Fix', () => {
   test.beforeEach(async ({ page }) => {
     // Navigate to test page (using production server at 8543)
-    await page.goto('http://localhost:8543/test-terminal');
+    await page.goto('http://localhost:8544/test-terminal');
 
     // Wait for terminal to initialize
     await page.waitForSelector('[data-testid="terminal-container"]', { timeout: 10000 });

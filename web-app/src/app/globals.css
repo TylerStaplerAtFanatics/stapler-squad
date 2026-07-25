@@ -1,16 +1,36 @@
+/*
+ * Story 1.5 COMPLETE — all legacy CSS var consumers have been migrated to vanilla-extract
+ * or bridge-mapped below. The @media (prefers-color-scheme: dark) block has been removed;
+ * theme switching is now class-based via ThemeContext + vanilla-extract createTheme.
+ *
+ * Bridge variables below map legacy names to vanilla-extract custom properties so that
+ * any remaining inline-style or utility-class references still resolve correctly.
+ * They are set in :root and overridden on the theme class elements by VE at build time.
+ */
+
 :root {
-  /* Light mode colors (default) */
-  --background: #ffffff;
-  --foreground: #0a0a0a;
-  --card-background: #f9f9f9;
-  --border-color: #e0e0e0;
-  --hover-background: #f0f0f0;
+  /* Default colors (matches cleanTheme — Linear/Vercel dark slate palette) */
+  --background: #0f1117;
+  --foreground: #e2e8f0;
+  --card-background: #161b22;
+  --border-color: #1e293b;
+  --hover-background: #1e2530;
 
   /* Text colors with proper contrast */
-  --text-primary: #0a0a0a;
-  --text-secondary: #4a4a4a;
-  --text-muted: #6b6b6b;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #7d8ea8;
   --text-disabled: #9a9a9a;
+
+  /* File viewer / code panel tokens (always dark, VS Code-style) */
+  --surface-bg: #1e1e1e;
+  --surface-header: #252526;
+  --surface-hover: #3a3a3a;
+  --text-default: #d4d4d4;
+  --accent-color: #4d8bf7;
+  --error-color: #f85149;
+  --icon-color: #888888;
+  --selection-bg: rgba(40, 100, 255, 0.25);
 
   /* Terminal-specific colors (always dark, for terminal modals) */
   --terminal-background: #1e1e1e;
@@ -23,13 +43,13 @@
   --terminal-hover-background: #3e3e42;
 
   /* Interactive elements */
-  --primary: #0070f3;
-  --primary-hover: #0051cc;
-  --primary-active: #003d99;
+  --primary: #6366f1;
+  --primary-hover: #818cf8;
+  --primary-active: #4f46e5;
   --primary-text: #ffffff;
 
   /* Status colors */
-  --success: #10b981;
+  --success: #22c55e;
   --success-bg: #d1fae5;
   --warning: #f59e0b;
   --warning-bg: #fef3c7;
@@ -57,64 +77,150 @@
   --breakpoint-lg: 1024px;
   --breakpoint-xl: 1280px;
 
+  /* Pixel 9 Pro Fold breakpoints */
+  --breakpoint-outer: 390px;   /* outer screen */
+  --breakpoint-fold: 600px;    /* between outer and inner */
+  --breakpoint-inner: 900px;   /* inner screen */
+
+  /* Bottom navigation bar height — overwritten at runtime by BottomNav ResizeObserver */
+  --bottom-nav-height: 72px;
+
   /* Touch target sizes (WCAG 2.1 AA) */
   --min-touch-target: 44px;
+
+  /* Safe area insets (requires viewport-fit=cover in layout.tsx) */
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+
+  /* Dynamic viewport vars — overwritten at runtime by ViewportProvider via
+     document.documentElement.style.setProperty from the visualViewport API.
+     Fallback values apply during SSR and before hydration. */
+  --viewport-height: 100dvh;
+  --keyboard-height: 0px;
+
+  /* Typography */
+  --font-mono: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+
+  /* Surface tokens — subtle/muted backgrounds for cards, forms, skeletons */
+  --surface-subtle: #f9fafb;
+  --surface-muted: #f3f4f6;
+
+  /* Extended border tokens */
+  --border-subtle: #e5e7eb;
+  --border-muted: #d1d5db;
+  --border-strong: #9ca3af;
+
+  /* Tertiary text — below --text-muted, for de-emphasised metadata */
+  /* #767676 gives 4.55:1 on white (#ffffff) — minimum WCAG AA */
+  --text-tertiary: #767676;
+
+  /* Accent — tinted background for selected/highlighted items */
+  --accent-bg: rgba(0, 112, 243, 0.08);
+  --accent-hover: rgba(0, 112, 243, 0.16);
+
+  /* Session bulk-select: selected row background tint (indigo-500 at 8% opacity) */
+  --session-selected-bg: rgba(99, 102, 241, 0.08);
+
+  /* Extended status variants */
+  --error-dark: #b91c1c;
+  --error-rgb: 239, 68, 68;
+  --success-rgb: 16, 185, 129;
+  --warning-text: #92400e;
+  --priority-color: #f59e0b;
+
+  /* Primary dark variant — for pressed/active states deeper than --primary-active */
+  --primary-dark: #003d99;
+
+  /* Border hover state */
+  --border-hover: #9ca3af;
+
+  /* Panel / card secondary surface */
+  --panel-bg-secondary: #f3f4f6;
+
+  /* Code block backgrounds */
+  --code-hover-bg: #e5e7eb;
+
+  /* Placeholder text */
+  --placeholder-color: #9ca3af;
+  --placeholder-color-dark: #6b7280;
+
+  /* Animation stagger index — set via inline style; default 0 */
+  --card-index: 0;
+
+  /* Status badge color tokens (used by StatusBadge.css.ts) */
+  --status-badge-approval-bg: #fecaca;
+  --status-badge-approval-fg: #991b1b;
+  --status-badge-approval-border: #fca5a5;
+  --status-badge-input-bg: #dbeafe;
+  --status-badge-input-fg: #1e40af;
+  --status-badge-input-border: #93c5fd;
+  --status-badge-complete-bg: #dcfce7;
+  --status-badge-complete-fg: #166534;
+  --status-badge-complete-border: #bbf7d0;
+  --status-badge-uncommitted-bg: #fef3c7;
+  --status-badge-uncommitted-fg: #92400e;
+  --status-badge-uncommitted-border: #fcd34d;
+  --status-badge-idle-bg: #f3f4f6;
+  --status-badge-idle-fg: #374151;
+  --status-badge-idle-border: #d1d5db;
+  --status-badge-stale-fg: #6b7280;
+  --status-badge-processing-bg: #e0e7ff;
+  --status-badge-processing-fg: #4338ca;
+  --status-badge-processing-border: #c7d2fe;
 }
 
-/* Mobile header height override */
-@media (max-width: 768px) {
+/* Header height override — aligns with compact breakpoint so height change and nav compression happen together */
+@media (max-width: 1024px) {
   :root {
     --header-height: 3.5rem;
   }
 }
 
-/* Dark mode override */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-    --card-background: #1a1a1a;
-    --border-color: #333333;
-    --hover-background: #2a2a2a;
+/*
+ * NOTE: Dark mode is now handled exclusively by vanilla-extract class-based themes.
+ * The @media (prefers-color-scheme: dark) block has been removed (Story 1.5.3).
+ * Theme switching is controlled by ThemeContext — see web-app/src/lib/contexts/ThemeContext.tsx.
+ */
 
-    /* Text colors with proper contrast for dark mode */
-    --text-primary: #ededed;
-    --text-secondary: #b4b4b4;
-    --text-muted: #8a8a8a;
-    --text-disabled: #767676; /* minimum #767676 for WCAG AA 4.5:1 on dark backgrounds */
+/* Focus ring — visible on dark bg */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
 
-    /* Interactive elements */
-    --primary: #2d9cdb;
-    --primary-hover: #3ba9e6;
-    --primary-active: #52b9f0;
-    --primary-text: #ffffff;
+/* Remove outline for mouse users — only show for keyboard nav */
+:focus:not(:focus-visible) {
+  outline: none;
+}
 
-    /* Status colors */
-    --success: #10b981;
-    --success-bg: #064e3b;
-    --warning: #f59e0b;
-    --warning-bg: #78350f;
-    --error: #ef4444;
-    --error-bg: #7f1d1d;
-    --error-text: #fca5a5;
+/* Scrollbar styling — matches dark slate theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
 
-    /* Modal/Overlay */
-    --modal-background: #1a1a1a;
-    --modal-border: #333333;
-    --overlay-background: rgba(0, 0, 0, 0.7);
+::-webkit-scrollbar-track {
+  background: transparent;
+}
 
-    /* Input elements */
-    --input-background: #2a2a2a;
-    --input-border: #404040;
-    --input-focus-border: #2d9cdb;
-    --input-text: #ededed;
-  }
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);  /* #1e293b — subtle */
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);  /* #7d8ea8 — more visible on hover */
 }
 
 * {
   box-sizing: border-box;
   padding: 0;
   margin: 0;
+  /* Firefox scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
 }
 
 html,
@@ -228,7 +334,7 @@ a {
 
 @media (max-width: 768px) {
   .modal {
-    max-height: calc(100vh - 5rem);
+    max-height: calc(var(--viewport-height) - 5rem);
     border-radius: 12px 12px 0 0;
     width: 100%;
     max-width: 100%;
@@ -236,6 +342,7 @@ a {
     bottom: 0;
     left: 0;
     right: 0;
+    padding-bottom: var(--safe-area-bottom);
   }
 }
 
@@ -328,6 +435,15 @@ a {
 
 .skip-link:focus {
   top: 0;
+}
+
+/* Chrome 138+ Pixel 9 Pro Fold — progressive enhancement only */
+@media (horizontal-viewport-segments: 2) {
+  :root {
+    --fold-left-width: env(viewport-segment-width 0 0);
+    --fold-right-width: env(viewport-segment-width 1 0);
+    --fold-gap: env(viewport-segment-left 1 0);
+  }
 }
 
 /* Respect reduced-motion user preference (WCAG 2.3.3) */

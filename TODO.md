@@ -2,11 +2,64 @@
 
 ## Priority Summary
 
-**P1** - Claude Config Editor Phase 3 (Web UI) - ✅ COMPLETE
-**P2** - Test Stabilization - Deferred until major features complete
+> **Note**: This file is a historical record. For the current task index see [docs/tasks/TODO.md](docs/tasks/TODO.md).
+> Last synced: 2026-05-02
 
-**Recent Completion**: Test Stabilization Bug Fixes (2025-12-05) - Fixed 4 category rendering bugs
-**Bug Status**: 7 bugs fixed (BUG-001 through BUG-007), 5 bugs open requiring investigation (BUG-008 through BUG-012)
+**P1** - Backend Architecture Stories 6.1-6.3: UUID keying in ReviewQueuePoller, InstanceReader interface, domain error types
+**P2** - Backend Architecture Stories 1-5, 7, 8: InstanceStore leak, BuildRuntimeDeps, Repository split, TerminalSession interface
+**P2** - Session Defaults Task 4.4: DirectoryRulesManager component (blocks web build on settings/defaults branch)
+**P2** - History Page Revamp: Ready for implementation (docs/tasks/history-page-revamp.md)
+**P3** - Mobile UX Task 3.4: iOS auto-zoom fix for xterm textarea (only remaining mobile item)
+**P3** - Rate Limit Story 5 + UX: Config/disable toggle and UX improvements pending
+
+**Recent Completions (2026-05-02)**:
+- Mobile toolbar overflow menu — secondary buttons collapse to ··· on mobile (ef342b6)
+- Browser console log streaming to server via LogClientEvents RPC (efac73ab)
+
+**Recent Completions (2026-04-22)**:
+- UUID persistence fix (session not found after restart — uuid field added to ent schema)
+- CreateSession clobbering live instances fix (LoadInstances hidden side effect isolated)
+
+**Recent Completions (2026-04-20)**:
+- Tmux Session Registry (T1-T6 all merged) — fork throttling eliminated
+- System Service Autostart (Stories 1-4 complete) — systemd + LaunchAgent + ssq-hooks
+- BUG-013 FIXED — xterm.js viewport jump on Claude repaints (EscapeSequenceParser.ts)
+- BUG-010, BUG-012 FIXED — tmux registry contamination and testutil failures
+
+**Bug Status (2026-05-02)**: Fixed: BUG-001..003, BUG-009..017 | Open-Medium: BUG-018 (gob heap), BUG-020 (vcs mutex), BUG-021 (gh auth mutex) | Open-Low: BUG-019 (flate pool), GAP-001..004
+
+---
+
+## ✅ COMPLETE: Permissions Extension (MDD)
+
+**Status**: Stories 1-3 ✅ COMPLETE
+**Priority**: P1 - Modularize classification for multi-CLI support
+**Epic ID**: FEATURE-PERMISSIONS-MDD
+**Progress**: 100% (Shared package and standalone hooks complete)
+
+### ✅ Completed Work:
+
+#### Sprint 1: Shared Package (COMPLETE)
+- [x] ✅ Create `pkg/classifier` with core logic and command parsing
+- [x] ✅ 100% test coverage for `pkg/classifier` (tests passing)
+- [x] ✅ Refactor main `stapler-squad` server to use `pkg/classifier`
+- [x] ✅ Remove redundant classification logic from `server/services/`
+
+#### Sprint 2: Standalone CLI (COMPLETE)
+- [x] ✅ Implement `ssq-hooks` CLI with `check`, `serve`, and `proxy` subcommands
+- [x] ✅ Implement rule export mechanism in `RulesStore` to `~/.config/stapler-squad/rules.json`
+- [x] ✅ Fix `proxy` output for shell evaluation (command to stdout, logs to stderr)
+- [x] ✅ Add `install` command to `ssq-hooks` for easy setup
+
+#### Sprint 3: Multi-CLI Integration (COMPLETE)
+- [x] ✅ Create `scripts/hooks/open-code-proxy.sh` wrapper
+- [x] ✅ Create `scripts/hooks/install-gemini-hook.sh` for Gemini CLI
+- [x] ✅ Implement deep security analysis (AST parsing enhancements)
+
+**Strategic Value**:
+- **Interoperability**: One classifier rules them all (Claude, Gemini, Open Code)
+- **Modularity**: Standalone permissions engine usable without the full TUI/Web UI
+- **Security**: Centralized policy enforcement across different AI tools
 
 ---
 
@@ -77,121 +130,45 @@
 
 ---
 
-## Bug Tracking: Test Stabilization Session (2025-12-05)
+## Bug Tracking (updated 2026-04-20)
 
-**Status**: 4 bugs fixed, 1 CRITICAL bug open, 4 additional bugs require investigation
-**Session Date**: 2025-12-05
-**Total Effort**: 4 bugs fixed (~90 minutes), investigation pending for remaining bugs
+**Status**: 5 bugs fixed; 2 open-high, 1 open-medium, 4 open-low gaps
 
-### ✅ Fixed Bugs (BUG-004 through BUG-007)
+### Fixed Bugs
 
-**BUG-004** [MEDIUM]: QueueView Nil Pointer Dereference ✅ FIXED
-- **Impact**: Test failures, potential runtime panics in TUI
-- **Root Cause**: `GetBorderColor()` accessed `queueView.reviewQueue` without nil checks
-- **Fix Applied**: Added defensive nil guards in `ui/list.go:1031-1044`
-- **Fix Time**: 20 minutes
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/fixed/BUG-004-queueview-nil-pointer.md`
+**BUG-001** [HIGH]: LastAcknowledged Field Not Persisted — FIXED
+**BUG-002** [MEDIUM]: LastMeaningfulOutput Timestamp Reset — FIXED
+**BUG-003** [LOW]: Large State File Size (34MB JSON) — FIXED (42x reduction)
+**BUG-009** [HIGH]: Session Package Test Failures — FIXED
+**BUG-010** [HIGH]: Tmux Test Failures — Global Registry Contamination — FIXED (2026-04-20)
+- Global `TmuxServerRegistry` bypassed mock executor; keepalive injected into isolated test servers
+- Fix: `WithRegistry(nil)` in mock tests; `serverSocket == ""` guard in `startControlMode()`
+- See: [docs/bugs/fixed/BUG-010-tmux-banner-prompt-detection.md](docs/bugs/fixed/BUG-010-tmux-banner-prompt-detection.md)
+**BUG-013** [HIGH]: xterm.js Viewport Jump on Claude Repaints — FIXED (2026-04-20)
+- ED3 filter in `EscapeSequenceParser.ts`; clear-prefix removed from cold-start snapshot; xterm.js upgraded to 6.0
+- See: [docs/bugs/fixed/BUG-013-xterm-viewport-corruption-from-ed3-sequence.md](docs/bugs/fixed/BUG-013-xterm-viewport-corruption-from-ed3-sequence.md)
+**Review Queue BUG-001/002/003** [HIGH/MEDIUM/MEDIUM]: Duplicate notifications, session ID inconsistency, dedup — FIXED (2026-03-30)
 
-**BUG-005** [HIGH]: Category Expansion Logic Using Wrong Boolean ✅ FIXED
-- **Impact**: Category expansion/collapse feature completely inverted
-- **Root Cause**: Used non-existent `shouldCollapseCategories` instead of `expandCategories`
-- **Fix Applied**: Changed to correct field in `ui/list.go:327, 364`
-- **Fix Time**: 22 minutes
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/fixed/BUG-005-category-expansion-wrong-boolean.md`
+### Open Gaps — Low Severity (Review Queue)
 
-**BUG-006** [HIGH]: Category Name Transformation Mismatch ✅ FIXED
-- **Impact**: Category names didn't match between storage and rendering, causing lookup failures
-- **Root Cause**: Manual string replacement instead of using `PathToDisplayCategory()` function
-- **Fix Applied**: Standardized to use `grouping.PathToDisplayCategory()` in 3 locations
-- **Fix Time**: 35 minutes
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/fixed/BUG-006-category-name-transformation-mismatch.md`
-
-**BUG-007** [HIGH]: Default Category Expansion Not Forcing True ✅ FIXED
-- **Impact**: Default "All" category appeared collapsed, hiding all sessions
-- **Root Cause**: "All" category treated like user-defined categories (can be collapsed)
-- **Fix Applied**: Forced "All" category to always return `true` in `ui/list.go:364`
-- **Fix Time**: 17 minutes
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/fixed/BUG-007-default-category-expansion-not-forced.md`
-
-### 🔴 CRITICAL Open Bug (Blocks Test Stabilization)
-
-**BUG-008** [CRITICAL]: Category Rendering in Tests - Sessions Don't Render ❌ OPEN
-- **Impact**: Test suite completely broken, prevents verification of rendering logic
-- **Status**: 🐛 Open - Requires investigation
-- **Symptom**: Category shows count "(1)" but no sessions render, visible items returns empty
-- **Investigation Needed**: 2.5-4.5 hours (isolate filtering bug, fix root cause, verify)
-- **Priority**: P1 - Blocks all UI test development
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/open/BUG-008-category-rendering-in-tests.md`
-
-**Investigation Plan**:
-1. Add debug logging to `getVisibleItems()` filtering stages (30 min)
-2. Check category group construction and membership (30 min)
-3. Identify which filter is incorrectly excluding sessions (1 hour)
-4. Apply targeted fix based on findings (1-2 hours)
-5. Comprehensive testing (30 min)
-
-### 🟡 Additional Open Bugs (Require Investigation)
-
-**BUG-009** [HIGH]: Session Package Test Failures 🔍 Investigating
-- **Impact**: Core session management tests failing, unknown production impact
-- **Tests Affected**: `TestInstance_FieldAccess`, `TestInstance_Lifecycle`, `TestInstance_Serialization`
-- **Investigation Needed**: 4-7 hours (capture output, analyze, fix)
-- **Priority**: P2 - Critical for test suite health
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/open/BUG-009-session-package-test-failures.md`
-
-**BUG-010** [HIGH]: tmux Banner and Prompt Detection Failures 🔍 Investigating
-- **Impact**: Session startup detection broken, tests timeout waiting for prompts
-- **Root Cause**: Shell banners interfere with prompt detection, timing issues
-- **Investigation Needed**: 4-5 hours (capture output, test shells, fix detection)
-- **Priority**: P2 - Blocks test stabilization, may affect production
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/open/BUG-010-tmux-banner-prompt-detection.md`
-
-**BUG-011** [HIGH]: UI Category Rendering Test Failure 🔍 Investigating
-- **Impact**: UI rendering tests failing, unknown production impact
-- **Tests Affected**: Category header, expand/collapse UI, styling (exact tests TBD)
-- **Investigation Needed**: 3-6 hours (identify failures, update expectations, fix bugs)
-- **Priority**: P2 - Important for test suite health
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/open/BUG-011-ui-category-rendering-test-failure.md`
-
-**BUG-012** [MEDIUM]: Testutil Package Failures 🔍 Investigating
-- **Impact**: Test infrastructure broken, blocks test development
-- **Root Cause**: Outdated mocks, stale fixtures, helper function changes (TBD)
-- **Investigation Needed**: 4-6 hours (identify broken utilities, update mocks/fixtures)
-- **Priority**: P2 - Affects all test development
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/open/BUG-012-testutil-package-failures.md`
-
-### Historical Bugs (Already Resolved)
-
-**BUG-001** [HIGH]: LastAcknowledged Field Not Persisted ✅ ALREADY FIXED
-- **Investigation Date**: 2025-11-30
-- **Result**: Field IS properly persisted, comprehensive tests passing
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/fixed/BUG-001-last-acknowledged-persistence.md`
-
-**BUG-002** [MEDIUM]: LastMeaningfulOutput Timestamp Reset ✅ ALREADY FIXED
-- **Investigation Date**: 2025-11-30
-- **Result**: Signature-based change detection working correctly
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/fixed/BUG-002-timestamp-refresh-reset.md`
-
-**BUG-003** [LOW]: Large State File Size (34MB JSON) ✅ FIXED (2025-12-01)
-- **Fix Date**: 2025-12-01
-- **Result**: 34 MB → ~800 KB (42x reduction) via diff content exclusion
-- **Location**: `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/fixed/BUG-003-large-state-file-size.md`
+- **GAP-001**: Approval timeout UX degrades silently — no proactive notification on timeout
+- **GAP-002**: No risk-weighted sorting within APPROVAL_PENDING tier (Won't Fix / MVP)
+- **GAP-003**: WebSocket reconnect falls back to 30s poll (no exponential backoff)
+- **GAP-004**: Multi-approval session shows only first approval in queue
+- **See**: [docs/bugs/open/review-queue-gaps.md](docs/bugs/open/review-queue-gaps.md)
 
 ### Bug Summary Statistics
 
-**Total Bugs Tracked**: 12
-**Fixed**: 7 (BUG-001, BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007)
-**Open - Critical**: 1 (BUG-008 - blocks test development)
-**Open - High**: 3 (BUG-009, BUG-010, BUG-011 - require investigation)
-**Open - Medium**: 1 (BUG-012 - test infrastructure)
+**Total Tracked**: 13 (including review-queue gaps)
+**Fixed**: 9 (BUG-001, BUG-002, BUG-003, BUG-009, BUG-010, BUG-012, BUG-013, RQ-BUG-001, RQ-BUG-002, RQ-BUG-003)
+**Open - High**: 0
+**Open - Low**: 4 (GAP-001..004)
 
-**Estimated Investigation Effort**: 14-22.5 hours for all open bugs
-**Recommended Next Action**: Fix BUG-008 (CRITICAL, 2.5-4.5 hours) to unblock test development
 
 ### Bug Documentation Structure
 
-All bugs documented following standardized format in `/Users/tylerstapler/IdeaProjects/stapler-squad/docs/bugs/`:
-- **open/** - Active bugs requiring investigation or fix (BUG-008 through BUG-012)
+All bugs documented following standardized format in `docs/bugs/`:
+- **open/** - Active bugs requiring investigation or fix (review-queue-gaps only)
 - **fixed/** - Resolved bugs with fix details (BUG-001 through BUG-007)
 - **in-progress/** - Bugs currently being worked on (empty)
 - **obsolete/** - Historical bugs no longer relevant (empty)
@@ -229,6 +206,51 @@ Tests hang in `config.GetClaudeCommand()` which executes shell commands during s
 - [ ] Integrate teatest framework for TUI testing
 
 **See**: [Test Stabilization Epic](docs/tasks/test-stabilization-and-teatest-integration.md)
+
+---
+
+## COMPLETE: Tmux Session Registry (2026-04-20)
+
+**Status**: T1-T6 all merged — fork throttling eliminated
+**Epic**: Replace fork-heavy polling with push-based tmux control-mode event stream
+**Commits**: 5e474b0 (T1) → 2bc47ac (T2) → 2b8919f (T3) → 017f0b1 (T4) → e987331 (T5) → ca78293 (T6)
+
+**Result**: ~40 forks/sec → near-zero for session-status checks. cgroup throttle counter should no longer climb.
+
+**Remaining**: One release cycle in production to confirm; remove polling fallbacks in follow-up PR.
+
+**See**: [docs/tasks/tmux-session-registry.md](docs/tasks/tmux-session-registry.md)
+
+---
+
+## COMPLETE: System Service Autostart (2026-04-20)
+
+**Status**: Stories 1-4 complete (shell script, uninstall, Makefile, ssq-hooks subcommand)
+**Epic**: Install stapler-squad as systemd user service (Linux) or LaunchAgent (macOS) with `make install-service`
+
+**Delivered**:
+- `scripts/install-service.sh` — OS detection, binary resolution, idempotent install/uninstall
+- `make install-service` / `make uninstall-service` Makefile targets
+- `ssq-hooks install service [--uninstall]` Go subcommand
+
+**See**: [docs/tasks/system-service-autostart.md](docs/tasks/system-service-autostart.md)
+
+---
+
+## IN PROGRESS: Backend Architecture Improvements (2026-04-20)
+
+**Status**: Not started — plan drafted from architecture review (score 7.5/10)
+**Priority**: P1 for Stories 1-2 (structural risk compounds with new features)
+
+| Story | Problem | Priority | Effort |
+|---|---|---|---|
+| 1 | Fix InstanceStore abstraction leak (type assertion in NewSessionService) | P1 | 3-4h |
+| 2 | Refactor BuildRuntimeDeps (ordering bugs, 12-step monolith) | P1 | 3-4h |
+| 3 | Split Repository interface (21-method monolith) | P2 | 2-3h |
+| 4 | Extract GitHubPRStatus value object | P2 | 2-3h |
+| 5 | Split mega-functions (StreamTerminal 294 lines, CreateSession 165 lines) | P2 | 3-4h |
+
+**See**: [docs/tasks/backend-architecture-improvements.md](docs/tasks/backend-architecture-improvements.md)
 
 ---
 
@@ -1886,9 +1908,48 @@ Do an end-to-end smoke test. If the UI renders and approve/deny work, the core f
 
 ---
 
+---
+
+## COMPLETE: FileTree Nested Search and Auto-Expand
+
+**Status**: Implementation complete, pending PR to main
+**Branch**: claude-squad-fix-filesystem-nested
+**Priority**: P1 - Core file discovery UX fix
+**Epic ID**: EPIC-FILETREE-SEARCH-001
+**Progress**: 100% (3 of 3 stories, 10 of 10 tasks)
+
+### Problem Solved
+
+File search in the Files tab only matched files already loaded via manual directory expansion. Files in collapsed directories were invisible to search, making the search bar effectively useless for project discovery.
+
+### What Was Implemented
+
+- **Backend**: `SearchFiles` RPC in `server/services/file_service.go` -- recursive `filepath.WalkDir` with gitignore support, hardSkipDirs, 500-result cap, context cancellation
+- **Proto**: `SearchFilesRequest` / `SearchFilesResponse` messages and `rpc SearchFiles` in `proto/session/v1/session.proto`; codegen run
+- **Frontend**: Dual-mode FileTree (browse vs. search), 300ms debounce, stale response prevention via requestIdRef, `buildSearchTree()` for nested display, `treeRef.openAll()` on results
+- **UX**: Loading spinner, "No files match" empty state, "Showing first 500" truncation notice, result count badge in toolbar ("12 matches"), browse-state restoration on search clear, Cmd+F keyboard shortcut
+
+### Key Files
+
+- `server/services/file_service.go` - SearchFiles handler + searchFilesInWorktree walk
+- `server/services/file_service_test.go` - 8 SearchFiles unit tests
+- `server/services/session_service.go` - SearchFiles delegation
+- `proto/session/v1/session.proto` - SearchFilesRequest/Response + RPC
+- `web-app/src/components/sessions/FileTree.tsx` - Search mode, debounce, auto-expand, browse restore
+- `web-app/src/components/sessions/FilesTab.tsx` - Result count badge, Cmd+F binding
+- `web-app/src/lib/hooks/useFileService.ts` - `searchFiles()` RPC client function
+
+### Next Action
+
+Open PR: `gh pr create` from `claude-squad-fix-filesystem-nested` to `main`
+
+**See Full Details**: [FileTree Search and Expand Fix](docs/tasks/filetree-search-and-expand-fix.md)
+
+---
+
 ## Context Notes
 
-**Last Updated**: 2026-03-20
+**Last Updated**: 2026-04-11
 **Current Phase**: Architecture refactoring wave complete; tmux user options metadata implemented (uncommitted); Approval Stories 5-6 pending
 **Next Milestone**: Wire ScanFromUserOptions() into server startup (2h); Approval Story 5 smoke test then Review Queue Integration
 

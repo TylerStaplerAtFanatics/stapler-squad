@@ -1,0 +1,11 @@
+{
+  "id": "ImportGitHubIssue",
+  "type": "backend",
+  "service": "BacklogService",
+  "method": "ImportGitHubIssue",
+  "protoFile": "proto/session/v1/backlog.proto",
+  "markerFound": false,
+  "tested": false,
+  "testIds": [],
+  "lastModified": "2026-07-07T08:50:35.878485731-07:00"
+}

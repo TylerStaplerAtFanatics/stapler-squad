@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, Suspense } from "react";
+import { usePageView } from "@/lib/analytics/usePageView";
 import { useRouter, useSearchParams } from "next/navigation";
 import { loginWithPasskey, registerPasskey } from "@/lib/auth/passkey";
 import { useAuth } from "@/lib/contexts/AuthContext";
-import styles from "./login.module.css";
+import * as styles from "./login.css";
 
 function LoginContent() {
   const router = useRouter();
@@ -13,6 +14,7 @@ function LoginContent() {
 
   const [status, setStatus] = useState<"idle" | "working" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
 
   const setupToken = searchParams.get("setup_token") ?? undefined;
   const isSetup = !hasCredentials || !!setupToken;
@@ -108,12 +110,24 @@ function LoginContent() {
             To register, use the setup URL printed in the server console.
           </p>
         )}
+
+        {isHttps && (
+          <div className={styles.caDivider}>
+            <p className={styles.hint}>
+              First time on this device? Install the CA certificate so your browser trusts this server.
+            </p>
+            <a href="/auth/ca.pem" download className={styles.secondaryButton}>
+              ⬇ Download CA Certificate
+            </a>
+          </div>
+        )}
       </div>
     </main>
   );
 }
 
 export default function LoginPage() {
+  usePageView();
   return (
     <Suspense>
       <LoginContent />

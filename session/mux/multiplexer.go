@@ -16,8 +16,18 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/session/tmux"
 )
+
+// MultiplexerOption is a functional option for configuring a Multiplexer.
+type MultiplexerOption func(*Multiplexer)
+
+// WithPaneExitSubscriber injects a PaneExitSubscriber for test isolation.
+// When set, startSessionMonitor uses the channel-based path instead of polling.
+func WithPaneExitSubscriber(s tmux.PaneExitSubscriber) MultiplexerOption {
+	return func(m *Multiplexer) { m.paneExitSub = s }
+}
 
 // Multiplexer handles PTY multiplexing for external Claude sessions.
 // It creates a tmux session with stapler-squad's naming convention, allowing
@@ -31,6 +41,14 @@ type Multiplexer struct {
 
 	// tmux session (uses stapler-squad naming convention for adoption)
 	tmuxSession string
+
+	// serverSocket is the tmux server socket this multiplexer's session lives
+	// on. Resolved once at construction via tmux.ResolveSocket so ssq-mux's own
+	// tests target a per-process isolated socket instead of the real, shared
+	// default one -- the zero value in production still means the real socket,
+	// matching prior behavior exactly. See ResolveSocket's doc comment for the
+	// incident class this closes.
+	serverSocket tmux.Socket
 
 	// attachOnly indicates we're attaching to an existing tmux session
 	// instead of creating a new one
@@ -59,14 +77,19 @@ type Multiplexer struct {
 
 	// Hooks configuration file path (for cleanup)
 	hooksPath string
+
+	// paneExitSub delivers pane-exit notifications via a channel.
+	// nil means fall back to the polling monitorTmuxSessionPolling goroutine.
+	paneExitSub tmux.PaneExitSubscriber
 }
 
 // NewMultiplexer creates a new PTY multiplexer for the given command.
 func NewMultiplexer(command string, args []string) *Multiplexer {
 	return &Multiplexer{
-		command: command,
-		args:    args,
-		clients: make(map[net.Conn]struct{}),
+		command:      command,
+		args:         args,
+		clients:      make(map[net.Conn]struct{}),
+		serverSocket: tmux.ResolveSocket(""),
 	}
 }
 
@@ -82,9 +105,10 @@ func NewMultiplexerWithName(command string, args []string, sessionName string) *
 // after a restart.
 func NewMultiplexerAttach(tmuxSession string) *Multiplexer {
 	return &Multiplexer{
-		tmuxSession: tmuxSession,
-		attachOnly:  true,
-		clients:     make(map[net.Conn]struct{}),
+		tmuxSession:  tmuxSession,
+		attachOnly:   true,
+		clients:      make(map[net.Conn]struct{}),
+		serverSocket: tmux.ResolveSocket(""),
 	}
 }
 
@@ -160,7 +184,7 @@ func (m *Multiplexer) Start() error {
 
 	// Create socket path using OS-specific temp directory
 	// On macOS this is /var/folders/.../T/, on Linux it's /tmp
-	m.socketPath = filepath.Join(os.TempDir(), fmt.Sprintf("claude-mux-%d.sock", os.Getpid()))
+	m.socketPath = filepath.Join(os.TempDir(), fmt.Sprintf("ssq-mux-%d.sock", os.Getpid()))
 
 	// Remove any stale socket
 	os.Remove(m.socketPath)
@@ -190,7 +214,9 @@ func (m *Multiplexer) Start() error {
 			return fmt.Errorf("attach mode requires a tmux session name")
 		}
 		// Check if session exists
-		checkCmd := exec.Command("tmux", "has-session", "-t", m.tmuxSession)
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer checkCancel()
+		checkCmd := safeexec.CommandContext(checkCtx, tmux.Binary(), m.serverSocket.Args("has-session", "-t", m.tmuxSession)...)
 		if err := checkCmd.Run(); err != nil {
 			m.listener.Close()
 			os.Remove(m.socketPath)
@@ -241,11 +267,13 @@ func (m *Multiplexer) Start() error {
 		}
 
 		// Start tmux session with the command (detached)
-		startCmd := exec.Command("tmux", "new-session", "-d", "-s", m.tmuxSession, "-c", cwd, fullCmd)
+		startCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer startCancel()
+		startCmd := safeexec.CommandContext(startCtx, tmux.Binary(), m.serverSocket.Args("new-session", "-d", "-s", m.tmuxSession, "-c", cwd, fullCmd)...)
 		if err := startCmd.Run(); err != nil {
 			// Clean up hooks file on failure
 			if m.hooksPath != "" {
-				CleanupHooksFile(m.hooksPath)
+				_ = CleanupHooksFile(m.hooksPath)
 			}
 			m.listener.Close()
 			os.Remove(m.socketPath)
@@ -254,14 +282,18 @@ func (m *Multiplexer) Start() error {
 	}
 
 	// Attach to the tmux session - this is what we wrap in PTY for the local terminal
-	m.cmd = exec.Command("tmux", "attach-session", "-t", m.tmuxSession)
+	// Use m.ctx so the attach process is killed when the multiplexer shuts down.
+	m.cmd = exec.CommandContext(m.ctx, tmux.Binary(), m.serverSocket.Args("attach-session", "-t", m.tmuxSession)...) //nolint:norawexec long-running cmd.Start() process; lifecycle managed by caller
 
 	// Start attach command in PTY
 	ptmx, err := pty.Start(m.cmd)
 	if err != nil {
 		// Clean up tmux session if attach fails (but not in attach-only mode)
 		if !m.attachOnly {
-			exec.Command("tmux", "kill-session", "-t", m.tmuxSession).Run()
+			killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer killCancel()
+			killCmd := safeexec.CommandContext(killCtx, tmux.Binary(), m.serverSocket.Args("kill-session", "-t", m.tmuxSession)...)
+			_ = killCmd.Run()
 		}
 		m.listener.Close()
 		os.Remove(m.socketPath)
@@ -294,11 +326,11 @@ func (m *Multiplexer) Start() error {
 	}
 
 	// Start goroutines
-	m.wg.Add(4)
+	m.wg.Add(3)
 	go m.acceptClients()
 	go m.forwardPTYOutput()
 	go m.forwardStdinToPTY()
-	go m.monitorTmuxSession()
+	m.startSessionMonitor()
 
 	return nil
 }
@@ -351,7 +383,7 @@ func (m *Multiplexer) Wait() (int, error) {
 
 	// Clean up hooks file
 	if m.hooksPath != "" {
-		CleanupHooksFile(m.hooksPath)
+		_ = CleanupHooksFile(m.hooksPath)
 		m.hooksPath = ""
 	}
 
@@ -367,21 +399,24 @@ func (m *Multiplexer) Shutdown() {
 
 	// Kill the process if it's still running
 	if m.cmd != nil && m.cmd.Process != nil {
-		m.cmd.Process.Signal(syscall.SIGTERM)
+		_ = m.cmd.Process.Signal(syscall.SIGTERM)
 		// Give it a moment to exit gracefully
 		time.Sleep(100 * time.Millisecond)
-		m.cmd.Process.Kill()
+		_ = m.cmd.Process.Kill()
 	}
 
 	// Kill tmux session on cleanup (user closed their terminal)
 	// In attach-only mode, preserve the session so it can be reattached later
 	if m.tmuxSession != "" && !m.attachOnly {
-		exec.Command("tmux", "kill-session", "-t", m.tmuxSession).Run()
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutCancel()
+		shutCmd := safeexec.CommandContext(shutCtx, tmux.Binary(), m.serverSocket.Args("kill-session", "-t", m.tmuxSession)...)
+		_ = shutCmd.Run()
 	}
 
 	// Clean up hooks file
 	if m.hooksPath != "" {
-		CleanupHooksFile(m.hooksPath)
+		_ = CleanupHooksFile(m.hooksPath)
 		m.hooksPath = ""
 	}
 }
@@ -398,7 +433,10 @@ func (m *Multiplexer) CapturePane() ([]byte, error) {
 	if m.tmuxSession == "" {
 		return nil, fmt.Errorf("tmux session not initialized")
 	}
-	output, err := exec.Command("tmux", "capture-pane", "-t", m.tmuxSession, "-p").Output()
+	captureCtx, captureCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer captureCancel()
+	captureCmd := safeexec.CommandContext(captureCtx, tmux.Binary(), m.serverSocket.Args("capture-pane", "-t", m.tmuxSession, "-p")...)
+	output, err := captureCmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to capture pane: %w", err)
 	}
@@ -456,7 +494,7 @@ func (m *Multiplexer) handleClient(conn net.Conn) {
 	// Send metadata to client
 	metaMsg, err := NewMetadataMessage(m.metadata)
 	if err == nil {
-		WriteMessage(conn, metaMsg)
+		_ = WriteMessage(conn, metaMsg)
 	}
 
 	// Read messages from client
@@ -468,7 +506,7 @@ func (m *Multiplexer) handleClient(conn net.Conn) {
 		}
 
 		// Set read deadline to allow checking context
-		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 
 		msg, err := DecodeMessage(conn)
 		if err != nil {
@@ -501,26 +539,26 @@ func (m *Multiplexer) handleClient(conn net.Conn) {
 		case MessageTypeInput:
 			// Forward input to PTY
 			if m.ptmx != nil {
-				m.ptmx.Write(msg.Data)
+				_, _ = m.ptmx.Write(msg.Data)
 			}
 
 		case MessageTypeResize:
 			// Resize PTY
 			if resize, err := ParseResizeMessage(msg); err == nil {
-				m.SetWindowSize(resize.Cols, resize.Rows)
+				_ = m.SetWindowSize(resize.Cols, resize.Rows)
 			}
 
 		case MessageTypePing:
 			// Respond with pong
-			WriteMessage(conn, NewPongMessage())
+			_ = WriteMessage(conn, NewPongMessage())
 
 		case MessageTypeSnapshot:
 			// Client requests clean screen snapshot
 			content, err := m.CapturePane()
 			if err != nil {
-				WriteMessage(conn, NewSnapshotReplyMessage(nil))
+				_ = WriteMessage(conn, NewSnapshotReplyMessage(nil))
 			} else {
-				WriteMessage(conn, NewSnapshotReplyMessage(content))
+				_ = WriteMessage(conn, NewSnapshotReplyMessage(content))
 			}
 
 		case MessageTypeClose:
@@ -544,9 +582,6 @@ func (m *Multiplexer) forwardPTYOutput() {
 
 		n, err := m.ptmx.Read(buf)
 		if err != nil {
-			if err != io.EOF {
-				// Log error if not expected EOF
-			}
 			return
 		}
 
@@ -577,21 +612,39 @@ func (m *Multiplexer) forwardStdinToPTY() {
 
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
-			if err != io.EOF {
-				// Log error if not expected EOF
-			}
 			return
 		}
 
 		if n > 0 {
-			m.ptmx.Write(buf[:n])
+			_, _ = m.ptmx.Write(buf[:n])
 		}
 	}
 }
 
-// monitorTmuxSession monitors the tmux session to detect when the subprocess exits.
+// startSessionMonitor starts the appropriate session monitor.
+// If a PaneExitSubscriber is configured it uses the channel-based path (no polling).
+// Otherwise it falls back to the ticker-based monitorTmuxSessionPolling goroutine.
+func (m *Multiplexer) startSessionMonitor() {
+	if m.paneExitSub != nil {
+		exitCh := m.paneExitSub.SubscribePaneExit(m.ctx, m.tmuxSession)
+		go func() {
+			select {
+			case <-exitCh:
+				m.Shutdown()
+			case <-m.ctx.Done():
+				// context cancelled; registry already cleaned up subscription
+			}
+		}()
+		return
+	}
+	// fallback: existing ticker loop
+	m.wg.Add(1)
+	go m.monitorTmuxSessionPolling()
+}
+
+// monitorTmuxSessionPolling monitors the tmux session to detect when the subprocess exits.
 // When the subprocess completes, it triggers a graceful shutdown of the multiplexer.
-func (m *Multiplexer) monitorTmuxSession() {
+func (m *Multiplexer) monitorTmuxSessionPolling() {
 	defer m.wg.Done()
 
 	// Poll tmux session status every 500ms
@@ -603,9 +656,13 @@ func (m *Multiplexer) monitorTmuxSession() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			// Check if the tmux session still exists
-			checkCmd := exec.Command("tmux", "has-session", "-t", m.tmuxSession)
-			if err := checkCmd.Run(); err != nil {
+			// Check if the tmux session still exists (2s timeout prevents goroutine accumulation
+			// when tmux is slow or the process table is under pressure).
+			pollCtx, pollCancel := context.WithTimeout(m.ctx, 2*time.Second)
+			checkCmd := safeexec.CommandContext(pollCtx, tmux.Binary(), m.serverSocket.Args("has-session", "-t", m.tmuxSession)...)
+			checkErr := checkCmd.Run()
+			pollCancel()
+			if checkErr != nil {
 				// Session no longer exists - subprocess likely exited
 				// Trigger shutdown of the multiplexer
 				m.Shutdown()
@@ -614,8 +671,10 @@ func (m *Multiplexer) monitorTmuxSession() {
 
 			// Check if there are any running processes in the tmux session
 			// This catches cases where the session exists but the command has exited
-			listCmd := exec.Command("tmux", "list-panes", "-t", m.tmuxSession, "-F", "#{pane_dead}")
+			listCtx, listCancel := context.WithTimeout(m.ctx, 2*time.Second)
+			listCmd := safeexec.CommandContext(listCtx, tmux.Binary(), m.serverSocket.Args("list-panes", "-t", m.tmuxSession, "-F", "#{pane_dead}")...)
 			output, err := listCmd.Output()
+			listCancel()
 			if err == nil && len(output) > 0 {
 				// Check if all panes are dead (1 means dead, 0 means alive)
 				allDead := true
@@ -651,8 +710,8 @@ func (m *Multiplexer) broadcastToClients(msg *Message) {
 
 	for conn := range m.clients {
 		// Non-blocking write with timeout
-		conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-		conn.Write(encoded)
+		_ = conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+		_, _ = conn.Write(encoded)
 	}
 }
 
@@ -686,6 +745,7 @@ func RunWithName(command string, args []string, sessionName string) (int, error)
 	} else {
 		m = NewMultiplexer(command, args)
 	}
+	m.paneExitSub = tmux.GetServerRegistry("")
 
 	if err := m.Start(); err != nil {
 		return 1, err
@@ -701,7 +761,7 @@ func RunWithName(command string, args []string, sessionName string) (int, error)
 
 	// Set initial window size from terminal
 	if size, err := pty.GetsizeFull(os.Stdin); err == nil {
-		m.SetWindowSize(uint16(size.Cols), uint16(size.Rows))
+		_ = m.SetWindowSize(uint16(size.Cols), uint16(size.Rows))
 	}
 
 	// Start signal handlers
@@ -713,7 +773,7 @@ func RunWithName(command string, args []string, sessionName string) (int, error)
 				return
 			case <-sigwinch:
 				if size, err := pty.GetsizeFull(os.Stdin); err == nil {
-					m.SetWindowSize(uint16(size.Cols), uint16(size.Rows))
+					_ = m.SetWindowSize(uint16(size.Cols), uint16(size.Rows))
 				}
 			case <-sigterm:
 				m.Shutdown()
@@ -748,7 +808,7 @@ func RunAttach(tmuxSession string) (int, error) {
 
 	// Set initial window size from terminal
 	if size, err := pty.GetsizeFull(os.Stdin); err == nil {
-		m.SetWindowSize(uint16(size.Cols), uint16(size.Rows))
+		_ = m.SetWindowSize(uint16(size.Cols), uint16(size.Rows))
 	}
 
 	// Start signal handlers
@@ -760,7 +820,7 @@ func RunAttach(tmuxSession string) (int, error) {
 				return
 			case <-sigwinch:
 				if size, err := pty.GetsizeFull(os.Stdin); err == nil {
-					m.SetWindowSize(uint16(size.Cols), uint16(size.Rows))
+					_ = m.SetWindowSize(uint16(size.Cols), uint16(size.Rows))
 				}
 			case <-sigterm:
 				m.Shutdown()
@@ -778,7 +838,10 @@ func RunAttach(tmuxSession string) (int, error) {
 // ListStaplerSquadSessions returns a list of tmux sessions that match the stapler-squad naming convention.
 // These are sessions that can be attached to using RunAttach.
 func ListStaplerSquadSessions() ([]string, error) {
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	listCtx, listCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer listCancel()
+	args := prependIsolatedSocket([]string{"list-sessions", "-F", "#{session_name}"})
+	cmd := safeexec.CommandContext(listCtx, tmux.Binary(), args...)
 	output, err := cmd.Output()
 	if err != nil {
 		// tmux returns error if no sessions exist

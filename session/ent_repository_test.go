@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	ssent "github.com/tstapler/stapler-squad/session/ent"
 )
 
 // TestEntRepository_CreateAndGet tests basic create and get operations
@@ -250,10 +253,10 @@ func TestEntRepository_ClaudeSession(t *testing.T) {
 	// Create session with Claude session data
 	session := createTestSession("claude-session")
 	session.ClaudeSession = ClaudeSessionData{
-		SessionID:      "claude-123",
-		ConversationID: "conv-456",
-		ProjectName:    "test-project",
-		LastAttached:   time.Now(),
+		ConversationUUID: "claude-123",
+		SquadSessionID:   "conv-456",
+		ProjectName:      "test-project",
+		LastAttached:     time.Now(),
 		Settings: ClaudeSettings{
 			AutoReattach:          true,
 			PreferredSessionName:  "my-session",
@@ -273,8 +276,8 @@ func TestEntRepository_ClaudeSession(t *testing.T) {
 	// Retrieve and verify Claude session
 	retrieved, err := repo.Get(ctx, session.Title)
 	require.NoError(t, err)
-	assert.Equal(t, session.ClaudeSession.SessionID, retrieved.ClaudeSession.SessionID)
-	assert.Equal(t, session.ClaudeSession.ConversationID, retrieved.ClaudeSession.ConversationID)
+	assert.Equal(t, session.ClaudeSession.ConversationUUID, retrieved.ClaudeSession.ConversationUUID)
+	assert.Equal(t, session.ClaudeSession.SquadSessionID, retrieved.ClaudeSession.SquadSessionID)
 	assert.Equal(t, session.ClaudeSession.Settings.AutoReattach, retrieved.ClaudeSession.Settings.AutoReattach)
 	assert.Equal(t, session.ClaudeSession.Metadata["key1"], retrieved.ClaudeSession.Metadata["key1"])
 }
@@ -307,7 +310,160 @@ func TestEntRepository_UpdateTimestamps(t *testing.T) {
 	assert.Equal(t, signature, retrieved.LastOutputSignature)
 }
 
+// TestEntRepository_UpdateTimestamps_NotFound verifies that UpdateTimestamps returns an
+// error when the session title does not exist (n==0 from the direct UPDATE).
+func TestEntRepository_UpdateTimestamps_NotFound(t *testing.T) {
+	repo, cleanup := createTestEntRepository(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	err := repo.UpdateTimestamps(ctx, "nonexistent-session", time.Now(), time.Now(), "sig")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nonexistent-session")
+}
+
+// TestEntRepository_UUID_PersistAndLoad verifies that the UUID field is stored and
+// retrieved correctly. This is the regression test for the "session not found after
+// restart" bug: the Ent schema previously had no uuid column, so every restart
+// assigned a new random UUID, invalidating all client-stored session IDs.
+func TestEntRepository_UUID_PersistAndLoad(t *testing.T) {
+	repo, cleanup := createTestEntRepository(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	sess := createTestSession("uuid-persist-test")
+	sess.UUID = "fixed-uuid-1234"
+
+	require.NoError(t, repo.Create(ctx, sess))
+
+	retrieved, err := repo.Get(ctx, sess.Title)
+	require.NoError(t, err)
+	assert.Equal(t, "fixed-uuid-1234", retrieved.UUID)
+}
+
+// TestEntRepository_UUID_UpdatePreservesUUID verifies that updating a session
+// preserves (or overwrites) the UUID field correctly.
+func TestEntRepository_UUID_UpdatePreservesUUID(t *testing.T) {
+	repo, cleanup := createTestEntRepository(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	sess := createTestSession("uuid-update-test")
+	sess.UUID = "original-uuid"
+	require.NoError(t, repo.Create(ctx, sess))
+
+	sess.UUID = "updated-uuid"
+	sess.Branch = "new-branch"
+	require.NoError(t, repo.Update(ctx, sess))
+
+	retrieved, err := repo.Get(ctx, sess.Title)
+	require.NoError(t, err)
+	assert.Equal(t, "updated-uuid", retrieved.UUID)
+}
+
+// TestEntRepository_UUID_SurvivesDBReopen simulates a server restart by closing
+// and reopening the database. The UUID must be the same as before close.
+// This is the core regression test: previously the UUID was not stored in the DB,
+// so every open assigned a fresh random UUID via the migration path in
+// FromInstanceData, breaking all client session references.
+func TestEntRepository_UUID_SurvivesDBReopen(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test-restart.db")
+
+	// First "run": create a session with a known UUID.
+	const wantUUID = "stable-uuid-across-restarts"
+	func() {
+		repo, err := NewEntRepository(WithDatabasePath(dbPath))
+		require.NoError(t, err)
+		defer repo.Close()
+
+		sess := createTestSession("restart-test-session")
+		sess.UUID = wantUUID
+		require.NoError(t, repo.Create(context.Background(), sess))
+	}()
+
+	// Second "run": open the same DB and verify UUID is unchanged.
+	repo2, err := NewEntRepository(WithDatabasePath(dbPath))
+	require.NoError(t, err)
+	defer repo2.Close()
+
+	retrieved, err := repo2.Get(context.Background(), "restart-test-session")
+	require.NoError(t, err)
+	assert.Equal(t, wantUUID, retrieved.UUID,
+		"UUID must survive DB close/reopen (simulated server restart)")
+}
+
+// TestEntRepository_UUID_EmptyDefaultDoesNotBreakList verifies that sessions
+// created without a UUID (legacy rows that pre-date UUID assignment) are
+// listed correctly with an empty UUID rather than causing errors.
+func TestEntRepository_UUID_EmptyDefaultDoesNotBreakList(t *testing.T) {
+	repo, cleanup := createTestEntRepository(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create two sessions: one with UUID, one without.
+	withUUID := createTestSession("with-uuid")
+	withUUID.UUID = "has-uuid-value"
+
+	withoutUUID := createTestSession("without-uuid")
+	withoutUUID.UUID = "" // legacy session
+
+	require.NoError(t, repo.Create(ctx, withUUID))
+	require.NoError(t, repo.Create(ctx, withoutUUID))
+
+	all, err := repo.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+
+	byTitle := make(map[string]InstanceData)
+	for _, d := range all {
+		byTitle[d.Title] = d
+	}
+	assert.Equal(t, "has-uuid-value", byTitle["with-uuid"].UUID)
+	assert.Equal(t, "", byTitle["without-uuid"].UUID)
+}
+
 // Helper function to create a test Ent repository
+// TestUpdateReviewQueueState_SingleStatement enforces that UpdateReviewQueueState
+// issues a single direct UPDATE and does NOT perform a SELECT first.
+// Regression guard for the SELECT+UPDATE → direct UPDATE refactor (PerfFix from
+// 2026-05-30 profiling session). An ent query interceptor counts any SELECT fired
+// against the Session table; the count must be 0 after the call.
+func TestUpdateReviewQueueState_SingleStatement(t *testing.T) {
+	repo, cleanup := createTestEntRepository(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	sess := createTestSession("queue-state-test")
+	require.NoError(t, repo.Create(ctx, sess))
+
+	// Install interceptor that counts ent Query (SELECT) operations.
+	var selectCount int32
+	repo.client.Intercept(ssent.InterceptFunc(func(next ssent.Querier) ssent.Querier {
+		return ssent.QuerierFunc(func(ctx context.Context, q ssent.Query) (ssent.Value, error) {
+			atomic.AddInt32(&selectCount, 1)
+			return next.Query(ctx, q)
+		})
+	}))
+
+	now := time.Now()
+	err := repo.UpdateReviewQueueState(ctx, sess.Title, now, time.Time{}, now, "sig-abc")
+	require.NoError(t, err)
+
+	got := atomic.LoadInt32(&selectCount)
+	require.Equal(t, int32(0), got,
+		"UpdateReviewQueueState must issue a single UPDATE, not SELECT+UPDATE (got %d SELECT queries)", got)
+
+	// Verify the update actually landed.
+	updated, err := repo.Get(ctx, sess.Title)
+	require.NoError(t, err)
+	assert.Equal(t, "sig-abc", updated.LastPromptSignature)
+	assert.False(t, updated.LastPromptDetected.IsZero())
+}
+
 func createTestEntRepository(t *testing.T) (*EntRepository, func()) {
 	// Create temporary database file with unique name using timestamp to avoid conflicts
 	tmpDir := t.TempDir()

@@ -12,16 +12,46 @@ import (
 // Tx is a transactional client that is created by calling Client.Tx().
 type Tx struct {
 	config
+	// AnalyticsEvent is the client for interacting with the AnalyticsEvent builders.
+	AnalyticsEvent *AnalyticsEventClient
+	// ApprovalRule is the client for interacting with the ApprovalRule builders.
+	ApprovalRule *ApprovalRuleClient
+	// BacklogItem is the client for interacting with the BacklogItem builders.
+	BacklogItem *BacklogItemClient
+	// BacklogStatusEvent is the client for interacting with the BacklogStatusEvent builders.
+	BacklogStatusEvent *BacklogStatusEventClient
+	// ClassificationAnalytics is the client for interacting with the ClassificationAnalytics builders.
+	ClassificationAnalytics *ClassificationAnalyticsClient
 	// ClaudeMetadata is the client for interacting with the ClaudeMetadata builders.
 	ClaudeMetadata *ClaudeMetadataClient
 	// ClaudeSession is the client for interacting with the ClaudeSession builders.
 	ClaudeSession *ClaudeSessionClient
 	// DiffStats is the client for interacting with the DiffStats builders.
 	DiffStats *DiffStatsClient
+	// ErrorEvent is the client for interacting with the ErrorEvent builders.
+	ErrorEvent *ErrorEventClient
+	// EscapeEvent is the client for interacting with the EscapeEvent builders.
+	EscapeEvent *EscapeEventClient
+	// ItemSession is the client for interacting with the ItemSession builders.
+	ItemSession *ItemSessionClient
+	// ItemSource is the client for interacting with the ItemSource builders.
+	ItemSource *ItemSourceClient
+	// Project is the client for interacting with the Project builders.
+	Project *ProjectClient
+	// ReviewVerdict is the client for interacting with the ReviewVerdict builders.
+	ReviewVerdict *ReviewVerdictClient
 	// Session is the client for interacting with the Session builders.
 	Session *SessionClient
+	// SessionGoal is the client for interacting with the SessionGoal builders.
+	SessionGoal *SessionGoalClient
+	// Shell is the client for interacting with the Shell builders.
+	Shell *ShellClient
+	// SourceSyncEvent is the client for interacting with the SourceSyncEvent builders.
+	SourceSyncEvent *SourceSyncEventClient
 	// Tag is the client for interacting with the Tag builders.
 	Tag *TagClient
+	// Workflow is the client for interacting with the Workflow builders.
+	Workflow *WorkflowClient
 	// Worktree is the client for interacting with the Worktree builders.
 	Worktree *WorktreeClient
 
@@ -155,11 +185,26 @@ func (tx *Tx) Client() *Client {
 }
 
 func (tx *Tx) init() {
+	tx.AnalyticsEvent = NewAnalyticsEventClient(tx.config)
+	tx.ApprovalRule = NewApprovalRuleClient(tx.config)
+	tx.BacklogItem = NewBacklogItemClient(tx.config)
+	tx.BacklogStatusEvent = NewBacklogStatusEventClient(tx.config)
+	tx.ClassificationAnalytics = NewClassificationAnalyticsClient(tx.config)
 	tx.ClaudeMetadata = NewClaudeMetadataClient(tx.config)
 	tx.ClaudeSession = NewClaudeSessionClient(tx.config)
 	tx.DiffStats = NewDiffStatsClient(tx.config)
+	tx.ErrorEvent = NewErrorEventClient(tx.config)
+	tx.EscapeEvent = NewEscapeEventClient(tx.config)
+	tx.ItemSession = NewItemSessionClient(tx.config)
+	tx.ItemSource = NewItemSourceClient(tx.config)
+	tx.Project = NewProjectClient(tx.config)
+	tx.ReviewVerdict = NewReviewVerdictClient(tx.config)
 	tx.Session = NewSessionClient(tx.config)
+	tx.SessionGoal = NewSessionGoalClient(tx.config)
+	tx.Shell = NewShellClient(tx.config)
+	tx.SourceSyncEvent = NewSourceSyncEventClient(tx.config)
 	tx.Tag = NewTagClient(tx.config)
+	tx.Workflow = NewWorkflowClient(tx.config)
 	tx.Worktree = NewWorktreeClient(tx.config)
 }
 
@@ -170,7 +215,7 @@ func (tx *Tx) init() {
 // of them in order to commit or rollback the transaction.
 //
 // If a closed transaction is embedded in one of the generated entities, and the entity
-// applies a query, for example: ClaudeMetadata.QueryXXX(), the query will be executed
+// applies a query, for example: AnalyticsEvent.QueryXXX(), the query will be executed
 // through the driver which created this transaction.
 //
 // Note that txDriver is not goroutine safe.

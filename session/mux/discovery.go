@@ -11,14 +11,14 @@ import (
 	"time"
 )
 
-// DiscoveredSession represents a discovered claude-mux session.
+// DiscoveredSession represents a discovered ssq-mux session.
 type DiscoveredSession struct {
 	SocketPath string
 	Metadata   *SessionMetadata
 	LastSeen   time.Time
 }
 
-// Discovery scans for and tracks claude-mux sessions.
+// Discovery scans for and tracks ssq-mux sessions.
 type Discovery struct {
 	sessions  map[string]*DiscoveredSession
 	mu        sync.RWMutex
@@ -41,10 +41,10 @@ func (d *Discovery) OnSessionChange(callback func(*DiscoveredSession, bool)) {
 	d.callbacks = append(d.callbacks, callback)
 }
 
-// Scan searches for active claude-mux sockets and returns discovered sessions.
+// Scan searches for active ssq-mux sockets and returns discovered sessions.
 func (d *Discovery) Scan() ([]*DiscoveredSession, error) {
 	// Find all potential socket files
-	pattern := filepath.Join(os.TempDir(), "claude-mux-*.sock")
+	pattern := filepath.Join(os.TempDir(), "ssq-mux-*.sock")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to glob socket files: %w", err)
@@ -195,14 +195,14 @@ func (d *Discovery) StartPolling(ctx context.Context, interval time.Duration) <-
 		defer ticker.Stop()
 
 		// Initial scan
-		d.Scan()
+		_, _ = d.Scan()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				d.Scan()
+				_, _ = d.Scan()
 			}
 		}
 	}()
@@ -220,7 +220,7 @@ func probeSocket(socketPath string) (*SessionMetadata, error) {
 	defer conn.Close()
 
 	// Set read timeout
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 	// Read the initial metadata message
 	msg, err := DecodeMessage(conn)
@@ -235,10 +235,10 @@ func probeSocket(socketPath string) (*SessionMetadata, error) {
 	return ParseMetadataMessage(msg)
 }
 
-// isClaudeCommand checks if a command is related to Claude.
+// isClaudeCommand checks if a command invokes the claude binary.
+// Uses exact basename match to avoid false positives from wrappers or paths containing "claude".
 func isClaudeCommand(command string) bool {
-	base := filepath.Base(command)
-	return strings.Contains(strings.ToLower(base), "claude")
+	return strings.ToLower(filepath.Base(command)) == "claude"
 }
 
 // CleanStaleSocket removes a socket file if it's no longer connected to a running process.
@@ -253,16 +253,16 @@ func CleanStaleSocket(socketPath string) error {
 	return nil // Socket is active, don't remove
 }
 
-// CleanAllStaleSockets removes all stale claude-mux sockets.
+// CleanAllStaleSockets removes all stale ssq-mux sockets.
 func CleanAllStaleSockets() error {
-	pattern := filepath.Join(os.TempDir(), "claude-mux-*.sock")
+	pattern := filepath.Join(os.TempDir(), "ssq-mux-*.sock")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return err
 	}
 
 	for _, socketPath := range matches {
-		CleanStaleSocket(socketPath)
+		_ = CleanStaleSocket(socketPath)
 	}
 	return nil
 }

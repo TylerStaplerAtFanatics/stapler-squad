@@ -1,13 +1,40 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"golang.org/x/sync/singleflight"
 )
+
+// ErrNoPR is returned by GetPRForBranch when no pull request exists for the branch.
+var ErrNoPR = errors.New("no pull request found for branch")
+
+// authResult caches the outcome of a gh auth status check with an expiry time.
+type authResult struct {
+	err    error
+	expiry time.Time
+}
+
+var (
+	ghAuthState atomic.Value       // stores authResult
+	ghAuthGroup singleflight.Group //nolint:exhaustruct
+)
+
+const ghAuthTTL = 5 * time.Minute
 
 // PRInfo contains metadata about a GitHub pull request
 type PRInfo struct {
@@ -27,6 +54,13 @@ type PRInfo struct {
 	Additions    int       `json:"additions"`
 	Deletions    int       `json:"deletions"`
 	ChangedFiles int       `json:"changedFiles"`
+
+	// Review and CI status fields (populated by GetPRInfo with extended fields)
+	ReviewDecision        string // "approved" / "changes_requested" / "review_required" / ""
+	ApprovedCount         int    // Count of current non-dismissed APPROVED reviews
+	ChangesRequestedCount int    // Count of current non-dismissed CHANGES_REQUESTED reviews
+	CheckConclusion       string // "success" / "failure" / "pending" / "action_required" / "neutral" / ""
+	CheckStatus           string // "completed" / "in_progress" / ""
 }
 
 // PRComment represents a comment on a PR (either issue comment or review comment)
@@ -62,6 +96,27 @@ type ghPRResponse struct {
 	Labels []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
+	ReviewDecision    string              `json:"reviewDecision"` // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, ""
+	Reviews           []ghReviewItem      `json:"reviews"`
+	StatusCheckRollup []ghStatusCheckItem `json:"statusCheckRollup"`
+}
+
+// ghReviewItem represents a single review from gh pr view --json reviews
+type ghReviewItem struct {
+	Author struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	State string `json:"state"` // APPROVED, CHANGES_REQUESTED, DISMISSED, COMMENTED, PENDING
+	Body  string `json:"body"`
+}
+
+// ghStatusCheckItem represents a single status check from gh pr view --json statusCheckRollup
+type ghStatusCheckItem struct {
+	Name       string `json:"name"`
+	Context    string `json:"context"`
+	State      string `json:"state"`      // SUCCESS, FAILURE, PENDING, ERROR, NEUTRAL
+	Status     string `json:"status"`     // completed, in_progress, queued
+	Conclusion string `json:"conclusion"` // success, failure, cancelled, action_required, neutral, skipped, timed_out
 }
 
 // ghCommentResponse represents a comment from gh pr view --json comments
@@ -76,24 +131,120 @@ type ghCommentResponse struct {
 	Line int    `json:"line,omitempty"`
 }
 
-// CheckGHAuth checks if GitHub CLI is installed and authenticated
+// CheckGHAuth verifies GitHub authentication via GET /user using the native HTTP
+// client. No subprocess is invoked — avoids forkExec lock contention.
+// Results are cached for 5 minutes. Concurrent callers share a single inflight
+// call via singleflight.
 func CheckGHAuth() error {
-	// Check if gh is installed
-	if _, err := exec.LookPath("gh"); err != nil {
-		return fmt.Errorf("GitHub CLI (gh) is not installed. Please install it: https://cli.github.com/")
+	// Fast path: return cached result if still fresh.
+	if v := ghAuthState.Load(); v != nil {
+		if r := v.(authResult); time.Now().Before(r.expiry) {
+			return r.err
+		}
 	}
 
-	// Check if gh is authenticated
-	cmd := exec.Command("gh", "auth", "status")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("GitHub CLI is not authenticated. Please run 'gh auth login' first")
-	}
+	// Slow path: at most one goroutine calls the API; others wait and reuse the result.
+	res, err, _ := ghAuthGroup.Do("auth", func() (interface{}, error) {
+		authCheckCtx, authCheckCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer authCheckCancel()
 
+		req, buildErr := newGHRequest(authCheckCtx, "user")
+		if buildErr != nil {
+			authErr := fmt.Errorf("GitHub auth check: failed to build request: %w", buildErr)
+			ghAuthState.Store(authResult{err: authErr, expiry: time.Now().Add(ghAuthTTL)})
+			return authErr, nil
+		}
+
+		resp, doErr := ghHTTPClient.Do(req)
+		if doErr != nil {
+			authErr := fmt.Errorf("GitHub auth check: request failed: %w", doErr)
+			ghAuthState.Store(authResult{err: authErr, expiry: time.Now().Add(ghAuthTTL)})
+			return authErr, nil
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+
+		var authErr error
+		switch resp.StatusCode {
+		case http.StatusOK:
+			// authenticated — no error
+		case http.StatusUnauthorized, http.StatusForbidden:
+			authErr = fmt.Errorf("GitHub is not authenticated (HTTP %d). Set GITHUB_TOKEN or run 'gh auth login'", resp.StatusCode)
+		default:
+			authErr = fmt.Errorf("GitHub auth check: unexpected status %d", resp.StatusCode)
+		}
+
+		ghAuthState.Store(authResult{err: authErr, expiry: time.Now().Add(ghAuthTTL)})
+		return authErr, nil
+	})
+
+	// singleflight itself never returns a non-nil error here (we always return
+	// nil from the Do closure and carry the real error in res), but handle it
+	// defensively.
+	if err != nil {
+		return err
+	}
+	if res != nil {
+		return res.(error)
+	}
 	return nil
 }
 
-// GetPRInfo fetches metadata for a pull request
+// GetCurrentUserLogin returns the GitHub login of the authenticated user via
+// GET /user. Returns an empty string (not an error) when unauthenticated so
+// callers can degrade gracefully.
+func GetCurrentUserLogin(ctx context.Context) (string, error) {
+	req, err := newGHRequest(ctx, "user")
+	if err != nil {
+		return "", fmt.Errorf("build /user request: %w", err)
+	}
+	return fetchLoginFromRequest(req)
+}
+
+// GetCurrentUserLoginWithToken fetches the GitHub login for an explicit token.
+// Returns ("", nil) when the token is invalid or unauthenticated.
+func GetCurrentUserLoginWithToken(ctx context.Context, token string) (string, error) {
+	req, err := newGHRequestWithToken(ctx, "user", token)
+	if err != nil {
+		return "", fmt.Errorf("build /user request: %w", err)
+	}
+	return fetchLoginFromRequest(req)
+}
+
+func fetchLoginFromRequest(req *http.Request) (string, error) {
+	resp, err := ghHTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("/user request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return "", fmt.Errorf("/user: unexpected status %d", resp.StatusCode)
+	}
+
+	var u struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		return "", fmt.Errorf("decode /user response: %w", err)
+	}
+	return u.Login, nil
+}
+
+
+// GetPRInfo fetches metadata for a pull request including review and CI status.
 func GetPRInfo(owner, repo string, prNumber int) (*PRInfo, error) {
+	return GetPRInfoCtx(context.Background(), owner, repo, prNumber)
+}
+
+// GetPRInfoCtx fetches metadata for a pull request with context support.
+// Includes review decisions and CI/check status.
+func GetPRInfoCtx(ctx context.Context, owner, repo string, prNumber int) (*PRInfo, error) {
 	if err := CheckGHAuth(); err != nil {
 		return nil, err
 	}
@@ -101,9 +252,8 @@ func GetPRInfo(owner, repo string, prNumber int) (*PRInfo, error) {
 	repoRef := fmt.Sprintf("%s/%s", owner, repo)
 	prRef := strconv.Itoa(prNumber)
 
-	// Get PR info with all relevant fields
-	fields := "number,title,body,headRefName,baseRefName,state,url,createdAt,updatedAt,isDraft,mergeable,additions,deletions,changedFiles,author,labels"
-	cmd := exec.Command("gh", "pr", "view", prRef, "--repo", repoRef, "--json", fields)
+	fields := "number,title,body,headRefName,baseRefName,state,url,createdAt,updatedAt,isDraft,mergeable,additions,deletions,changedFiles,author,labels,reviews,reviewDecision,statusCheckRollup"
+	cmd := safeexec.CommandContext(ctx, "gh", "pr", "view", prRef, "--repo", repoRef, "--json", fields)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -117,34 +267,185 @@ func GetPRInfo(owner, repo string, prNumber int) (*PRInfo, error) {
 		return nil, fmt.Errorf("failed to parse PR info: %w", err)
 	}
 
-	// Parse timestamps
 	createdAt, _ := time.Parse(time.RFC3339, resp.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339, resp.UpdatedAt)
 
-	// Extract label names
 	labels := make([]string, len(resp.Labels))
 	for i, label := range resp.Labels {
 		labels[i] = label.Name
 	}
 
+	approvedCount, changesReqCount := parseReviewCounts(resp.Reviews)
+	checkConclusion, checkStatus := getCheckConclusion(resp.StatusCheckRollup)
+
 	return &PRInfo{
-		Number:       resp.Number,
-		Title:        resp.Title,
-		Body:         resp.Body,
-		HeadRef:      resp.HeadRefName,
-		BaseRef:      resp.BaseRefName,
-		State:        resp.State,
-		Author:       resp.Author.Login,
-		Labels:       labels,
-		HTMLURL:      resp.URL,
-		CreatedAt:    createdAt,
-		UpdatedAt:    updatedAt,
-		IsDraft:      resp.IsDraft,
-		Mergeable:    resp.Mergeable,
-		Additions:    resp.Additions,
-		Deletions:    resp.Deletions,
-		ChangedFiles: resp.ChangedFiles,
+		Number:                resp.Number,
+		Title:                 resp.Title,
+		Body:                  resp.Body,
+		HeadRef:               resp.HeadRefName,
+		BaseRef:               resp.BaseRefName,
+		State:                 strings.ToLower(resp.State),
+		Author:                resp.Author.Login,
+		Labels:                labels,
+		HTMLURL:               resp.URL,
+		CreatedAt:             createdAt,
+		UpdatedAt:             updatedAt,
+		IsDraft:               resp.IsDraft,
+		Mergeable:             resp.Mergeable,
+		Additions:             resp.Additions,
+		Deletions:             resp.Deletions,
+		ChangedFiles:          resp.ChangedFiles,
+		ReviewDecision:        strings.ToLower(resp.ReviewDecision),
+		ApprovedCount:         approvedCount,
+		ChangesRequestedCount: changesReqCount,
+		CheckConclusion:       checkConclusion,
+		CheckStatus:           checkStatus,
 	}, nil
+}
+
+// parseReviewCounts derives approved/changes-requested counts from review items.
+// Uses latest non-dismissed, non-comment state per reviewer.
+func parseReviewCounts(reviews []ghReviewItem) (approved, changesRequested int) {
+	latestState := make(map[string]string)
+	for _, r := range reviews {
+		login := r.Author.Login
+		state := strings.ToUpper(r.State)
+		if state == "DISMISSED" {
+			delete(latestState, login)
+			continue
+		}
+		// COMMENTED does not override a blocking or approving review
+		if state == "COMMENTED" {
+			continue
+		}
+		latestState[login] = state
+	}
+	for _, state := range latestState {
+		switch state {
+		case "APPROVED":
+			approved++
+		case "CHANGES_REQUESTED":
+			changesRequested++
+		}
+	}
+	return
+}
+
+// getCheckConclusion derives a single conclusion from statusCheckRollup items.
+func getCheckConclusion(checks []ghStatusCheckItem) (conclusion, status string) {
+	if len(checks) == 0 {
+		return "", ""
+	}
+	hasInProgress := false
+	hasFailure := false
+	allSuccess := true
+
+	for _, check := range checks {
+		c := strings.ToLower(check.Conclusion)
+		s := strings.ToLower(check.Status)
+		st := strings.ToLower(check.State)
+		if c == "" {
+			c = st
+		}
+		switch {
+		case c == "failure" || c == "error" || c == "action_required" || c == "timed_out":
+			hasFailure = true
+			allSuccess = false
+		case c == "success":
+			// success
+		case s == "in_progress" || s == "queued" || c == "pending":
+			hasInProgress = true
+			allSuccess = false
+		default:
+			allSuccess = false
+		}
+	}
+	if hasFailure {
+		return "failure", "completed"
+	}
+	if hasInProgress {
+		return "pending", "in_progress"
+	}
+	if allSuccess {
+		return "success", "completed"
+	}
+	return "neutral", "completed"
+}
+
+// GetPRForBranch finds the GitHub PR associated with a branch.
+// Uses the GitHub REST API directly (no gh subprocess) to avoid forkExec lock contention.
+// Returns ErrNoPR when no pull request exists for the branch.
+func GetPRForBranch(ctx context.Context, owner, repo, branch string) (*PRInfo, error) {
+	apiPath := fmt.Sprintf("repos/%s/%s/pulls?head=%s&state=all&per_page=10",
+		url.PathEscape(owner), url.PathEscape(repo),
+		url.QueryEscape(owner+":"+branch))
+
+	req, err := newGHRequest(ctx, apiPath)
+	if err != nil {
+		return nil, fmt.Errorf("build PR list request: %w", err)
+	}
+
+	resp, err := ghHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("PR list request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("GitHub API: unauthorized (401) – run 'gh auth login'")
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("GitHub API: forbidden (403) – check token permissions")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned status %d for PR list", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read PR list response: %w", err)
+	}
+
+	var prs []struct {
+		Number    int    `json:"number"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(body, &prs); err != nil {
+		return nil, fmt.Errorf("parse PR list: %w", err)
+	}
+	if len(prs) == 0 {
+		return nil, ErrNoPR
+	}
+
+	// Use most recently updated PR when multiple PRs target the same branch.
+	sort.Slice(prs, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, prs[i].UpdatedAt)
+		tj, _ := time.Parse(time.RFC3339, prs[j].UpdatedAt)
+		return ti.After(tj)
+	})
+
+	return GetPRInfoCtx(ctx, owner, repo, prs[0].Number)
+}
+
+// IsForkRepo reports whether the given repo is a fork of another repository.
+func IsForkRepo(ctx context.Context, owner, repo string) (bool, error) {
+	if err := CheckGHAuth(); err != nil {
+		return false, err
+	}
+
+	cmd := safeexec.CommandContext(ctx, "gh", "api",
+		fmt.Sprintf("repos/%s/%s", owner, repo),
+		"--jq", ".fork",
+	)
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return false, fmt.Errorf("failed to check fork status: %s", string(exitErr.Stderr))
+		}
+		return false, fmt.Errorf("failed to check fork status: %w", err)
+	}
+
+	return strings.TrimSpace(string(output)) == "true", nil
 }
 
 // GetPRComments fetches all comments on a pull request
@@ -157,7 +458,9 @@ func GetPRComments(owner, repo string, prNumber int) ([]PRComment, error) {
 	prRef := strconv.Itoa(prNumber)
 
 	// Get comments
-	cmd := exec.Command("gh", "pr", "view", prRef, "--repo", repoRef, "--json", "comments")
+	commentsCtx, commentsCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer commentsCancel()
+	cmd := safeexec.CommandContext(commentsCtx, "gh", "pr", "view", prRef, "--repo", repoRef, "--json", "comments")
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -199,7 +502,9 @@ func GetPRDiff(owner, repo string, prNumber int) (string, error) {
 	repoRef := fmt.Sprintf("%s/%s", owner, repo)
 	prRef := strconv.Itoa(prNumber)
 
-	cmd := exec.Command("gh", "pr", "diff", prRef, "--repo", repoRef)
+	diffCtx, diffCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer diffCancel()
+	cmd := safeexec.CommandContext(diffCtx, "gh", "pr", "diff", prRef, "--repo", repoRef)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -220,7 +525,9 @@ func PostPRComment(owner, repo string, prNumber int, body string) error {
 	repoRef := fmt.Sprintf("%s/%s", owner, repo)
 	prRef := strconv.Itoa(prNumber)
 
-	cmd := exec.Command("gh", "pr", "comment", prRef, "--repo", repoRef, "--body", body)
+	commentCtx, commentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer commentCancel()
+	cmd := safeexec.CommandContext(commentCtx, "gh", "pr", "comment", prRef, "--repo", repoRef, "--body", body)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("failed to post comment: %s", string(exitErr.Stderr))
@@ -251,7 +558,9 @@ func MergePR(owner, repo string, prNumber int, method string) error {
 		args = append(args, "--merge")
 	}
 
-	cmd := exec.Command("gh", args...)
+	mergeCtx, mergeCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer mergeCancel()
+	cmd := safeexec.CommandContext(mergeCtx, "gh", args...)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("failed to merge PR: %s", string(exitErr.Stderr))
@@ -271,7 +580,9 @@ func ClosePR(owner, repo string, prNumber int) error {
 	repoRef := fmt.Sprintf("%s/%s", owner, repo)
 	prRef := strconv.Itoa(prNumber)
 
-	cmd := exec.Command("gh", "pr", "close", prRef, "--repo", repoRef)
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer closeCancel()
+	cmd := safeexec.CommandContext(closeCtx, "gh", "pr", "close", prRef, "--repo", repoRef)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("failed to close PR: %s", string(exitErr.Stderr))
@@ -289,7 +600,9 @@ func CloneRepository(owner, repo, targetPath string) error {
 	}
 
 	repoRef := fmt.Sprintf("%s/%s", owner, repo)
-	cmd := exec.Command("gh", "repo", "clone", repoRef, targetPath)
+	cloneCtx, cloneCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cloneCancel()
+	cmd := safeexec.CommandContext(cloneCtx, "gh", "repo", "clone", repoRef, targetPath)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("failed to clone repository: %s", string(exitErr.Stderr))
@@ -303,7 +616,9 @@ func CloneRepository(owner, repo, targetPath string) error {
 // FetchBranch fetches a specific branch in an existing repository
 func FetchBranch(repoPath, branchName string) error {
 	// Fetch the branch from origin
-	cmd := exec.Command("git", "-C", repoPath, "fetch", "origin", branchName)
+	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer fetchCancel()
+	cmd := safeexec.CommandContext(fetchCtx, "git", "-C", repoPath, "fetch", "origin", branchName)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("failed to fetch branch: %s", string(exitErr.Stderr))
@@ -316,7 +631,9 @@ func FetchBranch(repoPath, branchName string) error {
 
 // CheckoutBranch checks out a branch in an existing repository
 func CheckoutBranch(repoPath, branchName string) error {
-	cmd := exec.Command("git", "-C", repoPath, "checkout", branchName)
+	checkoutCtx, checkoutCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer checkoutCancel()
+	cmd := safeexec.CommandContext(checkoutCtx, "git", "-C", repoPath, "checkout", branchName)
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("failed to checkout branch: %s", string(exitErr.Stderr))
@@ -327,9 +644,18 @@ func CheckoutBranch(repoPath, branchName string) error {
 	return nil
 }
 
+// remoteURLCache memoises GetRemoteURL results per repo path.
+// Remote URLs are stable for a repo's lifetime; no TTL needed.
+var remoteURLCache sync.Map // map[string]string
+
 // GetRemoteURL returns the remote URL of a repository (used to determine owner/repo)
 func GetRemoteURL(repoPath string) (string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
+	if v, ok := remoteURLCache.Load(repoPath); ok {
+		return v.(string), nil
+	}
+	remoteCtx, remoteCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer remoteCancel()
+	cmd := safeexec.CommandContext(remoteCtx, "git", "-C", repoPath, "remote", "get-url", "origin")
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -337,25 +663,43 @@ func GetRemoteURL(repoPath string) (string, error) {
 		}
 		return "", fmt.Errorf("failed to get remote URL: %w", err)
 	}
-
-	return strings.TrimSpace(string(output)), nil
+	url := strings.TrimSpace(string(output))
+	remoteURLCache.Store(repoPath, url)
+	return url, nil
 }
+
+// GetOwnerRepoFromRemote returns a RepoRef for a local git repository by
+// reading the origin remote URL and parsing it. Returns an invalid zero-value
+// RepoRef (not an error) when the remote is not a GitHub URL.
+func GetOwnerRepoFromRemote(repoPath string) (RepoRef, error) {
+	remoteURL, err := GetRemoteURL(repoPath)
+	if err != nil {
+		return RepoRef{}, err
+	}
+	ref, parseErr := ParseGitHubRef(remoteURL)
+	if parseErr != nil {
+		return RepoRef{}, nil // not a GitHub URL — callers check IsValid()
+	}
+	r, _ := NewRepoRef(ref.Owner, ref.Repo)
+	return r, nil
+}
+
 
 // GeneratePRPrompt generates a context prompt from PR information
 // This can be used to initialize a Claude Code session with PR context
 func GeneratePRPrompt(pr *PRInfo, includeDescription bool) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Working on PR #%d: %s\n", pr.Number, pr.Title))
-	sb.WriteString(fmt.Sprintf("Branch: %s → %s\n", pr.HeadRef, pr.BaseRef))
-	sb.WriteString(fmt.Sprintf("Author: %s | State: %s\n", pr.Author, pr.State))
+	fmt.Fprintf(&sb, "Working on PR #%d: %s\n", pr.Number, pr.Title)
+	fmt.Fprintf(&sb, "Branch: %s → %s\n", pr.HeadRef, pr.BaseRef)
+	fmt.Fprintf(&sb, "Author: %s | State: %s\n", pr.Author, pr.State)
 
 	if pr.ChangedFiles > 0 {
-		sb.WriteString(fmt.Sprintf("Changes: +%d/-%d across %d files\n", pr.Additions, pr.Deletions, pr.ChangedFiles))
+		fmt.Fprintf(&sb, "Changes: +%d/-%d across %d files\n", pr.Additions, pr.Deletions, pr.ChangedFiles)
 	}
 
 	if len(pr.Labels) > 0 {
-		sb.WriteString(fmt.Sprintf("Labels: %s\n", strings.Join(pr.Labels, ", ")))
+		fmt.Fprintf(&sb, "Labels: %s\n", strings.Join(pr.Labels, ", "))
 	}
 
 	if includeDescription && pr.Body != "" {

@@ -1,10 +1,11 @@
 "use client";
 
 import { useApprovalsContext } from "@/lib/contexts/ApprovalsContext";
-import styles from "./ApprovalNavBadge.module.css";
+import { NavBadge } from "@/components/ui/NavBadge";
 
 interface ApprovalNavBadgeProps {
   inline?: boolean;
+  onClick?: () => void;
 }
 
 /**
@@ -13,27 +14,20 @@ interface ApprovalNavBadgeProps {
  *
  * Hidden when there are no pending approvals.
  */
-export function ApprovalNavBadge({ inline = false }: ApprovalNavBadgeProps) {
+export function ApprovalNavBadge({ inline = false, onClick }: ApprovalNavBadgeProps) {
   const { approvals } = useApprovalsContext();
 
   const count = approvals.length;
 
-  if (count === 0) {
-    return null;
-  }
-
-  const className = inline
-    ? `${styles.badge} ${styles.inline}`
-    : styles.badge;
-
   return (
-    <span
-      className={className}
+    <NavBadge
+      count={count}
+      element="button"
+      inline={inline}
       data-testid="approval-nav-badge"
-      aria-label={`${count} pending approval${count !== 1 ? "s" : ""}`}
+      aria-label={`${count} pending approval${count !== 1 ? "s" : ""}. Click to review.`}
       title={`${count} tool-use request${count !== 1 ? "s" : ""} awaiting approval`}
-    >
-      {count}
-    </span>
+      onClick={onClick}
+    />
   );
 }

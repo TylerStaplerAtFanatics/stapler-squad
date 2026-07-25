@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	creackpty "github.com/creack/pty"
 	"github.com/tstapler/stapler-squad/session/tmux"
 
 	"github.com/stretchr/testify/assert"
@@ -34,7 +35,7 @@ func newMockTmuxExecutor() *mockTmuxExecutor {
 
 func (m *mockTmuxExecutor) Run(cmd *exec.Cmd) error {
 	// Mock tmux commands to always succeed
-	if len(cmd.Args) > 0 && cmd.Args[0] == "tmux" {
+	if len(cmd.Args) > 0 && filepath.Base(cmd.Args[0]) == "tmux" {
 		// Track session creation
 		for i, arg := range cmd.Args {
 			if arg == "new-session" {
@@ -67,7 +68,7 @@ func (m *mockTmuxExecutor) Run(cmd *exec.Cmd) error {
 
 func (m *mockTmuxExecutor) Output(cmd *exec.Cmd) ([]byte, error) {
 	// Mock tmux command output
-	if len(cmd.Args) > 0 && cmd.Args[0] == "tmux" {
+	if len(cmd.Args) > 0 && filepath.Base(cmd.Args[0]) == "tmux" {
 		// Check if this is a list-sessions command for session existence checking
 		for i, arg := range cmd.Args {
 			if arg == "list-sessions" {
@@ -82,7 +83,7 @@ func (m *mockTmuxExecutor) Output(cmd *exec.Cmd) ([]byte, error) {
 
 				if hasFormat {
 					// Return session names (one per line) for sessions that exist
-					var sessionNames []string
+					sessionNames := make([]string, 0, len(m.sessionsCreated))
 					for sessionName := range m.sessionsCreated {
 						sessionNames = append(sessionNames, sessionName)
 					}
@@ -223,7 +224,7 @@ func (b *TestInstanceBuilder) buildWithMockTmux() (*Instance, tmux.CleanupFunc, 
 	mockTmuxSession := tmux.NewTmuxSessionWithDeps(instance.Title, instance.Program, mockPtyFactory, mockExecutor)
 
 	// Replace the real tmux session with the mock
-	instance.tmuxManager.session = mockTmuxSession
+	instance.processManager.(*TmuxBackend).TmuxManager().SetSession(mockTmuxSession)
 
 	return instance, cleanup, nil
 }
@@ -236,6 +237,10 @@ func (m *mockPtyFactory) Start(cmd *exec.Cmd) (*os.File, *exec.Cmd, error) {
 	return os.Stdin, cmd, nil
 }
 
+func (m *mockPtyFactory) StartWithSize(cmd *exec.Cmd, _ *creackpty.Winsize) (*os.File, *exec.Cmd, error) {
+	return m.Start(cmd)
+}
+
 func (m *mockPtyFactory) Close() {
 	// No-op for mock
 }
@@ -243,6 +248,9 @@ func (m *mockPtyFactory) Close() {
 // ComprehensiveSessionCreationSuite provides exhaustive testing of session creation
 // without requiring the full TUI application to run
 func TestComprehensiveSessionCreation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test that starts real tmux sessions")
+	}
 	t.Run("SessionCreationValidation", testSessionCreationValidation)
 	t.Run("SessionCreationTiming", testSessionCreationTiming)
 	t.Run("SessionCreationStates", testSessionCreationStates)

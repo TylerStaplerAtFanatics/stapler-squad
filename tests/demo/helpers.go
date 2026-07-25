@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/session"
 )
 
@@ -55,7 +56,8 @@ func StartDemoServer(t *testing.T) *DemoServer {
 		t.Fatalf("failed to ensure binary: %v", err)
 	}
 
-	cmd := exec.Command(binaryPath,
+	//nolint:norawexec long-running demo server process managed via cmd.Start/Stop lifecycle
+	cmd := exec.CommandContext(context.Background(), binaryPath,
 		"--test-mode",
 		"--test-dir", testDir,
 	)
@@ -137,10 +139,17 @@ func (s *DemoServer) Stop() {
 	_ = os.RemoveAll(s.testDir)
 }
 
+// SeedDirectory seeds count mock sessions into dir without requiring a running
+// server or a testing.T. Used by the e2e-video CI pipeline.
+func SeedDirectory(dir string, count int) error {
+	s := &DemoServer{testDir: dir}
+	return s.SeedMockSessions(count)
+}
+
 // mockSessions returns 6 realistic InstanceData records spanning Backend,
 // Frontend, and Infrastructure categories. No tmux processes required —
-// statuses are Paused, Ready, and NeedsApproval only (no Running) so the
-// review-queue poller does not reclassify them when no tmux process exists.
+// statuses are Paused and Active only so the review-queue poller does not
+// reclassify them when no tmux process exists.
 //
 // Two sessions include "payment" in their title/tags so the search demo
 // filters from 6 → 2 results, which is visually more compelling than 3 → 1.
@@ -162,12 +171,12 @@ func mockSessions() []session.InstanceData {
 			LastMeaningfulOutput: now.Add(-20 * time.Second),
 			DiffStats:            session.DiffStatsData{Added: 287, Removed: 43},
 		},
-		// Needs attention: agent hit a permission gate.
+		// Needs attention: agent hit a permission gate (sub-status; lifecycle is Active).
 		{
 			Title:                "fix-api-timeout",
 			Path:                 "/Users/dev/services/api-gateway",
 			Branch:               "fix/connection-pool-exhaustion",
-			Status:               session.NeedsApproval,
+			Status:               session.Active,
 			Program:              "claude",
 			Category:             "Backend",
 			Tags:                 []string{"Bug", "API", "Urgent"},
@@ -212,7 +221,7 @@ func mockSessions() []session.InstanceData {
 			Title:                "k8s-autoscaling",
 			Path:                 "/Users/dev/infra/terraform-modules",
 			Branch:               "feature/hpa-config",
-			Status:               session.Ready,
+			Status:               session.Active,
 			Program:              "claude",
 			Category:             "Infrastructure",
 			Tags:                 []string{"DevOps", "Kubernetes"},
@@ -271,7 +280,9 @@ func ensureBinary(binaryPath string) error {
 
 	fmt.Println("Building stapler-squad binary...")
 	root := filepath.Dir(binaryPath)
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer buildCancel()
+	cmd := safeexec.CommandContext(buildCtx, "go", "build", "-o", binaryPath, ".")
 	cmd.Dir = root
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

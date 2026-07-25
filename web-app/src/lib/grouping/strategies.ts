@@ -1,4 +1,4 @@
-import { Session } from "@/gen/session/v1/types_pb";
+import { Session, SessionStatus } from "@/gen/session/v1/types_pb";
 
 /**
  * Grouping strategy options for organizing sessions.
@@ -12,13 +12,12 @@ export enum GroupingStrategy {
   Program = "program",
   Status = "status",
   SessionType = "session_type",
+  Project = "project",
+  Workflow = "workflow",
   None = "none",
 }
 
-/**
- * Display labels for grouping strategies
- */
-export const GroupingStrategyLabels: Record<GroupingStrategy, string> = {
+export const GroupingStrategyLabels: Partial<Record<GroupingStrategy, string>> = {
   [GroupingStrategy.Category]: "Category",
   [GroupingStrategy.Tag]: "Tags",
   [GroupingStrategy.Branch]: "Branch",
@@ -26,6 +25,8 @@ export const GroupingStrategyLabels: Record<GroupingStrategy, string> = {
   [GroupingStrategy.Program]: "Program",
   [GroupingStrategy.Status]: "Status",
   [GroupingStrategy.SessionType]: "Session Type",
+  [GroupingStrategy.Project]: "Project",
+  [GroupingStrategy.Workflow]: "Workflow",
   [GroupingStrategy.None]: "None (Flat List)",
 };
 
@@ -57,9 +58,18 @@ export interface GroupedSessions {
  * @param strategy - Grouping strategy to apply (Category, Tag, Branch, etc.)
  * @returns Sorted array of grouped sessions with display metadata
  */
+/**
+ * Options for groupSessions. Currently used to pass workflow name lookups.
+ */
+export interface GroupSessionsOptions {
+  /** Map from workflow UUID to workflow name, used by GroupingStrategy.Workflow */
+  workflowIdToName?: Map<string, string>;
+}
+
 export function groupSessions(
   sessions: Session[],
-  strategy: GroupingStrategy
+  strategy: GroupingStrategy,
+  options?: GroupSessionsOptions
 ): GroupedSessions[] {
   // Early exit: No grouping returns single flat group
   if (strategy === GroupingStrategy.None) {
@@ -124,6 +134,21 @@ export function groupSessions(
         groupKeys = [getSessionTypeDisplayName(session.sessionType)];
         break;
 
+      case GroupingStrategy.Project:
+        // Single-membership: One project per session (empty project_id = No Project)
+        groupKeys = [session.projectId || "No Project"];
+        break;
+
+      case GroupingStrategy.Workflow:
+        // Single-membership: One workflow per session; manual sessions go into "Manual Sessions"
+        if (session.workflowId) {
+          const wfName = options?.workflowIdToName?.get(session.workflowId) ?? session.workflowId;
+          groupKeys = [wfName];
+        } else {
+          groupKeys = ["Manual Sessions"];
+        }
+        break;
+
       default:
         // Fallback for unknown strategies
         groupKeys = ["Uncategorized"];
@@ -145,10 +170,28 @@ export function groupSessions(
   // Sort logic ensures consistent ordering with special groups at the end
   const sortedGroups = Array.from(grouped.keys()).sort((a, b) => {
     // Special groups (empty/missing fields) always appear at the end
-    const specialGroups = ["Uncategorized", "Untagged", "No Branch", "No Path", "No Program"];
+    const specialGroups = ["Uncategorized", "Untagged", "No Branch", "No Path", "No Program", "No Project", "Manual Sessions"];
     if (specialGroups.includes(a)) return 1;
     if (specialGroups.includes(b)) return -1;
-    // Regular groups sorted alphabetically
+
+    // For Status grouping: enforce preferred order so active groups appear first.
+    // "Paused" appears after active/working groups, before terminal/unknown states.
+    const statusOrder: Record<string, number> = {
+      "Active": 0,
+      "Ready": 1,
+      "Loading": 2,
+      "Creating": 2,
+      "Needs Approval": 3,
+      "Paused": 4,
+      "Stopped": 5,
+      "Hibernated": 6,
+      "Unknown": 7,
+    };
+    const aOrder = statusOrder[a] ?? 99;
+    const bOrder = statusOrder[b] ?? 99;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+
+    // Regular groups sorted alphabetically as fallback
     return a.localeCompare(b);
   });
 
@@ -165,18 +208,15 @@ export function groupSessions(
  */
 function getStatusDisplayName(status: number): string {
   switch (status) {
-    case 1:
-      return "Running";
-    case 2:
-      return "Ready";
-    case 3:
-      return "Loading";
-    case 4:
-      return "Paused";
-    case 5:
-      return "Needs Approval";
-    default:
-      return "Unknown";
+    case SessionStatus.ACTIVE:         return "Active";   // 1 (covers legacy RUNNING alias)
+    case SessionStatus.READY:          return "Ready";    // 2 (deprecated)
+    case SessionStatus.LOADING:        return "Loading";  // 3 (deprecated)
+    case SessionStatus.PAUSED:         return "Paused";   // 4
+    case SessionStatus.NEEDS_APPROVAL: return "Needs Approval"; // 5 (deprecated)
+    case SessionStatus.CREATING:       return "Creating"; // 6
+    case SessionStatus.STOPPED:        return "Stopped";  // 7
+    case SessionStatus.HIBERNATED:     return "Hibernated"; // 8
+    default:                           return "Unknown";
   }
 }
 

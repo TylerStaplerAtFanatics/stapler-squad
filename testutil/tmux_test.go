@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 )
 
 // TestTmuxTestServer_Creation validates isolated server creation
@@ -200,13 +202,23 @@ func TestTmuxTestServer_AutomaticCleanup(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Try to list sessions on the now-dead server (should fail)
-	cmd := exec.Command("tmux", "-L", socketName, "list-sessions")
+	listCtx, listCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer listCancel()
+	cmd := safeexec.CommandContext(listCtx, "tmux", "-L", socketName, "list-sessions")
 	output, err := cmd.CombinedOutput()
 
-	// Should get "no server running" error
+	// Should get an error indicating the server is gone.
+	// "no server running" = tmux server process exited cleanly.
+	// "server exited unexpectedly" = socket present but server process gone.
+	// "error connecting to" = socket file removed (our cleanup deleted it).
+	// All three mean the server is not running.
 	if err != nil {
-		assert.Contains(t, string(output), "no server running",
-			"Server should be gone after cleanup")
+		outputStr := string(output)
+		isGone := strings.Contains(outputStr, "no server running") ||
+			strings.Contains(outputStr, "server exited unexpectedly") ||
+			strings.Contains(outputStr, "error connecting to")
+		assert.True(t, isGone,
+			"Server should be gone after cleanup, got: %q", outputStr)
 	} else {
 		// If no error, sessions list should be empty
 		sessions := strings.TrimSpace(string(output))

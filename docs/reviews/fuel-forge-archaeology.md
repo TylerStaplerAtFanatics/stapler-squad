@@ -306,7 +306,7 @@ Plan.md → (parsed) → DraftBeads → (published) → Beads
 **What stapler-squad does better:**
 1. **Operational simplicity** — Single Go binary, no `gt`/`bd` dependency, no 3-store data coordination problem.
 2. **Terminal streaming fidelity** — Control-mode tmux streaming with ANSI support. Fuel-forge's polecats write to worktrees; terminal output isn't streamed back.
-3. **Live session attachment** — `claude-mux` PTY multiplexer for monitoring external Claude sessions. Fuel-forge agents are fire-and-forget.
+3. **Live session attachment** — `ssq-mux` PTY multiplexer for monitoring external Claude sessions. Fuel-forge agents are fire-and-forget.
 4. **Test coverage** — Stapler-squad has benchmarks and targeted unit tests; fuel-forge's test suite is sparse outside forge-common.
 
 **Where fuel-forge's complexity becomes a liability:**

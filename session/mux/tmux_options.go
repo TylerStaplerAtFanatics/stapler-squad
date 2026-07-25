@@ -1,14 +1,17 @@
 package mux
 
 import (
+	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/session/tmux"
 )
 
-// tmux user option keys for claude-mux session metadata.
+// tmux user option keys for ssq-mux session metadata.
 // User options are @-prefixed and stored natively on the tmux session,
 // surviving server restarts and enabling socket-free discovery via
 // a single `tmux list-sessions` call.
@@ -35,16 +38,20 @@ func WriteSessionUserOptions(sessionName, socketPath, cwd, command string, pid i
 		{tmuxOptStartTime, strconv.FormatInt(startTime, 10)},
 	}
 	for _, opt := range opts {
-		cmd := exec.Command("tmux", "set-option", "-t", sessionName, opt.key, opt.value)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		setCtx, setCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		args := prependIsolatedSocket([]string{"set-option", "-t", sessionName, opt.key, opt.value})
+		cmd := safeexec.CommandContext(setCtx, tmux.Binary(), args...)
+		out, runErr := cmd.CombinedOutput()
+		setCancel()
+		if runErr != nil {
 			return fmt.Errorf("set %s on %s: %w (output: %s)",
-				opt.key, sessionName, err, strings.TrimSpace(string(out)))
+				opt.key, sessionName, runErr, strings.TrimSpace(string(out)))
 		}
 	}
 	return nil
 }
 
-// ScanByUserOptions discovers active claude-mux sessions via a single
+// ScanByUserOptions discovers active ssq-mux sessions via a single
 // `tmux list-sessions` call, reading user options written by WriteSessionUserOptions.
 //
 // This is faster than probing N sockets because:
@@ -53,7 +60,7 @@ func WriteSessionUserOptions(sessionName, socketPath, cwd, command string, pid i
 //   - Works immediately after a server restart before sockets are re-probed
 //
 // Returns an empty slice (not an error) when tmux is not running or has no sessions.
-// Sessions without @cs_socket_path set are silently skipped (not claude-mux sessions).
+// Sessions without @cs_socket_path set are silently skipped (not ssq-mux sessions).
 func ScanByUserOptions() ([]*DiscoveredSession, error) {
 	format := strings.Join([]string{
 		"#{session_name}",
@@ -64,7 +71,10 @@ func ScanByUserOptions() ([]*DiscoveredSession, error) {
 		"#{" + tmuxOptStartTime + "}",
 	}, "\t")
 
-	cmd := exec.Command("tmux", "list-sessions", "-F", format)
+	scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer scanCancel()
+	args := prependIsolatedSocket([]string{"list-sessions", "-F", format})
+	cmd := safeexec.CommandContext(scanCtx, tmux.Binary(), args...)
 	out, err := cmd.Output()
 	if err != nil {
 		// tmux exits non-zero when the server is not running or there are no
@@ -84,7 +94,7 @@ func ScanByUserOptions() ([]*DiscoveredSession, error) {
 
 		socketPath := fields[1]
 		if socketPath == "" {
-			// @cs_socket_path not set — not a claude-mux session.
+			// @cs_socket_path not set — not a ssq-mux session.
 			continue
 		}
 

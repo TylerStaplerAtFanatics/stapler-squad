@@ -1,0 +1,14 @@
+{
+  "id": "backlog-list-page",
+  "type": "frontend",
+  "component": "BacklogPage",
+  "path": "web-app/src/app/backlog/page.tsx",
+  "markerLine": 0,
+  "tested": true,
+  "testIds": [
+    "e2e:backlog-tour-first-visit",
+    "e2e:backlog-tour-reopen-button",
+    "e2e:backlog-dev-mode-should-display-a-seeded-backlog-item"
+  ],
+  "lastModified": "2026-07-06T00:00:00Z"
+}

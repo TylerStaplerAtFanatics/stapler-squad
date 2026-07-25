@@ -7,15 +7,26 @@ on:
       - '**.go'
       - 'go.mod'
       - 'go.sum'
+      - 'Makefile'
       - 'proto/**'
+      - 'web-app/**.css'
+      - 'web-app/**.ts'
+      - 'web-app/**.tsx'
+      - 'tests/e2e/**'
       - '.github/workflows/lint.yml'
+  workflow_dispatch:
   pull_request:
     branches: [ main ]
     paths:
       - '**.go'
       - 'go.mod'
       - 'go.sum'
+      - 'Makefile'
       - 'proto/**'
+      - 'web-app/**.css'
+      - 'web-app/**.ts'
+      - 'web-app/**.tsx'
+      - 'tests/e2e/**'
       - '.github/workflows/lint.yml'
 
 jobs:
@@ -29,14 +40,19 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.25.0'
-          cache: false
+          cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.27.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: web-app/package-lock.json
+          cache: 'pnpm'
+          cache-dependency-path: web-app/pnpm-lock.yaml
 
       - name: Install buf
         run: |
@@ -45,10 +61,14 @@ jobs:
 
       - name: Install web-app dependencies
         working-directory: web-app
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Generate protobuf code
         run: buf generate proto
+
+      - name: Generate ent ORM code
+        run: go run -mod=mod entgo.io/ent/cmd/ent generate --feature sql/upsert ./session/ent/schema
+
 
       - name: Create web dist stub
         run: |
@@ -61,14 +81,69 @@ jobs:
           version: v2.11.4
           args: --timeout=3m --max-issues-per-linter=0 --max-same-issues=0
           skip-cache: false
-          only-new-issues: true
+          only-new-issues: false
 
-      - name: Check formatting
+      - name: Import cycle check
+        run: go build ./...
+
+      - name: ESLint (no-100vh, mobile regression rules)
+        working-directory: web-app
         run: |
-          if [ -n "$(gofmt -l .)" ]; then
-            echo "The following files are not formatted correctly:"
-            gofmt -l .
-            echo "Fix these issues"
-            gofmt -d .
+          # Only lint files changed in this PR to avoid surfacing pre-existing issues
+          # in unmodified files. Falls back to full scan on push-to-main (no PR context).
+          # --max-warnings 0 is not used for full scan: pre-existing warnings in untouched
+          # files should not block push/workflow_dispatch. Errors (no-100vh etc.) still fail.
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            CHANGED=$(git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD \
+              -- 'web-app/**.ts' 'web-app/**.tsx' 2>/dev/null \
+              | grep -E '\.(ts|tsx)$' | sed 's|^web-app/||' || true)
+            if [ -z "$CHANGED" ]; then
+              echo "No TS/TSX files changed — skipping ESLint"
+              exit 0
+            fi
+            # Build --file args (one per changed file)
+            FILE_FLAGS=""
+            while IFS= read -r f; do
+              [ -n "$f" ] && FILE_FLAGS="$FILE_FLAGS --file $f"
+            done <<< "$CHANGED"
+            # shellcheck disable=SC2086
+            npx next lint $FILE_FLAGS
+          else
+            npx next lint
+          fi
+
+      - name: CSS lint (stylelint + undefined variable check)
+        working-directory: web-app
+        run: pnpm run lint:css
+
+      - name: Check formatting (PR-changed files only)
+        run: |
+          # Only check files modified in this PR to avoid pre-existing issues in
+          # untouched files (which may have been formatted with an older gofmt).
+          # On push-to-main (no PR), fall back to full repo check.
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            CHANGED=$(git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD -- '*.go' 2>/dev/null | grep '\.go$' || true)
+          else
+            CHANGED=$(gofmt -l .)
+          fi
+          if [ -z "$CHANGED" ]; then
+            echo "No Go files to format-check"
+            exit 0
+          fi
+          UNFORMATTED=$(echo "$CHANGED" | xargs gofmt -l 2>/dev/null || true)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "The following files modified in this PR are not gofmt formatted:"
+            echo "$UNFORMATTED"
+            echo ""
+            echo "Fix by running: gofmt -w \$(git diff --name-only origin/main...HEAD -- '*.go')"
             exit 1
           fi
+          echo "All changed Go files are properly formatted"
+
+      - name: Validate feature catalog (typed feature registry)
+        working-directory: web-app
+        run: |
+          # 1. TypeScript compile check on the features catalog — catches unknown FeatureId references
+          node_modules/.bin/tsc --noEmit --project tsconfig.node.json
+          # 2. Runtime catalog validation — catches features with empty testIds
+          pnpm run validate-catalog

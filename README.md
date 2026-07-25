@@ -1,6 +1,6 @@
-# Stapler Squad [![CI](https://github.com/tstapler/stapler-squad/actions/workflows/build.yml/badge.svg)](https://github.com/tstapler/stapler-squad/actions/workflows/build.yml) [![GitHub Release](https://img.shields.io/github/v/release/tstapler/stapler-squad)](https://github.com/tstapler/stapler-squad/releases/latest)
+# Stapler Squad [![CI](https://github.com/TylerStaplerAtFanatics/stapler-squad/actions/workflows/build.yml/badge.svg)](https://github.com/TylerStaplerAtFanatics/stapler-squad/actions/workflows/build.yml) [![GitHub Release](https://img.shields.io/github/v/release/TylerStaplerAtFanatics/stapler-squad)](https://github.com/TylerStaplerAtFanatics/stapler-squad/releases/latest)
 
-[Stapler Squad](https://tstapler.github.io/stapler-squad/) is a web-based mission control for running multiple AI coding agents ([Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex), [Gemini](https://github.com/google-gemini/gemini-cli), [Aider](https://github.com/Aider-AI/aider)) simultaneously — with a real-time dashboard, automatic approval rules, and a structured review queue. Run it with `ssq`, then open `http://localhost:8543`.
+[Stapler Squad](https://TylerStaplerAtFanatics.github.io/stapler-squad/) is a web-based mission control for running multiple AI coding agents ([Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex), [Gemini](https://github.com/google-gemini/gemini-cli), [Aider](https://github.com/Aider-AI/aider)) simultaneously — with a real-time dashboard, automatic approval rules, and a structured review queue. Run it with `ssq`, then open `http://localhost:8543`.
 
 ![Stapler Squad Demo](assets/demo.gif)
 
@@ -47,18 +47,17 @@ Both Homebrew and manual installation will install Stapler Squad as `ssq` on you
 #### Homebrew
 
 ```bash
-brew tap tstapler/stapler-squad https://github.com/tstapler/stapler-squad
-brew install tstapler/stapler-squad/stapler-squad
+brew tap TylerStaplerAtFanatics/stapler-squad https://github.com/TylerStaplerAtFanatics/stapler-squad && brew install TylerStaplerAtFanatics/stapler-squad/stapler-squad
 ```
 
 This installs both `stapler-squad` and the `ssq` alias.
 
-#### Manual
+#### Manual (pre-built binary)
 
-Stapler Squad can also be installed by running the following command:
+Download and install the latest pre-built binary:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tstapler/stapler-squad/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TylerStaplerAtFanatics/stapler-squad/main/install.sh | bash
 ```
 
 This puts the `ssq` binary in `~/.local/bin`.
@@ -66,13 +65,97 @@ This puts the `ssq` binary in `~/.local/bin`.
 To use a custom name for the binary:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tstapler/stapler-squad/main/install.sh | bash -s -- --name <your-binary-name>
+curl -fsSL https://raw.githubusercontent.com/TylerStaplerAtFanatics/stapler-squad/main/install.sh | bash -s -- --name <your-binary-name>
 ```
+
+#### Build from Source
+
+Build and install directly from source. The script installs Go via Homebrew if it isn't already present, then compiles the full application (web UI + server) and puts `ssq` in `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TylerStaplerAtFanatics/stapler-squad/main/install.sh | bash -s -- --from-source
+```
+
+Or step by step:
+
+```bash
+# 1. Install build dependencies (Go, Node.js, buf)
+brew install go node buf
+
+# 2. Clone the repository
+git clone https://github.com/TylerStaplerAtFanatics/stapler-squad.git
+cd stapler-squad
+
+# 3. Build (compiles proto code, Next.js web UI, and Go binary)
+make build
+
+# 4. Install to ~/.local/bin
+cp stapler-squad ~/.local/bin/ssq
+```
+
+> `node` and `buf` are required to compile the web UI and protobuf definitions. `make build` will install them automatically via Homebrew if they are missing.
 
 ### Prerequisites
 
 - [tmux](https://github.com/tmux/tmux/wiki/Installing)
 - [gh](https://cli.github.com/)
+
+### Browser Passthrough
+
+Browser passthrough lets agents (or you) open a real browser inside a session. The stapler-squad UI shows a live, interactive view of that browser in a **Browser** tab — mouse clicks, scrolls, drags, and keyboard input all work from the UI.
+
+Each session with browser passthrough enabled gets its own isolated virtual display (Xvfb). The `DISPLAY` environment variable is injected automatically into the tmux session so any GUI application the agent launches appears on that display. When a Chrome or Chromium window is detected, the Browser tab becomes active and streams the live view via noVNC.
+
+#### Required packages
+
+| Package | Arch | Debian / Ubuntu |
+|---|---|---|
+| Xvfb (virtual framebuffer) | `xorg-server-xvfb` | `xvfb` |
+| x11vnc (VNC server) | `x11vnc` | `x11vnc` |
+| xdotool (window detection) | `xdotool` | `xdotool` |
+| Chrome (recommended) | `google-chrome` (AUR) | via [Google's apt repo](https://www.google.com/chrome/) |
+| Chromium (alternative) | `chromium` | `chromium-browser` |
+
+**Arch:**
+```bash
+sudo pacman -S xorg-server-xvfb x11vnc xdotool chromium
+# or install google-chrome from AUR: yay -S google-chrome
+```
+
+**Debian / Ubuntu:**
+```bash
+sudo apt install xvfb x11vnc xdotool chromium-browser
+# or install Google Chrome from https://www.google.com/chrome/
+```
+
+#### Graceful degradation
+
+Stapler Squad detects missing dependencies at startup and degrades gracefully — the Browser tab is hidden entirely on hosts where the required packages are absent. All other features continue to work normally. A warning is logged listing the missing binaries.
+
+#### Opening a browser
+
+Agents can launch Chrome or Chromium directly — any command that starts the browser will be detected automatically within ~500 ms. The `$DISPLAY` variable is already set in the session environment.
+
+For convenience, the `scripts/launch-browser.sh` helper selects the available browser and applies the correct flags:
+
+```bash
+# Open the default blank page
+scripts/launch-browser.sh
+
+# Open a specific URL
+scripts/launch-browser.sh https://example.com
+```
+
+Agents can also call the browser directly:
+
+```bash
+google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu "$URL"
+chromium --no-sandbox --disable-dev-shm-usage --disable-gpu "$URL"
+```
+
+#### macOS
+
+Browser passthrough is Linux-only in v1 (requires Xvfb). macOS support via Apple Remote Desktop / Screen Sharing is planned for a future release.
 
 ### Configuration
 
@@ -172,7 +255,7 @@ brew install tmux gh
 
 ```bash
 # Clone the repository
-git clone https://github.com/tstapler/stapler-squad.git
+git clone https://github.com/TylerStaplerAtFanatics/stapler-squad.git
 cd stapler-squad
 
 # Build (auto-installs go, buf, and node via Homebrew if missing)
@@ -280,6 +363,80 @@ make lint             # Multi-tool linting suite
 
 Install all tools with: `make install-tools`
 
+#### ssq-mux (External Terminal Multiplexer)
+
+`ssq-mux` wraps AI assistant commands with a PTY multiplexer so Stapler Squad can stream terminal output from any external terminal (IntelliJ, VS Code, etc.) into the web UI in real time.
+
+**Build and install:**
+
+```bash
+# Build the binary locally
+make build-mux
+
+# Build and install to ~/.local/bin
+make install-mux
+```
+
+Or run the install script directly from the project root:
+
+```bash
+./scripts/install-mux.sh
+```
+
+Ensure `~/.local/bin` is in your `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+**Shell alias (recommended):**
+
+```bash
+alias claude='ssq-mux claude'
+```
+
+Add this to `~/.zshrc`, `~/.bashrc`, or equivalent, then reload: `source ~/.zshrc`.
+
+**Basic usage:**
+
+```bash
+# Start a Claude session — automatically discovered by Stapler Squad
+ssq-mux claude
+
+# Custom session name
+ssq-mux -n "api-refactor" claude
+
+# List active sessions
+ssq-mux --list
+
+# Reattach to an existing session after restart
+ssq-mux --attach <session-name>
+```
+
+**IDE configuration — IntelliJ IDEA / PyCharm / WebStorm:**
+
+1. Settings → Tools → Terminal
+2. Set **Shell path** to: `~/.local/bin/ssq-mux`
+3. Set **Shell arguments** to: `claude`
+4. Restart the IDE terminal
+
+**IDE configuration — VS Code:**
+
+Add to `settings.json`:
+
+```json
+"terminal.integrated.profiles.osx": {
+  "ssq-mux": {
+    "path": "~/.local/bin/ssq-mux",
+    "args": ["claude"]
+  }
+}
+```
+
+Set `terminal.integrated.defaultProfile.osx` to `"ssq-mux"`.
+
+<br />
+
 ### FAQs
 
 #### Failed to start new session
@@ -332,4 +489,4 @@ The result is opinionated toward my own workflow: approval gates before agent ch
 
 ### Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=tstapler/stapler-squad&type=Date)](https://www.star-history.com/#tstapler/stapler-squad&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=TylerStaplerAtFanatics/stapler-squad&type=Date)](https://www.star-history.com/#TylerStaplerAtFanatics/stapler-squad&Date)

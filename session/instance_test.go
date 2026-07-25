@@ -4,6 +4,7 @@ import (
 	"github.com/tstapler/stapler-squad/session/git"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,8 +45,8 @@ func TestFromInstanceDataWithMissingWorktree(t *testing.T) {
 				"abcdef1234567890",
 			),
 		},
-		started: true,
 	}
+	instance.started.Store(true)
 
 	// Test 1: Worktree exists - instance should not be paused
 	checkInstanceStatus(t, instance, worktreePath, false)
@@ -78,15 +79,19 @@ func TestFromInstanceDataWithMissingWorktree(t *testing.T) {
 				"abcdef1234567890",
 			),
 		},
-		started: true,
 	}
+	instance.started.Store(true)
 
-	// Test 2: Apply our fix - check if worktree exists and update status
+	// Test 2: Apply our fix - check if worktree exists and update status.
+	// Use ForceStatus, not a bare `instance.Status = Paused` field write: the
+	// earlier instance.Paused() call above already cached a snapshot, and a
+	// raw field write wouldn't republish it — Paused() below would then keep
+	// reading the stale pre-mutation snapshot. ForceStatus republishes.
 	if !instance.Paused() && instance.gitManager.worktree != nil {
 		worktreePath := instance.gitManager.worktree.GetWorktreePath()
 		if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 			// Worktree has been deleted, mark instance as paused
-			instance.Status = Paused
+			instance.ForceStatus(Paused)
 		}
 	}
 
@@ -103,23 +108,35 @@ func checkInstanceStatus(t *testing.T, instance *Instance, worktreePath string, 
 }
 
 func TestStatusEnumValues(t *testing.T) {
-	// Test that all status values are defined correctly
+	// Test that all status values match the new 5-state model:
+	// Creating=0, Active=1, Paused=2, Stopped=3, Hibernated=4
 	tests := []struct {
 		status Status
+		value  int
 		name   string
 	}{
-		{Running, "Running"},
-		{Ready, "Ready"},
-		{Loading, "Loading"},
-		{Paused, "Paused"},
-		{NeedsApproval, "NeedsApproval"},
+		{Creating, 0, "Creating"},
+		{Active, 1, "Active"},
+		{Paused, 2, "Paused"},
+		{Stopped, 3, "Stopped"},
+		{Hibernated, 4, "Hibernated"},
 	}
 
-	// Verify that status values are sequential starting from 0
-	for i, test := range tests {
-		if int(test.status) != i {
-			t.Errorf("Expected %s status to have value %d, got %d", test.name, i, test.status)
+	for _, test := range tests {
+		if int(test.status) != test.value {
+			t.Errorf("Expected %s status to have value %d, got %d", test.name, test.value, int(test.status))
 		}
+	}
+
+	// Verify deprecated aliases point to their canonical equivalents.
+	if Running != Active {
+		t.Errorf("Running alias should equal Active (1), got %d", int(Running))
+	}
+	if Ready != Active {
+		t.Errorf("Ready alias should equal Active (1), got %d", int(Ready))
+	}
+	if Loading != Creating {
+		t.Errorf("Loading alias should equal Creating (0), got %d", int(Loading))
 	}
 }
 
@@ -178,7 +195,7 @@ func TestTildeExpansionInNewInstance(t *testing.T) {
 				// Convert to absolute for comparison
 				tt.expectStartsWith, _ = filepath.Abs(tt.expectStartsWith)
 			}
-			if tt.expectStartsWith != "" && !filepath.HasPrefix(instance.Path, tt.expectStartsWith) {
+			if tt.expectStartsWith != "" && !strings.HasPrefix(instance.Path, tt.expectStartsWith) {
 				t.Errorf("Expected path to start with %s, got: %s", tt.expectStartsWith, instance.Path)
 			}
 
@@ -245,7 +262,7 @@ func TestMigrationOfCorruptedPaths(t *testing.T) {
 				}
 
 				// Path should start with home directory
-				if !filepath.IsAbs(instance.Path) || !filepath.HasPrefix(instance.Path, tt.expectedPrefix) {
+				if !filepath.IsAbs(instance.Path) || !strings.HasPrefix(instance.Path, tt.expectedPrefix) {
 					t.Errorf("Expected migrated path to start with %s, got: %s", tt.expectedPrefix, instance.Path)
 				}
 
@@ -260,5 +277,37 @@ func TestMigrationOfCorruptedPaths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNewInstance_PopulatesEnvVars_WhenPassedInOptions(t *testing.T) {
+	opts := InstanceOptions{
+		Title:       "test",
+		Path:        t.TempDir(),
+		SessionType: SessionTypeDirectory,
+		EnvVars:     map[string]string{"X": "1", "Y": "2"},
+	}
+	inst, err := NewInstance(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inst.EnvVars["X"] != "1" {
+		t.Errorf("expected EnvVars[X]=1, got %q", inst.EnvVars["X"])
+	}
+}
+
+func TestNewInstance_PopulatesCLIFlags_WhenPassedInOptions(t *testing.T) {
+	opts := InstanceOptions{
+		Title:       "test",
+		Path:        t.TempDir(),
+		SessionType: SessionTypeDirectory,
+		CLIFlags:    "--foo --bar",
+	}
+	inst, err := NewInstance(opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inst.CLIFlags != "--foo --bar" {
+		t.Errorf("expected CLIFlags '--foo --bar', got %q", inst.CLIFlags)
 	}
 }

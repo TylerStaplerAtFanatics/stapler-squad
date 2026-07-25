@@ -1,14 +1,103 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import Fuse from "fuse.js";
 import { detect, InputType, INPUT_TYPE_INFO, DetectionResult } from "@/lib/omnibar";
+import { useModeReducer, OmnibarModeState } from "@/lib/omnibar/modes/useModeReducer";
 import { PROGRAMS } from "@/lib/constants/programs";
-import styles from "./Omnibar.module.css";
+import { getApiBaseUrl } from "@/lib/config";
+import { useTheme } from "@/lib/contexts/ThemeContext";
+import type { ThemeName } from "@/lib/contexts/ThemeContext";
+import { usePathCompletions } from "@/lib/hooks/usePathCompletions";
+import { usePathHistory } from "@/lib/hooks/usePathHistory";
+import { useWorktreeSuggestions } from "@/lib/hooks/useWorktreeSuggestions";
+import { useSessionSearch, type SessionSearchResult } from "@/lib/hooks/useSessionSearch";
+import { useAppSelector } from "@/lib/store";
+import { selectActiveSessionsSortedByUpdatedAt } from "@/lib/store/sessionsSlice";
+import { Session, SessionType } from "@/gen/session/v1/types_pb";
+import { PathCompletionDropdown, type CompletionEntry } from "@/components/ui/PathCompletionDropdown";
+import { AtCommandDropdown } from "@/components/ui/AtCommandDropdown";
+import { useAtCommandSuggestions } from "@/lib/hooks/useAtCommandSuggestions";
+import type { WorkflowEntry } from "@/lib/omnibar/detectors/WorkflowDetector";
+import type { AliasMetadata } from "@/lib/omnibar/detectors/AliasDetector";
+import { OmnibarResultList, getResultListItemCount, getHighlightedItemId } from "./OmnibarResultList";
+import { OmnibarModeBadge } from "./OmnibarModeBadge";
+import { OmnibarCreationPanel, SESSION_TYPES } from "./OmnibarCreationPanel";
+import { parseSlashCommand } from "@/lib/omnibar/parseSlashCommand";
+import { parseInputWithSeparator } from "@/lib/omnibar/parseInput";
+import {
+  overlay, modal, inputContainer, typeIndicator, input as inputClass,
+  detectionInfo, detectionBadge, unknown,
+  shortcuts, shortcut, shortcutKey, completionError as completionErrorClass,
+  pathIndicator, pathIndicatorValid, pathIndicatorInvalid, pathIndicatorLoading,
+  createButton,
+} from "./Omnibar.css";
+import { AliasPalette } from "@/components/ui/AliasPalette";
+import { useAliasSuggestions } from "@/lib/hooks/useAliasSuggestions";
+import { useAliases } from "@/lib/hooks/useAliases";
 
 interface OmnibarProps {
   isOpen: boolean;
   onClose: () => void;
   onCreateSession: (data: OmnibarSessionData) => Promise<void>;
+  onNavigateToSession: (sessionId: string) => void;
+  onNavigateToSessionInNewPane?: (sessionId: string) => void;
+  onSpawnShell?: (sessionId?: string, workingDir?: string, shellCommand?: string) => void;
+  onRunWorkflow?: (slug: string, arg: string) => Promise<void>;
+  initialMode?: "discovery" | "creation";
+  initialInput?: string;
+  initialTitle?: string;
+  /** Available workflows for @slug autocomplete. */
+  workflows?: WorkflowEntry[];
+}
+
+// Consolidated form state
+export interface OmnibarFormState {
+  sessionName: string;
+  branch: string;
+  program: string;
+  category: string;
+  autoYes: boolean;
+  useTitleAsBranch: boolean;
+  sessionType: "directory" | "new_worktree" | "existing_worktree" | "one_off" | "new_project" | "autonomous";
+  existingWorktree: string;
+  workingDir: string;
+  // New project mode fields
+  parentDir: string;
+  projectName: string;
+  newProjectSessionType: "directory" | "new_worktree";
+  // Opt-in: when the path doesn't exist yet, create the directory and
+  // initialize a new git repository. Only applies to directory / new_worktree.
+  createIfMissing: boolean;
+  firstPrompt: string;
+}
+
+const INITIAL_FORM_STATE: OmnibarFormState = {
+  sessionName: "",
+  branch: "",
+  program: "",
+  category: "",
+  autoYes: false,
+  useTitleAsBranch: true,
+  sessionType: "new_worktree",
+  existingWorktree: "",
+  workingDir: "",
+  // New project mode defaults
+  parentDir: "",
+  projectName: "",
+  newProjectSessionType: "new_worktree",
+  createIfMissing: false,
+  firstPrompt: "",
+};
+
+// Consolidated UI state
+interface OmnibarUIState {
+  showAdvanced: boolean;
+  dropdownIndex: number;
+  dropdownDismissed: boolean;
+  resultHighlightIndex: number;
+  atSuggestIndex: number;
 }
 
 export interface OmnibarSessionData {
@@ -24,38 +113,287 @@ export interface OmnibarSessionData {
   gitHubRepo?: string;
   gitHubPRNumber?: number;
   // Session type and worktree
-  sessionType?: "directory" | "new_worktree" | "existing_worktree";
+  sessionType?: "directory" | "new_worktree" | "existing_worktree" | "one_off";
   existingWorktree?: string;
   workingDir?: string;
+  initialPrompt?: string;
+  // New project mode: tells the context layer to use SESSION_TYPE_NEW_PROJECT
+  isNewProject?: boolean;
+  // Explicit opt-in to create the directory + git repo if `path` doesn't exist.
+  createIfMissing?: boolean;
+  // Autonomous mode: run without human permission prompts (LLM approves tool calls).
+  autonomousMode?: boolean;
+  // Permission mode passed to Claude Code (e.g. "auto" for autonomous sessions).
+  permissionMode?: string;
+  aliasName?: string;
+  extraCliFlags?: string;
 }
 
-export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
+// Validates a project name: no path separators, null bytes, or leading/trailing spaces/dots.
+function isValidProjectName(name: string): boolean {
+  if (!name.trim()) return false;
+  return !/[/\\<>:"|?*\x00]/.test(name) && !/^\.|\.$|^ | $/.test(name);
+}
+
+const RESULT_LISTBOX_ID = "omnibar-result-listbox";
+
+function protoSessionTypeToFormString(st: SessionType): OmnibarFormState["sessionType"] {
+  switch (st) {
+    case SessionType.DIRECTORY: return "directory";
+    case SessionType.NEW_WORKTREE: return "new_worktree";
+    case SessionType.EXISTING_WORKTREE: return "existing_worktree";
+    case SessionType.ONE_OFF: return "one_off";
+    default: return "new_worktree";
+  }
+}
+
+export function Omnibar({ isOpen, onClose, onCreateSession, onNavigateToSession, onNavigateToSessionInNewPane, onSpawnShell, onRunWorkflow, initialMode, initialInput, initialTitle, workflows = [] }: OmnibarProps) {
+  const router = useRouter();
+  const { setTheme } = useTheme();
+
   // Input state
   const [input, setInput] = useState("");
+  // Debounced copy of input — used for Fuse searches to avoid running O(n log n) work
+  // on every keystroke. The visible input still uses the raw value for instant response.
+  const [debouncedInput, setDebouncedInput] = useState("");
+  const debounceFuseRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    if (debounceFuseRef.current) clearTimeout(debounceFuseRef.current);
+    debounceFuseRef.current = setTimeout(() => setDebouncedInput(input), 150);
+    return () => { if (debounceFuseRef.current) clearTimeout(debounceFuseRef.current); };
+  }, [input]);
   const [detection, setDetection] = useState<DetectionResult | null>(null);
 
-  // Form state
-  const [sessionName, setSessionName] = useState("");
-  const [program, setProgram] = useState("claude");
-  const [category, setCategory] = useState("");
-  const [autoYes, setAutoYes] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  // Consolidated form state
+  const [formState, setFormState] = useState<OmnibarFormState>(INITIAL_FORM_STATE);
+  const setFormField = useCallback(
+    <K extends keyof OmnibarFormState>(key: K, value: OmnibarFormState[K]) =>
+      setFormState((prev) => ({ ...prev, [key]: value })),
+    []
+  );
 
-  // Session type and worktree state
-  const [sessionType, setSessionType] = useState<"directory" | "new_worktree" | "existing_worktree">("new_worktree");
-  const [branch, setBranch] = useState("");
-  const [useTitleAsBranch, setUseTitleAsBranch] = useState(true);
-  const [existingWorktree, setExistingWorktree] = useState("");
-  const [workingDir, setWorkingDir] = useState("");
+  // Consolidated UI state
+  const [uiState, setUIState] = useState<OmnibarUIState>({
+    showAdvanced: false,
+    dropdownIndex: -1,
+    dropdownDismissed: false,
+    resultHighlightIndex: -1,
+    atSuggestIndex: -1,
+  });
+  const setUIField = useCallback(
+    <K extends keyof OmnibarUIState>(key: K, value: OmnibarUIState[K]) =>
+      setUIState((prev) => ({ ...prev, [key]: value })),
+    []
+  );
+
+  const [activeDropdown, setActiveDropdown] = useState<"alias" | "workflow" | "search" | null>(null);
+  const [aliasSuggestIndex, setAliasSuggestIndex] = useState(-1);
 
   // Submission state
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Mode state machine
+  const [modeState, dispatchMode] = useModeReducer();
+
+  // Confirmation dialog state for Directory mode with non-existent path
+  const [showPathConfirmation, setShowPathConfirmation] = useState(false);
+  const [pendingSessionData, setPendingSessionData] = useState<OmnibarSessionData | null>(null);
+
+  // Convenience aliases for existing code
+  // Destructure only fields needed for validation/submission logic in Omnibar.tsx
+  const { sessionName, program, category, autoYes, sessionType, branch, useTitleAsBranch, existingWorktree, workingDir, parentDir, projectName, newProjectSessionType, createIfMissing } = formState;
+  const { showAdvanced } = uiState;
+  const { dropdownIndex, dropdownDismissed, resultHighlightIndex, atSuggestIndex } = uiState;
+  // Used in detection auto-fill effects
+  const setSessionName = useCallback((v: string) => setFormField("sessionName", v), [setFormField]);
+  const setBranch = useCallback((v: string) => setFormField("branch", v), [setFormField]);
+  const setDropdownIndex = useCallback((updater: number | ((prev: number) => number)) => {
+    setUIState((prev) => ({
+      ...prev,
+      dropdownIndex: typeof updater === "function" ? updater(prev.dropdownIndex) : updater,
+    }));
+  }, []);
+  const setDropdownDismissed = useCallback((v: boolean) => setUIField("dropdownDismissed", v), [setUIField]);
+  const setResultHighlightIndex = useCallback((updater: number | ((prev: number) => number)) => {
+    setUIState((prev) => ({
+      ...prev,
+      resultHighlightIndex: typeof updater === "function" ? updater(prev.resultHighlightIndex) : updater,
+    }));
+  }, []);
+
   // Refs
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const lastSuggestedNameRef = useRef<string>("");
+  const prevDetectionTypeRef = useRef<string | null>(null);
+  // Stable ref so handleKeyDown can always call the latest handleSubmit without
+  // a circular declaration-order dependency (handleKeyDown is declared before handleSubmit).
+  const handleSubmitRef = useRef<() => void>(() => {});
+  // Holds the latest attached image paths from OmnibarCreationPanel without causing re-renders.
+  const attachedImagePathsRef = useRef<string[]>([]);
+  // Refs for form fields read inside the detection effect — avoids re-triggering
+  // the effect (and resetting to discovery mode) when only form fields change.
+  const sessionNameRef = useRef(sessionName);
+  const branchRef = useRef(branch);
+  const programRef = useRef(program);
+  useEffect(() => { sessionNameRef.current = sessionName; }, [sessionName]);
+  useEffect(() => { branchRef.current = branch; }, [branch]);
+  useEffect(() => { programRef.current = program; }, [program]);
+  const lastSuggestedProgramRef = useRef<string>("");
+
+  // API base URL for pre-session image uploads — uses shared helper for SSR/dev consistency.
+  const uploadBaseUrl = getApiBaseUrl();
+
+  // Determine whether completions should be active.
+  const isPathInput =
+    detection?.type === InputType.LocalPath ||
+    detection?.type === InputType.PathWithBranch;
+
+  // Use the detected local path (strips branch suffix for PathWithBranch).
+  const completionPrefix = isPathInput ? detection?.localPath ?? input : "";
+
+  const {
+    entries: completionEntries,
+    baseDir: completionBaseDir,
+    pathExists,
+    isLoading: isCompletionLoading,
+    error: completionError,
+  } = usePathCompletions(completionPrefix, {
+    enabled: isPathInput,
+    directoriesOnly: true,
+  });
+
+  const { getMatching: getHistoryMatching, getAll: getAllHistory, save: saveHistory } = usePathHistory();
+
+  // Worktree suggestions for the "Use Existing Worktree" mode.
+  // Prefer the pre-selected repo path from creation_with_repo mode; fall back to the
+  // live-detected local path when the user typed a path directly in the input.
+  const repoPathForWorktrees =
+    modeState.type === "creation_with_repo" && modeState.path
+      ? modeState.path
+      : isPathInput
+      ? (detection?.localPath ?? "")
+      : "";
+  const { worktrees, isLoading: isWorktreesLoading } = useWorktreeSuggestions(repoPathForWorktrees, {
+    enabled: sessionType === "existing_worktree" && !!repoPathForWorktrees,
+  });
+
+  // Convert live OS entries to CompletionEntry for type-safe downstream use.
+  const liveEntries = useMemo<CompletionEntry[]>(
+    () =>
+      completionEntries.map((e) => ({
+        name: e.name,
+        path: e.path,
+        isDirectory: e.isDirectory,
+      })),
+    [completionEntries]
+  );
+
+  // History entries matching the current prefix.
+  const historyMatches = useMemo<CompletionEntry[]>(
+    () =>
+      isPathInput
+        ? getHistoryMatching(completionPrefix).map((h) => ({
+            name: h.path,
+            path: h.path,
+            isDirectory: true,
+            isHistory: true,
+          }))
+        : [],
+    [isPathInput, completionPrefix, getHistoryMatching]
+  );
+
+  // Merged entries: history first, then live (deduped against history).
+  const mergedEntries = useMemo<CompletionEntry[]>(() => {
+    const liveDeduped = liveEntries.filter(
+      (e) => !historyMatches.some((h) => h.path === e.path)
+    );
+    return [...historyMatches, ...liveDeduped];
+  }, [historyMatches, liveEntries]);
+
+  const historyCount = historyMatches.length;
+
+  const isDropdownVisible =
+    isPathInput && mergedEntries.length > 0 && !dropdownDismissed;
+
+  // Discovery mode derived from modeState
+  const isDiscoveryMode = modeState.type === "discovery";
+
+  // @command autocomplete — active while user is typing "@slug" (no space yet)
+  const { isAtCommand, suggestions: atSuggestions, complete: completeAtCommand } =
+    useAtCommandSuggestions(input, workflows);
+  const isAtDropdownVisible = isDiscoveryMode && isAtCommand;
+
+  const { aliases, error: aliasError, refetch: refetchAliases } = useAliases();
+
+  // Re-fetch aliases each time the omnibar opens so newly created aliases appear immediately.
+  const prevIsOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && !prevIsOpenRef.current) {
+      refetchAliases();
+    }
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, refetchAliases]);
+  const { isAliasBrowse, isAliasCompletion, filteredAliases, complete: completeAlias } = useAliasSuggestions(input, aliases);
+  const isAliasPaletteVisible = isDiscoveryMode && (isAliasBrowse || isAliasCompletion);
+
+  // Session search query uses the debounced input so Fuse only runs after typing pauses.
+  const sessionSearchQuery = useMemo(() => {
+    if (!debouncedInput.trim()) return "";
+    if (detection?.type === InputType.SessionSearch) return debouncedInput;
+    // Eagerly treat as session search if input doesn't look like a path or URL
+    if (!debouncedInput.startsWith("/") && !debouncedInput.startsWith("~") && !debouncedInput.startsWith("http")) {
+      return debouncedInput;
+    }
+    return "";
+  }, [debouncedInput, detection]);
+  const sessionResults = useSessionSearch(sessionSearchQuery);
+
+  const allRepoEntries = useMemo(() => getAllHistory(50), [getAllHistory]);
+  const repoFuse = useMemo(
+    () =>
+      new Fuse(allRepoEntries, {
+        keys: [{ name: "path", weight: 1.0 }],
+        threshold: 0.4,
+        ignoreLocation: true,
+        minMatchCharLength: 1,
+      }),
+    [allRepoEntries]
+  );
+
+  const activeSortedSessions = useAppSelector(selectActiveSessionsSortedByUpdatedAt);
+
+  const displayedSessionResults = useMemo((): SessionSearchResult[] => {
+    if (!debouncedInput.trim()) {
+      return activeSortedSessions.slice(0, 5).map((s) => ({ session: s, score: 0, matchedFields: [] }));
+    }
+    return sessionResults;
+  }, [debouncedInput, sessionResults, activeSortedSessions]);
+
+  const displayedRepoEntries = useMemo(() => {
+    if (!debouncedInput.trim()) {
+      return allRepoEntries.slice(0, 5);
+    }
+    return repoFuse.search(debouncedInput).map((r) => r.item).slice(0, 8);
+  }, [debouncedInput, allRepoEntries, repoFuse]);
+
+  const totalResultCount = getResultListItemCount(
+    displayedSessionResults.length,
+    displayedRepoEntries.length
+  );
+
+  // Accept a completion entry: fill the input and continue for further completion.
+  const handleCompletionSelect = useCallback(
+    (entry: CompletionEntry) => {
+      const newInput = entry.isDirectory ? entry.path + "/" : entry.path;
+      setInput(newInput);
+      setDropdownIndex(-1);
+      setDropdownDismissed(false);
+      inputRef.current?.focus();
+    },
+    [setDropdownIndex, setDropdownDismissed]
+  );
 
   // Detect input type with debouncing
   useEffect(() => {
@@ -65,26 +403,105 @@ export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
 
     debounceRef.current = setTimeout(() => {
       if (input.trim()) {
-        const result = detect(input);
+        // Pre-process slash commands before detection so /oneoff etc. aren't
+        // misidentified as local paths by LocalPathDetector (priority 100).
+        const slashCmd = parseSlashCommand(input);
+        if (slashCmd) {
+          setFormField("sessionType", slashCmd.sessionType);
+        }
+        const detectInput = slashCmd ? slashCmd.remainder : input;
+        const result = detect(detectInput || input);
         setDetection(result);
 
-        // Auto-fill session name if:
+        // Reset dropdown dismissed state when input type changes modes.
+        // Prevents session results from being suppressed after user dismisses
+        // path completion dropdown then backspaces to bare text.
+        if (result.type !== prevDetectionTypeRef.current) {
+          setDropdownDismissed(false);
+        }
+        prevDetectionTypeRef.current = result.type;
+
+        // Update mode based on detection type
+        if (result.type === InputType.NewSession) {
+          // "new/" prefix typed → creation_with_repo mode with query from parsedValue
+          dispatchMode({ kind: "new_prefix_typed", query: result.parsedValue });
+        } else {
+          dispatchMode({ kind: "detect", detection: result });
+          if (result.type === InputType.SessionSearch) {
+            setResultHighlightIndex(-1);
+          }
+        }
+
+        // Auto-fill session name (and firstPrompt for `>` separator) if:
         // 1. Session name is empty, OR
         // 2. Session name matches the last auto-suggested name (not manually edited)
         // This allows suggestions to update as the user types the path (e.g., "~" → "sqlway")
-        if (result.suggestedName) {
-          if (!sessionName || sessionName === lastSuggestedNameRef.current) {
+        if (result.type === InputType.SessionSearch && !slashCmd) {
+          // Derive-on-read: split on first `>` to populate name + firstPrompt
+          const parsed = parseInputWithSeparator(input);
+          const derivedName = parsed.name;
+          if (derivedName && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {
+            setSessionName(derivedName);
+            lastSuggestedNameRef.current = derivedName;
+          }
+          if (parsed.firstPrompt) {
+            setFormField("firstPrompt", parsed.firstPrompt);
+          }
+        } else if (result.suggestedName && result.type !== InputType.Alias) {
+          // Skip for Alias — the alias-specific block below handles name population
+          // (running both would reset lastSuggestedNameRef mid-effect and cause oscillation).
+          if (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current) {
             setSessionName(result.suggestedName);
             lastSuggestedNameRef.current = result.suggestedName;
           }
         }
 
         // Auto-fill branch if detected
-        if (result.branch && !branch) {
+        if (result.branch && !branchRef.current) {
           setBranch(result.branch);
+        }
+
+        // When an alias resolves, populate form fields from its configured defaults
+        // so the user can see (and optionally adjust) what will be created.
+        if (result.type === InputType.Alias) {
+          const aliasMeta = result.metadata as AliasMetadata | undefined;
+          const alias = aliasMeta?.alias;
+          if (alias) {
+            if (alias.program && (!programRef.current || programRef.current === lastSuggestedProgramRef.current)) {
+              setFormField("program", alias.program);
+              lastSuggestedProgramRef.current = alias.program;
+            }
+            // UNSPECIFIED means "Default (directory)" in the alias editor — always apply it.
+            // Skipping UNSPECIFIED left the form at its initial "new_worktree" default.
+            const resolvedSessionType = alias.sessionType !== SessionType.UNSPECIFIED
+              ? protoSessionTypeToFormString(alias.sessionType)
+              : "directory";
+            setFormField("sessionType", resolvedSessionType);
+            setFormField("autoYes", alias.autoYes);
+          }
+          // Populate branch from @alias:branch syntax so the user can see/edit it.
+          if (aliasMeta?.branch && !branchRef.current) {
+            setBranch(aliasMeta.branch);
+          }
+          // If the user typed a label after the alias name (e.g. "@ssq my-feature"),
+          // use it as the session name so they can see and edit it before submitting.
+          // If the alias defines a name_prefix, prepend it (e.g. prefix "ssq-" → "ssq-my-feature").
+          const typedLabel = aliasMeta?.label;
+          const namePrefix = alias?.namePrefix ?? "";
+          if (typedLabel && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {
+            const suggested = namePrefix ? `${namePrefix}${typedLabel}` : typedLabel;
+            setSessionName(suggested);
+            lastSuggestedNameRef.current = suggested;
+          } else if (namePrefix && (!sessionNameRef.current || sessionNameRef.current === lastSuggestedNameRef.current)) {
+            // No label yet but prefix defined: show just the prefix so the user knows what to complete.
+            setSessionName(namePrefix);
+            lastSuggestedNameRef.current = namePrefix;
+          }
         }
       } else {
         setDetection(null);
+        dispatchMode({ kind: "reset_to_discovery" });
+        setResultHighlightIndex(-1);
       }
     }, 150); // 150ms debounce
 
@@ -93,7 +510,7 @@ export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
         clearTimeout(debounceRef.current);
       }
     };
-  }, [input, sessionName, branch]);
+  }, [input, dispatchMode, setFormField, setBranch, setDropdownDismissed, setResultHighlightIndex, setSessionName]);
 
   // Focus input when opened
   useEffect(() => {
@@ -107,32 +524,314 @@ export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
     if (!isOpen) {
       setInput("");
       setDetection(null);
-      setSessionName("");
-      setProgram("claude");
-      setCategory("");
-      setAutoYes(false);
-      setShowAdvanced(false);
+      setFormState(INITIAL_FORM_STATE);
+      setUIState({ showAdvanced: false, dropdownIndex: -1, dropdownDismissed: false, resultHighlightIndex: -1, atSuggestIndex: -1 });
       setError(null);
-      setSessionType("new_worktree");
-      setBranch("");
-      setUseTitleAsBranch(false);
-      setExistingWorktree("");
-      setWorkingDir("");
       lastSuggestedNameRef.current = "";
+      prevDetectionTypeRef.current = null;
+      dispatchMode({ kind: "reset_to_discovery" });
     }
-  }, [isOpen]);
+  }, [isOpen, dispatchMode]);
+
+  // Reset atSuggestIndex when leaving @ mode (user added space or cleared the @).
+  useEffect(() => {
+    if (!isAtCommand) {
+      setUIField("atSuggestIndex", -1);
+    }
+  }, [isAtCommand, setUIField]);
+
+  useEffect(() => {
+    if (isAliasPaletteVisible) {
+      setActiveDropdown("alias");
+    } else if (isAtDropdownVisible) {
+      setActiveDropdown("workflow");
+    } else {
+      setActiveDropdown(null);
+    }
+  }, [isAliasPaletteVisible, isAtDropdownVisible]);
+
+  // On open: apply initialMode if provided
+  useEffect(() => {
+    if (isOpen && initialMode === "creation") {
+      dispatchMode({ kind: "open_creation_direct" });
+    }
+  }, [isOpen, initialMode, dispatchMode]);
+
+  // On open: pre-populate input if initialInput is provided
+  useEffect(() => {
+    if (isOpen && initialInput) {
+      setInput(initialInput);
+    }
+  }, [isOpen, initialInput]);
+
+  // On open: pre-populate sessionName if initialTitle is provided
+  useEffect(() => {
+    if (isOpen && initialTitle) {
+      setSessionName(initialTitle);
+    }
+  }, [isOpen, initialTitle, setSessionName]);
+
+  // Session result selection handlers
+  const handleSessionSelect = useCallback(
+    (session: Session) => {
+      onNavigateToSession(session.id);
+      onClose();
+    },
+    [onNavigateToSession, onClose]
+  );
+
+  const handleSessionSelectInNewPane = useCallback(
+    (session: Session) => {
+      onNavigateToSessionInNewPane?.(session.id);
+      onClose();
+    },
+    [onNavigateToSessionInNewPane, onClose]
+  );
+
+  const handleCloneSession = useCallback(
+    (session: Session) => {
+      // Pre-fill the input with the source session's path and switch to creation mode
+      if (session.path) {
+        setInput(session.path);
+        dispatchMode({ kind: "select_repo", path: session.path });
+        setResultHighlightIndex(-1);
+        setDropdownDismissed(false);
+        inputRef.current?.focus();
+      }
+    },
+    [dispatchMode, setDropdownDismissed, setResultHighlightIndex]
+  );
+
+  const handleRepoSelect = useCallback(
+    (path: string) => {
+      setInput(path + "/");
+      dispatchMode({ kind: "select_repo", path });
+      setResultHighlightIndex(-1);
+      setDropdownDismissed(false);
+      inputRef.current?.focus();
+    },
+    [dispatchMode, setDropdownDismissed, setResultHighlightIndex]
+  );
+
+  const dispatchHighlightedResultAction = useCallback(
+    (index: number) => {
+      if (index < displayedSessionResults.length) {
+        handleSessionSelect(displayedSessionResults[index].session);
+      } else {
+        const repoIndex = index - displayedSessionResults.length;
+        if (repoIndex < displayedRepoEntries.length) {
+          handleRepoSelect(displayedRepoEntries[repoIndex].path);
+        } else {
+          dispatchMode({ kind: "open_creation_direct" });
+          setResultHighlightIndex(-1);
+        }
+      }
+    },
+    [displayedSessionResults, displayedRepoEntries, handleSessionSelect, handleRepoSelect, dispatchMode, setResultHighlightIndex]
+  );
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Alias palette keyboard navigation
+      if (activeDropdown === "alias" && filteredAliases.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setAliasSuggestIndex((i) => Math.min(i + 1, filteredAliases.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setAliasSuggestIndex((i) => Math.max(i - 1, -1));
+          return;
+        }
+        if (e.key === "Tab" || (e.key === "Enter" && aliasSuggestIndex >= 0)) {
+          e.preventDefault();
+          const idx = aliasSuggestIndex >= 0 ? aliasSuggestIndex : 0;
+          if (filteredAliases[idx]) {
+            setInput(completeAlias(filteredAliases[idx]));
+            setAliasSuggestIndex(-1);
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          if (input.length > 1) {
+            setInput("@");
+          } else {
+            setInput("");
+          }
+          setAliasSuggestIndex(-1);
+          return;
+        }
+      }
+
+      // @command autocomplete (highest priority when visible)
+      if (isAtDropdownVisible) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setUIField("atSuggestIndex", Math.min(atSuggestIndex + 1, atSuggestions.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setUIField("atSuggestIndex", Math.max(atSuggestIndex - 1, -1));
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          const idx = atSuggestIndex >= 0 ? atSuggestIndex : 0;
+          if (atSuggestions[idx]) {
+            setInput(completeAtCommand(atSuggestions[idx]));
+            setUIField("atSuggestIndex", -1);
+          }
+          return;
+        }
+        if (e.key === "Enter" && atSuggestIndex >= 0 && atSuggestions[atSuggestIndex]) {
+          e.preventDefault();
+          setInput(completeAtCommand(atSuggestions[atSuggestIndex]));
+          setUIField("atSuggestIndex", -1);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.nativeEvent.stopImmediatePropagation();
+          setUIField("atSuggestIndex", -1);
+          return;
+        }
+      }
+
+      // Discovery mode navigation (before dropdown check)
+      if (isDiscoveryMode && (resultHighlightIndex >= 0 || e.key === "ArrowDown")) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setResultHighlightIndex((i) => Math.min(i + 1, totalResultCount - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setResultHighlightIndex((i) => Math.max(i - 1, -1));
+          return;
+        }
+        if (e.key === "Enter" && !e.metaKey && resultHighlightIndex >= 0) {
+          e.preventDefault();
+          dispatchHighlightedResultAction(resultHighlightIndex);
+          return;
+        }
+        if (e.key === "Escape" && resultHighlightIndex >= 0) {
+          e.nativeEvent.stopImmediatePropagation();
+          setResultHighlightIndex(-1);
+          return;
+        }
+      }
+
+      if (isDropdownVisible) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setDropdownIndex((i) => Math.min(i + 1, mergedEntries.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setDropdownIndex((i) => Math.max(i - 1, -1));
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          if (dropdownIndex >= 0) {
+            // Explicit selection (including history entries) → accept it.
+            handleCompletionSelect(mergedEntries[dropdownIndex]);
+          } else if (liveEntries.length === 1) {
+            handleCompletionSelect(liveEntries[0]);
+          } else if (liveEntries.length > 1) {
+            // Extend input to longest common prefix of live entry names only.
+            const lcp = liveEntries.reduce((acc, entry) => {
+              let i = 0;
+              while (i < acc.length && i < entry.name.length && acc[i] === entry.name[i]) i++;
+              return acc.slice(0, i);
+            }, liveEntries[0].name);
+            if (lcp) {
+              const sep = completionBaseDir.endsWith("/") ? "" : "/";
+              setInput(completionBaseDir + sep + lcp);
+              setDropdownDismissed(false);
+            }
+          }
+          return;
+        }
+        if (e.key === "Enter" && !e.metaKey && dropdownIndex >= 0) {
+          e.preventDefault();
+          handleCompletionSelect(mergedEntries[dropdownIndex]);
+          return;
+        }
+        if (e.key === "Escape") {
+          // Stop the native event so the global document listener doesn't
+          // also call onClose() — first Escape dismisses the dropdown only.
+          e.nativeEvent.stopImmediatePropagation();
+          setDropdownDismissed(true);
+          setDropdownIndex(-1);
+          return;
+        }
+      }
+
+      // Tab cycles session type when in creation mode and no dropdown is open
+      if (e.key === "Tab" && !isDiscoveryMode && !isDropdownVisible) {
+        e.preventDefault();
+        const types = SESSION_TYPES.map((t) => t.value);
+        const idx = types.indexOf(sessionType as typeof types[number]);
+        const next = types[(idx + 1) % types.length];
+        setFormField("sessionType", next as OmnibarFormState["sessionType"]);
+        return;
+      }
+
       if (e.key === "Escape") {
-        onClose();
-      } else if (e.key === "Enter" && e.metaKey) {
-        // Cmd+Enter to submit
-        handleSubmit();
+        // Stop propagation so the global document listener doesn't call onClose() a second time.
+        e.nativeEvent.stopImmediatePropagation();
+        if (!isDiscoveryMode) {
+          // Escape in creation mode: return to discovery rather than closing.
+          // Second Escape (in discovery mode) will close.
+          dispatchMode({ kind: "reset_to_discovery" });
+          setInput("");
+          setResultHighlightIndex(-1);
+        } else {
+          onClose();
+        }
+      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        // Cmd+Enter (Mac) / Ctrl+Enter (Linux/Windows) to submit.
+        handleSubmitRef.current();
+      } else if (e.key === "Enter" && !isDiscoveryMode) {
+        // Plain Enter in creation mode submits when the form is ready.
+        // handleSubmit guards on canSubmit internally, so this is a no-op when the form is incomplete.
+        handleSubmitRef.current();
       }
     },
-    [onClose]
+    [
+      isDiscoveryMode,
+      resultHighlightIndex,
+      totalResultCount,
+      dispatchHighlightedResultAction,
+      isDropdownVisible,
+      mergedEntries,
+      liveEntries,
+      completionBaseDir,
+      dropdownIndex,
+      handleCompletionSelect,
+      onClose,
+      dispatchMode,
+      sessionType,
+      setFormField,
+      setDropdownDismissed,
+      setDropdownIndex,
+      setResultHighlightIndex,
+      isAtDropdownVisible,
+      atSuggestIndex,
+      atSuggestions,
+      completeAtCommand,
+      setUIField,
+      activeDropdown,
+      aliasSuggestIndex,
+      filteredAliases,
+      completeAlias,
+      input,
+    ]
   );
 
   // Global keyboard handler
@@ -154,11 +853,43 @@ export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
     return INPUT_TYPE_INFO[detection.type];
   }, [detection]);
 
+  // True only after path completion has resolved and the path is missing.
+  // Also requires that we're working with a local path (GitHub URLs are
+  // resolved server-side, so existence isn't meaningful here).
+  const pathDoesNotExist =
+    isPathInput && !isCompletionLoading && pathExists === false;
+
   // Check if we can submit
   const canSubmit = useMemo(() => {
+    // One-off mode: only session name is required (no path needed).
+    if (sessionType === "one_off") {
+      return !!sessionName.trim();
+    }
+
+    // Autonomous mode: a session name is required; path or GitHub URL is optional
+    // (the agent will be spawned in a one-off directory if no path is given).
+    if (sessionType === "autonomous") {
+      return !!sessionName.trim();
+    }
+
+    // New project mode: requires parentDir + projectName (valid), no path detection.
+    if (sessionType === "new_project") {
+      if (!sessionName.trim()) return false;
+      if (!parentDir.trim()) return false;
+      if (!projectName.trim()) return false;
+      if (!isValidProjectName(projectName)) return false;
+      if (newProjectSessionType === "new_worktree" && !useTitleAsBranch && !branch.trim()) return false;
+      return true;
+    }
+
+    // Recognized commands (>theme ..., >go ...) and spawn_shell are always submittable
+    if (detection?.type === InputType.Command && detection.confidence === 1.0) return true;
+    if (detection?.type === InputType.SpawnShell && detection.confidence === 1.0) return true;
+
     if (!input.trim()) return false;
     if (!sessionName.trim()) return false;
-    if (!detection || detection.type === InputType.Unknown) return false;
+    if (!detection || detection.type === InputType.Unknown || detection.type === InputType.Command || detection.type === InputType.SessionSearch || detection.type === InputType.AliasNotFound || detection.type === InputType.AliasBrowse) return false;
+    if (detection.type === InputType.Alias) return true;
 
     // Validate session type specific requirements
     if (sessionType === "new_worktree") {
@@ -167,14 +898,90 @@ export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
     } else if (sessionType === "existing_worktree") {
       // Existing worktree path is required
       if (!existingWorktree.trim()) return false;
+      // existing_worktree requires the parent repo path to actually exist
+      if (pathDoesNotExist) return false;
+    }
+
+    // For directory / new_worktree: missing path requires explicit opt-in
+    if (
+      pathDoesNotExist &&
+      (sessionType === "directory" || sessionType === "new_worktree") &&
+      !createIfMissing
+    ) {
+      return false;
     }
 
     return true;
-  }, [input, sessionName, detection, sessionType, branch, useTitleAsBranch, existingWorktree]);
+  }, [input, sessionName, detection, sessionType, branch, useTitleAsBranch, existingWorktree, pathDoesNotExist, createIfMissing, parentDir, projectName, newProjectSessionType]);
 
   // Handle form submission
-  const handleSubmit = async () => {
+  const handleSubmit = useCallback(async () => {
     if (!canSubmit || isSubmitting) return;
+
+    // Execute omnibar commands (>theme ..., >go ...) immediately without entering
+    // session-creation flow. These are fire-and-forget; no loading state needed.
+    if (detection?.type === InputType.Command && detection.confidence === 1.0 && detection.metadata) {
+      const { commandType, commandArg } = detection.metadata as { commandType: string; commandArg: string };
+      if (commandType === "theme") {
+        setTheme(commandArg as ThemeName);
+      } else if (commandType === "navigate") {
+        router.push(commandArg);
+      }
+      onClose();
+      return;
+    }
+
+    // Spawn shell command (>shell [optional command]) — fire-and-forget, no session-creation flow.
+    if (detection?.type === InputType.SpawnShell && detection.confidence === 1.0) {
+      const { commandArg } = (detection.metadata ?? {}) as { commandArg?: string };
+      onSpawnShell?.(undefined, "", commandArg);
+      onClose();
+      return;
+    }
+
+    // Workflow invocation (@slug [arg]) — fire-and-forget, no session-creation flow.
+    if (detection?.type === InputType.Workflow && detection.metadata?.workflowFound) {
+      const { slug, workflowArg } = detection.metadata as { slug: string; workflowArg: string };
+      void onRunWorkflow?.(slug, workflowArg ?? "");
+      onClose();
+      return;
+    }
+
+    // Alias invocation (@aliasname [...]) — create session with alias context.
+    if (detection?.type === InputType.Alias && detection.metadata?.aliasName) {
+      const aliasMeta = detection.metadata as unknown as AliasMetadata;
+      const { aliasName, branch: aliasBranch, label, extraFlags } = aliasMeta;
+      const sessionTitle = sessionName.trim() || label?.trim() || String(aliasName);
+      // Apply useTitleAsBranch for new_worktree alias sessions, same as the regular path.
+      let aliasFinalBranch = branch.trim() || (aliasBranch !== undefined ? String(aliasBranch) : "");
+      if (sessionType === "new_worktree" && useTitleAsBranch && !aliasFinalBranch) {
+        aliasFinalBranch = sessionTitle;
+      }
+      const firstPromptText = formState.firstPrompt?.trim() || undefined;
+      const sessionData: OmnibarSessionData = {
+        title: sessionTitle,
+        path: "",
+        program: program || "",
+        autoYes,
+        aliasName: String(aliasName),
+        branch: aliasFinalBranch || undefined,
+        extraCliFlags: extraFlags !== undefined ? String(extraFlags) : undefined,
+        sessionType: sessionType as "directory" | "new_worktree" | "existing_worktree" | "one_off",
+        workingDir: workingDir.trim() || undefined,
+        category: category.trim() || undefined,
+        initialPrompt: firstPromptText,
+      };
+      setIsSubmitting(true);
+      setError(null);
+      try {
+        await onCreateSession(sessionData);
+        onClose();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to create session");
+        setIsSubmitting(false);
+      }
+      return;
+    }
 
     setIsSubmitting(true);
     setError(null);
@@ -182,35 +989,87 @@ export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
     try {
       // Determine final branch name
       let finalBranch = branch.trim();
-      if (sessionType === "new_worktree" && useTitleAsBranch) {
+      if ((sessionType === "new_worktree" || (sessionType === "new_project" && newProjectSessionType === "new_worktree")) && useTitleAsBranch) {
         finalBranch = sessionName.trim();
       }
 
-      const sessionData: OmnibarSessionData = {
-        title: sessionName.trim(),
-        path: detection?.localPath || "",
-        branch: finalBranch || undefined,
-        program,
-        category: category.trim() || undefined,
-        autoYes,
-        sessionType,
-        existingWorktree: existingWorktree.trim() || undefined,
-        workingDir: workingDir.trim() || undefined,
-      };
+      // Build prompt from attached image paths (pre-session uploads go to temp dir).
+      const imagePaths = attachedImagePathsRef.current;
+      const finalPrompt = imagePaths.length > 0 ? imagePaths.join(" ") : undefined;
+      const firstPromptText = formState.firstPrompt?.trim() || undefined;
 
-      // Handle GitHub URLs - path will be resolved server-side
-      if (detection?.gitHubRef) {
-        sessionData.gitHubOwner = detection.gitHubRef.owner;
-        sessionData.gitHubRepo = detection.gitHubRef.repo;
-        sessionData.gitHubPRNumber = detection.gitHubRef.prNumber;
+      let sessionData: OmnibarSessionData;
 
-        // For GitHub URLs, set path to the parsed value for server-side cloning
-        if (!sessionData.path) {
-          sessionData.path = detection.parsedValue;
+      if (sessionType === "new_project") {
+        // New project mode: build the resolved path from parentDir + projectName
+        const resolvedPath = `${parentDir.trim().replace(/\/$/, "")}/${projectName.trim()}`;
+        sessionData = {
+          title: sessionName.trim(),
+          path: resolvedPath,
+          branch: newProjectSessionType === "new_worktree" ? (finalBranch || undefined) : undefined,
+          program,
+          category: category.trim() || undefined,
+          prompt: finalPrompt,
+          autoYes,
+          sessionType: newProjectSessionType,
+          isNewProject: true,
+          initialPrompt: firstPromptText,
+        };
+      } else {
+        const isAutonomous = sessionType === "autonomous";
+        const isOneOff = sessionType === "one_off";
+        sessionData = {
+          title: sessionName.trim(),
+          path: (isOneOff || isAutonomous) ? "" : (detection?.localPath || ""),
+          branch: (isOneOff || isAutonomous) ? undefined : (finalBranch || undefined),
+          program,
+          category: category.trim() || undefined,
+          prompt: finalPrompt,
+          autoYes,
+          sessionType: isAutonomous ? "directory" : sessionType,
+          existingWorktree: (isOneOff || isAutonomous) ? undefined : (existingWorktree.trim() || undefined),
+          workingDir: (isOneOff || isAutonomous) ? undefined : (workingDir.trim() || undefined),
+          autonomousMode: isAutonomous ? true : undefined,
+          permissionMode: isAutonomous ? "auto" : undefined,
+          // Only forward when relevant (non-existent path + opt-in checked).
+          createIfMissing: pathDoesNotExist && createIfMissing ? true : undefined,
+          initialPrompt: firstPromptText,
+        };
+
+        // Handle GitHub URLs - path will be resolved server-side
+        if (!isOneOff && !isAutonomous && detection?.gitHubRef) {
+          sessionData.gitHubOwner = detection.gitHubRef.owner;
+          sessionData.gitHubRepo = detection.gitHubRef.repo;
+          sessionData.gitHubPRNumber = detection.gitHubRef.prNumber;
+
+          // For GitHub URLs, set path to the parsed value for server-side cloning
+          if (!sessionData.path) {
+            sessionData.path = detection.parsedValue;
+          }
         }
       }
 
-      await onCreateSession(sessionData);
+      try {
+        await onCreateSession(sessionData);
+      } catch (err) {
+        // R2: Directory mode with non-existent path → show confirmation dialog
+        if (
+          sessionType === "directory" &&
+          err instanceof Error &&
+          (err.message.includes("not found") || err.message.includes("CodeNotFound") || err.message.includes("path does not exist"))
+        ) {
+          setPendingSessionData(sessionData);
+          setShowPathConfirmation(true);
+          setIsSubmitting(false);
+          return;
+        }
+        throw err;
+      }
+
+      // Persist the chosen path to history for future completions.
+      if (isPathInput && detection?.localPath && sessionType !== "one_off" && sessionType !== "autonomous") {
+        saveHistory(detection.localPath);
+      }
       onClose();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create session";
@@ -218,49 +1077,235 @@ export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [
+    canSubmit,
+    isSubmitting,
+    branch,
+    sessionName,
+    sessionType,
+    useTitleAsBranch,
+    detection,
+    program,
+    category,
+    autoYes,
+    existingWorktree,
+    workingDir,
+    parentDir,
+    projectName,
+    newProjectSessionType,
+    pathDoesNotExist,
+    createIfMissing,
+    isPathInput,
+    saveHistory,
+    onCreateSession,
+    onClose,
+    onSpawnShell,
+    onRunWorkflow,
+    formState.firstPrompt,
+    router,
+    setTheme,
+  ]);
+
+  // Keep the ref in sync so handleKeyDown always dispatches the latest version.
+  useEffect(() => {
+    handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
 
   if (!isOpen) return null;
 
+  const isMac = (() => {
+    try {
+      return typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+    } catch {
+      return false;
+    }
+  })();
+
   return (
     <div
-      className={styles.overlay}
+      className={overlay}
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-labelledby="omnibar-title"
     >
       <div
-        className={styles.modal}
+        className={modal}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
         {/* Main Input */}
-        <div className={styles.inputContainer}>
-          <span className={styles.typeIndicator} aria-hidden="true">
-            {typeInfo.icon}
+        <div className={inputContainer}>
+          <span className={typeIndicator} aria-hidden="true">
+            {sessionType === "one_off" ? "⚡" : sessionType === "autonomous" ? "🤖" : typeInfo.icon}
           </span>
           <input
             ref={inputRef}
             type="text"
-            className={styles.input}
-            placeholder="Enter path, GitHub URL, or owner/repo..."
+            className={inputClass}
+            placeholder={
+              sessionType === "one_off"
+                ? "Session title is the only thing needed…"
+                : sessionType === "autonomous"
+                ? "Session title (agent will run without human approval)…"
+                : isDiscoveryMode
+                ? "Jump to session, @alias, or search repos..."
+                : "Enter path, GitHub URL, or owner/repo..."
+            }
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setDropdownDismissed(false);
+              setDropdownIndex(-1);
+            }}
             autoComplete="off"
             autoCorrect="off"
             autoCapitalize="off"
             spellCheck={false}
+            role="combobox"
             aria-label="Session source input"
+            aria-autocomplete="list"
+            aria-expanded={
+              isDiscoveryMode
+                ? displayedSessionResults.length > 0 || displayedRepoEntries.length > 0
+                : isDropdownVisible
+            }
+            aria-controls={
+              isDiscoveryMode ? RESULT_LISTBOX_ID : "path-completion-listbox"
+            }
+            aria-activedescendant={
+              isDiscoveryMode
+                ? getHighlightedItemId(
+                    RESULT_LISTBOX_ID,
+                    displayedSessionResults,
+                    displayedRepoEntries,
+                    resultHighlightIndex
+                  )
+                : isDropdownVisible && dropdownIndex >= 0
+                ? `path-completion-listbox-option-${dropdownIndex}`
+                : undefined
+            }
           />
+          {/* Path existence indicator. When the path is missing and the user
+              has opted in to create it, swap ✗ for + so the affordance reads
+              as "create" rather than "broken". */}
+          {isPathInput && !isDiscoveryMode && input.trim() && (
+            <span
+              className={pathIndicator}
+              aria-live="polite"
+              aria-label={
+                isCompletionLoading
+                  ? "Checking path"
+                  : pathExists
+                  ? "Path exists"
+                  : createIfMissing
+                  ? "New repository will be created"
+                  : "Path does not exist"
+              }
+            >
+              {isCompletionLoading ? (
+                <span className={pathIndicatorLoading} aria-hidden="true">⟳</span>
+              ) : pathExists ? (
+                <span className={pathIndicatorValid} aria-hidden="true">✓</span>
+              ) : createIfMissing ? (
+                <span className={pathIndicatorValid} aria-hidden="true">+</span>
+              ) : (
+                <span className={pathIndicatorInvalid} aria-hidden="true">✗</span>
+              )}
+            </span>
+          )}
         </div>
 
+        {isAliasPaletteVisible && (
+          <AliasPalette
+            aliases={filteredAliases}
+            input={input}
+            selectedIndex={aliasSuggestIndex}
+            onSelect={(alias) => {
+              setInput(completeAlias(alias));
+              setAliasSuggestIndex(-1);
+            }}
+            error={aliasError}
+          />
+        )}
+
+        {/* @command autocomplete — shown in discovery mode while typing @slug */}
+        {isAtDropdownVisible && (
+          <AtCommandDropdown
+            id="at-command-listbox"
+            suggestions={atSuggestions}
+            selectedIndex={atSuggestIndex}
+            onSelect={(wf) => {
+              setInput(completeAtCommand(wf));
+              setUIField("atSuggestIndex", -1);
+              inputRef.current?.focus();
+            }}
+          />
+        )}
+
+        {detection?.type === InputType.Alias && detection.metadata && (() => {
+          const m = detection.metadata as Record<string, unknown>;
+          return (
+            <div role="status" aria-live="polite" data-testid="alias-resolution-chip">
+              <span>Alias resolved: @{String(m.aliasName)}</span>
+              {m.branch ? <span> :{String(m.branch)}</span> : null}
+              {m.label ? <span> · {String(m.label)}</span> : null}
+              {m.extraFlags ? <span> · {String(m.extraFlags)} (appended)</span> : null}
+            </div>
+          );
+        })()}
+        {detection?.type === InputType.AliasNotFound && (() => {
+          const m = detection.metadata as Record<string, unknown> | undefined;
+          return (
+            <div role="alert" aria-live="assertive" data-testid="alias-not-found">
+              No alias &apos;@{String(m?.slug)}&apos;
+            </div>
+          );
+        })()}
+
+        {/* Discovery mode: session results + recent repos */}
+        {isDiscoveryMode && !isAtDropdownVisible && (
+          <OmnibarResultList
+            id={RESULT_LISTBOX_ID}
+            sessionResults={displayedSessionResults}
+            repoEntries={displayedRepoEntries}
+            highlightedIndex={resultHighlightIndex}
+            onSessionSelect={handleSessionSelect}
+            onSessionOpenInNewPane={onNavigateToSessionInNewPane ? handleSessionSelectInNewPane : undefined}
+            onRepoSelect={handleRepoSelect}
+            onCloneSession={handleCloneSession}
+            onCreateNew={() => {
+              dispatchMode({ kind: "open_creation_direct" });
+              setResultHighlightIndex(-1);
+            }}
+          />
+        )}
+
+        {/* Creation mode: path completion dropdown (existing, unchanged) */}
+        {!isDiscoveryMode && isDropdownVisible && sessionType !== "one_off" && sessionType !== "autonomous" && (
+          <PathCompletionDropdown
+            id="path-completion-listbox"
+            entries={mergedEntries}
+            historyCount={historyCount}
+            selectedIndex={dropdownIndex}
+            onSelect={handleCompletionSelect}
+            isLoading={isCompletionLoading}
+          />
+        )}
+
+        {/* Path completion error */}
+        {isPathInput && completionError && (
+          <div className={completionErrorClass} aria-live="polite">
+            Could not load completions
+          </div>
+        )}
+
         {/* Detection Badge */}
-        {input.trim() && (
-          <div className={styles.detectionInfo}>
+        {input.trim() && !isDiscoveryMode && sessionType !== "one_off" && sessionType !== "autonomous" && (
+          <div className={detectionInfo}>
             <span
-              className={`${styles.detectionBadge} ${
-                detection?.type === InputType.Unknown ? styles.unknown : ""
+              className={`${detectionBadge} ${
+                detection?.type === InputType.Unknown ? unknown : ""
               }`}
             >
               {typeInfo.icon} {typeInfo.label}
@@ -268,208 +1313,176 @@ export function Omnibar({ isOpen, onClose, onCreateSession }: OmnibarProps) {
           </div>
         )}
 
-        {/* Form Fields */}
-        <div className={styles.body}>
-          {/* Session Name */}
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="omnibar-name">
-              Session Name *
-            </label>
-            <input
-              id="omnibar-name"
-              type="text"
-              className={styles.fieldInput}
-              placeholder="my-feature-session"
-              value={sessionName}
-              onChange={(e) => setSessionName(e.target.value)}
-            />
-          </div>
+        {/* Creation form + footer — delegated to OmnibarCreationPanel */}
+        {!isDiscoveryMode && (
+          <OmnibarCreationPanel
+            formState={formState}
+            setFormField={setFormField}
+            onSubmit={handleSubmit}
+            onCancel={onClose}
+            worktrees={worktrees}
+            isWorktreesLoading={isWorktreesLoading}
+            isSubmitting={isSubmitting}
+            canSubmit={canSubmit}
+            error={error}
+            showAdvanced={showAdvanced}
+            onToggleAdvanced={() => setUIField("showAdvanced", !uiState.showAdvanced)}
+            path={
+              modeState.type === "creation_with_repo"
+                ? modeState.path
+                : detection?.type === InputType.Alias
+                ? ((detection.metadata as AliasMetadata | undefined)?.alias?.path || undefined)
+                : undefined
+            }
+            uploadBaseUrl={uploadBaseUrl}
+            onAttachedImagesChange={(paths) => { attachedImagePathsRef.current = paths; }}
+            pathDoesNotExist={pathDoesNotExist}
+            namePrefix={
+              detection?.type === InputType.Alias
+                ? ((detection.metadata as AliasMetadata | undefined)?.alias?.namePrefix ?? "")
+                : ""
+            }
+          />
+        )}
 
-          {/* Session Type */}
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="omnibar-session-type">
-              Session Type
-            </label>
-            <select
-              id="omnibar-session-type"
-              className={styles.select}
-              value={sessionType}
-              onChange={(e) => setSessionType(e.target.value as "directory" | "new_worktree" | "existing_worktree")}
-            >
-              <option value="new_worktree">Create New Worktree</option>
-              <option value="existing_worktree">Use Existing Worktree</option>
-              <option value="directory">Directory Only (No Worktree)</option>
-            </select>
-            <span className={styles.hint}>
-              {sessionType === "new_worktree" && "Creates an isolated git worktree for this session"}
-              {sessionType === "existing_worktree" && "Uses an existing worktree at a specific path"}
-              {sessionType === "directory" && "Works directly in the repository without worktree isolation"}
-            </span>
-          </div>
-
-          {/* Branch controls (for new worktree) */}
-          {sessionType === "new_worktree" && (
-            <>
-              <label className={styles.checkbox}>
-                <input
-                  type="checkbox"
-                  checked={useTitleAsBranch}
-                  onChange={(e) => setUseTitleAsBranch(e.target.checked)}
-                />
-                <span>Use session name as branch name</span>
-              </label>
-
-              <div className={styles.field}>
-                <label className={styles.label} htmlFor="omnibar-branch">
-                  Git Branch {!useTitleAsBranch && "*"}
-                </label>
-                <input
-                  id="omnibar-branch"
-                  type="text"
-                  className={styles.fieldInput}
-                  placeholder={useTitleAsBranch ? sessionName || "Enter session name first" : "feature/my-feature"}
-                  value={useTitleAsBranch ? sessionName : branch}
-                  onChange={(e) => !useTitleAsBranch && setBranch(e.target.value)}
-                  disabled={useTitleAsBranch}
-                  style={{ opacity: useTitleAsBranch ? 0.6 : 1 }}
-                />
-                <span className={styles.hint}>
-                  {useTitleAsBranch
-                    ? `Branch name will be: ${sessionName || "(enter session name)"}`
-                    : "Branch to create for the new worktree"}
-                </span>
-              </div>
-            </>
-          )}
-
-          {/* Existing worktree path */}
-          {sessionType === "existing_worktree" && (
-            <div className={styles.field}>
-              <label className={styles.label} htmlFor="omnibar-existing-worktree">
-                Existing Worktree Path *
-              </label>
-              <input
-                id="omnibar-existing-worktree"
-                type="text"
-                className={styles.fieldInput}
-                placeholder="/path/to/existing/worktree"
-                value={existingWorktree}
-                onChange={(e) => setExistingWorktree(e.target.value)}
-              />
-              <span className={styles.hint}>Absolute path to an existing git worktree</span>
-            </div>
-          )}
-
-          {/* Working Directory (optional, for all types) */}
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="omnibar-working-dir">
-              Working Directory
-            </label>
-            <input
-              id="omnibar-working-dir"
-              type="text"
-              className={styles.fieldInput}
-              placeholder="src/api (optional)"
-              value={workingDir}
-              onChange={(e) => setWorkingDir(e.target.value)}
-            />
-            <span className={styles.hint}>Optional: Start in a subdirectory (relative path)</span>
-          </div>
-
-          {/* Advanced Options */}
-          <div className={styles.collapsible}>
+        {/* R2: Confirmation dialog for Directory mode with non-existent path */}
+        {showPathConfirmation && pendingSessionData && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="path-confirm-title"
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(0,0,0,0.5)",
+              zIndex: 10,
+              borderRadius: "inherit",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div
-              className={styles.collapsibleHeader}
-              onClick={() => setShowAdvanced(!showAdvanced)}
+              style={{
+                background: "var(--card-background)",
+                border: "1px solid var(--border-color)",
+                borderRadius: "8px",
+                padding: "24px",
+                maxWidth: "420px",
+                width: "100%",
+                margin: "16px",
+              }}
             >
-              <span className={styles.collapsibleTitle}>Advanced Options</span>
-              <span
-                className={`${styles.collapsibleIcon} ${
-                  showAdvanced ? styles.expanded : ""
-                }`}
-              >
-                ▼
-              </span>
-            </div>
-
-            {showAdvanced && (
-              <div className={styles.collapsibleContent}>
-                {/* Program */}
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor="omnibar-program">
-                    Program
-                  </label>
-                  <select
-                    id="omnibar-program"
-                    className={styles.select}
-                    value={program}
-                    onChange={(e) => setProgram(e.target.value)}
-                  >
-                    {PROGRAMS.map((p) => (
-                      <option key={p.value} value={p.value}>{p.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Category */}
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor="omnibar-category">
-                    Category
-                  </label>
-                  <input
-                    id="omnibar-category"
-                    type="text"
-                    className={styles.fieldInput}
-                    placeholder="e.g., Features, Bugfixes"
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                  />
-                </div>
-
-                {/* Auto-Yes */}
-                <label className={styles.checkbox}>
-                  <input
-                    type="checkbox"
-                    checked={autoYes}
-                    onChange={(e) => setAutoYes(e.target.checked)}
-                  />
-                  <span>Auto-approve prompts (experimental)</span>
-                </label>
+              <div id="path-confirm-title" style={{ fontWeight: 600, fontSize: "1rem", marginBottom: "8px" }}>
+                Create directory?
               </div>
-            )}
+              <div style={{ fontSize: "0.875rem", color: "var(--text-secondary)", marginBottom: "16px" }}>
+                The path <code style={{ fontFamily: "monospace", padding: "0 4px" }}>{pendingSessionData.path}</code> does not exist.
+                Create it and initialize a git repository?
+              </div>
+              <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  style={{
+                    padding: "6px 14px",
+                    fontSize: "0.875rem",
+                    borderRadius: "6px",
+                    border: "1px solid var(--border-color)",
+                    background: "transparent",
+                    color: "var(--text-primary)",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => {
+                    setShowPathConfirmation(false);
+                    setPendingSessionData(null);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    padding: "6px 14px",
+                    fontSize: "0.875rem",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: "var(--primary)",
+                    color: "var(--primary-text)",
+                    cursor: "pointer",
+                  }}
+                  onClick={async () => {
+                    setShowPathConfirmation(false);
+                    const retryData = { ...pendingSessionData, createIfMissing: true };
+                    setPendingSessionData(null);
+                    setIsSubmitting(true);
+                    setError(null);
+                    try {
+                      await onCreateSession(retryData);
+                      onClose();
+                    } catch (err) {
+                      const message = err instanceof Error ? err.message : "Failed to create session";
+                      setError(message);
+                    } finally {
+                      setIsSubmitting(false);
+                    }
+                  }}
+                >
+                  Create &amp; Open
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-
-        {/* Error Message */}
-        {error && <div className={styles.error}>{error}</div>}
-
-        {/* Footer */}
-        <div className={styles.footer}>
-          <button
-            type="button"
-            className={`${styles.button} ${styles.buttonSecondary}`}
-            onClick={onClose}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className={`${styles.button} ${styles.buttonPrimary}`}
-            onClick={handleSubmit}
-            disabled={!canSubmit || isSubmitting}
-          >
-            {isSubmitting ? "Creating..." : "Create Session"}
-          </button>
-        </div>
+        )}
 
         {/* Keyboard Shortcuts */}
-        <div className={styles.shortcuts}>
-          <span className={styles.shortcut}>
-            <span className={styles.shortcutKey}>Esc</span> Close
+        <div className={shortcuts}>
+          <OmnibarModeBadge
+            mode={isDiscoveryMode ? "discovery" : "creation"}
+            onToggle={() =>
+              isDiscoveryMode
+                ? dispatchMode({ kind: "open_creation_direct" })
+                : dispatchMode({ kind: "reset_to_discovery" })
+            }
+          />
+          <span className={shortcut}>
+            <span className={shortcutKey}>Esc</span> Close
           </span>
-          <span className={styles.shortcut}>
-            <span className={styles.shortcutKey}>⌘↵</span> Create
-          </span>
+          {!isDiscoveryMode && (
+            <button
+              type="button"
+              className={createButton}
+              onClick={handleSubmit}
+              disabled={!canSubmit || isSubmitting}
+            >
+              {isSubmitting ? "Creating…" : "Create Session"}
+            </button>
+          )}
+          {isDiscoveryMode && (
+            <>
+              <span className={shortcut}>
+                <span className={shortcutKey}>↑↓</span> Navigate
+              </span>
+              <span className={shortcut}>
+                <span className={shortcutKey}>↵</span> Jump
+              </span>
+            </>
+          )}
+          {!isDiscoveryMode && isDropdownVisible && (
+            <>
+              <span className={shortcut}>
+                <span className={shortcutKey}>↑↓</span> Navigate
+              </span>
+              <span className={shortcut}>
+                <span className={shortcutKey}>Tab</span> Complete
+              </span>
+            </>
+          )}
+          {!isDiscoveryMode && !isDropdownVisible && (
+            <span className={shortcut}>
+              <span className={shortcutKey}>Tab</span> Cycle type
+            </span>
+          )}
         </div>
       </div>
     </div>

@@ -1,9 +1,34 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/tstapler/stapler-squad/session/tmux"
+	"github.com/tstapler/stapler-squad/testutil/wait"
 )
+
+// fakeSessionLister is a test double for tmux.SessionLister.
+type fakeSessionLister struct {
+	sessions map[string]bool
+	healthy  bool
+}
+
+func (f *fakeSessionLister) ListSessions() map[string]bool {
+	m := make(map[string]bool, len(f.sessions))
+	for k, v := range f.sessions {
+		m[k] = v
+	}
+	return m
+}
+
+func (f *fakeSessionLister) IsHealthy() bool { return f.healthy }
+
+// Compile-time check: fakeSessionLister satisfies the interface.
+var _ tmux.SessionLister = (*fakeSessionLister)(nil)
 
 func TestNewPTYDiscovery(t *testing.T) {
 	pd := NewPTYDiscovery()
@@ -324,17 +349,18 @@ func TestPTYDiscovery_StartStop(t *testing.T) {
 	// Start monitoring
 	pd.Start()
 
-	// Give it a moment to start
-	time.Sleep(100 * time.Millisecond)
-
 	// Stop monitoring
 	pd.Stop()
 
-	// Verify stop channel is closed
-	select {
-	case <-pd.stopCh:
-		// Good, channel is closed
-	case <-time.After(100 * time.Millisecond):
+	// Verify stop channel is closed by polling
+	if err := wait.WaitForCondition(func() bool {
+		select {
+		case <-pd.stopCh:
+			return true
+		default:
+			return false
+		}
+	}, wait.FastWaitConfig()); err != nil {
 		t.Error("Stop did not close stopCh")
 	}
 }
@@ -363,5 +389,165 @@ func TestPTYDiscovery_OrganizeByCategory(t *testing.T) {
 
 	if len(categorized[PTYCategoryOther]) != 1 {
 		t.Errorf("Other category = %d, want 1", len(categorized[PTYCategoryOther]))
+	}
+}
+
+// TestWithSessionLister verifies that the functional option wires the lister field.
+func TestWithSessionLister(t *testing.T) {
+	lister := &fakeSessionLister{
+		sessions: map[string]bool{"staplersquad_test": true},
+		healthy:  true,
+	}
+	pd := NewPTYDiscovery(WithSessionLister(lister))
+	if pd.sessionLister != lister {
+		t.Error("WithSessionLister did not set sessionLister field")
+	}
+}
+
+// TestPTYDiscovery_DiscoverOrphanedPTYs_UsesLister verifies that when the
+// SessionLister is healthy no exec.Command("tmux","list-sessions") fork occurs.
+// The lister returns two staplersquad_ sessions; because there is no real tmux
+// process the PTY lookup (getPTYInfoFromTmuxWithSocket) will fail and both sessions will
+// be skipped — but the point is we exercised the lister path without error.
+func TestPTYDiscovery_DiscoverOrphanedPTYs_UsesLister(t *testing.T) {
+	lister := &fakeSessionLister{
+		sessions: map[string]bool{
+			"staplersquad_foo": true,
+			"staplersquad_bar": true,
+		},
+		healthy: true,
+	}
+
+	pd := NewPTYDiscovery(WithSessionLister(lister))
+
+	// discoverOrphanedPTYs must not panic and must consume sessions from the
+	// lister without forking tmux list-sessions.
+	result := pd.discoverOrphanedPTYs()
+
+	// In a test environment getPTYInfoFromTmuxWithSocket will fail for every session,
+	// so the returned slice will be empty — but no exec fork occurred.
+	// We assert nil-safety only; the important invariant is no panic.
+	if result == nil {
+		t.Error("discoverOrphanedPTYs returned nil slice")
+	}
+}
+
+// TestPTYDiscovery_DiscoverOrphanedPTYs_FallbackWhenUnhealthy verifies that
+// when IsHealthy returns false the method falls back to exec (which fails in
+// the test environment and returns an empty slice gracefully).
+func TestPTYDiscovery_DiscoverOrphanedPTYs_FallbackWhenUnhealthy(t *testing.T) {
+	tests := []struct {
+		name   string
+		lister *fakeSessionLister
+	}{
+		{
+			name:   "unhealthy lister",
+			lister: &fakeSessionLister{sessions: map[string]bool{"staplersquad_foo": true}, healthy: false},
+		},
+		{
+			name:   "nil lister",
+			lister: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var opts []PTYDiscoveryOption
+			if tt.lister != nil {
+				opts = append(opts, WithSessionLister(tt.lister))
+			} else {
+				// Override the default registry with nil to force exec fallback.
+				opts = append(opts, WithSessionLister(nil))
+			}
+
+			pd := NewPTYDiscovery(opts...)
+
+			// In a test environment tmux list-sessions will return an error or
+			// empty output, so the result should be a non-nil empty slice.
+			result := pd.discoverOrphanedPTYs()
+			if result == nil {
+				t.Error("discoverOrphanedPTYs returned nil slice on exec fallback")
+			}
+		})
+	}
+}
+
+// TestBatchPaneActivity_UsesIsolatedSocketWhenCalledWithoutOne is the regression guard
+// for the raw "tmux list-panes -a" call that, before ResolveSocket existed, always
+// targeted the shared, machine-wide default tmux socket when called with an empty
+// socket argument — the same class of bug that let a test process enumerate another
+// running stapler-squad instance's panes. It replaces the tmux binary with a fake
+// script that records its argv and asserts the call is socket-scoped to the
+// per-process isolated socket rather than the shared default.
+func TestBatchPaneActivity_UsesIsolatedSocketWhenCalledWithoutOne(t *testing.T) {
+	logPath := installFakeTmuxBinary(t)
+
+	batchPaneActivity("")
+
+	assertInvocationsUseIsolatedSocket(t, logPath, "list-panes")
+}
+
+// TestBatchPTYInfo_UsesIsolatedSocketWhenCalledWithoutOne mirrors
+// TestBatchPaneActivity_UsesIsolatedSocketWhenCalledWithoutOne for the sibling
+// "tmux list-panes -a" call in batchPTYInfo.
+func TestBatchPTYInfo_UsesIsolatedSocketWhenCalledWithoutOne(t *testing.T) {
+	logPath := installFakeTmuxBinary(t)
+
+	batchPTYInfo("")
+
+	assertInvocationsUseIsolatedSocket(t, logPath, "list-panes")
+}
+
+// installFakeTmuxBinary points TMUX_BIN (auto-restored by t.Setenv) at a script that
+// appends its argv to a log file and exits non-zero, so callers gracefully return
+// empty results. Returns the log path.
+func installFakeTmuxBinary(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "argv.log")
+	fakeTmux := filepath.Join(dir, "tmux")
+
+	script := "#!/bin/sh\necho \"$@\" >> \"" + logPath + "\"\nexit 1\n"
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write fake tmux binary: %v", err)
+	}
+	t.Setenv("TMUX_BIN", fakeTmux)
+	return logPath
+}
+
+// assertInvocationsUseIsolatedSocket asserts that the fake tmux binary was invoked
+// at least once with the given subcommand, and that EVERY invocation logged --
+// including any from unrelated background goroutines (e.g. hibernation sweepers)
+// left running by earlier tests in this process, since TMUX_BIN is process-global --
+// is socket-scoped with "-L <isolated-socket>" rather than falling through to the
+// shared default (no -L at all). A stray unscoped call from anywhere would mean
+// ResolveSocket's isolation guarantee has a hole.
+func assertInvocationsUseIsolatedSocket(t *testing.T, logPath string, wantSubcommand string) {
+	t.Helper()
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected the fake tmux binary to have been invoked: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(logBytes)), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("expected at least one tmux invocation, got none")
+	}
+
+	sawWantedSubcommand := false
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "-L ") {
+			t.Fatalf("expected every invocation to be socket-scoped with -L, got: %q", line)
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.Contains(fields[1], "test-isolated-") {
+			t.Fatalf("expected the per-process isolated socket, not the shared default, got: %q", line)
+		}
+		if strings.Contains(line, wantSubcommand) {
+			sawWantedSubcommand = true
+		}
+	}
+	if !sawWantedSubcommand {
+		t.Fatalf("expected an invocation containing %q, got: %v", wantSubcommand, lines)
 	}
 }

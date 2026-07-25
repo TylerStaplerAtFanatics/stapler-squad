@@ -267,4 +267,74 @@ describe('EscapeSequenceParser', () => {
       expect(fullOutput).toContain('\x1b[2C'); // Cursor forward
     });
   });
+
+  describe('ED2+ED3 Passthrough (xterm.js v6)', () => {
+    test('EscapeSequenceParser_should_passThrough_ED3_When_pairedWithED2', () => {
+      // xterm.js v6 handles ED2+ED3 correctly; the combined sequence must not be stripped.
+      const result = parser.processChunk('[2J[3J');
+      expect(result).toBe('[2J[3J');
+    });
+
+    test('EscapeSequenceParser_should_passThrough_ED3_When_standalone', () => {
+      // A standalone ED3 should pass through unchanged.
+      const result = parser.processChunk('[3J');
+      expect(result).toBe('[3J');
+    });
+
+    test('preserves standalone ED2 with no following ED3', () => {
+      const result = parser.processChunk('[2J');
+      expect(result).toBe('[2J');
+    });
+
+    test('multiple ED2+ED3 pairs in one chunk pass through unchanged', () => {
+      const input = 'a[2J[3Jb[2J[3Jc';
+      const result = parser.processChunk(input);
+      expect(result).toBe('a[2J[3Jb[2J[3Jc');
+    });
+
+    test('normal text passes through unmodified', () => {
+      const input = 'Hello, World!';
+      const result = parser.processChunk(input);
+      expect(result).toBe('Hello, World!');
+    });
+  });
+
+  describe('Long OSC and DCS sequence buffering (256-byte lookback)', () => {
+    test('EscapeSequenceParser_should_bufferPartial_When_OSCTitleExceeds20Chars', () => {
+      // OSC title with a 30-char payload, split at char 22 of the sequence.
+      // Sequence: ESC]0;<30 chars>BEL
+      // Split point: first chunk has ESC]0; + 18 chars (22 chars total of the seq)
+      const titlePart1 = 'ABCDEFGHIJKLMNOPQR'; // 18 chars
+      const titlePart2 = 'STUVWXYZ0123456789'; // 18 chars remainder
+      const chunk1 = 'prefix]0;' + titlePart1;
+      const result1 = parser.processChunk(chunk1);
+
+      // prefix should be emitted; OSC sequence should be buffered
+      expect(result1).toBe('prefix');
+      expect(parser.getBuffered()).toBe(']0;' + titlePart1);
+
+      // Deliver rest of title + BEL terminator
+      const chunk2 = titlePart2 + 'suffix';
+      const result2 = parser.processChunk(chunk2);
+      expect(result2).toBe(']0;' + titlePart1 + titlePart2 + 'suffix');
+      expect(parser.getBuffered()).toBe('');
+    });
+
+    test('EscapeSequenceParser_should_recognizeDCS_When_splitBeforeST', () => {
+      // DCS sequence split right after the introducer ESC P
+      const chunk1 = 'beforeP';
+      const result1 = parser.processChunk(chunk1);
+
+      // 'before' should be emitted; partial DCS buffered
+      expect(result1).toBe('before');
+      expect(parser.getBuffered()).toBe('P');
+
+      // Complete DCS with ST terminator (ESC \)
+      const chunk2 = 'payload\after';
+      const result2 = parser.processChunk(chunk2);
+      expect(result2).toBe('Ppayload\after');
+      expect(parser.getBuffered()).toBe('');
+    });
+  });
+
 });

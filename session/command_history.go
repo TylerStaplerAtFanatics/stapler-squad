@@ -55,7 +55,6 @@ func NewCommandHistoryWithPersistence(sessionName string, persistDir string) (*C
 // Add adds a command execution to the history.
 func (ch *CommandHistory) Add(entry *HistoryEntry) error {
 	ch.mu.Lock()
-	defer ch.mu.Unlock()
 
 	// Add entry
 	ch.entries = append(ch.entries, entry)
@@ -66,9 +65,15 @@ func (ch *CommandHistory) Add(entry *HistoryEntry) error {
 		ch.entries = ch.entries[len(ch.entries)-ch.maxEntries:]
 	}
 
-	// Persist if enabled
+	var snapshot []*HistoryEntry
 	if ch.persistPath != "" {
-		if err := ch.saveUnsafe(); err != nil {
+		snapshot = make([]*HistoryEntry, len(ch.entries))
+		copy(snapshot, ch.entries)
+	}
+	ch.mu.Unlock() // release BEFORE disk I/O
+
+	if snapshot != nil {
+		if err := ch.saveSnapshot(snapshot); err != nil {
 			return fmt.Errorf("failed to persist history: %w", err)
 		}
 	}
@@ -251,13 +256,17 @@ func (ch *CommandHistory) Count() int {
 // Clear removes all history entries.
 func (ch *CommandHistory) Clear() error {
 	ch.mu.Lock()
-	defer ch.mu.Unlock()
 
 	ch.entries = make([]*HistoryEntry, 0)
 
-	// Persist if enabled
+	var snapshot []*HistoryEntry
 	if ch.persistPath != "" {
-		if err := ch.saveUnsafe(); err != nil {
+		snapshot = make([]*HistoryEntry, 0)
+	}
+	ch.mu.Unlock() // release BEFORE disk I/O
+
+	if snapshot != nil {
+		if err := ch.saveSnapshot(snapshot); err != nil {
 			return fmt.Errorf("failed to persist cleared history: %w", err)
 		}
 	}
@@ -338,14 +347,23 @@ type HistoryStatistics struct {
 // Save persists the history to disk.
 func (ch *CommandHistory) Save() error {
 	ch.mu.Lock()
-	defer ch.mu.Unlock()
-	return ch.saveUnsafe()
+	var snapshot []*HistoryEntry
+	if ch.persistPath != "" {
+		snapshot = make([]*HistoryEntry, len(ch.entries))
+		copy(snapshot, ch.entries)
+	}
+	ch.mu.Unlock()
+
+	if snapshot != nil {
+		return ch.saveSnapshot(snapshot)
+	}
+	return nil
 }
 
-// saveUnsafe saves without acquiring lock (internal use only).
-func (ch *CommandHistory) saveUnsafe() error {
+// saveSnapshot saves a pre-captured snapshot of the history to disk (no lock held).
+func (ch *CommandHistory) saveSnapshot(entries []*HistoryEntry) error {
 	if ch.persistPath == "" {
-		return fmt.Errorf("persistence not enabled for this history")
+		return nil
 	}
 
 	// Create directory if it doesn't exist
@@ -362,7 +380,7 @@ func (ch *CommandHistory) saveUnsafe() error {
 		MaxEntries  int             `json:"max_entries"`
 	}{
 		SessionName: ch.sessionName,
-		Entries:     ch.entries,
+		Entries:     entries,
 		Timestamp:   time.Now(),
 		MaxEntries:  ch.maxEntries,
 	}
@@ -378,11 +396,7 @@ func (ch *CommandHistory) saveUnsafe() error {
 		return fmt.Errorf("failed to write history data: %w", err)
 	}
 
-	if err := os.Rename(tempPath, ch.persistPath); err != nil {
-		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
-
-	return nil
+	return os.Rename(tempPath, ch.persistPath)
 }
 
 // Load restores the history from disk.

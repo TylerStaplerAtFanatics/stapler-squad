@@ -105,22 +105,241 @@ message Session {
 
   // External instance metadata (only populated for external sessions)
   ExternalInstanceMetadata external_metadata = 32;
+
+  // PR status fields — populated by PRStatusPoller; empty when no PR exists.
+
+  // PR lifecycle state: "open", "closed", "merged"
+  string github_pr_state = 33;
+
+  // Whether the PR is in draft mode
+  bool github_pr_is_draft = 34;
+
+  // Derived priority: blocking/ready/pending/draft/complete/no_pr/auth_error
+  string github_pr_priority = 35;
+
+  // Count of current non-dismissed APPROVED reviews
+  int32 github_approved_count = 36;
+
+  // Count of current non-dismissed CHANGES_REQUESTED reviews
+  int32 github_changes_req_count = 37;
+
+  // CI rollup conclusion: success/failure/pending/action_required/neutral/""
+  string github_check_conclusion = 38;
+
+  // When PR status was last successfully fetched
+  google.protobuf.Timestamp last_pr_status_check = 39;
+
+  // Rate limit detection state
+  // Indicates if session is experiencing rate limiting from LLM provider
+  RateLimitState rate_limit_state = 40;
+
+  // When the rate limit is expected to reset (populated when rate_limit_state == WAITING).
+  google.protobuf.Timestamp rate_limit_reset_time = 46;
+
+  // Whether automatic rate limit recovery is enabled for this session.
+  // Defaults to true. Set to false to disable auto-resume for this session.
+  bool rate_limit_enabled = 47;
+
+  // Path to the Claude Code JSONL history file for this session.
+  // Populated by HistoryLinker once the session's open files are detected.
+  // Used to pass --resume <uuid> when reattaching after server restart.
+  string history_file_path = 41;
+
+  // Claude Code conversation UUID extracted from the history file path.
+  // Matches the UUID in the JSONL filename under ~/.claude/projects/<dir>/<uuid>.jsonl.
+  string claude_conversation_uuid = 42;
+
+  // Project ID this session belongs to (empty if not in a project).
+  string project_id = 43;
+
+  // Initial prompt that was injected into CLAUDE.md at session creation.
+  string initial_prompt = 44;
+
+  // Full launch command as passed to tmux on session start, including injected flags
+  // (e.g. --resume <id>, --mcp-server ..., -y, initial prompt). Empty for external sessions.
+  string launch_command = 45;
+
+  // Deprecated: derived client-side via deriveWorkingState().
+  // Active-work state for review queue filtering. Populated from IdleDetector state.
+  WorkingState working_state = 50;
+
+  // VNC/browser passthrough state. Populated when VNC is supported on the host.
+  VNCState vnc_state = 51;
+
+  // CDP browser streaming state. Populated when Chrome is available on the host.
+  CDPState cdp_state = 52;
+
+  // Human-readable progress message during Creating state (empty otherwise).
+  // Set by the async creation goroutine; cleared once session becomes Active.
+  string creation_progress = 53;
+
+  // Fine-grained activity state for Active sessions. Derived from terminal detection
+  // layer at read time; never stored in the database.
+  // Only meaningful when lifecycle_status == SESSION_STATUS_ACTIVE.
+  SubStatus sub_status = 54;
+
+  // Approximate resident set size (RSS) in MB for all processes in this session.
+  // Zero for hibernated sessions or when measurement is unavailable.
+  int64 memory_rss_mb = 55;
+
+  // Estimated RAM freed in MB if this session were hibernated now.
+  // Equal to memory_rss_mb for Active sessions; zero for Hibernated sessions.
+  int64 estimated_savings_mb = 56;
+
+  // When true, this session is excluded from the default session list and review queue.
+  // Used for system/background sessions (e.g. triage, validation) that should not
+  // pollute the user-facing session viewer.
+  bool hidden = 57;
+
+  // Reason why the session was paused. Empty when session has never been paused.
+  // Values: "manual", "auto:inactivity", "auto:session_limit", "auto:resource"
+  string pause_reason = 58;
+
+  // Current session goal and task tracking state. Nil when no goal has been set.
+  SessionGoalSummary goal = 59;
+
+  // Whether this session is running under LLM orchestration (AutonomousDriver).
+  // When true, the session injects prompts automatically based on idle detection.
+  bool autonomous_mode = 60;
+
+  // UUID of the Workflow that spawned this session. Empty for manually-created sessions.
+  string workflow_id = 62;
+
+  // When the session was archived. Zero value means not archived.
+  google.protobuf.Timestamp archived_at = 63;
+
+  // Human-readable name of the workflow that spawned this session.
+  // Populated at read time from the workflow name cache; empty for manual sessions.
+  string workflow_name = 64;
+
+  // Current turn number in an ongoing autonomous run. Zero when not running.
+  int32 autonomous_turn = 65;
+  // Maximum turns configured for the current autonomous run. Zero when not running.
+  int32 autonomous_max_turns = 66;
+  // Outcome of the last completed autonomous run: "", "done", "stuck".
+  string autonomous_outcome = 67;
+
+  // Fine-grained detected status from PTY output analysis.
+  // Only meaningful when status == SESSION_STATUS_ACTIVE.
+  // Maps to detection.DetectedStatus in Go.
+  DetectedStatus detected_status = 68;
+
+  // Human-readable context string from the terminal pattern detector
+  // (e.g. "Waiting for tool approval", "Tests failing: 3 of 12").
+  // Empty when detected_status is UNSPECIFIED.
+  string detected_context = 69;
+
+  // Structured artifacts extracted from the session's JSONL conversation history.
+  // Populated asynchronously by ArtifactExtractor; nil until first scan completes.
+  SessionArtifacts artifacts = 70;
+}
+
+// SessionArtifacts holds structured artifacts extracted from the session's
+// Claude Code JSONL conversation history.
+message SessionArtifacts {
+  // GitHub PR URLs found in tool_result output (e.g. from gh pr create).
+  repeated string pr_urls = 1;
+  // Git commit SHAs (40-char) found in tool_result output.
+  repeated string commit_shas = 2;
+  // External URLs found in tool_result output (capped at 50 entries).
+  repeated string external_urls = 3;
+  // When the JSONL file was last successfully scanned.
+  google.protobuf.Timestamp last_scanned_at = 4;
+}
+
+// SessionGoalSummary summarizes the current goal and task state for a session.
+// Populated by the server when a goal has been set via the set_session_goal MCP tool.
+message SessionGoalSummary {
+  // Human-readable goal description (max 2000 chars).
+  string goal_text = 1;
+  // Current goal status: idle, working, blocked, done.
+  string status = 2;
+  // Total number of tasks in the task tree (all depth levels).
+  int32 tasks_total = 3;
+  // Number of tasks with status "done" (all depth levels).
+  int32 tasks_done = 4;
+  // JSON-encoded []TaskNode; "[]" when no tasks have been set.
+  // Parse client-side to render the full recursive task tree.
+  string tasks_json = 5;
+}
+
+// VNCStatus represents the operational state of the VNC subsystem for a session.
+enum VNCStatus {
+  VNC_STATUS_UNSPECIFIED = 0;
+  // Xvfb/x11vnc processes are starting.
+  VNC_STATUS_STARTING = 1;
+  // A browser window has been detected; x11vnc is in focused -id mode.
+  VNC_STATUS_READY = 2;
+  // VNC is running (full display mode) but no browser window detected yet.
+  VNC_STATUS_NO_BROWSER = 3;
+  // VNC is unavailable: missing binaries, unsupported platform, or startup failed.
+  VNC_STATUS_UNAVAILABLE = 4;
+  // A pre-existing X display was detected and reused; x11vnc is not running.
+  VNC_STATUS_PASSTHROUGH = 5;
+}
+
+// VNCState holds the browser-passthrough state for a session.
+message VNCState {
+  // Current operational status.
+  VNCStatus status = 1;
+  // Allocated X11 display number (e.g. 100 means :100).
+  int32 display_number = 2;
+  // vnc_password is reserved for a future RFB auth implementation.
+  // Currently empty — x11vnc runs with -nopw and auth is handled by the Go proxy.
+  string vnc_password = 3;
+  // True when a browser window has been detected on the virtual display.
+  bool browser_window_detected = 4;
+}
+
+// CDPStatus represents the operational state of the CDP subsystem for a session.
+enum CDPStatus {
+  CDP_STATUS_UNSPECIFIED = 0;
+  // Polling for Chrome on the allocated CDP port.
+  CDP_STATUS_WAITING = 1;
+  // Connected to Chrome and receiving screencast frames.
+  CDP_STATUS_STREAMING = 2;
+  // CDP port allocated but Chrome not yet detected.
+  CDP_STATUS_NO_BROWSER = 3;
+  // CDP unavailable: Chrome not found or startup failed.
+  CDP_STATUS_UNAVAILABLE = 4;
+}
+
+// CDPState holds the Chrome DevTools Protocol streaming state for a session.
+message CDPState {
+  // Current operational status.
+  CDPStatus status = 1;
 }
 
 // SessionStatus represents the current state of a session.
 // Maps to session.Status enum in Go.
+// Wire values for RUNNING(1), READY(2), LOADING(3), NEEDS_APPROVAL(5), CREATING(6), STOPPED(7)
+// are preserved for backward compatibility with existing clients.
 enum SessionStatus {
+  option allow_alias = true;
+
   SESSION_STATUS_UNSPECIFIED = 0;
-  // Session is running and agent is working.
-  SESSION_STATUS_RUNNING = 1;
-  // Agent is ready for user input (waiting).
-  SESSION_STATUS_READY = 2;
-  // Session is loading/starting up.
-  SESSION_STATUS_LOADING = 3;
+
+  // Session has an active AI process (replaces legacy RUNNING and READY).
+  SESSION_STATUS_ACTIVE = 1;
+  // Deprecated: use SESSION_STATUS_ACTIVE. Integer wire value 1 preserved.
+  SESSION_STATUS_RUNNING = 1 [deprecated = true];
+  // Deprecated: use SESSION_STATUS_ACTIVE. Integer wire value 2 (legacy ready state).
+  SESSION_STATUS_READY = 2 [deprecated = true];
+  // Deprecated: use SESSION_STATUS_CREATING. Integer wire value 3 (legacy loading state).
+  SESSION_STATUS_LOADING = 3 [deprecated = true];
   // Session is paused (worktree removed but branch preserved).
   SESSION_STATUS_PAUSED = 4;
-  // Session needs user approval on a prompt.
-  SESSION_STATUS_NEEDS_APPROVAL = 5;
+  // Deprecated: NeedsApproval is now a sub-status. Integer wire value 5 preserved.
+  SESSION_STATUS_NEEDS_APPROVAL = 5 [deprecated = true];
+  // Session is being initialized (transient state before first start).
+  SESSION_STATUS_CREATING = 6;
+  // Session has been stopped (terminal state, cannot transition further).
+  SESSION_STATUS_STOPPED = 7;
+  // Session has been hibernated (checkpoint written, tmux session killed).
+  SESSION_STATUS_HIBERNATED = 8;
+  // Session is being restored from a previous run (transient startup state).
+  // Never persisted to the database. Transitions to ACTIVE or CREATING on completion.
+  SESSION_STATUS_RESTORING = 9;
 }
 
 // SessionType determines the session workflow.
@@ -132,6 +351,10 @@ enum SessionType {
   SESSION_TYPE_NEW_WORKTREE = 2;
   // Reuse existing git worktree.
   SESSION_TYPE_EXISTING_WORKTREE = 3;
+  // Create a directory, run git init, and start a session in the new repo.
+  SESSION_TYPE_NEW_PROJECT = 4;
+  // Generate a fresh temporary directory under one_off_base_dir and start a directory session.
+  SESSION_TYPE_ONE_OFF = 5;
 }
 
 // InstanceType indicates whether a session is managed by claude-squad or external.
@@ -139,8 +362,82 @@ enum InstanceType {
   INSTANCE_TYPE_UNSPECIFIED = 0;
   // Session fully managed by claude-squad with complete lifecycle control.
   INSTANCE_TYPE_MANAGED = 1;
-  // Session discovered externally (e.g., via claude-mux) with limited interaction.
+  // Session discovered externally (e.g., via ssq-mux) with limited interaction.
   INSTANCE_TYPE_EXTERNAL = 2;
+}
+
+// DetectedStatus represents the fine-grained activity state detected from PTY output analysis.
+// Derived from terminal pattern matching in the detection layer; never stored in the database.
+// Only meaningful when Session.status == SESSION_STATUS_ACTIVE.
+enum DetectedStatus {
+  DETECTED_STATUS_UNSPECIFIED       = 0;
+  DETECTED_STATUS_IDLE              = 1;
+  DETECTED_STATUS_PROCESSING        = 2;
+  DETECTED_STATUS_EXECUTING         = 3;
+  DETECTED_STATUS_NEEDS_APPROVAL    = 4;
+  DETECTED_STATUS_INPUT_REQUIRED    = 5;
+  DETECTED_STATUS_ERROR             = 6;
+  DETECTED_STATUS_TESTS_FAILING     = 7;
+  DETECTED_STATUS_SUCCESS           = 8;
+  DETECTED_STATUS_UNKNOWN           = 9;
+  DETECTED_STATUS_READY             = 10;
+  DETECTED_STATUS_WAITING_FOR_AGENT = 11;
+}
+
+// WorkingState represents the active-work status of a session for review queue filtering.
+// Populated from IdleDetector state; allows frontend to distinguish sessions that are
+// actively working from those waiting for user attention.
+enum WorkingState {
+  WORKING_STATE_UNSPECIFIED = 0;
+  // Session is actively generating output (Claude producing tokens, interrupt available).
+  WORKING_STATE_ACTIVE = 1;
+  // Session is running a tool (Bash, Edit, etc.) with no interrupt visible.
+  WORKING_STATE_PROCESSING = 2;
+  // Session is at the idle prompt, ready for user input.
+  WORKING_STATE_IDLE = 3;
+  // Session has been silent beyond the idle threshold (may be stuck or waiting).
+  WORKING_STATE_WAITING = 4;
+}
+
+// SubStatus provides fine-grained activity state for Active sessions.
+// Derived at read time from the detection layer; never stored in the database.
+enum SubStatus {
+  SUB_STATUS_UNSPECIFIED = 0;
+  // Session is at the idle prompt, waiting for user input.
+  SUB_STATUS_IDLE = 1;
+  // Session is actively processing (Claude generating tokens or running a tool).
+  SUB_STATUS_PROCESSING = 2;
+  // Session is waiting for user approval on a tool-use request.
+  SUB_STATUS_NEEDS_APPROVAL = 3;
+  // Session encountered an error state.
+  SUB_STATUS_ERROR = 4;
+  // Tests are currently failing.
+  SUB_STATUS_TESTS_FAILING = 5;
+  // Session is experiencing API rate limiting.
+  SUB_STATUS_RATE_LIMITED = 6;
+  // Session is presenting a numbered option menu or open-ended question — user must type or select.
+  SUB_STATUS_INPUT_REQUIRED = 7;
+  // Session is at the input prompt, ready for the user's next instruction.
+  SUB_STATUS_READY = 8;
+  // Task completed successfully.
+  SUB_STATUS_SUCCESS = 9;
+  // Claude is waiting for one or more background agents to finish (e.g. "✻ Waiting for 2 background agents").
+  SUB_STATUS_WAITING_FOR_AGENT = 10;
+}
+
+// RateLimitState indicates whether the session is experiencing rate limiting.
+enum RateLimitState {
+  RATE_LIMIT_STATE_UNSPECIFIED = 0;
+  // No rate limit detected
+  RATE_LIMIT_STATE_NONE = 1;
+  // Rate limit detected, waiting for reset time
+  RATE_LIMIT_STATE_WAITING = 2;
+  // Currently attempting recovery
+  RATE_LIMIT_STATE_RECOVERING = 3;
+  // Successfully recovered from rate limit
+  RATE_LIMIT_STATE_RECOVERED = 4;
+  // Recovery failed
+  RATE_LIMIT_STATE_FAILED = 5;
 }
 
 // ExternalInstanceMetadata contains metadata for externally discovered sessions.
@@ -160,7 +457,7 @@ message ExternalInstanceMetadata {
   // Original process ID when first discovered
   int32 original_pid = 5;
 
-  // Path to claude-mux Unix domain socket (if mux-enabled)
+  // Path to ssq-mux Unix domain socket (if mux-enabled)
   string mux_socket_path = 6;
 
   // Whether this instance supports mux protocol for bidirectional terminal access
@@ -298,6 +595,22 @@ message ReviewItem {
   // This is the actual last activity time, used for sorting and display.
   // Used instead of detected_at for showing when the session was last active.
   google.protobuf.Timestamp last_activity = 17;
+
+  // GitHub PR URL for the session (empty if no PR exists yet).
+  string github_pr_url = 18;
+
+  // True if the session's branch has diverged from the base branch (main/master).
+  // Populated by RunOneShot pre-check; shows warning badge in review queue UI.
+  bool branch_diverged_from_base = 19;
+
+  // Deprecated: derived client-side via deriveWorkingState().
+  // Active-work state for review queue filtering. Populated from IdleDetector state.
+  WorkingState working_state = 20;
+
+  // Fine-grained activity state derived from ClaudeStatus at the time the item
+  // was enqueued. Used by the frontend deriveWorkingState() utility to compute
+  // the effective WorkingState without relying on the deprecated working_state field.
+  SubStatus sub_status = 21;
 }
 
 // Priority levels for review queue items (highest to lowest urgency).
@@ -466,6 +779,7 @@ enum NotificationType {
   NOTIFICATION_TYPE_INFO = 10;              // General information
   NOTIFICATION_TYPE_DEBUG = 11;             // Debug information
   NOTIFICATION_TYPE_STATUS_CHANGE = 12;     // Session status changed
+  NOTIFICATION_TYPE_AUTO_APPROVED = 13;     // Classifier auto-approved or auto-denied; no human action needed
 
   // Custom (Medium Priority by default)
   NOTIFICATION_TYPE_CUSTOM = 100;           // Custom notification type
@@ -760,6 +1074,20 @@ message ApprovalRuleProto {
   bool enabled = 12;
   string source = 13;
   google.protobuf.Timestamp created_at = 14;
+
+  // Structured CommandCriteria fields (field numbers 15–19 reserved; criteria start at 20).
+  // When any of these are set, they are used instead of command_pattern for Bash matching.
+  repeated string programs                = 20;
+  repeated string subcommands             = 21;
+  repeated string blocked_subcommands     = 22;
+  repeated string required_flags          = 23;
+  repeated string forbidden_flags         = 24;
+  repeated string python_modes            = 25;
+  bool            safe_python_imports_only = 26;
+  repeated string required_flag_prefixes  = 27;
+  // tool_category matches against classifier.CategorizeToolName() result.
+  // Use one of: "builtin", "builtin-agent", "mcp", "mcp-read", "mcp-write".
+  string          tool_category           = 28;
 }
 
 // AnalyticsSummaryProto aggregates classification decisions over a time window.
@@ -794,6 +1122,9 @@ message AnalyticsSummaryProto {
 message ToolStatProto {
   string tool_name = 1;
   int32 count = 2;
+  // manual_allow / manual_deny break down how past manual reviews resolved for this tool.
+  int32 manual_allow = 3;
+  int32 manual_deny  = 4;
 }
 
 message CommandStatProto {
@@ -815,6 +1146,9 @@ message ProgramStatProto {
   // category groups the program (e.g., "vcs", "node", "python").
   string category = 2;
   int32 count = 3;
+  // manual_allow / manual_deny break down how past manual reviews resolved for this program.
+  int32 manual_allow = 4;
+  int32 manual_deny  = 5;
 }
 
 // ImportStatProto represents a Python module imported in an inline invocation.
@@ -831,6 +1165,9 @@ message SubcommandStatProto {
   string subcommand = 2;
   string category = 3;
   int32 count = 4;
+  // manual_allow / manual_deny break down how past manual reviews resolved for this pair.
+  int32 manual_allow = 5;
+  int32 manual_deny  = 6;
 }
 
 // DailyBucketProto aggregates classification decisions for a single calendar day.
@@ -843,6 +1180,26 @@ message DailyBucketProto {
   int32 manual_allow = 5;
   int32 manual_deny = 6;
   int32 total = 7;
+}
+
+// SubcommandBreakdownProto is a per-subcommand decision breakdown for the drill-down panel.
+message SubcommandBreakdownProto {
+  // subcommand is the first positional argument (e.g., "commit", "push").
+  // Empty string means no subcommand was detected.
+  string subcommand = 1;
+  // total is the total call count for this subcommand in the window.
+  int32 total = 2;
+  // Per-decision counts.
+  int32 auto_allow = 3;
+  int32 auto_deny = 4;
+  int32 escalate = 5;
+  int32 manual_allow = 6;
+  int32 manual_deny = 7;
+  // has_rule_coverage is true if any existing rule covers this (program, subcommand) pair.
+  bool has_rule_coverage = 8;
+  // suggested_rule_hint is an optional pre-fill pattern hint for the rule form.
+  // Format: the subcommand string itself (e.g., "push") — the UI appends context.
+  string suggested_rule_hint = 9;
 }
 
 // ============================================================================
@@ -878,6 +1235,37 @@ message DatabaseInfo {
 }
 
 // ============================================================================
+// File Viewer Types
+// ============================================================================
+
+// FileNode represents a single entry (file or directory) in a session's worktree.
+message FileNode {
+  // File or directory name (basename only).
+  string name = 1;
+
+  // Path relative to the session worktree root.
+  string path = 2;
+
+  // True if this entry is a directory.
+  bool is_dir = 3;
+
+  // File size in bytes (0 for directories).
+  int64 size = 4;
+
+  // Git status letter (M/A/D/R/?). Populated client-side; server always returns empty.
+  string git_status = 5;
+
+  // True if this entry is a symbolic link.
+  bool is_symlink = 6;
+
+  // Symlink target path (only set when is_symlink=true).
+  string symlink_target = 7;
+
+  // True if this entry is matched by .gitignore rules.
+  bool is_ignored = 8;
+}
+
+// ============================================================================
 // Checkpoint Types
 // ============================================================================
 
@@ -910,4 +1298,162 @@ message CheckpointProto {
 
   // When the checkpoint was created.
   google.protobuf.Timestamp timestamp = 9;
+}
+
+// ScanStatus indicates the result quality of the last unfinished-work scan.
+enum ScanStatus {
+  SCAN_STATUS_UNSPECIFIED = 0;
+  SCAN_STATUS_OK          = 1;
+  SCAN_STATUS_TIMEOUT     = 2;
+  SCAN_STATUS_PERMISSION  = 3;
+  SCAN_STATUS_ERROR       = 4;
+}
+
+// UnfinishedWorktree represents a single git worktree that has unfinished work.
+message UnfinishedWorktree {
+  // Composite key fields
+  string repo_path    = 1;  // Absolute path to the repo root
+  string branch       = 2;  // Branch name (e.g., "feature-auth")
+  string worktree_path = 3; // Absolute path to the worktree directory
+
+  // Display fields
+  string repo_name    = 4;  // Derived from remote URL basename or dir basename
+  string display_path = 5;  // Worktree path with ~ substitution
+
+  // Status flags
+  bool has_uncommitted  = 6;  // git status --porcelain non-empty
+  int32 commits_ahead   = 7;  // commits in HEAD not in default branch
+  int32 commits_behind  = 8;  // commits in default branch not in HEAD
+  string default_branch = 9;  // resolved default branch (main/master/etc.)
+
+  // Expanded detail fields
+  int32 changed_files  = 10;
+  int32 lines_added    = 11;
+  int32 lines_removed  = 12;
+  repeated string ahead_commit_messages = 13; // Up to 5 short messages
+
+  // Timestamps
+  google.protobuf.Timestamp last_modified = 14; // mtime of worktree dir
+  google.protobuf.Timestamp scan_time     = 15; // when this result was computed
+
+  // Scan status
+  ScanStatus scan_status  = 16;
+  string scan_error_msg   = 17; // human-readable error, empty on success
+
+  // Action state
+  bool is_dismissed  = 18;
+  bool is_snoozed    = 19;
+  repeated string session_ids = 20; // UUIDs of active sessions covering this worktree path
+
+  // GitHub PR enrichment (populated from session PR state when sessions cover this worktree).
+  int32  github_pr_number   = 21; // 0 when no PR found
+  string github_pr_url      = 22;
+  string github_pr_state    = 23; // "open" / "closed" / "merged" / ""
+  string github_pr_priority = 24; // from PRStatusPoller (no_pr / needs_review / approved / etc.)
+}
+
+// UnfinishedWorkConfig holds user-configurable source settings.
+message UnfinishedWorkConfig {
+  bool   auto_spider_sessions = 1; // default: true
+  repeated string watch_dirs  = 2;
+  repeated string pinned_repos = 3;
+}
+
+// ============================================================================
+// Custom Shell Types
+// ============================================================================
+
+// ShellStatus represents the lifecycle state of a custom shell.
+enum ShellStatus {
+  SHELL_STATUS_UNSPECIFIED = 0;
+  // Shell process is running.
+  SHELL_STATUS_RUNNING = 1;
+  // Shell process exited cleanly (exit code 0) or was explicitly stopped.
+  SHELL_STATUS_STOPPED = 2;
+  // Shell process exited with non-zero exit code or failed to start.
+  SHELL_STATUS_ERROR = 3;
+}
+
+// Shell represents a custom shell session attached to a parent session.
+// Each shell runs as an independent sibling tmux session.
+message Shell {
+  // Unique identifier (UUID).
+  string id = 1;
+
+  // Human-readable name (defaults to basename of command).
+  string name = 2;
+
+  // Command that was launched (e.g., "/bin/bash", "python3").
+  string command = 3;
+
+  // Working directory for the shell process.
+  string working_dir = 4;
+
+  // Current lifecycle status.
+  ShellStatus status = 5;
+
+  // Exit code of the process (only meaningful when status is STOPPED or ERROR).
+  int32 exit_code = 6;
+
+  // Display order index (0-based).
+  int32 order_index = 7;
+
+  // When the shell was started.
+  google.protobuf.Timestamp started_at = 8;
+
+  // When the shell stopped (only set when status is STOPPED or ERROR).
+  google.protobuf.Timestamp stopped_at = 9;
+}
+
+// SuggestionSource identifies what data was used to generate a rule suggestion.
+enum SuggestionSource {
+  SUGGESTION_SOURCE_UNSPECIFIED = 0;
+  SUGGESTION_SOURCE_ANALYTICS_GAPS = 1;
+  SUGGESTION_SOURCE_REVIEW_QUEUE_ITEM = 2;
+  SUGGESTION_SOURCE_COMMAND_SAMPLE = 3;
+}
+
+// SuggestedRuleProto carries a pre-filled rule proposal plus AI metadata.
+// It mirrors ApprovalRuleProto fields 1–11 (same field numbers) so the UI
+// can reuse ApprovalRuleProto rendering helpers with a simple copy.
+message SuggestedRuleProto {
+  string name           = 1;
+  string tool_name      = 2;
+  string tool_pattern   = 3;
+  string command_pattern = 4;
+  string file_pattern   = 5;
+  AutoDecision decision = 6;
+  string risk_level     = 7;
+  string reason         = 8;
+  string alternative    = 9;
+  int32  priority       = 10;
+  // AI metadata.
+  float  confidence        = 11;  // 0.0–1.0; agent's certainty in the pattern
+  string explanation       = 12;  // why these fields were chosen
+  repeated string source_commands = 13; // up to 20 commands that informed the pattern
+  // Conflict detection results (computed server-side, heuristic — may overlap).
+  repeated string shadowed_by_rule_ids  = 14; // IDs of higher-priority rules that may fire first
+  repeated string shadows_rule_ids      = 15; // IDs of lower-priority rules this may suppress
+}
+
+// UserPR represents an open (or recently closed) pull request authored by the
+// authenticated GitHub user. Served by GitHubUserService.
+message UserPR {
+  string owner             = 1;
+  string repo              = 2;
+  int32  number            = 3;
+  string title             = 4;
+  string html_url          = 5;
+  string state             = 6;  // "OPEN" / "CLOSED" / "MERGED"
+  string head_ref          = 7;
+  string base_ref          = 8;
+  bool   is_draft          = 9;
+  string check_conclusion  = 10; // "success" / "failure" / "pending" / ""
+  int32  approved_count    = 11;
+  int32  changes_req_count = 12;
+  google.protobuf.Timestamp updated_at          = 13;
+  google.protobuf.Timestamp closed_at           = 14;
+  google.protobuf.Timestamp merged_at           = 15;
+  repeated string           session_ids          = 16; // local sessions checked out on this branch
+  string                    local_worktree_path  = 17; // local worktree path, if any
 }

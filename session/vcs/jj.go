@@ -3,12 +3,12 @@ package vcs
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
-	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tstapler/stapler-squad/executor/safeexec"
 	"github.com/tstapler/stapler-squad/log"
 )
 
@@ -36,14 +36,16 @@ func (j *JJClient) RepoPath() string {
 
 // run executes a jj command and returns the output
 func (j *JJClient) run(args ...string) (string, error) {
-	cmd := exec.Command("jj", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := safeexec.CommandContext(ctx, "jj", args...)
 	cmd.Dir = j.repoPath
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	log.DebugLog.Printf("[JJ] Running: jj %s", strings.Join(args, " "))
+	log.Debug("running jj command", "args", strings.Join(args, " "))
 
 	if err := cmd.Run(); err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
@@ -191,12 +193,12 @@ func (j *JJClient) SwitchTo(target string, opts SwitchOptions) error {
 		case KeepAsWIP:
 			// Describe current change as WIP so it's not empty
 			if err := j.DescribeWIP("WIP: uncommitted changes before workspace switch"); err != nil {
-				log.WarningLog.Printf("[JJ] Failed to describe WIP: %v", err)
+				log.Warn("failed to describe WIP", "err", err)
 			}
 		case BringAlong:
 			// Just describe - the changes will be in the parent chain
 			if err := j.DescribeWIP("WIP: changes to bring along"); err != nil {
-				log.WarningLog.Printf("[JJ] Failed to describe WIP: %v", err)
+				log.Warn("failed to describe WIP", "err", err)
 			}
 		case Abandon:
 			if err := j.AbandonChanges(); err != nil {
@@ -232,7 +234,7 @@ func (j *JJClient) SwitchTo(target string, opts SwitchOptions) error {
 		return fmt.Errorf("failed to switch to %s: %w", target, err)
 	}
 
-	log.InfoLog.Printf("[JJ] Switched to %s", target)
+	log.Info("switched to target", "target", target)
 	return nil
 }
 
@@ -261,7 +263,7 @@ func (j *JJClient) CreateBookmark(name string, base string) error {
 		return fmt.Errorf("failed to create bookmark %s: %w", name, err)
 	}
 
-	log.InfoLog.Printf("[JJ] Created bookmark %s at %s", name, base)
+	log.Info("created bookmark", "bookmark", name, "base", base)
 	return nil
 }
 
@@ -373,7 +375,7 @@ func (j *JJClient) CreateWorktree(path string, name string) error {
 		return fmt.Errorf("failed to create workspace at %s: %w", path, err)
 	}
 
-	log.InfoLog.Printf("[JJ] Created workspace %s at %s", name, path)
+	log.Info("created workspace", "name", name, "path", path)
 	return nil
 }
 
@@ -424,33 +426,12 @@ func truncateID(id string, length int) string {
 
 // GetJJVersion returns the installed JJ version
 func GetJJVersion() (string, error) {
-	cmd := exec.Command("jj", "--version")
+	vCtx, vCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer vCancel()
+	cmd := safeexec.CommandContext(vCtx, "jj", "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
-}
-
-// parseJJTimestamp parses JJ timestamp formats
-func parseJJTimestamp(ts string) time.Time {
-	// Try various formats
-	formats := []string{
-		time.RFC3339,
-		"2006-01-02 15:04:05 -0700",
-		"2006-01-02 15:04:05",
-	}
-
-	for _, format := range formats {
-		if t, err := time.Parse(format, ts); err == nil {
-			return t
-		}
-	}
-
-	// Try Unix timestamp
-	if i, err := strconv.ParseInt(ts, 10, 64); err == nil {
-		return time.Unix(i, 0)
-	}
-
-	return time.Time{}
 }

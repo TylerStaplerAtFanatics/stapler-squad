@@ -2,7 +2,7 @@ package session
 
 // TagManager provides CRUD operations for session tags.
 // It is a pure data structure with no I/O or external dependencies.
-// Thread safety is provided by Instance.stateMutex -- callers must hold
+// Thread safety is provided by Instance.mu -- callers must hold
 // the lock when calling TagManager methods.
 //
 // TagManager stores a pointer to the Instance.Tags slice so that mutations
@@ -63,6 +63,7 @@ func (tm *TagManager) All() []string {
 
 // Set replaces all tags with a new deduplicated set.
 // Returns ErrTagTooLong on the first tag that exceeds MaxTagLength.
+// Returns ErrTooManyTags if the deduplicated count exceeds MaxTagCount.
 func (tm *TagManager) Set(tags []string) error {
 	seen := make(map[string]struct{}, len(tags))
 	deduped := make([]string, 0, len(tags))
@@ -74,6 +75,9 @@ func (tm *TagManager) Set(tags []string) error {
 			seen[tag] = struct{}{}
 			deduped = append(deduped, tag)
 		}
+	}
+	if len(deduped) > MaxTagCount {
+		return ErrTooManyTags{Count: len(deduped), MaxCount: MaxTagCount}
 	}
 	*tm.tags = deduped
 	return nil

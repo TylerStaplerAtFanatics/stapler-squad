@@ -4,15 +4,16 @@ package ent
 
 import (
 	"fmt"
-	"github.com/tstapler/stapler-squad/session/ent/claudesession"
-	"github.com/tstapler/stapler-squad/session/ent/diffstats"
-	"github.com/tstapler/stapler-squad/session/ent/session"
-	"github.com/tstapler/stapler-squad/session/ent/worktree"
 	"strings"
 	"time"
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
+	"github.com/tstapler/stapler-squad/session/ent/claudesession"
+	"github.com/tstapler/stapler-squad/session/ent/diffstats"
+	"github.com/tstapler/stapler-squad/session/ent/project"
+	"github.com/tstapler/stapler-squad/session/ent/session"
+	"github.com/tstapler/stapler-squad/session/ent/worktree"
 )
 
 // Session is the model entity for the Session schema.
@@ -22,6 +23,8 @@ type Session struct {
 	ID int `json:"id,omitempty"`
 	// Title holds the value of the "title" field.
 	Title string `json:"title,omitempty"`
+	// UUID holds the value of the "uuid" field.
+	UUID string `json:"uuid,omitempty"`
 	// Path holds the value of the "path" field.
 	Path string `json:"path,omitempty"`
 	// WorkingDir holds the value of the "working_dir" field.
@@ -40,6 +43,8 @@ type Session struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 	// AutoYes holds the value of the "auto_yes" field.
 	AutoYes bool `json:"auto_yes,omitempty"`
+	// Crew autonomy mode — when true, the Fixer injects correction prompts without user confirmation.
+	AutonomousMode bool `json:"autonomous_mode,omitempty"`
 	// Prompt holds the value of the "prompt" field.
 	Prompt string `json:"prompt,omitempty"`
 	// Program holds the value of the "program" field.
@@ -66,10 +71,43 @@ type Session struct {
 	LastViewed *time.Time `json:"last_viewed,omitempty"`
 	// LastAcknowledged holds the value of the "last_acknowledged" field.
 	LastAcknowledged *time.Time `json:"last_acknowledged,omitempty"`
+	// McpServerURL holds the value of the "mcp_server_url" field.
+	McpServerURL string `json:"mcp_server_url,omitempty"`
+	// Prompt typed into the session terminal once the session reaches Ready state.
+	InitialPrompt string `json:"initial_prompt,omitempty"`
+	// When true, runs claude in -p mode; session exits after task completes.
+	OneShot bool `json:"one_shot,omitempty"`
+	// LastUserResponse holds the value of the "last_user_response" field.
+	LastUserResponse *time.Time `json:"last_user_response,omitempty"`
+	// ProcessingGraceUntil holds the value of the "processing_grace_until" field.
+	ProcessingGraceUntil *time.Time `json:"processing_grace_until,omitempty"`
+	// LastPromptDetected holds the value of the "last_prompt_detected" field.
+	LastPromptDetected *time.Time `json:"last_prompt_detected,omitempty"`
+	// LastPromptSignature holds the value of the "last_prompt_signature" field.
+	LastPromptSignature string `json:"last_prompt_signature,omitempty"`
+	// When true, session is excluded from the default session list and review queue.
+	Hidden bool `json:"hidden,omitempty"`
+	// Reason the session was paused: manual, auto:inactivity, auto:session_limit, auto:resource. Empty when never paused.
+	PauseReason string `json:"pause_reason,omitempty"`
+	// UUID of the Workflow that spawned this session, if any.
+	WorkflowID string `json:"workflow_id,omitempty"`
+	// Set when the session is archived; nil = not archived.
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	// Full URL to the GitHub PR associated with this session (e.g. https://github.com/owner/repo/pull/123).
+	GithubPrURL string `json:"github_pr_url,omitempty"`
+	// GitHub PR number discovered by PRStatusPoller or extracted from push output. 0 = not yet discovered.
+	GithubPrNumber int `json:"github_pr_number,omitempty"`
+	// GitHub repository owner (user or org) associated with this session.
+	GithubOwner string `json:"github_owner,omitempty"`
+	// GitHub repository name associated with this session.
+	GithubRepo string `json:"github_repo,omitempty"`
+	// JSON-encoded SessionArtifactsBlob: PRURLs, CommitSHAs, ExternalURLs, scan offset.
+	SessionArtifacts string `json:"session_artifacts,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the SessionQuery when eager-loading is set.
-	Edges        SessionEdges `json:"edges"`
-	selectValues sql.SelectValues
+	Edges            SessionEdges `json:"edges"`
+	project_sessions *int
+	selectValues     sql.SelectValues
 }
 
 // SessionEdges holds the relations/edges for other nodes in the graph.
@@ -82,9 +120,15 @@ type SessionEdges struct {
 	Tags []*Tag `json:"tags,omitempty"`
 	// ClaudeSession holds the value of the claude_session edge.
 	ClaudeSession *ClaudeSession `json:"claude_session,omitempty"`
+	// Project holds the value of the project edge.
+	Project *Project `json:"project,omitempty"`
+	// BacklogItems holds the value of the backlog_items edge.
+	BacklogItems []*BacklogItem `json:"backlog_items,omitempty"`
+	// Shells holds the value of the shells edge.
+	Shells []*Shell `json:"shells,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [4]bool
+	loadedTypes [7]bool
 }
 
 // WorktreeOrErr returns the Worktree value or an error if the edge
@@ -129,19 +173,50 @@ func (e SessionEdges) ClaudeSessionOrErr() (*ClaudeSession, error) {
 	return nil, &NotLoadedError{edge: "claude_session"}
 }
 
+// ProjectOrErr returns the Project value or an error if the edge
+// was not loaded in eager-loading, or loaded but was not found.
+func (e SessionEdges) ProjectOrErr() (*Project, error) {
+	if e.Project != nil {
+		return e.Project, nil
+	} else if e.loadedTypes[4] {
+		return nil, &NotFoundError{label: project.Label}
+	}
+	return nil, &NotLoadedError{edge: "project"}
+}
+
+// BacklogItemsOrErr returns the BacklogItems value or an error if the edge
+// was not loaded in eager-loading.
+func (e SessionEdges) BacklogItemsOrErr() ([]*BacklogItem, error) {
+	if e.loadedTypes[5] {
+		return e.BacklogItems, nil
+	}
+	return nil, &NotLoadedError{edge: "backlog_items"}
+}
+
+// ShellsOrErr returns the Shells value or an error if the edge
+// was not loaded in eager-loading.
+func (e SessionEdges) ShellsOrErr() ([]*Shell, error) {
+	if e.loadedTypes[6] {
+		return e.Shells, nil
+	}
+	return nil, &NotLoadedError{edge: "shells"}
+}
+
 // scanValues returns the types for scanning values from sql.Rows.
 func (*Session) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case session.FieldAutoYes, session.FieldIsExpanded:
+		case session.FieldAutoYes, session.FieldAutonomousMode, session.FieldIsExpanded, session.FieldOneShot, session.FieldHidden:
 			values[i] = new(sql.NullBool)
-		case session.FieldID, session.FieldStatus, session.FieldHeight, session.FieldWidth:
+		case session.FieldID, session.FieldStatus, session.FieldHeight, session.FieldWidth, session.FieldGithubPrNumber:
 			values[i] = new(sql.NullInt64)
-		case session.FieldTitle, session.FieldPath, session.FieldWorkingDir, session.FieldBranch, session.FieldPrompt, session.FieldProgram, session.FieldExistingWorktree, session.FieldCategory, session.FieldSessionType, session.FieldTmuxPrefix, session.FieldLastOutputSignature:
+		case session.FieldTitle, session.FieldUUID, session.FieldPath, session.FieldWorkingDir, session.FieldBranch, session.FieldPrompt, session.FieldProgram, session.FieldExistingWorktree, session.FieldCategory, session.FieldSessionType, session.FieldTmuxPrefix, session.FieldLastOutputSignature, session.FieldMcpServerURL, session.FieldInitialPrompt, session.FieldLastPromptSignature, session.FieldPauseReason, session.FieldWorkflowID, session.FieldGithubPrURL, session.FieldGithubOwner, session.FieldGithubRepo, session.FieldSessionArtifacts:
 			values[i] = new(sql.NullString)
-		case session.FieldCreatedAt, session.FieldUpdatedAt, session.FieldLastTerminalUpdate, session.FieldLastMeaningfulOutput, session.FieldLastAddedToQueue, session.FieldLastViewed, session.FieldLastAcknowledged:
+		case session.FieldCreatedAt, session.FieldUpdatedAt, session.FieldLastTerminalUpdate, session.FieldLastMeaningfulOutput, session.FieldLastAddedToQueue, session.FieldLastViewed, session.FieldLastAcknowledged, session.FieldLastUserResponse, session.FieldProcessingGraceUntil, session.FieldLastPromptDetected, session.FieldArchivedAt:
 			values[i] = new(sql.NullTime)
+		case session.ForeignKeys[0]: // project_sessions
+			values[i] = new(sql.NullInt64)
 		default:
 			values[i] = new(sql.UnknownType)
 		}
@@ -168,6 +243,12 @@ func (_m *Session) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field title", values[i])
 			} else if value.Valid {
 				_m.Title = value.String
+			}
+		case session.FieldUUID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field uuid", values[i])
+			} else if value.Valid {
+				_m.UUID = value.String
 			}
 		case session.FieldPath:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -222,6 +303,12 @@ func (_m *Session) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field auto_yes", values[i])
 			} else if value.Valid {
 				_m.AutoYes = value.Bool
+			}
+		case session.FieldAutonomousMode:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field autonomous_mode", values[i])
+			} else if value.Valid {
+				_m.AutonomousMode = value.Bool
 			}
 		case session.FieldPrompt:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -306,6 +393,113 @@ func (_m *Session) assignValues(columns []string, values []any) error {
 				_m.LastAcknowledged = new(time.Time)
 				*_m.LastAcknowledged = value.Time
 			}
+		case session.FieldMcpServerURL:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field mcp_server_url", values[i])
+			} else if value.Valid {
+				_m.McpServerURL = value.String
+			}
+		case session.FieldInitialPrompt:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field initial_prompt", values[i])
+			} else if value.Valid {
+				_m.InitialPrompt = value.String
+			}
+		case session.FieldOneShot:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field one_shot", values[i])
+			} else if value.Valid {
+				_m.OneShot = value.Bool
+			}
+		case session.FieldLastUserResponse:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field last_user_response", values[i])
+			} else if value.Valid {
+				_m.LastUserResponse = new(time.Time)
+				*_m.LastUserResponse = value.Time
+			}
+		case session.FieldProcessingGraceUntil:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field processing_grace_until", values[i])
+			} else if value.Valid {
+				_m.ProcessingGraceUntil = new(time.Time)
+				*_m.ProcessingGraceUntil = value.Time
+			}
+		case session.FieldLastPromptDetected:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field last_prompt_detected", values[i])
+			} else if value.Valid {
+				_m.LastPromptDetected = new(time.Time)
+				*_m.LastPromptDetected = value.Time
+			}
+		case session.FieldLastPromptSignature:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field last_prompt_signature", values[i])
+			} else if value.Valid {
+				_m.LastPromptSignature = value.String
+			}
+		case session.FieldHidden:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field hidden", values[i])
+			} else if value.Valid {
+				_m.Hidden = value.Bool
+			}
+		case session.FieldPauseReason:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field pause_reason", values[i])
+			} else if value.Valid {
+				_m.PauseReason = value.String
+			}
+		case session.FieldWorkflowID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field workflow_id", values[i])
+			} else if value.Valid {
+				_m.WorkflowID = value.String
+			}
+		case session.FieldArchivedAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field archived_at", values[i])
+			} else if value.Valid {
+				_m.ArchivedAt = new(time.Time)
+				*_m.ArchivedAt = value.Time
+			}
+		case session.FieldGithubPrURL:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field github_pr_url", values[i])
+			} else if value.Valid {
+				_m.GithubPrURL = value.String
+			}
+		case session.FieldGithubPrNumber:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field github_pr_number", values[i])
+			} else if value.Valid {
+				_m.GithubPrNumber = int(value.Int64)
+			}
+		case session.FieldGithubOwner:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field github_owner", values[i])
+			} else if value.Valid {
+				_m.GithubOwner = value.String
+			}
+		case session.FieldGithubRepo:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field github_repo", values[i])
+			} else if value.Valid {
+				_m.GithubRepo = value.String
+			}
+		case session.FieldSessionArtifacts:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field session_artifacts", values[i])
+			} else if value.Valid {
+				_m.SessionArtifacts = value.String
+			}
+		case session.ForeignKeys[0]:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for edge-field project_sessions", value)
+			} else if value.Valid {
+				_m.project_sessions = new(int)
+				*_m.project_sessions = int(value.Int64)
+			}
 		default:
 			_m.selectValues.Set(columns[i], values[i])
 		}
@@ -339,6 +533,21 @@ func (_m *Session) QueryClaudeSession() *ClaudeSessionQuery {
 	return NewSessionClient(_m.config).QueryClaudeSession(_m)
 }
 
+// QueryProject queries the "project" edge of the Session entity.
+func (_m *Session) QueryProject() *ProjectQuery {
+	return NewSessionClient(_m.config).QueryProject(_m)
+}
+
+// QueryBacklogItems queries the "backlog_items" edge of the Session entity.
+func (_m *Session) QueryBacklogItems() *BacklogItemQuery {
+	return NewSessionClient(_m.config).QueryBacklogItems(_m)
+}
+
+// QueryShells queries the "shells" edge of the Session entity.
+func (_m *Session) QueryShells() *ShellQuery {
+	return NewSessionClient(_m.config).QueryShells(_m)
+}
+
 // Update returns a builder for updating this Session.
 // Note that you need to call Session.Unwrap() before calling this method if this Session
 // was returned from a transaction, and the transaction was committed or rolled back.
@@ -364,6 +573,9 @@ func (_m *Session) String() string {
 	builder.WriteString(fmt.Sprintf("id=%v, ", _m.ID))
 	builder.WriteString("title=")
 	builder.WriteString(_m.Title)
+	builder.WriteString(", ")
+	builder.WriteString("uuid=")
+	builder.WriteString(_m.UUID)
 	builder.WriteString(", ")
 	builder.WriteString("path=")
 	builder.WriteString(_m.Path)
@@ -391,6 +603,9 @@ func (_m *Session) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("auto_yes=")
 	builder.WriteString(fmt.Sprintf("%v", _m.AutoYes))
+	builder.WriteString(", ")
+	builder.WriteString("autonomous_mode=")
+	builder.WriteString(fmt.Sprintf("%v", _m.AutonomousMode))
 	builder.WriteString(", ")
 	builder.WriteString("prompt=")
 	builder.WriteString(_m.Prompt)
@@ -440,6 +655,62 @@ func (_m *Session) String() string {
 		builder.WriteString("last_acknowledged=")
 		builder.WriteString(v.Format(time.ANSIC))
 	}
+	builder.WriteString(", ")
+	builder.WriteString("mcp_server_url=")
+	builder.WriteString(_m.McpServerURL)
+	builder.WriteString(", ")
+	builder.WriteString("initial_prompt=")
+	builder.WriteString(_m.InitialPrompt)
+	builder.WriteString(", ")
+	builder.WriteString("one_shot=")
+	builder.WriteString(fmt.Sprintf("%v", _m.OneShot))
+	builder.WriteString(", ")
+	if v := _m.LastUserResponse; v != nil {
+		builder.WriteString("last_user_response=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	if v := _m.ProcessingGraceUntil; v != nil {
+		builder.WriteString("processing_grace_until=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	if v := _m.LastPromptDetected; v != nil {
+		builder.WriteString("last_prompt_detected=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	builder.WriteString("last_prompt_signature=")
+	builder.WriteString(_m.LastPromptSignature)
+	builder.WriteString(", ")
+	builder.WriteString("hidden=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Hidden))
+	builder.WriteString(", ")
+	builder.WriteString("pause_reason=")
+	builder.WriteString(_m.PauseReason)
+	builder.WriteString(", ")
+	builder.WriteString("workflow_id=")
+	builder.WriteString(_m.WorkflowID)
+	builder.WriteString(", ")
+	if v := _m.ArchivedAt; v != nil {
+		builder.WriteString("archived_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	builder.WriteString("github_pr_url=")
+	builder.WriteString(_m.GithubPrURL)
+	builder.WriteString(", ")
+	builder.WriteString("github_pr_number=")
+	builder.WriteString(fmt.Sprintf("%v", _m.GithubPrNumber))
+	builder.WriteString(", ")
+	builder.WriteString("github_owner=")
+	builder.WriteString(_m.GithubOwner)
+	builder.WriteString(", ")
+	builder.WriteString("github_repo=")
+	builder.WriteString(_m.GithubRepo)
+	builder.WriteString(", ")
+	builder.WriteString("session_artifacts=")
+	builder.WriteString(_m.SessionArtifacts)
 	builder.WriteByte(')')
 	return builder.String()
 }

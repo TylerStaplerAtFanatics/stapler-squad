@@ -2,8 +2,15 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { createClient } from "@connectrpc/connect";
-import { createConnectTransport } from "@connectrpc/connect-web";
+import { NotificationEvent } from "@/gen/session/v1/events_pb";
+import { NotificationType } from "@/gen/session/v1/types_pb";
+import { SessionService } from "@/gen/session/v1/session_pb";
 import { useNotifications } from "@/lib/contexts/NotificationContext";
+import { NotificationData } from "@/lib/types/notification";
+import { mapNotificationType, mapPriority } from "@/lib/utils/notificationMapping";
+import { TOAST_DEDUP_WINDOW_MS, nativeAutoCloseMs, NATIVE_ACTIONABLE_TTL_MS } from "@/lib/notification-policy";
+import { getConnectTransport } from "@/lib/api/transport";
+import { showBrowserNotification, playPriorityNotificationSound } from "@/lib/utils/notifications";
 
 /**
  * Notification types that should only appear in history — no toast, no sound.
@@ -17,71 +24,16 @@ const HISTORY_ONLY_TYPES = new Set([
   NotificationType.INFO,
   NotificationType.DEBUG,
 ]);
-import { NotificationEvent } from "@/gen/session/v1/events_pb";
-import { NotificationPriority, NotificationType } from "@/gen/session/v1/types_pb";
-import { SessionService } from "@/gen/session/v1/session_pb";
-import { NotificationData } from "@/components/ui/NotificationToast";
-import { getApiBaseUrl } from "@/lib/config";
 
 /**
  * Calls resolveApproval RPC to allow or deny a pending tool use.
  */
 async function resolveApproval(approvalId: string, decision: "allow" | "deny"): Promise<void> {
   try {
-    const transport = createConnectTransport({ baseUrl: getApiBaseUrl() });
-    const client = createClient(SessionService, transport);
+    const client = createClient(SessionService, getConnectTransport());
     await client.resolveApproval({ approvalId, decision });
   } catch (error) {
     console.error(`[resolveApproval] Failed to resolve approval ${approvalId}:`, error);
-  }
-}
-
-/**
- * Maps protobuf NotificationPriority enum to UI priority string
- */
-function mapPriority(priority: NotificationPriority): "urgent" | "high" | "medium" | "low" {
-  switch (priority) {
-    case NotificationPriority.URGENT:
-      return "urgent";
-    case NotificationPriority.HIGH:
-      return "high";
-    case NotificationPriority.MEDIUM:
-      return "medium";
-    case NotificationPriority.LOW:
-      return "low";
-    default:
-      return "medium";
-  }
-}
-
-/**
- * Maps protobuf NotificationType enum to UI notification type string
- */
-function mapNotificationType(type: NotificationType): NotificationData["notificationType"] {
-  switch (type) {
-    case NotificationType.APPROVAL_NEEDED:
-    case NotificationType.CONFIRMATION_NEEDED:
-      return "approval_needed";
-    case NotificationType.INPUT_REQUIRED:
-      return "question";
-    case NotificationType.ERROR:
-    case NotificationType.FAILURE:
-      return "error";
-    case NotificationType.WARNING:
-      return "warning";
-    case NotificationType.TASK_COMPLETE:
-    case NotificationType.PROCESS_FINISHED:
-      return "task_complete";
-    case NotificationType.PROCESS_STARTED:
-      return "progress";
-    case NotificationType.INFO:
-    case NotificationType.DEBUG:
-    case NotificationType.STATUS_CHANGE:
-      return "info";
-    case NotificationType.CUSTOM:
-      return "custom";
-    default:
-      return "info";
   }
 }
 
@@ -92,10 +44,7 @@ async function focusWindow(bundleId?: string, appName?: string): Promise<void> {
   if (!bundleId && !appName) return;
 
   try {
-    const transport = createConnectTransport({
-      baseUrl: getApiBaseUrl(),
-    });
-    const client = createClient(SessionService, transport);
+    const client = createClient(SessionService, getConnectTransport());
     const response = await client.focusWindow({
       bundleId: bundleId,
       appName: appName,
@@ -107,118 +56,6 @@ async function focusWindow(bundleId?: string, appName?: string): Promise<void> {
     }
   } catch (error) {
     console.warn("Failed to focus window:", error);
-  }
-}
-
-/**
- * Plays notification audio based on priority level
- */
-function playNotificationSound(priority: NotificationPriority): void {
-  // Use Web Audio API for chimes
-  if (typeof window === "undefined" || !window.AudioContext) return;
-
-  try {
-    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const oscillator = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    oscillator.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-
-    // Different frequencies and durations for different priorities
-    switch (priority) {
-      case NotificationPriority.URGENT:
-        // Rapid high-pitched alert (3 quick beeps)
-        oscillator.type = "sine";
-        oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
-        gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
-        oscillator.start(audioCtx.currentTime);
-        oscillator.stop(audioCtx.currentTime + 0.15);
-
-        // Second beep
-        setTimeout(() => {
-          const osc2 = audioCtx.createOscillator();
-          const gain2 = audioCtx.createGain();
-          osc2.connect(gain2);
-          gain2.connect(audioCtx.destination);
-          osc2.type = "sine";
-          osc2.frequency.setValueAtTime(880, audioCtx.currentTime);
-          gain2.gain.setValueAtTime(0.3, audioCtx.currentTime);
-          gain2.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
-          osc2.start();
-          osc2.stop(audioCtx.currentTime + 0.15);
-        }, 150);
-
-        // Third beep
-        setTimeout(() => {
-          const osc3 = audioCtx.createOscillator();
-          const gain3 = audioCtx.createGain();
-          osc3.connect(gain3);
-          gain3.connect(audioCtx.destination);
-          osc3.type = "sine";
-          osc3.frequency.setValueAtTime(880, audioCtx.currentTime);
-          gain3.gain.setValueAtTime(0.3, audioCtx.currentTime);
-          gain3.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
-          osc3.start();
-          osc3.stop(audioCtx.currentTime + 0.15);
-        }, 300);
-        break;
-
-      case NotificationPriority.HIGH:
-        // Double beep
-        oscillator.type = "sine";
-        oscillator.frequency.setValueAtTime(659, audioCtx.currentTime); // E5
-        gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
-        oscillator.start(audioCtx.currentTime);
-        oscillator.stop(audioCtx.currentTime + 0.2);
-
-        setTimeout(() => {
-          const osc2 = audioCtx.createOscillator();
-          const gain2 = audioCtx.createGain();
-          osc2.connect(gain2);
-          gain2.connect(audioCtx.destination);
-          osc2.type = "sine";
-          osc2.frequency.setValueAtTime(784, audioCtx.currentTime); // G5
-          gain2.gain.setValueAtTime(0.2, audioCtx.currentTime);
-          gain2.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
-          osc2.start();
-          osc2.stop(audioCtx.currentTime + 0.2);
-        }, 200);
-        break;
-
-      case NotificationPriority.MEDIUM:
-        // Single soft chime
-        oscillator.type = "sine";
-        oscillator.frequency.setValueAtTime(523, audioCtx.currentTime); // C5
-        gainNode.gain.setValueAtTime(0.15, audioCtx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
-        oscillator.start(audioCtx.currentTime);
-        oscillator.stop(audioCtx.currentTime + 0.4);
-        break;
-
-      case NotificationPriority.LOW:
-        // Very soft, low tone
-        oscillator.type = "sine";
-        oscillator.frequency.setValueAtTime(392, audioCtx.currentTime); // G4
-        gainNode.gain.setValueAtTime(0.08, audioCtx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
-        oscillator.start(audioCtx.currentTime);
-        oscillator.stop(audioCtx.currentTime + 0.25);
-        break;
-
-      default:
-        // Default medium chime
-        oscillator.type = "sine";
-        oscillator.frequency.setValueAtTime(523, audioCtx.currentTime);
-        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
-        oscillator.start(audioCtx.currentTime);
-        oscillator.stop(audioCtx.currentTime + 0.4);
-    }
-  } catch (e) {
-    console.warn("Failed to play notification sound:", e);
   }
 }
 
@@ -256,33 +93,34 @@ export function useSessionNotifications(options: UseSessionNotificationsOptions 
 
   const handleNotification = useCallback((event: NotificationEvent) => {
     // --- Toast deduplication ---
-    // Suppress duplicate toasts for the same (sessionId, notificationType)
-    // within a 10-second window. The server handles history-store dedup
-    // independently; this only prevents redundant UI toasts.
-    const DEDUP_WINDOW_MS = 10_000;
+    // Within a 10-second window, suppress audio and native notifications for
+    // repeat (sessionId, notificationType) events. However, visible toasts are
+    // still refreshed with the latest content so that rapidly-updating system
+    // alerts (e.g. fork-pressure) replace their stale toast rather than going
+    // silent until the window expires.
     const dedupKey = `${event.sessionId}:${event.notificationType}`;
     const now = Date.now();
-    const lastShown = recentToastKeys.current.get(dedupKey);
 
-    // Prune stale entries to prevent unbounded map growth
+    // Prune stale entries before reading — ensures lastShown reflects the
+    // post-prune state, so a boundary-case entry doesn't linger in the map.
     for (const [key, ts] of recentToastKeys.current) {
-      if (now - ts >= DEDUP_WINDOW_MS) {
+      if (now - ts >= TOAST_DEDUP_WINDOW_MS) {
         recentToastKeys.current.delete(key);
       }
     }
 
+    const lastShown = recentToastKeys.current.get(dedupKey);
+
     // Never suppress approval_needed or question notifications — each one blocks Claude and requires a response.
     const isApproval = event.notificationType === NotificationType.APPROVAL_NEEDED ||
       event.notificationType === NotificationType.INPUT_REQUIRED;
-    if (!isApproval && lastShown && now - lastShown < DEDUP_WINDOW_MS) {
-      // Duplicate toast suppressed — event still reaches history store via server
-      return;
-    }
-    recentToastKeys.current.set(dedupKey, now);
+    const isDuplicate = !isApproval && !!lastShown && now - lastShown < TOAST_DEDUP_WINDOW_MS;
 
-    // History-only types: no toast, no sound — just record in the history panel
+    // History-only types: no toast, no sound — just record in the history panel.
+    // Duplicates are fully suppressed (no visible toast to refresh).
     if (HISTORY_ONLY_TYPES.has(event.notificationType)) {
-      const notificationData: Omit<NotificationData, "id" | "timestamp"> = {
+      if (isDuplicate) return;
+      addToHistoryOnly({
         sessionId: event.sessionId,
         sessionName: event.sessionName || "Unknown Session",
         title: event.title,
@@ -293,14 +131,8 @@ export function useSessionNotifications(options: UseSessionNotificationsOptions 
         onView: onViewSessionRef.current
           ? () => onViewSessionRef.current?.(event.sessionId)
           : undefined,
-      };
-      addToHistoryOnly(notificationData);
+      });
       return;
-    }
-
-    // Play audio chime based on priority
-    if (enableAudioRef.current) {
-      playNotificationSound(event.priority);
     }
 
     // Extract source app metadata from the event
@@ -308,11 +140,6 @@ export function useSessionNotifications(options: UseSessionNotificationsOptions 
     const sourceBundleId = event.metadata?.["source_bundle"];
     const sourceWorkingDir = event.metadata?.["cwd"];
     const sourceProject = event.metadata?.["source_project"];
-
-    // Check if this is an external session (has source app info)
-    const isExternal = sourceApp !== undefined || sourceBundleId !== undefined;
-
-    // Detect approval requests (have an approval_id in metadata)
     const approvalId = event.metadata?.["approval_id"];
 
     // Build the notification data with all available fields
@@ -332,16 +159,55 @@ export function useSessionNotifications(options: UseSessionNotificationsOptions 
         ? () => onViewSessionRef.current?.(event.sessionId)
         : undefined,
       // Add focus window handler if we have source app info
-      onFocusWindow: isExternal
+      onFocusWindow: (sourceApp || sourceBundleId)
         ? () => focusWindow(sourceBundleId, sourceApp)
         : undefined,
       // Attach approve/deny callbacks for tool-use approval requests
       onApprove: approvalId ? () => resolveApproval(approvalId, "allow") : undefined,
-      onDeny: approvalId ? () => resolveApproval(approvalId, "deny") : undefined,
+      onDeny:    approvalId ? () => resolveApproval(approvalId, "deny")  : undefined,
     };
+
+    // Duplicate visible-toast event: refresh the existing toast with updated
+    // content (addNotification replaces by sessionId, not stacks) but skip
+    // audio and native notification to avoid spamming the user.
+    if (isDuplicate) {
+      addNotification(notificationData);
+      return;
+    }
+
+    recentToastKeys.current.set(dedupKey, now);
+
+    // Play audio chime based on priority
+    if (enableAudioRef.current) {
+      playPriorityNotificationSound(event.priority);
+    }
 
     // Add visual notification
     addNotification(notificationData);
+
+    // Native notification (FR-6): fire alongside toast for non-history types.
+    // Guard: only when already granted — we do NOT call requestPermission() here.
+    // Requesting permission mid-session triggers a disruptive OS prompt; permission
+    // is requested proactively via requestNotificationPermission() in the settings flow.
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+      const nativeTag = isApproval && event.metadata?.["approval_id"]
+        ? `approval:${event.metadata["approval_id"]}`
+        : `${event.sessionId}:${mapNotificationType(event.notificationType)}`;
+
+      // Approval body is redacted in the OS tray: shell commands and file paths from
+      // tool inputs must not appear in notification center, screen recordings, or
+      // lock-screen previews. The in-app toast shows the full content.
+      const nativeBody = isApproval
+        ? "Open Stapler Squad to review and approve"
+        : event.message ?? undefined;
+
+      void showBrowserNotification(event.title, {
+        body: nativeBody,
+        tag: nativeTag,
+        autoCloseMs: isApproval ? NATIVE_ACTIONABLE_TTL_MS : nativeAutoCloseMs(event.priority),
+        requireInteraction: isApproval,
+      });
+    }
   }, [addNotification, addToHistoryOnly]);
 
   return handleNotification;

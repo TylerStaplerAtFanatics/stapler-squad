@@ -1,11 +1,15 @@
 package mux
 
 import (
+	"context"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tstapler/stapler-squad/executor/safeexec"
+	"github.com/tstapler/stapler-squad/session/tmux"
 )
 
 // hasTmux reports whether tmux is available in PATH.
@@ -31,9 +35,9 @@ func TestScanByUserOptions_NoSessions(t *testing.T) {
 // logic using the same field splitting used in ScanByUserOptions.
 func TestScanByUserOptions_ParsesFields(t *testing.T) {
 	// Simulate the output of `tmux list-sessions -F ...` for two sessions:
-	// one claude-mux session and one without options.
+	// one ssq-mux session and one without options.
 	lines := []string{
-		"claudesquad_ext_myproject_claude_1234\t/tmp/claude-mux-1234.sock\t/home/user/myproject\tclaude\t1234\t1700000000",
+		"claudesquad_ext_myproject_claude_1234\t/tmp/ssq-mux-1234.sock\t/home/user/myproject\tclaude\t1234\t1700000000",
 		"some_other_session\t\t\t\t\t", // no @cs_socket_path — should be filtered
 	}
 	output := strings.Join(lines, "\n")
@@ -77,7 +81,7 @@ func TestScanByUserOptions_ParsesFields(t *testing.T) {
 	if s.Metadata.TmuxSession != "claudesquad_ext_myproject_claude_1234" {
 		t.Errorf("TmuxSession: got %q", s.Metadata.TmuxSession)
 	}
-	if s.SocketPath != "/tmp/claude-mux-1234.sock" {
+	if s.SocketPath != "/tmp/ssq-mux-1234.sock" {
 		t.Errorf("SocketPath: got %q", s.SocketPath)
 	}
 	if s.Metadata.Cwd != "/home/user/myproject" {
@@ -104,16 +108,21 @@ func TestWriteReadUserOptions(t *testing.T) {
 
 	sessionName := "cs-test-useropts"
 
-	// Create a throw-away tmux session.
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "sleep", "60")
+	// Created via the same isolated socket that WriteSessionUserOptions resolves to
+	// inside a `go test` binary -- see prependIsolatedSocket.
+	create := safeexec.CommandContext(context.Background(), tmux.Binary(),
+		prependIsolatedSocket([]string{"new-session", "-d", "-s", sessionName, "sleep", "60"})...)
 	if err := create.Run(); err != nil {
 		t.Fatalf("create tmux session: %v", err)
 	}
 	t.Cleanup(func() {
-		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+		killCtx, killCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer killCancel()
+		_ = safeexec.CommandContext(killCtx, tmux.Binary(),
+			prependIsolatedSocket([]string{"kill-session", "-t", sessionName})...).Run()
 	})
 
-	socketPath := "/tmp/claude-mux-test-99999.sock"
+	socketPath := "/tmp/ssq-mux-test-99999.sock"
 	cwd := "/tmp/test-cwd"
 	command := "claude"
 	pid := 99999
@@ -135,7 +144,10 @@ func TestWriteReadUserOptions(t *testing.T) {
 		{tmuxOptStartTime, strconv.FormatInt(startTime, 10)},
 	}
 	for _, tc := range cases {
-		out, err := exec.Command("tmux", "show-options", "-t", sessionName, tc.key).Output()
+		showCtx, showCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer showCancel()
+		out, err := safeexec.CommandContext(showCtx, tmux.Binary(),
+			prependIsolatedSocket([]string{"show-options", "-t", sessionName, tc.key})...).Output()
 		if err != nil {
 			t.Errorf("show-options %s: %v", tc.key, err)
 			continue
@@ -158,15 +170,21 @@ func TestScanFromUserOptions_RegistersSession(t *testing.T) {
 	}
 
 	sessionName := "cs-test-scanfromopts"
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "sleep", "60")
+	// Created via the same isolated socket that WriteSessionUserOptions and
+	// ScanByUserOptions resolve to inside a `go test` binary -- see prependIsolatedSocket.
+	create := safeexec.CommandContext(context.Background(), tmux.Binary(),
+		prependIsolatedSocket([]string{"new-session", "-d", "-s", sessionName, "sleep", "60"})...)
 	if err := create.Run(); err != nil {
 		t.Fatalf("create tmux session: %v", err)
 	}
 	t.Cleanup(func() {
-		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+		killCtx2, killCancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer killCancel2()
+		_ = safeexec.CommandContext(killCtx2, tmux.Binary(),
+			prependIsolatedSocket([]string{"kill-session", "-t", sessionName})...).Run()
 	})
 
-	socketPath := "/tmp/claude-mux-test-88888.sock"
+	socketPath := "/tmp/ssq-mux-test-88888.sock"
 	if err := WriteSessionUserOptions(sessionName, socketPath, "/tmp", "claude", 88888, time.Now().Unix()); err != nil {
 		t.Fatalf("WriteSessionUserOptions: %v", err)
 	}
