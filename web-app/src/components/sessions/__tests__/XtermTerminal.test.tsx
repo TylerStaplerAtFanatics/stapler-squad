@@ -31,6 +31,9 @@ jest.mock("@xterm/xterm", () => {
     loadedAddons: any[] = [];
     containerEl: HTMLElement | null = null;
     disposed = false;
+    // updateScrollbar() (origin/main's mobile-scrollbar feature) reads buffer.active
+    // unconditionally from the startup double-RAF fit and every confirmed sampler tick.
+    buffer = { active: { length: 0, viewportY: 0 } };
 
     constructor(options: any) {
       this.options = options ?? {};
@@ -202,6 +205,14 @@ beforeEach(() => {
   jest.spyOn(console, "warn").mockImplementation(() => {});
   jest.spyOn(console, "error").mockImplementation(() => {});
   installCapturingResizeObserver();
+  // jsdom has no WebGL2 support and therefore no WebGL2RenderingContext global.
+  // XtermTerminal's xterm.js issue #2033 Android guard (`typeof
+  // WebGL2RenderingContext !== 'undefined'`) gates the dynamic addon-webgl
+  // import on this, so without a stub the WebGL->Canvas fallback suite below
+  // would never even attempt to load @xterm/addon-webgl.
+  if (typeof (global as any).WebGL2RenderingContext === "undefined") {
+    (global as any).WebGL2RenderingContext = class WebGL2RenderingContext {};
+  }
   MockTerminal.instances.length = 0;
   MockFitAddon.instances.length = 0;
   MockWebglAddon.instances.length = 0;
@@ -214,13 +225,20 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-/** Mounts a single XtermTerminal and flushes its double-RAF + 100ms init-fit chain
- * with one bounded, fixed-budget advance (never an unbounded drain-the-queue call). */
-function mountAndSettle() {
+/** Mounts a single XtermTerminal and flushes its double-RAF init-fit chain with
+ * one bounded, fixed-budget advance (never an unbounded drain-the-queue call).
+ * Also flushes the microtask queue so the dynamic `import('@xterm/addon-webgl')`
+ * (xterm.js issue #2033 Android guard) resolves and populates webglAddonRef
+ * before callers assert against MockWebglAddon.instances. */
+async function mountAndSettle() {
   const ref = React.createRef<XtermTerminalHandle>();
   render(<XtermTerminal ref={ref} />);
-  act(() => {
+  await act(async () => {
     jest.advanceTimersByTime(200);
+    // Flush the dynamic import()'s promise chain (a microtask, not a timer --
+    // advanceTimersByTime alone does not resolve it).
+    await Promise.resolve();
+    await Promise.resolve();
   });
   const terminal = MockTerminal.instances[MockTerminal.instances.length - 1];
   const fitAddon = MockFitAddon.instances[MockFitAddon.instances.length - 1];
@@ -244,14 +262,18 @@ function mountAndSettle() {
   return { ref, terminal, fitAddon, ro };
 }
 
-/** Fires an RO delivery and flushes the adaptive-debounce -> sampler-start tick
- * (10ms, since resizeCount stays <=3 across all uses in this file). */
+/** Fires an RO delivery and flushes the flat 150ms debounce (R1.2, replacing
+ * the old adaptive 10ms-for-first-3 debounce) -> sampler-start tick 1, which
+ * runs synchronously inside startSamplerIfNeeded(). Advances just past 150ms
+ * -- deliberately NOT a full SAMPLE_INTERVAL_MS beyond that, which would also
+ * sweep up tick 2 in the same advance and collapse the two-tick dead-band
+ * confirmation this whole suite exists to exercise. */
 function fireResizeAndStartSampler(ro: CapturedRO, width: number, height = 480) {
   act(() => {
     ro.callback([{ contentRect: { width, height } }]);
   });
   act(() => {
-    jest.advanceTimersByTime(10);
+    jest.advanceTimersByTime(151);
   });
 }
 
@@ -261,7 +283,7 @@ function fireResizeAndStartSampler(ro: CapturedRO, width: number, height = 480) 
  * pitfalls §5's guidance to avoid brittle mockReturnValueOnce chaining. */
 function driveConvergentResize(
   ro: CapturedRO,
-  fitAddon: ReturnType<typeof mountAndSettle>["fitAddon"],
+  fitAddon: Awaited<ReturnType<typeof mountAndSettle>>["fitAddon"],
   targetCols: number,
   targetRows: number,
   width: number
@@ -344,8 +366,8 @@ describe("XtermTerminal sampler (component + fake timers)", () => {
   // delivery relative to *mount* is exercised by never firing RO at all; this
   // test instead exercises a converge-to-noop tick pair which is the sampler
   // -level unchanged case per shouldScheduleFit's own contract).
-  it("calls fit() 0 times when the sampler's proposed dimensions already equal the applied dimensions", () => {
-    const { fitAddon, ro, terminal } = mountAndSettle();
+  it("calls fit() 0 times when the sampler's proposed dimensions already equal the applied dimensions", async () => {
+    const { fitAddon, ro, terminal } = await mountAndSettle();
     fitAddon.proposeDimensions.mockReturnValue({ cols: terminal.cols, rows: terminal.rows });
 
     fireResizeAndStartSampler(ro, 800);
@@ -358,8 +380,8 @@ describe("XtermTerminal sampler (component + fake timers)", () => {
 
   // Task 4.1.4 (edge path): 20-tick never-repeating oscillation past
   // MAX_SAMPLES, then re-arm and converge on a genuinely new resize.
-  it("stops the sampler and warns after MAX_SAMPLES=20 ticks without confirmation, then re-arms and converges on the next distinct resize", () => {
-    const { fitAddon, ro } = mountAndSettle();
+  it("stops the sampler and warns after MAX_SAMPLES=20 ticks without confirmation, then re-arms and converges on the next distinct resize", async () => {
+    const { fitAddon, ro } = await mountAndSettle();
     const warnSpy = console.warn as jest.Mock;
 
     let callCount = 0;
@@ -396,7 +418,7 @@ describe("XtermTerminal sampler (component + fake timers)", () => {
 });
 
 describe("XtermTerminal WebGL->Canvas fallback (mocked renderer, not real WebGL)", () => {
-  function setMismatch(terminal: ReturnType<typeof mountAndSettle>["terminal"], actualPxPerCol: number, expectedPxPerCol: number) {
+  function setMismatch(terminal: Awaited<ReturnType<typeof mountAndSettle>>["terminal"], actualPxPerCol: number, expectedPxPerCol: number) {
     terminal._core._renderService.dimensions = { css: { cell: { width: expectedPxPerCol } } };
     if (terminal.containerEl) {
       terminal.containerEl.getBoundingClientRect = jest.fn(
@@ -416,8 +438,8 @@ describe("XtermTerminal WebGL->Canvas fallback (mocked renderer, not real WebGL)
     }
   }
 
-  it("trips the canvas fallback exactly once after 3 consecutive mismatch samples exceeding MISMATCH_TOLERANCE_PX (mocked renderer, not real WebGL)", () => {
-    const { fitAddon, ro, terminal } = mountAndSettle();
+  it("trips the canvas fallback exactly once after 3 consecutive mismatch samples exceeding MISMATCH_TOLERANCE_PX (mocked renderer, not real WebGL)", async () => {
+    const { fitAddon, ro, terminal } = await mountAndSettle();
     setMismatch(terminal, 9.2, 8.0);
 
     driveConvergentResize(ro, fitAddon, 81, 24, 800);
@@ -446,8 +468,8 @@ describe("XtermTerminal WebGL->Canvas fallback (mocked renderer, not real WebGL)
   // them" -- only on genuinely consecutive mismatches. Limited to 3 RO
   // deliveries (matching every other test in this file, per
   // fireResizeAndStartSampler's <=3 adaptive-debounce assumption).
-  it("resets the consecutive mismatch count on a clean sample, so the fallback does not trip on 2 mismatches separated by a clean sample", () => {
-    const { fitAddon, ro, terminal } = mountAndSettle();
+  it("resets the consecutive mismatch count on a clean sample, so the fallback does not trip on 2 mismatches separated by a clean sample", async () => {
+    const { fitAddon, ro, terminal } = await mountAndSettle();
 
     // Cycle 1: mismatch (count -> 1).
     setMismatch(terminal, 9.2, 8.0);
@@ -467,8 +489,8 @@ describe("XtermTerminal WebGL->Canvas fallback (mocked renderer, not real WebGL)
     expect(webglInstance.dispose).not.toHaveBeenCalled();
   });
 
-  it("does not call dispose()/loadAddon() again on a 4th mismatch sample once the fallback is already triggered", () => {
-    const { fitAddon, ro, terminal } = mountAndSettle();
+  it("does not call dispose()/loadAddon() again on a 4th mismatch sample once the fallback is already triggered", async () => {
+    const { fitAddon, ro, terminal } = await mountAndSettle();
     setMismatch(terminal, 9.2, 8.0);
 
     driveConvergentResize(ro, fitAddon, 81, 24, 800);
@@ -492,8 +514,8 @@ describe("XtermTerminal WebGL->Canvas fallback (mocked renderer, not real WebGL)
     expect(MockCanvasAddon.instances).toHaveLength(1);
   });
 
-  it("falls through to xterm's built-in DOM renderer without crashing when CanvasAddon also fails to load", () => {
-    const { fitAddon, ro, terminal } = mountAndSettle();
+  it("falls through to xterm's built-in DOM renderer without crashing when CanvasAddon also fails to load", async () => {
+    const { fitAddon, ro, terminal } = await mountAndSettle();
     setMismatch(terminal, 9.2, 8.0);
     MockCanvasAddon.shouldThrow = true;
     const errorSpy = console.error as jest.Mock;
@@ -518,8 +540,8 @@ describe("XtermTerminal WebGL->Canvas fallback (mocked renderer, not real WebGL)
     expect(fitAddon.fit).toHaveBeenCalledTimes(3);
   });
 
-  it("skips the post-fallback fit() and warns when proposeDimensions() is not finite after the RAF-guarded CanvasAddon swap", () => {
-    const { fitAddon, ro, terminal } = mountAndSettle();
+  it("skips the post-fallback fit() and warns when proposeDimensions() is not finite after the RAF-guarded CanvasAddon swap", async () => {
+    const { fitAddon, ro, terminal } = await mountAndSettle();
     setMismatch(terminal, 9.2, 8.0);
 
     driveConvergentResize(ro, fitAddon, 81, 24, 800);
@@ -539,8 +561,8 @@ describe("XtermTerminal WebGL->Canvas fallback (mocked renderer, not real WebGL)
     expect(skipWarnings).toHaveLength(1);
   });
 
-  it("routes onContextLoss through the same latch as the mismatch-threshold path, without double-disposing when both fire", () => {
-    const { fitAddon, ro, terminal } = mountAndSettle();
+  it("routes onContextLoss through the same latch as the mismatch-threshold path, without double-disposing when both fire", async () => {
+    const { fitAddon, ro, terminal } = await mountAndSettle();
     setMismatch(terminal, 9.2, 8.0);
 
     driveConvergentResize(ro, fitAddon, 81, 24, 800);
@@ -569,7 +591,7 @@ describe("XtermTerminal cross-instance perturbation (multi-mount, bounded settli
   // parent; instance 0's fit() perturbs siblings' proposed dimensions,
   // simulating a shared-layout side effect. Total fit() calls across all
   // instances must settle to a bounded ceiling, not grow unboundedly.
-  it("sums fit() calls to a bounded total across 3 same-parent instances when instance 0's fit() perturbs the shared layout", () => {
+  it("sums fit() calls to a bounded total across 3 same-parent instances when instance 0's fit() perturbs the shared layout", async () => {
     const refs = [React.createRef<XtermTerminalHandle>(), React.createRef<XtermTerminalHandle>(), React.createRef<XtermTerminalHandle>()];
     render(
       <div data-testid="shared-parent">
@@ -578,8 +600,11 @@ describe("XtermTerminal cross-instance perturbation (multi-mount, bounded settli
         <XtermTerminal ref={refs[2]} />
       </div>
     );
-    act(() => {
+    await act(async () => {
       jest.advanceTimersByTime(200);
+      // Flush each instance's dynamic import('@xterm/addon-webgl') microtask chain.
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(MockFitAddon.instances).toHaveLength(3);
@@ -611,7 +636,7 @@ describe("XtermTerminal cross-instance perturbation (multi-mount, bounded settli
       ro2.callback([{ contentRect: { width: 800, height: 480 } }]);
     });
     act(() => {
-      jest.advanceTimersByTime(10); // tick 1 for all 3 (registers pending)
+      jest.advanceTimersByTime(151); // flat 150ms debounce -> tick 1 for all 3 (registers pending)
     });
     // Bounded settling window: give the perturbed siblings a few extra ticks
     // to re-converge after instance 0's mutation, but never run unbounded.

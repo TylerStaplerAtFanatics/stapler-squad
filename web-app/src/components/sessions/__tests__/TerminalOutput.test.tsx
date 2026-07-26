@@ -76,6 +76,55 @@ jest.mock("@/lib/hooks/useTerminalStream", () => ({
   useTerminalStream: (...args: any[]) => mockUseTerminalStream(...args),
 }));
 
+// ── Supporting mocks (origin/main scaffolding TerminalOutput now depends on;
+// see TerminalOutput.reconnect.test.tsx for the canonical set) ──────────────
+
+jest.mock("@/lib/terminal/TerminalDimensionCache", () => ({
+  getCachedDimensions: jest.fn().mockReturnValue(null),
+  saveDimensions: jest.fn(),
+  validateCellDimensions: jest.fn().mockReturnValue(null),
+}));
+
+jest.mock("@/lib/terminal/TerminalStreamManager", () => ({
+  TerminalStreamManager: jest.fn().mockImplementation(() => ({
+    setOnFirstOutput: jest.fn(),
+    setSerializeAddon: jest.fn(),
+    installDebugMonitor: jest.fn(),
+    writeInitialContent: jest.fn().mockResolvedValue(undefined),
+    write: jest.fn(),
+    cleanup: jest.fn(),
+    updateSendFlowControl: jest.fn(),
+  })),
+}));
+
+jest.mock("@/lib/contexts/AnalyticsContext", () => ({
+  useAnalytics: () => ({ track: jest.fn() }),
+}));
+
+jest.mock("@/lib/contexts/ApprovalsContext", () => ({
+  useApprovalsContext: () => ({
+    clearForSession: jest.fn(),
+    refresh: jest.fn(),
+    pendingCount: 0,
+  }),
+}));
+
+jest.mock("@/lib/hooks/useHandedness", () => ({
+  useHandedness: () => ({ leftHanded: false, toggleHandedness: jest.fn() }),
+}));
+
+jest.mock("@/lib/hooks/useSplitContainerSize", () => ({
+  useSplitContainerSize: () => ({ width: 800, height: 600 }),
+}));
+
+jest.mock("@/lib/hooks/useBrowserLogStream", () => ({
+  useBrowserLogStream: jest.fn(),
+}));
+
+jest.mock("@/components/providers/ViewportProvider", () => ({
+  useViewport: () => ({ isMobile: false }),
+}));
+
 import { TerminalOutput } from "../TerminalOutput";
 
 const mockXtermState = jest.requireMock("../XtermTerminal").__mockXtermState as {
@@ -89,18 +138,22 @@ function makeStreamMock(overrides: Partial<Record<string, any>> = {}) {
   return {
     isConnected: false,
     error: null,
+    output: "",
     sendInput: jest.fn(),
-    sendInputWithEcho: jest.fn(),
     resize: jest.fn(),
     connect: jest.fn(),
     disconnect: jest.fn(),
     scrollbackLoaded: true,
     requestScrollback: jest.fn(),
     sendFlowControl: jest.fn(),
-    getIsApplyingState: jest.fn(() => false),
-    sspNegotiated: false,
     startRecording: jest.fn(),
     stopRecording: jest.fn(),
+    terminalState: "DISCONNECTED",
+    isHardFailed: false,
+    handleManualReconnect: jest.fn(),
+    requestFullResync: jest.fn(),
+    markResyncComplete: jest.fn(),
+    markPaneResponseReceived: jest.fn(),
     ...overrides,
   };
 }
@@ -128,8 +181,17 @@ describe("TerminalOutput resize call sites", () => {
 
   // Task 4.2.2, AC4: post-connection resync effect passes a literal
   // force:true third argument.
-  it("calls resize with a literal force:true third argument from the post-connection resync effect", () => {
+  it("calls resize with a literal force:true third argument from the post-connection resync effect", async () => {
     const { rerender } = render(<TerminalOutput sessionId="s1" baseUrl="http://x" />);
+
+    // XtermTerminal is lazy-loaded (React.lazy + Suspense) in TerminalOutput, so its
+    // mock's mount-time onResize(80,24) fires on a later microtask, not synchronously
+    // within the initial render()'s act(). Flush that before asserting anything that
+    // depends on lastResizeRef having been populated.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     // Initial mount: XtermTerminal's simulated onResize(80,24) fires while
     // disconnected, populating lastResizeRef without calling resize().
@@ -140,6 +202,13 @@ describe("TerminalOutput resize call sites", () => {
     mockUseTerminalStream.mockImplementation(() => streamState);
     act(() => {
       rerender(<TerminalOutput sessionId="s1" baseUrl="http://x" />);
+    });
+
+    // The post-connection resize sync is deliberately delayed 250ms so the
+    // container can settle before it fires (see TerminalOutput's connection-state
+    // effect) -- flush that timer before asserting.
+    act(() => {
+      jest.advanceTimersByTime(250);
     });
 
     expect(streamState.resize).toHaveBeenCalledTimes(1);
@@ -159,7 +228,13 @@ describe("TerminalOutput resize call sites", () => {
     });
     streamState.resize.mockClear();
 
-    const fitButton = getByRole("button", { name: "Resize terminal" });
+    // The toolbar (which holds the Resize button) starts collapsed; expand it first.
+    const toolbarToggle = getByRole("button", { name: "Toggle toolbar" });
+    act(() => {
+      fireEvent.click(toolbarToggle);
+    });
+
+    const fitButton = getByRole("button", { name: "Resize terminal to fit container" });
     act(() => {
       fireEvent.click(fitButton);
     });

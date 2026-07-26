@@ -732,15 +732,13 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
       searchAddonRef.current = searchAddon;
       serializeAddonRef.current = serializeAddon;
 
-      // Now trigger initial resize callback (ref is ready for parent's getTerminal()).
-      // terminal.onResize (above) only fires once fit() actually changes cols/rows, which
-      // may never happen if the container already matches the terminal's construction-time
-      // size — so the parent must be told the initial size explicitly here rather than
-      // waiting indefinitely on a fit.
-      lastSizeRef.current = { cols: terminal.cols, rows: terminal.rows };
-      if (onResizeRef.current) {
-        onResizeRef.current(terminal.cols, terminal.rows);
-      }
+      // Deliberately no synchronous initial onResize() call here: it used to fire
+      // onResize(terminal.cols, terminal.rows) with xterm's construction-time defaults
+      // (80x24) before fitAddon.fit() ever ran, corrupting TerminalOutput's dimension
+      // cache with the wrong size (see XtermTerminalBug.test.tsx "Bug 1" and R-series fix
+      // "prevent premature resize from corrupting dimension cache"). The double-RAF
+      // initial fit() below — and the decoupled sampler / ResizeObserver after it — are
+      // solely responsible for telling the parent the real size via terminal.onResize.
 
       // ---- Mobile selection handle drag logic ----
       // Each handle listens for touchstart, then registers a document-level
@@ -1046,18 +1044,14 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
           }
 
           // Schedule the decoupled sampler start (ADR-002) after the debounce settles.
-          // Double rAF ensures DOM reflow is complete before the sampler's first
-          // proposeDimensions() measurement on iOS Safari — a single rAF is insufficient
-          // because the browser may batch it with the resize event, leaving stale
-          // dimensions. See xterm.js issue #3895. The debounce only decides *when to
-          // start* the sampler for a burst of RO deliveries; once started, the sampler's
-          // own tick chain is never reset by further RO deliveries (ADR-002).
+          // No extra rAF guard here (unlike the startup double-rAF fit): a stale first
+          // proposeDimensions() read just produces a "pending" sample that won't match
+          // the next tick SAMPLE_INTERVAL_MS later, self-correcting within one extra
+          // 50ms tick rather than committing a wrong fit(). The debounce only decides
+          // *when to start* the sampler for a burst of RO deliveries; once started, the
+          // sampler's own tick chain is never reset by further RO deliveries (ADR-002).
           resizeTimeout = setTimeout(() => {
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                startSamplerIfNeeded();
-              });
-            });
+            startSamplerIfNeeded();
             resizeTimeout = null;
           }, debounceDelay);
         } else if ((widthChanged || heightChanged) && (width === 0 || height === 0)) {

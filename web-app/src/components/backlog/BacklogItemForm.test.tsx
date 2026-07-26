@@ -11,6 +11,7 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { BacklogItemForm } from "./BacklogItemForm";
+import type { BacklogItemInput } from "@/lib/hooks/useBacklogService";
 
 // RepoPathInput uses useSessionRepoPaths (Redux) and usePathCompletions (RPC).
 // Stub both so tests don't need a Redux store or ConnectRPC transport.
@@ -118,7 +119,7 @@ describe("BacklogItemForm — acceptance criteria row identity", () => {
   });
 
   it("strips clientKey from the acCriteria payload on submit", async () => {
-    const onSubmit = jest.fn(() => Promise.resolve());
+    const onSubmit = jest.fn((_data: BacklogItemInput) => Promise.resolve());
     render(
       <BacklogItemForm
         initialValues={{
