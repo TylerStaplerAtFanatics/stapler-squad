@@ -45,15 +45,21 @@ export function useTerminalFlowControl({
   const lastResizeTimeRef = useRef<number>(0);
   const lastSentDimsRef = useRef<ResizeDimensions | null>(null);
   const pendingResizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const paneRequestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dimensionSyncRef = useRef<{ cols?: number; rows?: number }>({});
 
-  // Cancel any pending deferred resize timer when the component unmounts to prevent
-  // the timer callback from firing against a torn-down component/connection.
+  // Cancel any pending deferred resize/pane-request timers when the component
+  // unmounts to prevent the timer callback from firing against a torn-down
+  // component/connection.
   useEffect(() => {
     return () => {
       if (pendingResizeTimerRef.current) {
         clearTimeout(pendingResizeTimerRef.current);
         pendingResizeTimerRef.current = null;
+      }
+      if (paneRequestTimerRef.current) {
+        clearTimeout(paneRequestTimerRef.current);
+        paneRequestTimerRef.current = null;
       }
     };
   }, []);
@@ -241,7 +247,8 @@ export function useTerminalFlowControl({
         lastSentDimsRef.current = { cols, rows };
 
         // After resizing, request fresh terminal content
-        setTimeout(() => {
+        paneRequestTimerRef.current = setTimeout(() => {
+          paneRequestTimerRef.current = null;
           if (!pushMessageRef.current || !isConnectedRef.current) return;
           try {
             console.log(`[useTerminalFlowControl] Requesting fresh pane content after resize`);

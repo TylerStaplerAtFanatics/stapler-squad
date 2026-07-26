@@ -425,7 +425,7 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
     let postFallbackRafId: number | null = null;
 
     const triggerCanvasFallback = () => {
-      if (webglFallbackTriggered) return; // one-directional latch, never re-arms (pitfalls §4)
+      if (webglFallbackTriggered || cancelled) return; // one-directional latch, never re-arms (pitfalls §4)
       webglFallbackTriggered = true;
       console.warn('[XtermTerminal] WebGL cell-measurement mismatch exceeded threshold, falling back to canvas renderer');
 
