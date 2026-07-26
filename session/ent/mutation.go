@@ -2992,6 +2992,7 @@ type BacklogItemMutation struct {
 	user_modified_fields    *string
 	notes                   *string
 	external_id             *string
+	external_url            *string
 	user_modified_status_at *time.Time
 	archived_at             *time.Time
 	created_at              *time.Time
@@ -3745,6 +3746,55 @@ func (m *BacklogItemMutation) ResetExternalID() {
 	delete(m.clearedFields, backlogitem.FieldExternalID)
 }
 
+// SetExternalURL sets the "external_url" field.
+func (m *BacklogItemMutation) SetExternalURL(s string) {
+	m.external_url = &s
+}
+
+// ExternalURL returns the value of the "external_url" field in the mutation.
+func (m *BacklogItemMutation) ExternalURL() (r string, exists bool) {
+	v := m.external_url
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExternalURL returns the old "external_url" field's value of the BacklogItem entity.
+// If the BacklogItem object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *BacklogItemMutation) OldExternalURL(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExternalURL is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExternalURL requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExternalURL: %w", err)
+	}
+	return oldValue.ExternalURL, nil
+}
+
+// ClearExternalURL clears the value of the "external_url" field.
+func (m *BacklogItemMutation) ClearExternalURL() {
+	m.external_url = nil
+	m.clearedFields[backlogitem.FieldExternalURL] = struct{}{}
+}
+
+// ExternalURLCleared returns if the "external_url" field was cleared in this mutation.
+func (m *BacklogItemMutation) ExternalURLCleared() bool {
+	_, ok := m.clearedFields[backlogitem.FieldExternalURL]
+	return ok
+}
+
+// ResetExternalURL resets all changes to the "external_url" field.
+func (m *BacklogItemMutation) ResetExternalURL() {
+	m.external_url = nil
+	delete(m.clearedFields, backlogitem.FieldExternalURL)
+}
+
 // SetUserModifiedStatusAt sets the "user_modified_status_at" field.
 func (m *BacklogItemMutation) SetUserModifiedStatusAt(t time.Time) {
 	m.user_modified_status_at = &t
@@ -4150,7 +4200,7 @@ func (m *BacklogItemMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *BacklogItemMutation) Fields() []string {
-	fields := make([]string, 0, 18)
+	fields := make([]string, 0, 19)
 	if m.title != nil {
 		fields = append(fields, backlogitem.FieldTitle)
 	}
@@ -4192,6 +4242,9 @@ func (m *BacklogItemMutation) Fields() []string {
 	}
 	if m.external_id != nil {
 		fields = append(fields, backlogitem.FieldExternalID)
+	}
+	if m.external_url != nil {
+		fields = append(fields, backlogitem.FieldExternalURL)
 	}
 	if m.user_modified_status_at != nil {
 		fields = append(fields, backlogitem.FieldUserModifiedStatusAt)
@@ -4241,6 +4294,8 @@ func (m *BacklogItemMutation) Field(name string) (ent.Value, bool) {
 		return m.Notes()
 	case backlogitem.FieldExternalID:
 		return m.ExternalID()
+	case backlogitem.FieldExternalURL:
+		return m.ExternalURL()
 	case backlogitem.FieldUserModifiedStatusAt:
 		return m.UserModifiedStatusAt()
 	case backlogitem.FieldArchivedAt:
@@ -4286,6 +4341,8 @@ func (m *BacklogItemMutation) OldField(ctx context.Context, name string) (ent.Va
 		return m.OldNotes(ctx)
 	case backlogitem.FieldExternalID:
 		return m.OldExternalID(ctx)
+	case backlogitem.FieldExternalURL:
+		return m.OldExternalURL(ctx)
 	case backlogitem.FieldUserModifiedStatusAt:
 		return m.OldUserModifiedStatusAt(ctx)
 	case backlogitem.FieldArchivedAt:
@@ -4401,6 +4458,13 @@ func (m *BacklogItemMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetExternalID(v)
 		return nil
+	case backlogitem.FieldExternalURL:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExternalURL(v)
+		return nil
 	case backlogitem.FieldUserModifiedStatusAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -4498,6 +4562,9 @@ func (m *BacklogItemMutation) ClearedFields() []string {
 	if m.FieldCleared(backlogitem.FieldExternalID) {
 		fields = append(fields, backlogitem.FieldExternalID)
 	}
+	if m.FieldCleared(backlogitem.FieldExternalURL) {
+		fields = append(fields, backlogitem.FieldExternalURL)
+	}
 	if m.FieldCleared(backlogitem.FieldUserModifiedStatusAt) {
 		fields = append(fields, backlogitem.FieldUserModifiedStatusAt)
 	}
@@ -4541,6 +4608,9 @@ func (m *BacklogItemMutation) ClearField(name string) error {
 		return nil
 	case backlogitem.FieldExternalID:
 		m.ClearExternalID()
+		return nil
+	case backlogitem.FieldExternalURL:
+		m.ClearExternalURL()
 		return nil
 	case backlogitem.FieldUserModifiedStatusAt:
 		m.ClearUserModifiedStatusAt()
@@ -4597,6 +4667,9 @@ func (m *BacklogItemMutation) ResetField(name string) error {
 		return nil
 	case backlogitem.FieldExternalID:
 		m.ResetExternalID()
+		return nil
+	case backlogitem.FieldExternalURL:
+		m.ResetExternalURL()
 		return nil
 	case backlogitem.FieldUserModifiedStatusAt:
 		m.ResetUserModifiedStatusAt()

@@ -121,6 +121,7 @@ var (
 		{Name: "user_modified_fields", Type: field.TypeString, Nullable: true},
 		{Name: "notes", Type: field.TypeString, Nullable: true},
 		{Name: "external_id", Type: field.TypeString, Nullable: true},
+		{Name: "external_url", Type: field.TypeString, Nullable: true},
 		{Name: "user_modified_status_at", Type: field.TypeTime, Nullable: true},
 		{Name: "archived_at", Type: field.TypeTime, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime},
@@ -135,7 +136,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "backlog_items_item_sources_backlog_items",
-				Columns:    []*schema.Column{BacklogItemsColumns[19]},
+				Columns:    []*schema.Column{BacklogItemsColumns[20]},
 				RefColumns: []*schema.Column{ItemSourcesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -149,7 +150,7 @@ var (
 			{
 				Name:    "backlogitem_status_updated_at",
 				Unique:  false,
-				Columns: []*schema.Column{BacklogItemsColumns[5], BacklogItemsColumns[18]},
+				Columns: []*schema.Column{BacklogItemsColumns[5], BacklogItemsColumns[19]},
 			},
 			{
 				Name:    "backlogitem_external_id",

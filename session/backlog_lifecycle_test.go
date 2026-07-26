@@ -22,6 +22,29 @@ func waitWithTimeout(t *testing.T, done <-chan struct{}) {
 	}
 }
 
+// TestCreateBacklogItem_ExternalURL_RoundTripsThroughGetBacklogItem proves AC2's
+// round-trip requirement: ExternalURL set on create is read back unchanged.
+func TestCreateBacklogItem_ExternalURL_RoundTripsThroughGetBacklogItem(t *testing.T) {
+	storage, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	itemData := BacklogItemData{
+		Title:       "Imported item",
+		Priority:    3,
+		Status:      string(BacklogStatusIdea),
+		ExternalURL: "https://github.com/acme/widget/issues/42",
+	}
+	created, err := storage.CreateBacklogItem(ctx, itemData)
+	require.NoError(t, err)
+	require.NotNil(t, created)
+
+	refetched, err := storage.GetBacklogItem(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/acme/widget/issues/42", refetched.ExternalURL)
+}
+
 // TestBacklogLifecycleListener_OnSessionStarted verifies that when a session UUID
 // maps to an ItemSession, UpdateItemSessionStarted is called. When session UUID
 // has no ItemSession (ErrNotFound), no error is propagated.

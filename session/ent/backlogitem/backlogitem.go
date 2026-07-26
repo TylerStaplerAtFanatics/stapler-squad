@@ -43,6 +43,8 @@ const (
 	FieldNotes = "notes"
 	// FieldExternalID holds the string denoting the external_id field in the database.
 	FieldExternalID = "external_id"
+	// FieldExternalURL holds the string denoting the external_url field in the database.
+	FieldExternalURL = "external_url"
 	// FieldUserModifiedStatusAt holds the string denoting the user_modified_status_at field in the database.
 	FieldUserModifiedStatusAt = "user_modified_status_at"
 	// FieldArchivedAt holds the string denoting the archived_at field in the database.
@@ -106,6 +108,7 @@ var Columns = []string{
 	FieldUserModifiedFields,
 	FieldNotes,
 	FieldExternalID,
+	FieldExternalURL,
 	FieldUserModifiedStatusAt,
 	FieldArchivedAt,
 	FieldCreatedAt,
@@ -240,6 +243,11 @@ func ByNotes(opts ...sql.OrderTermOption) OrderOption {
 // ByExternalID orders the results by the external_id field.
 func ByExternalID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldExternalID, opts...).ToFunc()
+}
+
+// ByExternalURL orders the results by the external_url field.
+func ByExternalURL(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldExternalURL, opts...).ToFunc()
 }
 
 // ByUserModifiedStatusAt orders the results by the user_modified_status_at field.

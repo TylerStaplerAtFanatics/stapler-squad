@@ -533,6 +533,48 @@ func TestBacklogFullLifecycle_TriageApprovalSpawn_CarriesRealPromptContent(t *te
 	assert.Equal(t, "in_progress", finalResp.Msg.Item.Status)
 }
 
+// TestSpawnSessionFromItem_PromptContainsLinkedIssueSection proves AC7: the
+// SpawnSessionFromItem entItem literal includes ExternalURL, so the spawned
+// session's actual prompt contains the linked-issue fact and instruction
+// lines — not just at the ent-struct level, but at the real integration
+// boundary an agent session sees.
+func TestSpawnSessionFromItem_PromptContainsLinkedIssueSection(t *testing.T) {
+	cases := []struct {
+		name        string
+		externalURL string
+		wantSubstr  string
+	}{
+		{"issue URL", "https://github.com/acme/widget/issues/42", "Fixes acme/widget#42"},
+		{"PR URL", "https://github.com/acme/widget/pull/17", "Related: acme/widget#17"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			storage := createTestStorage(t)
+			creator := &mockSessionCreator{}
+			svc := NewBacklogService(storage, creator, nil, nil)
+
+			created, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+				Title:        "zzyzx widget",
+				Status:       string(session.BacklogStatusReady),
+				SkipPlanning: true,
+				RepoPath:     t.TempDir(),
+				ExternalURL:  tc.externalURL,
+			})
+			require.NoError(t, err)
+
+			_, err = svc.SpawnSessionFromItem(t.Context(), connect.NewRequest(&sessionv1.SpawnSessionFromItemRequest{
+				ItemId: created.ID,
+			}))
+			require.NoError(t, err)
+
+			require.Len(t, creator.calls, 1)
+			prompt := creator.calls[0].prompt
+			assert.Contains(t, prompt, "Linked GitHub Issue/PR: "+tc.externalURL)
+			assert.Contains(t, prompt, tc.wantSubstr)
+		})
+	}
+}
+
 // ─── AttachSessionToItem ──────────────────────────────────────────────────────
 
 // TestAttachSessionToItem_WritesContextFileWithPlanArtifactsAndPriorSessions is a
@@ -613,6 +655,49 @@ func TestAttachSessionToItem_WritesContextFileWithPlanArtifactsAndPriorSessions(
 	// future change that stops filtering on EndedAt.
 	assert.Equal(t, 1, strings.Count(content, "- Role:"),
 		"only the one real prior (ended) session should be rendered, not the just-created attach session")
+}
+
+// TestAttachSessionToItem_PromptContainsLinkedIssueSection proves AC7 for the
+// second hand-built ent.BacklogItem{} literal (AttachSessionToItem): it must
+// also include ExternalURL, otherwise the attach path silently omits the
+// linked-issue section that the spawn path renders — exactly the kind of
+// two-literal drift this feature exists to fix (ExternalID was historically
+// missing from both).
+func TestAttachSessionToItem_PromptContainsLinkedIssueSection(t *testing.T) {
+	storage := createTestStorage(t)
+	svc := NewBacklogService(storage, nil, nil, nil)
+
+	repoPath := t.TempDir()
+	created, err := storage.CreateBacklogItem(t.Context(), session.BacklogItemData{
+		Title:       "attach me",
+		RepoPath:    repoPath,
+		ExternalURL: "https://github.com/acme/widget/issues/42",
+	})
+	require.NoError(t, err)
+
+	const attachUUID = "attach-linked-issue-uuid"
+	require.NoError(t, storage.AddInstance(&session.Instance{
+		Title:     "attach-target",
+		UUID:      attachUUID,
+		Path:      repoPath,
+		Status:    session.Paused,
+		Program:   "claude",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}))
+
+	_, err = svc.AttachSessionToItem(t.Context(), connect.NewRequest(&sessionv1.AttachSessionToItemRequest{
+		ItemId:      created.ID,
+		SessionUuid: attachUUID,
+	}))
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(repoPath, ".backlog-context.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "Linked GitHub Issue/PR: https://github.com/acme/widget/issues/42")
+	assert.Contains(t, content, "Fixes acme/widget#42")
 }
 
 // TestTriggerTriage_SlowLLMCallDoesNotExpireCleanupContext is a regression test
