@@ -194,6 +194,17 @@ export function useTerminalFlowControl({
       return;
     }
 
+    // Cancel any previously deferred resize — we have newer dimensions now.
+    // This MUST run before the value-dedup early-return below: otherwise a
+    // bounce-back call whose dimensions match lastSentDimsRef (e.g. A -> B
+    // deferred within the throttle window -> back to A) would dedup-return
+    // without cancelling the still-pending deferred send for B, letting that
+    // stale send fire later with the wrong dimensions.
+    if (pendingResizeTimerRef.current) {
+      clearTimeout(pendingResizeTimerRef.current);
+      pendingResizeTimerRef.current = null;
+    }
+
     // Value-dedup: skip if this exact (cols, rows) pair was the last one actually
     // sent, independent of (and checked before) the time throttle below. An
     // unchanged value must not keep the throttle window "warm" — lastResizeTimeRef
@@ -205,12 +216,6 @@ export function useTerminalFlowControl({
     ) {
       console.log(`[useTerminalFlowControl] Resize skipped, value unchanged (${cols}x${rows})`);
       return;
-    }
-
-    // Cancel any previously deferred resize — we have newer dimensions now.
-    if (pendingResizeTimerRef.current) {
-      clearTimeout(pendingResizeTimerRef.current);
-      pendingResizeTimerRef.current = null;
     }
 
     const now = Date.now();

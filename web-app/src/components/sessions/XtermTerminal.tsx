@@ -518,10 +518,17 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
     // the unmount cleanup effect below can reach the live instance, and
     // onContextLoss routes through triggerCanvasFallback() so a real context
     // loss is treated identically to the AC5 mismatch-tracker fallback path.
+    // Guards against the async import below resolving after this effect has
+    // already been cleaned up (e.g. a fast session-switch unmount) — without
+    // this, loadAddon() would be called on an already-disposed terminal and
+    // webglAddonRef.current would be left pointing at an orphaned, undisposed
+    // WebGL addon that leaks its context. Set to true in the cleanup below.
+    let cancelled = false;
     (async () => {
       if (typeof WebGL2RenderingContext !== 'undefined') {
         try {
           const { WebglAddon } = await import('@xterm/addon-webgl');
+          if (cancelled) return;
           webglAddonRef.current = new WebglAddon();
           terminal.loadAddon(webglAddonRef.current);
           webglAddonRef.current.onContextLoss(() => {
@@ -1063,6 +1070,7 @@ export const XtermTerminal = forwardRef<XtermTerminalHandle, XtermTerminalProps>
 
       // Cleanup
       return () => {
+        cancelled = true;
         if (resizeTimeout) {
           clearTimeout(resizeTimeout);
         }
