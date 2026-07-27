@@ -1103,18 +1103,23 @@ already merged to `main` but the doc was never relocated.
 **The 2 `ORPHANED_TRIAGE` items are NOT a new instance of the lost-event bug class** — root-caused
 via live DB + log evidence, not speculation. Both original triage sessions have a populated
 `ended_at`, cleanly closed by `reconcileOrphanedTriageItems` exactly at `firstDetectedAt` — no
-lost exit event. The real causes are two compounding, independently-verified things: (1) the
-host is currently under severe memory pressure — **swap at 31Gi/31Gi used, 360Ki free** at audit
-time — matching the exact signature the code's own comment (`backlog_service_triage.go:1830-1838`)
-already attributes to a 2026-07-24 incident that caused stuck headless calls; a same-day retry on
-`4f03de7b` timed out (`context deadline exceeded` after the full 30m budget) with this same
-signature live. (2) **`orphaned_triage` was never wired into the `evaluateRemediation`
-backoff/parking framework** the other four stuck reasons (rework, stale-session, push-retry,
-turn-budget) all share — its own code comment says "no resolve pass needed... once the item
-leaves idea," i.e. it detects and notifies exactly once, with no auto-retry. **Action needed**:
-relieve the current swap exhaustion (host-level, not a code fix) and manually re-trigger triage
-on both items now; separately, extend automated remediation to cover `orphaned_triage` so this
-doesn't require a human notice-and-retry next time.
+lost exit event. Two compounding things, independently verified: (1) `/proc/swaps` showed the
+swapfile at 33,554,368/33,554,428 KB used at audit time — real, not a sandbox artifact — and a
+same-day retry on `4f03de7b` timed out (`context deadline exceeded` after the full 30m budget)
+with the same signature the code's own comment (`backlog_service_triage.go:1830-1838`) already
+attributes to a 2026-07-24 incident. **Correction, checked after the fact**: `free -h`'s
+`available` column read 24Gi at the same moment — swap sitting at capacity doesn't mean the host
+was under *active* pressure right then (Linux doesn't proactively reclaim swapped-out pages once
+whatever pushed them there subsides), so this was very likely a stale artifact of the 07-24
+incident, not a live one recurring in real time; the timed-out retry may be coincidental rather
+than caused by the swap reading. Worth clearing (reboot or a swapoff/swapon cycle) but not
+grounds to treat as an ongoing emergency. (2) **`orphaned_triage` was never wired into the
+`evaluateRemediation` backoff/parking framework** the other four stuck reasons (rework,
+stale-session, push-retry, turn-budget) all share — its own code comment says "no resolve
+pass needed... once the item leaves idea," i.e. it detects and notifies exactly once, with no
+auto-retry. **This gap is now fixed** — see PR #274, which wires `orphaned_triage` into the same
+backoff/parking machinery as its siblings. **Remaining action**: manually re-trigger triage on
+both items now (or let the new automated retry pick them up once #274 merges and deploys).
 
 ### [1] Reconciliation Bugs — 4 NEW CRITICAL findings, same recurring shape
 
@@ -1261,26 +1266,39 @@ shape gets a structural fix per the recommendation above (not just 4 more patche
 
 ### Recommended Next Actions (routing per skill Phase 5)
 
-1. **Immediate, non-code**: relieve host swap exhaustion, then manually re-trigger triage on
-   `4f03de7b` and `505fb733`.
-2. **`sdd:fix-bug` × 4, but framed as one systemic pass, not four isolated patches** — the
-   swallowed-status-transition findings (bucket 1, items 1-4 above). Per the skill's own
-   "prefer systemic fixes over instance patches" guidance, run this with a mandatory
-   `quality:reflect-and-fix` Phase D that installs a structural guard (lint rule / shared
-   helper / exhaustive test), not just 4 more individually-patched call sites.
-3. **`sdd:fix-bug`** — wire `StuckReasonOrphanedTriage` into `evaluateRemediation`'s
-   backoff/parking framework, closing the one remaining stuck-reason gap.
-4. **`sdd:quick`** — `GateVerdictBox` `skipReviewGate`-aware auto-bypass +
-   `SessionMonitor`/`ReviewChangesModal` silent-fetch-failure fixes — same three items flagged
-   07-18, still open, batchable in one pass.
-5. **`sdd:quick`** — Settings nav link to `/settings/pipeline-modes` (trivial, last remaining
-   hop of the pipeline-mode-selector gap that's otherwise now closed).
-6. **`sdd:fix-bug`** — the two second-tier reconciliation MAJORs (`ReconcilePRPending`'s missing
+**Shipped this same session, as parallel `Agent(isolation: worktree)` runs (all draft PRs, not
+yet merged/reviewed):**
+
+1. ~~`sdd:fix-bug` × 4, systemic pass~~ → **PR #275**: fixed 9 call sites (the 3 confirmed
+   findings + 6 more of the identical shape found while building the enforcement mechanism —
+   finding 3 turned out to be a structurally different problem, a missing timeout detector
+   rather than a swallowed write, and was correctly scoped out rather than force-fixed), plus a
+   new `tools/lint/silenttransition` `go/analysis` pass wired into `make lint-custom` that flags
+   any `TransitionBacklogItemStatus`/`UpdateItemSessionEnded` call whose error is only logged —
+   verified it would have caught all the fixed instances. This is the structural fix the
+   "prefer systemic over instance" guidance called for, not just 4 more one-off patches.
+2. ~~`sdd:fix-bug` — orphaned_triage remediation wiring~~ → **PR #274**: wired into
+   `evaluateRemediation`'s backoff/parking framework via a new `TriageRespawner` interface,
+   mirroring the existing `ReviewRespawner`/`abandoned_review` pattern exactly; also updated the
+   `a027bc5da` exhaustiveness guard and confirmed it actually fails if the wiring is reverted.
+3. ~~`sdd:quick` — GateVerdictBox/SessionMonitor/ReviewChangesModal/Settings-nav batch~~ →
+   **PR #273**: also found and fixed a real structural bug beyond the original scope —
+   `request_review`'s MCP-tool handler (`server/mcp/tools_backlog.go`) ignored
+   `item.SkipReviewGate` entirely, unlike every other path that reaches `review`, so an item
+   with the flag set could still get stranded in `review` forever depending on which path
+   completed it. Fixed at the source rather than papering over it in the frontend.
+
+**Not yet started:**
+
+4. **`sdd:fix-bug`** — the two second-tier reconciliation MAJORs (`ReconcilePRPending`'s missing
    backoff gate, `AutoRespawnAutonomousWork`'s silent failures) — lower urgency, batchable
    together.
-7. Not routed this pass, needs a decision not a fix: whether to compose
+5. Not routed this pass, needs a decision not a fix: whether to compose
    `SkipReviewGate`/`AutoSpawnSession`/`AutoCreatePR`/`PipelineMode` into label/category-driven
    defaults (the bucket-2/bucket-3 crossover finding above) — this is a product decision about
    how much default automation to apply per item category, not a bug or a small UX fix.
-8. Interface-pollution cleanup (`PipelineModeRepository`, `Repository`) — low priority,
+6. Interface-pollution cleanup (`PipelineModeRepository`, `Repository`) — low priority,
    mechanical, no functional bug; fold into a future refactor pass rather than its own session.
+7. **Review note**: PRs #274 and this doc's own 07-27 update both touched
+   `docs/tasks/backlog-feature-improvement.md` on divergent branches — check for a merge
+   conflict on this file specifically when reviewing/merging #274.
