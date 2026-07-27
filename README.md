@@ -1,5 +1,8 @@
 # Stapler Squad [![CI](https://github.com/TylerStaplerAtFanatics/stapler-squad/actions/workflows/build.yml/badge.svg)](https://github.com/TylerStaplerAtFanatics/stapler-squad/actions/workflows/build.yml) [![GitHub Release](https://img.shields.io/github/v/release/TylerStaplerAtFanatics/stapler-squad)](https://github.com/TylerStaplerAtFanatics/stapler-squad/releases/latest)
 
+> **⚠️ This fork is no longer maintained.**
+> Development has moved to **[tstapler/stapler-squad](https://github.com/tstapler/stapler-squad)** — please open new issues and PRs there. All open issues from this repo have been migrated (each closed issue here links to its new home). This repository is being archived and will remain available read-only for historical reference.
+
 [Stapler Squad](https://TylerStaplerAtFanatics.github.io/stapler-squad/) is a web-based mission control for running multiple AI coding agents ([Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex), [Gemini](https://github.com/google-gemini/gemini-cli), [Aider](https://github.com/Aider-AI/aider)) simultaneously — with a real-time dashboard, automatic approval rules, and a structured review queue. Run it with `ssq`, then open `http://localhost:8543`.
 
 ![Stapler Squad Demo](assets/demo.gif)
